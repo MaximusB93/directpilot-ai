@@ -16,9 +16,10 @@ const navItems = [
   { id: 'recommendations', label: 'Рекомендации', icon: '✨' },
   { id: 'reports', label: 'Отчёты', icon: '📄' },
   { id: 'autopilot', label: 'Автопилот', icon: '🛡️' },
+  { id: 'integrations', label: 'Интеграции', icon: '🔌' },
 ];
 
-let activeView = 'landing';
+let activeView = 'dashboard';
 let selectedClientId = clients[0].id;
 
 function currentClient() {
@@ -55,7 +56,7 @@ function renderLanding() {
         <a href="#workflow">Как работает</a>
         <a href="#security">Безопасность</a>
       </div>
-      <button class="navCta" data-view="dashboard">Открыть демо-кабинет</button>
+      <button class="navCta" data-view="dashboard">Перейти в кабинет</button>
     </nav>
 
     <section id="top" class="hero section">
@@ -67,7 +68,7 @@ function renderLanding() {
           помогает безопасно внедрять изменения с подтверждением специалиста.
         </p>
         <div class="heroActions">
-          <button class="primaryButton" data-view="dashboard">Открыть демо-кабинет <span>→</span></button>
+          <button class="primaryButton" data-view="dashboard">Перейти в кабинет <span>→</span></button>
           <a class="secondaryButton" href="#features">Что умеет сервис</a>
         </div>
         <div class="trustRow">
@@ -325,6 +326,31 @@ function renderReports() {
   `);
 }
 
+function renderIntegrations() {
+  return renderShell(`
+    <div class="pageIntro"><span class="eyebrow">🔌 Интеграции</span><h2>Подключение Яндекс.Директа и источников данных</h2><p>Следующий backend-шаг — OAuth Яндекса: пользователь выдаёт доступ, backend получает confirmation code, затем безопасно обменивает его на токен и хранит подключение.</p></div>
+    <div class="integrationGrid">
+      <article class="integrationCard primaryIntegration">
+        <div class="integrationTop"><span>Яндекс.Директ</span><strong>OAuth готовится</strong></div>
+        <h3>Подключить рекламный кабинет</h3>
+        <p>Backend endpoint уже может сформировать ссылку авторизации, когда заданы переменные YANDEX_CLIENT_ID и YANDEX_REDIRECT_URI.</p>
+        <code>GET /api/v1/auth/yandex/start</code>
+        <button class="approveButton">Подключить Яндекс.Директ</button>
+      </article>
+      <article class="integrationCard">
+        <div class="integrationTop"><span>Яндекс.Метрика</span><strong>Следом</strong></div>
+        <h3>Цели и конверсии</h3>
+        <p>Нужна для CPA, ROAS, ecommerce и качества рекомендаций.</p>
+      </article>
+      <article class="integrationCard">
+        <div class="integrationTop"><span>CRM</span><strong>План</strong></div>
+        <h3>Качество лидов и продажи</h3>
+        <p>Позволит оптимизировать рекламу не по заявкам, а по выручке и марже.</p>
+      </article>
+    </div>
+  `);
+}
+
 function renderAutopilot() {
   return renderShell(`
     <div class="pageIntro"><span class="eyebrow">🛡️ Автопилот</span><h2>Политики безопасной автоматизации</h2><p>ИИ может действовать только в рамках лимитов клиента и после подтверждения критичных изменений.</p></div>
@@ -352,6 +378,7 @@ function render() {
     recommendations: renderRecommendations,
     reports: renderReports,
     autopilot: renderAutopilot,
+    integrations: renderIntegrations,
   };
   app.innerHTML = views[activeView]();
   document.body.dataset.view = activeView;

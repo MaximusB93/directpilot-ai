@@ -1,3 +1,4 @@
+import os
 from dataclasses import dataclass, field
 
 
@@ -6,6 +7,12 @@ class Settings:
     api_prefix: str = "/api/v1"
     service_name: str = "directpilot-ai-backend"
     environment: str = "development"
+    yandex_client_id: str | None = os.getenv("YANDEX_CLIENT_ID")
+    yandex_redirect_uri: str = os.getenv(
+        "YANDEX_REDIRECT_URI",
+        "http://localhost:8000/api/v1/auth/yandex/callback",
+    )
+    yandex_oauth_authorize_url: str = "https://oauth.yandex.com/authorize"
     allowed_origins: list[str] = field(
         default_factory=lambda: [
             "http://localhost:5173",

@@ -123,6 +123,20 @@ class IntegrationStatus(BaseModel):
     next_action: str
 
 
+class YandexAuthStartResponse(BaseModel):
+    configured: bool
+    auth_url: str | None = None
+    state: str
+    message: str
+
+
+class YandexAuthCallbackResponse(BaseModel):
+    status: str
+    code_received: bool
+    state: str | None = None
+    message: str
+
+
 class HealthResponse(BaseModel):
     status: str
     service: str

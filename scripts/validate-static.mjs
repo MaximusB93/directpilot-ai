@@ -20,6 +20,7 @@ const checks = [
   ['responsive styles', css.includes('@media')],
   ['mock clients', data.includes('clients')],
   ['autopilot rules', data.includes('autopilotRules')],
+  ['integrations view', js.includes('renderIntegrations')],
 ];
 
 const failed = checks.filter(([, ok]) => !ok);

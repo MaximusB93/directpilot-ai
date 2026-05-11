@@ -41,6 +41,17 @@ http://localhost:8000/health
 http://localhost:8000/docs
 ```
 
+## Подключение Яндекс.Директа
+
+В backend добавлен первый OAuth entrypoint для подключения аккаунта Яндекса:
+
+```text
+GET /api/v1/auth/yandex/start
+GET /api/v1/auth/yandex/callback
+```
+
+Для реального запуска нужны `YANDEX_CLIENT_ID` и `YANDEX_REDIRECT_URI`. Текущая версия формирует auth URL и принимает confirmation code; обмен кода на токен и безопасное хранение токенов добавим следующим шагом.
+
 ## MCP server
 
 В backend добавлен первый read-only MCP-сервер для AI-клиентов. Он запускается через stdio-транспорт FastMCP и отдаёт tools для клиентов, кампаний, аудита, рекомендаций и интеграций на mock-данных.

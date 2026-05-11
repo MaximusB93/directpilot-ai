@@ -735,3 +735,69 @@ td {
   .sideNav { grid-template-columns: 1fr 1fr; }
   .auditItem { grid-template-columns: 1fr; }
 }
+
+.integrationGrid {
+  display: grid;
+  grid-template-columns: 1.2fr 0.9fr 0.9fr;
+  gap: 16px;
+}
+
+.integrationCard {
+  display: grid;
+  gap: 14px;
+  padding: 22px;
+  border: 1px solid rgba(19, 34, 56, 0.08);
+  border-radius: 26px;
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: 0 18px 50px rgba(41, 65, 103, 0.08);
+}
+
+.integrationCard h3 {
+  margin: 0;
+  color: #101928;
+  font-size: 22px;
+  letter-spacing: -0.03em;
+}
+
+.integrationCard p {
+  margin: 0;
+  color: #5b6b80;
+  line-height: 1.6;
+}
+
+.integrationCard code {
+  width: fit-content;
+  padding: 8px 10px;
+  border-radius: 12px;
+  color: #1e5dff;
+  background: #edf3ff;
+  font-weight: 800;
+}
+
+.integrationTop {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.integrationTop span,
+.integrationTop strong {
+  padding: 8px 10px;
+  border-radius: 999px;
+  background: #f1f5f9;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.integrationTop strong {
+  color: #087a49;
+  background: #e9f9f1;
+}
+
+.primaryIntegration {
+  border-color: rgba(30, 93, 255, 0.22);
+}
+
+@media (max-width: 920px) {
+  .integrationGrid { grid-template-columns: 1fr; }
+}

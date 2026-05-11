@@ -29,11 +29,24 @@ http://localhost:8000/docs
 - `GET /api/v1/recommendations` — список рекомендаций.
 - `GET /api/v1/recommendations/{recommendation_id}` — детальная рекомендация.
 - `GET /api/v1/integrations` — статусы будущих интеграций.
+- `GET /api/v1/auth/yandex/callback` — принять confirmation code от Яндекса.
+- `GET /api/v1/auth/yandex/start` — сформировать OAuth-ссылку подключения Яндекса.
 - `POST /api/v1/recommendations/{recommendation_id}/preview` — dry-run preview рекомендации.
 - `POST /api/v1/approvals` — создать запрос на подтверждение.
 - `POST /api/v1/approvals/{approval_id}/approve` — подтвердить preview.
 - `POST /api/v1/approvals/{approval_id}/reject` — отклонить preview.
 - `GET /api/v1/audit-log` — журнал preview/approval событий.
+
+## Yandex Direct OAuth
+
+Для реального подключения аккаунта нужно зарегистрировать OAuth-приложение Яндекса, запросить доступ к Direct API и задать переменные окружения:
+
+```bash
+export YANDEX_CLIENT_ID=<client-id>
+export YANDEX_REDIRECT_URI=http://localhost:8000/api/v1/auth/yandex/callback
+```
+
+После этого endpoint `GET /api/v1/auth/yandex/start` вернёт `auth_url`, которую пользователь должен открыть для выдачи доступа. Callback v1 пока принимает confirmation code и не хранит токены; обмен code на access token и encrypted token storage — следующий шаг.
 
 ## MCP server v1
 
