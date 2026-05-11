@@ -29,6 +29,11 @@ http://localhost:8000/docs
 - `GET /api/v1/recommendations` — список рекомендаций.
 - `GET /api/v1/recommendations/{recommendation_id}` — детальная рекомендация.
 - `GET /api/v1/integrations` — статусы будущих интеграций.
+- `POST /api/v1/recommendations/{recommendation_id}/preview` — dry-run preview рекомендации.
+- `POST /api/v1/approvals` — создать запрос на подтверждение.
+- `POST /api/v1/approvals/{approval_id}/approve` — подтвердить preview.
+- `POST /api/v1/approvals/{approval_id}/reject` — отклонить preview.
+- `GET /api/v1/audit-log` — журнал preview/approval событий.
 
 ## MCP server v1
 
@@ -39,7 +44,7 @@ cd backend
 python -m app.mcp.server
 ```
 
-В первой версии MCP tools ничего не меняют в Яндекс.Директе. Write-операции должны появляться только после dry-run, policy checks, approval workflow и audit log.
+MCP tools ничего не меняют в Яндекс.Директе. В v2 добавлен только dry-run preview и чтение audit log; реальные write-операции должны появляться только после policy checks, approval workflow и rollback snapshots.
 
 ## Что дальше
 

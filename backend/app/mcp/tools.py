@@ -1,5 +1,6 @@
 from typing import Any
 
+from app.services.approvals import create_preview, list_audit_log
 from app.services.mock_data import AUDIT_ISSUES, CAMPAIGNS, CLIENTS, INTEGRATIONS, RECOMMENDATIONS
 
 JsonObject = dict[str, Any]
@@ -93,6 +94,24 @@ TOOLS: list[JsonObject] = [
         "description": "List planned and connected integrations such as Yandex Direct, Metrica and CRM.",
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
+    {
+        "name": "preview_recommendation",
+        "description": "Create a dry-run preview for a recommendation without applying changes.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "recommendation_id": {"type": "string", "description": "Recommendation identifier"},
+                "client_id": {"type": "string", "description": "Client identifier", "default": "furniture"},
+            },
+            "required": ["recommendation_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "list_audit_log",
+        "description": "List backend audit log events created by previews and approval actions.",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
 ]
 
 
@@ -116,5 +135,15 @@ def call_tool(name: str, arguments: JsonObject | None = None) -> Any:
         return _dump(_find_recommendation(args["recommendation_id"]))
     if name == "list_integrations":
         return _dump(INTEGRATIONS)
+    if name == "preview_recommendation":
+        return _dump(
+            create_preview(
+                recommendation_id=args["recommendation_id"],
+                client_id=args.get("client_id", "furniture"),
+                actor="mcp-agent",
+            )
+        )
+    if name == "list_audit_log":
+        return _dump(list_audit_log())
 
     raise ValueError(f"Unknown MCP tool '{name}'")

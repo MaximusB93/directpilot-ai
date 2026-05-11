@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routers import audit, clients, health, integrations, recommendations
+from app.api.routers import approvals, audit, clients, health, integrations, recommendations
 from app.core.config import settings
 
 app = FastAPI(
@@ -23,3 +23,4 @@ app.include_router(clients.router, prefix=settings.api_prefix)
 app.include_router(audit.router, prefix=settings.api_prefix)
 app.include_router(recommendations.router, prefix=settings.api_prefix)
 app.include_router(integrations.router, prefix=settings.api_prefix)
+app.include_router(approvals.router, prefix=settings.api_prefix)

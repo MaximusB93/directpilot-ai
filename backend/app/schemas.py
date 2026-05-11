@@ -64,6 +64,57 @@ class Recommendation(BaseModel):
     diff: RecommendationDiff
 
 
+class PlannedChange(BaseModel):
+    object_type: str
+    object_name: str
+    campaign: str
+    before: str
+    after: str
+    action: str
+
+
+class ChangePreview(BaseModel):
+    id: str
+    recommendation_id: str
+    client_id: str
+    risk: str
+    requires_approval: bool
+    summary: str
+    changes: list[PlannedChange]
+
+
+class ApprovalCreateRequest(BaseModel):
+    preview_id: str
+    requested_by: str = "ppc-specialist"
+
+
+class ApprovalDecisionRequest(BaseModel):
+    decided_by: str = "ppc-lead"
+    comment: str | None = None
+
+
+class ApprovalRecord(BaseModel):
+    id: str
+    preview_id: str
+    recommendation_id: str
+    client_id: str
+    requested_by: str
+    status: str
+    created_at: str
+    decided_by: str | None = None
+    decided_at: str | None = None
+    comment: str | None = None
+
+
+class AuditLogEvent(BaseModel):
+    id: str
+    type: str
+    actor: str
+    description: str
+    created_at: str
+    entity_id: str | None = None
+
+
 class IntegrationStatus(BaseModel):
     id: str
     name: str

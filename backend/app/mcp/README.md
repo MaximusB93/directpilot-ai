@@ -32,9 +32,11 @@ python -m app.mcp.server
 - `list_recommendations`
 - `get_recommendation`
 - `list_integrations`
+- `list_audit_log`
+- `preview_recommendation`
 
 ## Ограничения v1
 
-- Только read-only tools.
+- Read-only tools плюс dry-run preview без применения изменений.
 - Данные берутся из `app.services.mock_data`.
-- Реальные write-операции в Яндекс.Директе должны добавляться только после policy checks, dry-run, approval workflow и audit log.
+- Реальные write-операции в Яндекс.Директе должны добавляться только после policy checks, approval workflow, audit log и rollback snapshots.

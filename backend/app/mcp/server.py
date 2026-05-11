@@ -49,5 +49,17 @@ def list_integrations() -> list[dict[str, Any]]:
     return call_tool("list_integrations")
 
 
+@mcp.tool()
+def preview_recommendation(recommendation_id: str, client_id: str = "furniture") -> dict[str, Any]:
+    """Create a dry-run preview for a recommendation without applying changes."""
+    return call_tool("preview_recommendation", {"recommendation_id": recommendation_id, "client_id": client_id})
+
+
+@mcp.tool()
+def list_audit_log() -> list[dict[str, Any]]:
+    """List backend audit log events created by previews and approval actions."""
+    return call_tool("list_audit_log")
+
+
 if __name__ == "__main__":
     mcp.run()
