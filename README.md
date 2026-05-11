@@ -22,6 +22,25 @@ npm run build
 
 Команда запускает статическую проверку ключевых файлов прототипа.
 
+## Backend API
+
+В проект добавлен первый backend-каркас в папке `backend/`. Он пока работает на mock-данных, но уже задаёт будущий контракт API для фронтенда: клиенты, кампании, AI-аудит, рекомендации и интеграции.
+
+```bash
+cd backend
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+uvicorn app.main:app --reload --port 8000
+```
+
+После запуска доступны:
+
+```text
+http://localhost:8000/health
+http://localhost:8000/docs
+```
+
 ## Публикация через GitHub Pages
 
 Проект можно публиковать двумя способами.
