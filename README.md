@@ -41,6 +41,15 @@ http://localhost:8000/health
 http://localhost:8000/docs
 ```
 
+## MCP server
+
+В backend добавлен первый read-only MCP-сервер для AI-клиентов. Он запускается через stdio-транспорт FastMCP и отдаёт tools для клиентов, кампаний, аудита, рекомендаций и интеграций на mock-данных.
+
+```bash
+cd backend
+python -m app.mcp.server
+```
+
 ## Публикация через GitHub Pages
 
 Проект можно публиковать двумя способами.

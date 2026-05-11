@@ -30,6 +30,17 @@ http://localhost:8000/docs
 - `GET /api/v1/recommendations/{recommendation_id}` — детальная рекомендация.
 - `GET /api/v1/integrations` — статусы будущих интеграций.
 
+## MCP server v1
+
+Добавлен read-only MCP-сервер на FastMCP поверх mock-данных backend-сервиса. Он предназначен для AI-клиентов и будущих агентов, которым нужно безопасно читать клиентов, кампании, аудит, рекомендации и интеграции.
+
+```bash
+cd backend
+python -m app.mcp.server
+```
+
+В первой версии MCP tools ничего не меняют в Яндекс.Директе. Write-операции должны появляться только после dry-run, policy checks, approval workflow и audit log.
+
 ## Что дальше
 
 1. Подключить реальное хранилище: PostgreSQL для сущностей и ClickHouse для статистики.
