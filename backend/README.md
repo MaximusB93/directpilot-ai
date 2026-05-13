@@ -37,6 +37,26 @@ http://localhost:8000/docs
 - `POST /api/v1/approvals/{approval_id}/reject` — отклонить preview.
 - `GET /api/v1/audit-log` — журнал preview/approval событий.
 
+## Деплой на Vercel
+
+Backend можно деплоить из корня репозитория на Vercel. Для этого в корне есть:
+
+- `index.py` — entrypoint, который экспортирует FastAPI-приложение `app`;
+- `backend/index.py` — такой же entrypoint для варианта, где Root Directory в Vercel установлен как `backend`;
+- `requirements.txt` — подключает зависимости из `backend/requirements.txt`.
+
+Проверочные URL после деплоя:
+
+```text
+/
+/health
+/docs
+/api/v1/clients
+/api/v1/recommendations
+```
+
+Корневой route `/` добавлен специально для Vercel-домена, чтобы открытие `https://directpilot-ai.vercel.app/` показывало статус API, а не стандартный FastAPI 404 `{"detail":"Not Found"}`.
+
 ## Yandex Direct OAuth
 
 Для реального подключения аккаунта нужно зарегистрировать OAuth-приложение Яндекса, запросить доступ к Direct API и задать переменные окружения:

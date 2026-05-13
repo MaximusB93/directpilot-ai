@@ -25,3 +25,21 @@ app.include_router(audit.router, prefix=settings.api_prefix)
 app.include_router(recommendations.router, prefix=settings.api_prefix)
 app.include_router(integrations.router, prefix=settings.api_prefix)
 app.include_router(approvals.router, prefix=settings.api_prefix)
+
+
+@app.get("/", tags=["health"])
+def read_root() -> dict[str, object]:
+    return {
+        "status": "ok",
+        "service": settings.service_name,
+        "message": "DirectPilot AI backend is running.",
+        "docs_url": "/docs",
+        "health_url": "/health",
+        "api_prefix": settings.api_prefix,
+        "sample_endpoints": [
+            f"{settings.api_prefix}/clients",
+            f"{settings.api_prefix}/recommendations",
+            f"{settings.api_prefix}/integrations",
+            f"{settings.api_prefix}/auth/yandex/start",
+        ],
+    }

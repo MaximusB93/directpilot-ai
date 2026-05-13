@@ -41,6 +41,23 @@ http://localhost:8000/health
 http://localhost:8000/docs
 ```
 
+## Деплой backend на Vercel
+
+Для Vercel добавлен root-level entrypoint `index.py`, который экспортирует FastAPI-приложение как `app`. Также есть `backend/index.py` на случай, если в настройках Vercel выбран Root Directory = `backend`. Это нужно потому, что Vercel автоматически ищет FastAPI entrypoint в `index.py`, `app.py`, `server.py` или аналогичных путях.
+
+Также добавлен корневой `requirements.txt`, который подключает зависимости из `backend/requirements.txt`, чтобы Vercel установил FastAPI-зависимости при деплое из корня репозитория.
+
+После деплоя backend должен отвечать:
+
+```text
+https://directpilot-ai.vercel.app/
+https://directpilot-ai.vercel.app/health
+https://directpilot-ai.vercel.app/docs
+https://directpilot-ai.vercel.app/api/v1/clients
+```
+
+Если корневой URL раньше возвращал `{"detail": "not found"}`, это означало, что FastAPI-приложение запущено, но у него не было маршрута `/`. Теперь маршрут `/` отдаёт короткий статус backend и ссылки на основные endpoint'ы.
+
 ## Подключение Яндекс.Директа
 
 В backend добавлен первый OAuth entrypoint для подключения аккаунта Яндекса:
