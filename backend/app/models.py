@@ -1,0 +1,78 @@
+from datetime import datetime
+from uuid import uuid4
+
+from sqlalchemy import DateTime, ForeignKey, String, Text, UniqueConstraint, func
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.db import Base
+
+
+def _uuid() -> str:
+    return str(uuid4())
+
+
+class Organization(Base):
+    __tablename__ = "organizations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(255), nullable=False, default="DirectPilot AI")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    users: Mapped[list["User"]] = relationship(back_populates="organization")
+    accounts: Mapped[list["ConnectedAccount"]] = relationship(back_populates="organization")
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), nullable=False)
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    external_user_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    provider: Mapped[str] = mapped_column(String(64), nullable=False, default="yandex")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    organization: Mapped[Organization] = relationship(back_populates="users")
+
+
+class ConnectedAccount(Base):
+    __tablename__ = "connected_accounts"
+    __table_args__ = (UniqueConstraint("provider", "external_user_id", name="uq_connected_accounts_provider_user"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), nullable=False)
+    provider: Mapped[str] = mapped_column(String(64), nullable=False, default="yandex")
+    external_user_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    login: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(String(64), nullable=False, default="connected")
+    scope: Mapped[str | None] = mapped_column(Text, nullable=True)
+    connected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    organization: Mapped[Organization] = relationship(back_populates="accounts")
+    tokens: Mapped[list["OAuthToken"]] = relationship(back_populates="account", cascade="all, delete-orphan")
+
+
+class OAuthToken(Base):
+    __tablename__ = "oauth_tokens"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    account_id: Mapped[str] = mapped_column(ForeignKey("connected_accounts.id"), nullable=False)
+    token_type: Mapped[str] = mapped_column(String(64), nullable=False, default="bearer")
+    access_token_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    refresh_token_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    scope: Mapped[str | None] = mapped_column(Text, nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    account: Mapped[ConnectedAccount] = relationship(back_populates="tokens")
