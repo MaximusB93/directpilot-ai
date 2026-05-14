@@ -101,6 +101,16 @@ print(Fernet.generate_key().decode())
 PY
 ```
 
+
+
+Если `/api/v1/auth/yandex/start` возвращает `auth_url`, где `client_id` выглядит как `%E2%80%A2%E2%80%A2...`, значит в `YANDEX_CLIENT_ID` случайно вставлено замаскированное значение из UI Vercel. Нужно нажать Edit у переменной и вставить реальный Client ID из кабинета Яндекса. Backend теперь считает такие значения невалидными и возвращает понятное сообщение вместо генерации OAuth URL с bullets.
+
+Для проверки реально задеплоенных маршрутов есть диагностический endpoint:
+
+```text
+GET /api/v1/debug/routes
+```
+
 Секреты, пароль базы и OAuth secret нельзя коммитить в Git. Примеры переменных без реальных значений лежат в `.env.example` и `backend/.env.example`.
 
 ## MCP server

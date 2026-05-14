@@ -6,6 +6,13 @@ def _split_scopes(value: str) -> list[str]:
     return [scope.strip() for scope in value.replace(",", " ").split() if scope.strip()]
 
 
+def _looks_redacted(value: str | None) -> bool:
+    if not value:
+        return False
+    stripped = value.strip()
+    return "•" in stripped or stripped in {"********", "****"} or stripped.startswith("<")
+
+
 @dataclass(frozen=True)
 class Settings:
     api_prefix: str = "/api/v1"
@@ -47,7 +54,17 @@ class Settings:
 
     @property
     def yandex_oauth_configured(self) -> bool:
-        return bool(self.yandex_client_id and self.yandex_client_secret and self.yandex_redirect_uri)
+        return bool(
+            self.yandex_client_id
+            and self.yandex_client_secret
+            and self.yandex_redirect_uri
+            and not _looks_redacted(self.yandex_client_id)
+            and not _looks_redacted(self.yandex_client_secret)
+        )
+
+    @property
+    def yandex_env_has_redacted_values(self) -> bool:
+        return _looks_redacted(self.yandex_client_id) or _looks_redacted(self.yandex_client_secret)
 
     @property
     def postgres_configured(self) -> bool:

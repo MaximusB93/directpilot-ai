@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.db import get_db
+from app.db import get_db, get_optional_db
 from app.schemas import YandexAuthCallbackResponse, YandexAuthStartResponse, YandexConnectionStatus
 from app.services.connected_accounts import get_yandex_connection_status, save_yandex_connection
 from app.services.yandex_oauth import exchange_code_for_token, fetch_yandex_user_info
@@ -13,16 +13,28 @@ from app.services.yandex_oauth import exchange_code_for_token, fetch_yandex_user
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
+def _oauth_env_message() -> str:
+    if settings.yandex_env_has_redacted_values:
+        return (
+            "Yandex OAuth environment variables contain redacted placeholder characters. "
+            "Open Vercel Environment Variables and paste the real YANDEX_CLIENT_ID and YANDEX_CLIENT_SECRET values, "
+            "not the masked bullets shown by the Vercel UI."
+        )
+    if not settings.yandex_oauth_configured:
+        return "Set YANDEX_CLIENT_ID, YANDEX_CLIENT_SECRET and YANDEX_REDIRECT_URI to enable Yandex OAuth."
+    return "Open auth_url to connect a Yandex Direct account."
+
+
 @router.get("/yandex/start", response_model=YandexAuthStartResponse)
 def start_yandex_oauth() -> YandexAuthStartResponse:
     state = token_urlsafe(24)
 
-    if not settings.yandex_client_id:
+    if not settings.yandex_client_id or settings.yandex_env_has_redacted_values:
         return YandexAuthStartResponse(
             configured=False,
             auth_url=None,
             state=state,
-            message="Set YANDEX_CLIENT_ID, YANDEX_CLIENT_SECRET and YANDEX_REDIRECT_URI to enable Yandex OAuth.",
+            message=_oauth_env_message(),
         )
 
     query = urlencode(
@@ -38,7 +50,7 @@ def start_yandex_oauth() -> YandexAuthStartResponse:
         configured=settings.yandex_oauth_configured,
         auth_url=f"{settings.yandex_oauth_authorize_url}?{query}",
         state=state,
-        message="Open auth_url to connect a Yandex Direct account.",
+        message=_oauth_env_message(),
     )
 
 
@@ -76,7 +88,8 @@ def yandex_oauth_callback(
 
 
 @router.get("/yandex/status", response_model=YandexConnectionStatus)
-def yandex_oauth_status(db: Session = Depends(get_db)) -> YandexConnectionStatus:
+@router.get("/yandex/connection-status", response_model=YandexConnectionStatus, include_in_schema=False)
+def yandex_oauth_status(db: Session | None = Depends(get_optional_db)) -> YandexConnectionStatus:
     status = get_yandex_connection_status(db)
     return YandexConnectionStatus(
         configured=settings.yandex_oauth_configured,
@@ -84,5 +97,5 @@ def yandex_oauth_status(db: Session = Depends(get_db)) -> YandexConnectionStatus
         token_storage_configured=settings.token_storage_configured,
         connected=status["connected"],
         accounts=status["accounts"],
-        message=status["message"],
+        message=_oauth_env_message() if settings.yandex_env_has_redacted_values else status["message"],
     )
