@@ -197,3 +197,16 @@ class YandexDirectCampaign(BaseModel):
     status: str
     state: str | None = None
     type: str | None = None
+
+
+class YandexCampaignReportRow(BaseModel):
+    campaign_id: str
+    campaign_name: str
+    impressions: int
+    clicks: int
+    cost: float
+    ctr: float
+    avg_cpc: float
+    conversions: float
+    cost_per_conversion: float | None = None
+    conversion_rate: float | None = None

@@ -79,6 +79,7 @@ Backend теперь поддерживает production-путь подключ
 4. `GET /api/v1/auth/yandex/status` показывает подключённые аккаунты.
 5. `GET /api/v1/yandex-direct/connection` проверяет наличие токена для Direct API.
 6. `GET /api/v1/yandex-direct/campaigns` делает первый read-only запрос в Yandex Direct API.
+7. `GET /api/v1/yandex-direct/reports/campaigns?days=30` получает кампанийную статистику из Yandex Direct Reports API: показы, клики, расход, CTR, средний CPC и конверсии.
 
 Для Vercel нужно добавить Environment Variables без коммита секретов в репозиторий:
 
@@ -109,6 +110,20 @@ PY
 
 ```text
 GET /api/v1/debug/routes
+```
+
+
+
+Проверить первый отчёт по кампаниям после подключения аккаунта:
+
+```text
+GET /api/v1/yandex-direct/reports/campaigns?days=30
+```
+
+Для агентских аккаунтов можно передать логин клиента:
+
+```text
+GET /api/v1/yandex-direct/reports/campaigns?days=30&client_login=<client-login>
 ```
 
 Секреты, пароль базы и OAuth secret нельзя коммитить в Git. Примеры переменных без реальных значений лежат в `.env.example` и `backend/.env.example`.
