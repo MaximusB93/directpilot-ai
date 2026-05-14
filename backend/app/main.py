@@ -1,13 +1,25 @@
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routers import approvals, audit, auth, clients, health, integrations, recommendations
+from app.api.routers import approvals, audit, auth, clients, health, integrations, recommendations, yandex_direct
 from app.core.config import settings
+from app.db import init_db
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    init_db()
+    yield
+
 
 app = FastAPI(
     title="DirectPilot AI API",
     description="Backend API for AI-assisted Yandex.Direct audit, recommendations and safe automation.",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -25,6 +37,7 @@ app.include_router(audit.router, prefix=settings.api_prefix)
 app.include_router(recommendations.router, prefix=settings.api_prefix)
 app.include_router(integrations.router, prefix=settings.api_prefix)
 app.include_router(approvals.router, prefix=settings.api_prefix)
+app.include_router(yandex_direct.router, prefix=settings.api_prefix)
 
 
 @app.get("/", tags=["health"])
@@ -41,5 +54,7 @@ def read_root() -> dict[str, object]:
             f"{settings.api_prefix}/recommendations",
             f"{settings.api_prefix}/integrations",
             f"{settings.api_prefix}/auth/yandex/start",
+            f"{settings.api_prefix}/auth/yandex/status",
+            f"{settings.api_prefix}/yandex-direct/connection",
         ],
     }

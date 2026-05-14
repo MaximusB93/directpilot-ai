@@ -130,14 +130,70 @@ class YandexAuthStartResponse(BaseModel):
     message: str
 
 
+
+
+class YandexTokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int | None = None
+    refresh_token: str | None = None
+    scope: str | None = None
+
+
+class YandexUserInfo(BaseModel):
+    id: str | None = None
+    login: str | None = None
+    client_id: str | None = None
+    display_name: str | None = None
+    real_name: str | None = None
+    default_email: str | None = None
+
+
+class ConnectedYandexAccount(BaseModel):
+    id: str
+    provider: str = "yandex"
+    status: str
+    login: str | None = None
+    display_name: str | None = None
+    external_user_id: str | None = None
+    scope: str | None = None
+    connected_at: str
+    updated_at: str
+    token_expires_at: str | None = None
+
+
+class YandexConnectionStatus(BaseModel):
+    configured: bool
+    database_configured: bool
+    token_storage_configured: bool
+    connected: bool
+    accounts: list[ConnectedYandexAccount]
+    message: str
+
+
 class YandexAuthCallbackResponse(BaseModel):
     status: str
     code_received: bool
     state: str | None = None
     message: str
+    account: ConnectedYandexAccount | None = None
 
 
 class HealthResponse(BaseModel):
     status: str
     service: str
     environment: str
+
+
+class YandexDirectConnectionCheck(BaseModel):
+    configured: bool
+    can_call_api: bool
+    message: str
+
+
+class YandexDirectCampaign(BaseModel):
+    id: str
+    name: str
+    status: str
+    state: str | None = None
+    type: str | None = None

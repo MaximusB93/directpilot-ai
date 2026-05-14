@@ -31,6 +31,9 @@ http://localhost:8000/docs
 - `GET /api/v1/integrations` — статусы будущих интеграций.
 - `GET /api/v1/auth/yandex/callback` — принять confirmation code от Яндекса.
 - `GET /api/v1/auth/yandex/start` — сформировать OAuth-ссылку подключения Яндекса.
+- `GET /api/v1/auth/yandex/status` — статус подключённых Яндекс-аккаунтов.
+- `GET /api/v1/yandex-direct/connection` — проверить наличие токена для Direct API.
+- `GET /api/v1/yandex-direct/campaigns` — получить кампании через read-only Direct API connector.
 - `POST /api/v1/recommendations/{recommendation_id}/preview` — dry-run preview рекомендации.
 - `POST /api/v1/approvals` — создать запрос на подтверждение.
 - `POST /api/v1/approvals/{approval_id}/approve` — подтвердить preview.
@@ -62,11 +65,48 @@ Backend можно деплоить из корня репозитория на 
 Для реального подключения аккаунта нужно зарегистрировать OAuth-приложение Яндекса, запросить доступ к Direct API и задать переменные окружения:
 
 ```bash
+export DATABASE_URL=postgresql+psycopg://<db-user>:<db-password>@<db-host>:5432/<db-name>
+export TOKEN_ENCRYPTION_KEY=<fernet-key>
 export YANDEX_CLIENT_ID=<client-id>
+export YANDEX_CLIENT_SECRET=<client-secret>
 export YANDEX_REDIRECT_URI=http://localhost:8000/api/v1/auth/yandex/callback
 ```
 
-После этого endpoint `GET /api/v1/auth/yandex/start` вернёт `auth_url`, которую пользователь должен открыть для выдачи доступа. Callback v1 пока принимает confirmation code и не хранит токены; обмен code на access token и encrypted token storage — следующий шаг.
+После этого endpoint `GET /api/v1/auth/yandex/start` вернёт `auth_url`, которую пользователь должен открыть для выдачи доступа. Callback меняет confirmation code на access token, получает информацию Яндекс ID и сохраняет OAuth token в Postgres в зашифрованном виде.
+
+## Реальное подключение Яндекс.Директа и Postgres
+
+Backend теперь поддерживает production-путь подключения Яндекса:
+
+1. `GET /api/v1/auth/yandex/start` формирует OAuth URL со scopes `direct:api`, `metrika:read`, `login:info`.
+2. `GET /api/v1/auth/yandex/callback` меняет `code` на OAuth token, получает базовую информацию Яндекс ID и сохраняет подключение.
+3. OAuth tokens сохраняются в Postgres в зашифрованном виде.
+4. `GET /api/v1/auth/yandex/status` показывает подключённые аккаунты.
+5. `GET /api/v1/yandex-direct/connection` проверяет наличие токена для Direct API.
+6. `GET /api/v1/yandex-direct/campaigns` делает первый read-only запрос в Yandex Direct API.
+
+Для Vercel нужно добавить Environment Variables без коммита секретов в репозиторий:
+
+```text
+ENVIRONMENT=production
+DATABASE_URL=postgresql+psycopg://<db-user>:<db-password>@<db-host>:5432/<db-name>
+TOKEN_ENCRYPTION_KEY=<fernet-key>
+YANDEX_CLIENT_ID=<client-id>
+YANDEX_CLIENT_SECRET=<client-secret>
+YANDEX_REDIRECT_URI=https://directpilot-ai.vercel.app/api/v1/auth/yandex/callback
+YANDEX_OAUTH_SCOPES=direct:api metrika:read login:info
+```
+
+Ключ шифрования можно сгенерировать локально:
+
+```bash
+python - <<'PY'
+from cryptography.fernet import Fernet
+print(Fernet.generate_key().decode())
+PY
+```
+
+Секреты, пароль базы и OAuth secret нельзя коммитить в Git. Примеры переменных без реальных значений лежат в `.env.example` и `backend/.env.example`.
 
 ## MCP server v1
 

@@ -67,7 +67,41 @@ GET /api/v1/auth/yandex/start
 GET /api/v1/auth/yandex/callback
 ```
 
-Для реального запуска нужны `YANDEX_CLIENT_ID` и `YANDEX_REDIRECT_URI`. Текущая версия формирует auth URL и принимает confirmation code; обмен кода на токен и безопасное хранение токенов добавим следующим шагом.
+Для реального запуска нужны `DATABASE_URL`, `TOKEN_ENCRYPTION_KEY`, `YANDEX_CLIENT_ID`, `YANDEX_CLIENT_SECRET` и `YANDEX_REDIRECT_URI`. Текущая версия формирует auth URL, меняет confirmation code на OAuth token и сохраняет подключение в Postgres с шифрованием токенов.
+
+## Реальное подключение Яндекс.Директа и Postgres
+
+Backend теперь поддерживает production-путь подключения Яндекса:
+
+1. `GET /api/v1/auth/yandex/start` формирует OAuth URL со scopes `direct:api`, `metrika:read`, `login:info`.
+2. `GET /api/v1/auth/yandex/callback` меняет `code` на OAuth token, получает базовую информацию Яндекс ID и сохраняет подключение.
+3. OAuth tokens сохраняются в Postgres в зашифрованном виде.
+4. `GET /api/v1/auth/yandex/status` показывает подключённые аккаунты.
+5. `GET /api/v1/yandex-direct/connection` проверяет наличие токена для Direct API.
+6. `GET /api/v1/yandex-direct/campaigns` делает первый read-only запрос в Yandex Direct API.
+
+Для Vercel нужно добавить Environment Variables без коммита секретов в репозиторий:
+
+```text
+ENVIRONMENT=production
+DATABASE_URL=postgresql+psycopg://<db-user>:<db-password>@<db-host>:5432/<db-name>
+TOKEN_ENCRYPTION_KEY=<fernet-key>
+YANDEX_CLIENT_ID=<client-id>
+YANDEX_CLIENT_SECRET=<client-secret>
+YANDEX_REDIRECT_URI=https://directpilot-ai.vercel.app/api/v1/auth/yandex/callback
+YANDEX_OAUTH_SCOPES=direct:api metrika:read login:info
+```
+
+Ключ шифрования можно сгенерировать локально:
+
+```bash
+python - <<'PY'
+from cryptography.fernet import Fernet
+print(Fernet.generate_key().decode())
+PY
+```
+
+Секреты, пароль базы и OAuth secret нельзя коммитить в Git. Примеры переменных без реальных значений лежат в `.env.example` и `backend/.env.example`.
 
 ## MCP server
 
