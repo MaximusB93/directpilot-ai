@@ -135,6 +135,14 @@ GET /api/v1/yandex-direct/reports/campaigns?date_range=ALL_TIME
 
 Важно: Yandex Direct хранит статистику за три года до текущего месяца. Если запросить слишком старую дату, например `date_from` раньше доступного периода, backend вернёт понятную ошибку с минимальной допустимой датой вместо общего `400 Bad Request` от Direct API.
 
+
+
+По умолчанию отчёты запрашиваются с `processing_mode=auto`: если Яндекс не может построить отчёт online, он ставит отчёт в offline-очередь, а backend несколько раз повторяет тот же запрос в пределах `max_wait_seconds`. Если отчёт ещё не готов, повторите тот же URL позже.
+
+```text
+GET /api/v1/yandex-direct/reports/campaigns?date_from=2025-11-01&date_to=2025-12-31&processing_mode=auto&max_wait_seconds=20
+```
+
 Для агентских аккаунтов можно передать логин клиента:
 
 ```text

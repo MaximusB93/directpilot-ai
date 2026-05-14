@@ -11,6 +11,7 @@ from app.services.connected_accounts import get_latest_yandex_access_token
 router = APIRouter(prefix="/yandex-direct", tags=["yandex-direct"])
 
 ALLOWED_REPORT_RANGES = {"CUSTOM_DATE", "ALL_TIME", "LAST_365_DAYS", "LAST_90_DAYS", "LAST_30_DAYS", "LAST_14_DAYS", "LAST_7_DAYS"}
+ALLOWED_PROCESSING_MODES = {"auto", "online", "offline"}
 
 
 def _min_available_stats_date(today: date | None = None) -> date:
@@ -85,6 +86,8 @@ def get_yandex_campaign_report(
     date_to: date | None = None,
     date_range: str = Query(default="CUSTOM_DATE"),
     limit: int = Query(default=1000, ge=1, le=10000),
+    processing_mode: str = Query(default="auto"),
+    max_wait_seconds: int = Query(default=20, ge=0, le=50),
     client_login: str | None = None,
     db: Session = Depends(get_db),
 ) -> list[YandexCampaignReportRow]:
@@ -96,6 +99,13 @@ def get_yandex_campaign_report(
         )
     if date_range != "CUSTOM_DATE" and (date_from or date_to):
         raise HTTPException(status_code=400, detail="date_from/date_to can be used only with date_range=CUSTOM_DATE.")
+
+    processing_mode = processing_mode.lower()
+    if processing_mode not in ALLOWED_PROCESSING_MODES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported processing_mode '{processing_mode}'. Use one of: {', '.join(sorted(ALLOWED_PROCESSING_MODES))}.",
+        )
 
     min_date = _min_available_stats_date()
     if date_range == "CUSTOM_DATE" and date_from and date_from < min_date:
@@ -114,6 +124,8 @@ def get_yandex_campaign_report(
             days=days,
             limit=limit,
             date_range_type=date_range,
+            processing_mode=processing_mode,
+            max_wait_seconds=max_wait_seconds,
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc

@@ -1,4 +1,5 @@
 import csv
+import time
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from io import StringIO
@@ -27,7 +28,7 @@ class YandexDirectConnector:
     def is_configured(self) -> bool:
         return bool(self.access_token)
 
-    def _headers(self, *, reports: bool = False) -> dict[str, str]:
+    def _headers(self, *, reports: bool = False, processing_mode: str = "auto") -> dict[str, str]:
         if not self.access_token:
             raise RuntimeError("Yandex Direct access token is not configured")
         headers = {
@@ -38,7 +39,7 @@ class YandexDirectConnector:
         if reports:
             headers.update(
                 {
-                    "processingMode": "online",
+                    "processingMode": processing_mode,
                     "returnMoneyInMicros": "false",
                     "skipReportHeader": "true",
                     "skipReportSummary": "true",
@@ -77,6 +78,8 @@ class YandexDirectConnector:
         days: int = 30,
         limit: int = 1000,
         date_range_type: str = "CUSTOM_DATE",
+        processing_mode: str = "auto",
+        max_wait_seconds: int = 20,
     ) -> list[dict[str, str]]:
         if not self.is_configured:
             return []
@@ -117,14 +120,42 @@ class YandexDirectConnector:
                 "Page": {"Limit": limit},
             }
         }
-        response = httpx.post(self.reports_url, json=payload, headers=self._headers(reports=True), timeout=60)
-        if response.status_code in {201, 202}:
-            retry_in = response.headers.get("retryIn")
-            suffix = f" Retry after {retry_in} seconds." if retry_in else ""
-            raise RuntimeError(f"Yandex Direct report is being generated offline.{suffix}")
-        if response.status_code >= 400:
-            raise RuntimeError(_format_direct_error(response))
-        return _parse_tsv_report(response.text)
+        return self._request_report_with_retries(
+            payload=payload,
+            processing_mode=processing_mode.lower(),
+            max_wait_seconds=max_wait_seconds,
+        )
+
+    def _request_report_with_retries(
+        self,
+        *,
+        payload: dict[str, Any],
+        processing_mode: str,
+        max_wait_seconds: int,
+    ) -> list[dict[str, str]]:
+        started_at = time.monotonic()
+        while True:
+            response = httpx.post(
+                self.reports_url,
+                json=payload,
+                headers=self._headers(reports=True, processing_mode=processing_mode),
+                timeout=60,
+            )
+            if response.status_code == 200:
+                return _parse_tsv_report(response.text)
+            if response.status_code in {201, 202}:
+                retry_in = _retry_in_seconds(response)
+                elapsed = time.monotonic() - started_at
+                if elapsed + retry_in > max_wait_seconds:
+                    raise RuntimeError(
+                        "Yandex Direct report is being generated offline. "
+                        f"Repeat the same request later. Retry after {retry_in} seconds."
+                    )
+                time.sleep(retry_in)
+                continue
+            if response.status_code >= 400:
+                raise RuntimeError(_format_direct_error(response))
+            response.raise_for_status()
 
 
 def _parse_tsv_report(report_text: str) -> list[dict[str, str]]:
@@ -163,3 +194,10 @@ def _format_direct_error(response: httpx.Response) -> str:
             detail = str(error)
     suffix = f" RequestId: {request_id}." if request_id else ""
     return f"Yandex Direct API returned {response.status_code}: {detail}.{suffix}"
+
+
+def _retry_in_seconds(response: httpx.Response) -> int:
+    try:
+        return max(1, min(int(response.headers.get("retryIn", "5")), 10))
+    except ValueError:
+        return 5
