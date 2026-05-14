@@ -210,3 +210,26 @@ class YandexCampaignReportRow(BaseModel):
     conversions: float
     cost_per_conversion: float | None = None
     conversion_rate: float | None = None
+
+
+class EmailCodeRequest(BaseModel):
+    email: str
+
+
+class EmailCodeRequestResponse(BaseModel):
+    status: str
+    message: str
+    expires_in_seconds: int
+    dev_code: str | None = None
+
+
+class EmailCodeVerifyRequest(BaseModel):
+    email: str
+    code: str
+
+
+class EmailCodeVerifyResponse(BaseModel):
+    authenticated: bool
+    email: str
+    session_token: str
+    expires_at: str

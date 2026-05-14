@@ -9,9 +9,10 @@ import {
 } from './data.js';
 
 const app = document.querySelector('#app');
+const API_BASE = 'https://directpilot-ai.vercel.app/api/v1';
+const page = document.body.dataset.page ?? 'landing';
 const navItems = [
   { id: 'dashboard', label: 'Dashboard', icon: '📊' },
-  { id: 'clients', label: 'Клиенты', icon: '👥' },
   { id: 'audit', label: 'AI-аудит', icon: '⚡' },
   { id: 'recommendations', label: 'Рекомендации', icon: '✨' },
   { id: 'reports', label: 'Отчёты', icon: '📄' },
@@ -19,7 +20,13 @@ const navItems = [
   { id: 'integrations', label: 'Интеграции', icon: '🔌' },
 ];
 
-let activeView = 'dashboard';
+let activeView = page === 'login' ? 'login' : page === 'app' ? 'dashboard' : 'landing';
+let authEmail = '';
+let authStatus = '';
+let authStep = 'email';
+let devCode = null;
+let integrationStatus = {};
+
 let selectedClientId = clients[0].id;
 
 function currentClient() {
@@ -56,7 +63,7 @@ function renderLanding() {
         <a href="#workflow">Как работает</a>
         <a href="#security">Безопасность</a>
       </div>
-      <button class="navCta" data-view="dashboard">Перейти в кабинет</button>
+      <a class="navCta" href="login.html">Войти</a>
     </nav>
 
     <section id="top" class="hero section">
@@ -68,7 +75,7 @@ function renderLanding() {
           помогает безопасно внедрять изменения с подтверждением специалиста.
         </p>
         <div class="heroActions">
-          <button class="primaryButton" data-view="dashboard">Перейти в кабинет <span>→</span></button>
+          <a class="primaryButton" href="login.html">Перейти в кабинет <span>→</span></a>
           <a class="secondaryButton" href="#features">Что умеет сервис</a>
         </div>
         <div class="trustRow">
@@ -185,15 +192,87 @@ function renderLanding() {
   `;
 }
 
+
+function renderLogin() {
+  return `
+    <section class="authPage">
+      <a class="brand authBrand" href="index.html">
+        <span class="brandIcon">✦</span>
+        DirectPilot AI
+      </a>
+      <div class="authCard">
+        <span class="eyebrow">🔐 Вход по email-коду</span>
+        <h1>Войдите в личный кабинет</h1>
+        <p>Мы отправим одноразовый код на почту. После подтверждения откроется отдельная страница кабинета.</p>
+        <form class="authForm" data-auth-form>
+          <label>
+            <span>Email</span>
+            <input type="email" name="email" value="${authEmail}" placeholder="you@agency.ru" required />
+          </label>
+          ${authStep === 'code' ? `
+            <label>
+              <span>Код из письма</span>
+              <input type="text" name="code" inputmode="numeric" maxlength="6" placeholder="000000" required />
+            </label>
+          ` : ''}
+          <button class="primaryButton" type="submit">${authStep === 'code' ? 'Подтвердить код' : 'Получить код'}</button>
+        </form>
+        ${authStatus ? `<div class="authStatus">${authStatus}</div>` : ''}
+        ${devCode ? `<div class="authStatus dev">Dev code: <strong>${devCode}</strong></div>` : ''}
+        <a class="secondaryButton" href="index.html">← На главную</a>
+      </div>
+    </section>
+  `;
+}
+
+async function requestEmailCode(email) {
+  const response = await fetch(`${API_BASE}/auth/email/request-code`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email }),
+  });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.detail || 'Не удалось отправить код');
+  return payload;
+}
+
+async function verifyEmailCode(email, code) {
+  const response = await fetch(`${API_BASE}/auth/email/verify-code`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, code }),
+  });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.detail || 'Не удалось подтвердить код');
+  return payload;
+}
+
+async function connectYandexIntegration() {
+  const response = await fetch(`${API_BASE}/auth/yandex/start`);
+  const payload = await response.json();
+  if (!response.ok || !payload.auth_url) throw new Error(payload.detail || payload.message || 'OAuth URL не получен');
+  window.location.href = payload.auth_url;
+}
+
+async function loadIntegrationStatus() {
+  try {
+    const response = await fetch(`${API_BASE}/auth/yandex/status`);
+    integrationStatus = response.ok ? await response.json() : {};
+    if (activeView === 'integrations') render();
+  } catch (error) {
+    integrationStatus = { message: 'Не удалось получить статус интеграций' };
+  }
+}
+
 function renderShell(content) {
   const client = currentClient();
   return `
     <div class="appShell">
       <aside class="sidebar">
-        <button class="brand appBrand" data-view="landing">
+        <a class="brand appBrand" href="index.html">
           <span class="brandIcon">✦</span>
           <span>DirectPilot AI</span>
-        </button>
+        </a>
         <nav class="sideNav" aria-label="Навигация демо-кабинета">
           ${navItems.map((item) => `
             <button class="sideNavItem ${activeView === item.id ? 'active' : ''}" data-view="${item.id}">
@@ -203,7 +282,7 @@ function renderShell(content) {
         </nav>
         <div class="sidebarNote">
           <strong>Режим демо</strong>
-          <p>Данные моковые, структура готова для подключения Direct API, Метрики и CRM.</p>
+          <p>Демо-проект один. Интеграции подключаются к рабочему backend на Vercel.</p>
         </div>
       </aside>
 
@@ -213,12 +292,10 @@ function renderShell(content) {
             <span class="muted">Выбранный клиент</span>
             <h1>${client.name}</h1>
           </div>
-          <label class="clientSelect">
-            <span>Клиент</span>
-            <select data-client-select>
-              ${clients.map((item) => `<option value="${item.id}" ${item.id === selectedClientId ? 'selected' : ''}>${item.name}</option>`).join('')}
-            </select>
-          </label>
+          <div class="clientSelect">
+            <span>Демо-проект</span>
+            <strong>${client.segment}</strong>
+          </div>
         </header>
         ${content}
       </section>
@@ -327,27 +404,34 @@ function renderReports() {
 }
 
 function renderIntegrations() {
+  const connected = integrationStatus.connected;
+  const account = integrationStatus.accounts?.[0];
+  const statusText = connected ? `Подключено: ${account.login}` : 'Не подключено';
   return renderShell(`
-    <div class="pageIntro"><span class="eyebrow">🔌 Интеграции</span><h2>Подключение Яндекс.Директа и источников данных</h2><p>Следующий backend-шаг — OAuth Яндекса: пользователь выдаёт доступ, backend получает confirmation code, затем безопасно обменивает его на токен и хранит подключение.</p></div>
+    <div class="pageIntro"><span class="eyebrow">🔌 Интеграции</span><h2>Подключите рабочие источники данных</h2><p>Яндекс.Директ и Метрика подключаются через OAuth. Один доступ содержит scopes direct:api, metrika:read и login:info.</p></div>
     <div class="integrationGrid">
       <article class="integrationCard primaryIntegration">
-        <div class="integrationTop"><span>Яндекс.Директ</span><strong>OAuth готовится</strong></div>
-        <h3>Подключить рекламный кабинет</h3>
-        <p>Backend endpoint уже может сформировать ссылку авторизации, когда заданы переменные YANDEX_CLIENT_ID и YANDEX_REDIRECT_URI.</p>
+        <div class="integrationTop"><span>Яндекс.Директ</span><strong>${statusText}</strong></div>
+        <h3>Рекламные кампании и отчёты</h3>
+        <p>Подключение уже работает: backend получает OAuth token, хранит его в Postgres и читает кампании/отчёты Direct API.</p>
         <code>GET /api/v1/auth/yandex/start</code>
-        <button class="approveButton">Подключить Яндекс.Директ</button>
+        <button class="approveButton" data-integration="yandex-direct">${connected ? 'Переподключить Директ' : 'Подключить Яндекс.Директ'}</button>
       </article>
-      <article class="integrationCard">
-        <div class="integrationTop"><span>Яндекс.Метрика</span><strong>Следом</strong></div>
-        <h3>Цели и конверсии</h3>
-        <p>Нужна для CPA, ROAS, ecommerce и качества рекомендаций.</p>
+      <article class="integrationCard primaryIntegration">
+        <div class="integrationTop"><span>Яндекс.Метрика</span><strong>${connected ? 'Доступ выдан' : 'Требуется OAuth'}</strong></div>
+        <h3>Цели, конверсии и ecommerce</h3>
+        <p>Используем тот же OAuth-flow со scope metrika:read. Следующий backend-шаг — чтение счётчиков и целей Метрики.</p>
+        <code>scope: metrika:read</code>
+        <button class="approveButton" data-integration="yandex-metrica">${connected ? 'Обновить доступ Метрики' : 'Подключить Яндекс.Метрику'}</button>
       </article>
       <article class="integrationCard">
         <div class="integrationTop"><span>CRM</span><strong>План</strong></div>
         <h3>Качество лидов и продажи</h3>
         <p>Позволит оптимизировать рекламу не по заявкам, а по выручке и марже.</p>
+        <button data-integration="crm">Оставить в плане</button>
       </article>
     </div>
+    ${integrationStatus.message ? `<div class="authStatus integrationStatus">${integrationStatus.message}</div>` : ''}
   `);
 }
 
@@ -372,6 +456,7 @@ function renderAutopilot() {
 function render() {
   const views = {
     landing: renderLanding,
+    login: renderLogin,
     dashboard: renderDashboard,
     clients: renderClients,
     audit: renderAudit,
@@ -382,11 +467,33 @@ function render() {
   };
   app.innerHTML = views[activeView]();
   document.body.dataset.view = activeView;
+  if (activeView === 'integrations' && !integrationStatus.message && integrationStatus.connected === undefined) {
+    loadIntegrationStatus();
+  }
 }
 
-app.addEventListener('click', (event) => {
+app.addEventListener('click', async (event) => {
   const viewButton = event.target.closest('[data-view]');
   const clientButton = event.target.closest('[data-client-id]');
+  const integrationButton = event.target.closest('[data-integration]');
+
+  if (integrationButton) {
+    const integration = integrationButton.dataset.integration;
+    if (integration === 'yandex-direct' || integration === 'yandex-metrica') {
+      integrationButton.disabled = true;
+      integrationButton.textContent = 'Открываем OAuth...';
+      try {
+        await connectYandexIntegration();
+      } catch (error) {
+        integrationStatus = { message: error.message };
+        render();
+      }
+    } else {
+      integrationStatus = { message: 'CRM-интеграция добавлена в план разработки.' };
+      render();
+    }
+    return;
+  }
 
   if (viewButton) {
     activeView = viewButton.dataset.view;
@@ -399,6 +506,35 @@ app.addEventListener('click', (event) => {
     activeView = 'dashboard';
     render();
   }
+});
+
+app.addEventListener('submit', async (event) => {
+  const form = event.target.closest('[data-auth-form]');
+  if (!form) return;
+  event.preventDefault();
+  const formData = new FormData(form);
+  const email = String(formData.get('email') || '').trim();
+  const code = String(formData.get('code') || '').trim();
+  authEmail = email;
+  authStatus = 'Отправляем запрос...';
+  render();
+  try {
+    if (authStep === 'email') {
+      const result = await requestEmailCode(email);
+      authStep = 'code';
+      devCode = result.dev_code;
+      authStatus = 'Код отправлен на почту. Проверьте входящие и спам.';
+    } else {
+      const result = await verifyEmailCode(email, code);
+      localStorage.setItem('directpilot_session', result.session_token);
+      localStorage.setItem('directpilot_email', result.email);
+      window.location.href = 'app.html';
+      return;
+    }
+  } catch (error) {
+    authStatus = error.message;
+  }
+  render();
 });
 
 app.addEventListener('change', (event) => {

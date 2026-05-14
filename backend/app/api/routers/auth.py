@@ -6,11 +6,40 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db import get_db, get_optional_db
-from app.schemas import YandexAuthCallbackResponse, YandexAuthStartResponse, YandexConnectionStatus
+from app.schemas import (
+    EmailCodeRequest,
+    EmailCodeRequestResponse,
+    EmailCodeVerifyRequest,
+    EmailCodeVerifyResponse,
+    YandexAuthCallbackResponse,
+    YandexAuthStartResponse,
+    YandexConnectionStatus,
+)
 from app.services.connected_accounts import get_yandex_connection_status, save_yandex_connection
+from app.services.email_auth import request_email_code, verify_email_code
 from app.services.yandex_oauth import exchange_code_for_token, fetch_yandex_user_info
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+
+
+@router.post("/email/request-code", response_model=EmailCodeRequestResponse)
+def request_login_code(request: EmailCodeRequest, db: Session = Depends(get_db)) -> EmailCodeRequestResponse:
+    try:
+        return request_email_code(db, request.email)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.post("/email/verify-code", response_model=EmailCodeVerifyResponse)
+def verify_login_code(request: EmailCodeVerifyRequest, db: Session = Depends(get_db)) -> EmailCodeVerifyResponse:
+    try:
+        return verify_email_code(db, request.email, request.code)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _oauth_env_message() -> str:

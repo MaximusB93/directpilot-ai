@@ -20,6 +20,13 @@ class Settings:
     environment: str = os.getenv("ENVIRONMENT", "development")
     database_url: str | None = os.getenv("DATABASE_URL")
     token_encryption_key: str | None = os.getenv("TOKEN_ENCRYPTION_KEY")
+    email_auth_dev_mode: bool = os.getenv("EMAIL_AUTH_DEV_MODE", "false").lower() == "true"
+    smtp_host: str | None = os.getenv("SMTP_HOST")
+    smtp_port: int = int(os.getenv("SMTP_PORT", "587"))
+    smtp_username: str | None = os.getenv("SMTP_USERNAME")
+    smtp_password: str | None = os.getenv("SMTP_PASSWORD")
+    smtp_from_email: str = os.getenv("SMTP_FROM_EMAIL", "noreply@directpilot.ai")
+    smtp_use_tls: bool = os.getenv("SMTP_USE_TLS", "true").lower() == "true"
     yandex_client_id: str | None = os.getenv("YANDEX_CLIENT_ID")
     yandex_client_secret: str | None = os.getenv("YANDEX_CLIENT_SECRET")
     yandex_redirect_uri: str = os.getenv(
@@ -51,6 +58,10 @@ class Settings:
             "https://directpilot-ai.vercel.app",
         ]
     )
+
+    @property
+    def smtp_configured(self) -> bool:
+        return bool(self.smtp_host and self.smtp_username and self.smtp_password)
 
     @property
     def yandex_oauth_configured(self) -> bool:

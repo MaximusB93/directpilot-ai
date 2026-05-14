@@ -151,6 +151,30 @@ GET /api/v1/yandex-direct/reports/campaigns?days=30&client_login=<client-login>
 
 Секреты, пароль базы и OAuth secret нельзя коммитить в Git. Примеры переменных без реальных значений лежат в `.env.example` и `backend/.env.example`.
 
+
+
+## Email-авторизация
+
+Добавлен passwordless-вход по email-коду:
+
+```text
+POST /api/v1/auth/email/request-code
+POST /api/v1/auth/email/verify-code
+```
+
+Для отправки писем в production задайте SMTP-переменные окружения:
+
+```text
+SMTP_HOST=<smtp-host>
+SMTP_PORT=587
+SMTP_USERNAME=<smtp-username>
+SMTP_PASSWORD=<smtp-password>
+SMTP_FROM_EMAIL=noreply@directpilot.ai
+SMTP_USE_TLS=true
+```
+
+Для локальной разработки можно временно включить `EMAIL_AUTH_DEV_MODE=true`; тогда код вернётся в `dev_code` в ответе API, но в production так делать нельзя.
+
 ## MCP server v1
 
 Добавлен read-only MCP-сервер на FastMCP поверх mock-данных backend-сервиса. Он предназначен для AI-клиентов и будущих агентов, которым нужно безопасно читать клиентов, кампании, аудит, рекомендации и интеграции.

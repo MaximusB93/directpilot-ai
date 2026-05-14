@@ -35,6 +35,8 @@ jobs:
           rm -rf _site
           mkdir -p _site
           cp index.html _site/index.html
+          cp login.html _site/login.html
+          cp app.html _site/app.html
           cp -R src _site/src
           cp .nojekyll _site/.nojekyll
 

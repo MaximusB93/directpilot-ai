@@ -801,3 +801,58 @@ td {
 @media (max-width: 920px) {
   .integrationGrid { grid-template-columns: 1fr; }
 }
+
+.authPage {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  padding: 32px;
+}
+
+.authBrand { position: fixed; top: 24px; left: 28px; }
+
+.authCard {
+  width: min(520px, 100%);
+  padding: 34px;
+  border: 1px solid rgba(19, 34, 56, 0.08);
+  border-radius: 34px;
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow: 0 30px 90px rgba(32, 53, 89, 0.18);
+}
+
+.authCard h1 {
+  margin: 0;
+  color: #101928;
+  font-size: clamp(36px, 5vw, 58px);
+  line-height: .95;
+  letter-spacing: -0.06em;
+}
+
+.authCard p { color: #536276; line-height: 1.65; }
+
+.authForm { display: grid; gap: 14px; margin: 24px 0 16px; }
+.authForm label { display: grid; gap: 8px; color: #66758a; font-size: 13px; font-weight: 900; }
+.authForm input {
+  width: 100%;
+  padding: 15px 16px;
+  border: 1px solid rgba(19, 34, 56, 0.12);
+  border-radius: 16px;
+  color: #132238;
+  background: #fff;
+  font: inherit;
+  font-weight: 800;
+}
+
+.authStatus {
+  margin-top: 14px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  color: #263850;
+  background: #f1f5f9;
+  font-weight: 800;
+  line-height: 1.5;
+}
+.authStatus.dev { color: #8a5a00; background: #fff7e6; }
+.integrationStatus { width: fit-content; }
+
+.integrationCard button:disabled { opacity: .7; cursor: progress; }

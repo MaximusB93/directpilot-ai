@@ -54,6 +54,7 @@ def read_root() -> dict[str, object]:
             f"{settings.api_prefix}/clients",
             f"{settings.api_prefix}/recommendations",
             f"{settings.api_prefix}/integrations",
+            f"{settings.api_prefix}/auth/email/request-code",
             f"{settings.api_prefix}/auth/yandex/start",
             f"{settings.api_prefix}/auth/yandex/status",
             f"{settings.api_prefix}/yandex-direct/connection",
