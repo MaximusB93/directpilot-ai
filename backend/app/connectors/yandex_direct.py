@@ -76,21 +76,25 @@ class YandexDirectConnector:
         date_to: date | None = None,
         days: int = 30,
         limit: int = 1000,
+        date_range_type: str = "CUSTOM_DATE",
     ) -> list[dict[str, str]]:
         if not self.is_configured:
             return []
 
-        if date_to is None:
-            date_to = datetime.now(UTC).date()
-        if date_from is None:
-            date_from = date_to - timedelta(days=days - 1)
+        date_range_type = date_range_type.upper()
+        selection_criteria: dict[str, str] = {}
+        report_period = date_range_type
+        if date_range_type == "CUSTOM_DATE":
+            if date_to is None:
+                date_to = datetime.now(UTC).date()
+            if date_from is None:
+                date_from = date_to - timedelta(days=days - 1)
+            selection_criteria = {"DateFrom": date_from.isoformat(), "DateTo": date_to.isoformat()}
+            report_period = f"{date_from.isoformat()} {date_to.isoformat()}"
 
         payload = {
             "params": {
-                "SelectionCriteria": {
-                    "DateFrom": date_from.isoformat(),
-                    "DateTo": date_to.isoformat(),
-                },
+                "SelectionCriteria": selection_criteria,
                 "FieldNames": [
                     "CampaignId",
                     "CampaignName",
@@ -104,9 +108,9 @@ class YandexDirectConnector:
                     "ConversionRate",
                 ],
                 "OrderBy": [{"Field": "CampaignId"}],
-                "ReportName": f"DirectPilot Campaign Report {date_from.isoformat()} {date_to.isoformat()}",
+                "ReportName": f"DirectPilot Campaign Report {report_period}",
                 "ReportType": "CAMPAIGN_PERFORMANCE_REPORT",
-                "DateRangeType": "CUSTOM_DATE",
+                "DateRangeType": date_range_type,
                 "Format": "TSV",
                 "IncludeVAT": "YES",
                 "IncludeDiscount": "YES",
@@ -118,7 +122,8 @@ class YandexDirectConnector:
             retry_in = response.headers.get("retryIn")
             suffix = f" Retry after {retry_in} seconds." if retry_in else ""
             raise RuntimeError(f"Yandex Direct report is being generated offline.{suffix}")
-        response.raise_for_status()
+        if response.status_code >= 400:
+            raise RuntimeError(_format_direct_error(response))
         return _parse_tsv_report(response.text)
 
 
@@ -135,3 +140,26 @@ def _parse_tsv_report(report_text: str) -> list[dict[str, str]]:
             continue
         rows.append({key: value for key, value in row.items() if key is not None})
     return rows
+
+
+def _format_direct_error(response: httpx.Response) -> str:
+    request_id = response.headers.get("RequestId") or response.headers.get("requestId") or response.headers.get("X-Request-Id")
+    detail = response.text.strip()
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict):
+        error = payload.get("error") or payload
+        if isinstance(error, dict):
+            detail = (
+                error.get("error_detail")
+                or error.get("error_string")
+                or error.get("error_description")
+                or error.get("message")
+                or str(error)
+            )
+        else:
+            detail = str(error)
+    suffix = f" RequestId: {request_id}." if request_id else ""
+    return f"Yandex Direct API returned {response.status_code}: {detail}.{suffix}"

@@ -120,6 +120,16 @@ GET /api/v1/debug/routes
 GET /api/v1/yandex-direct/reports/campaigns?days=30
 ```
 
+
+
+Если в аккаунте нет свежих кампаний, можно запросить весь доступный период статистики:
+
+```text
+GET /api/v1/yandex-direct/reports/campaigns?date_range=ALL_TIME
+```
+
+Важно: Yandex Direct хранит статистику за три года до текущего месяца. Если запросить слишком старую дату, например `date_from` раньше доступного периода, backend вернёт понятную ошибку с минимальной допустимой датой вместо общего `400 Bad Request` от Direct API.
+
 Для агентских аккаунтов можно передать логин клиента:
 
 ```text
