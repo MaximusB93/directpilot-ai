@@ -831,7 +831,6 @@ td {
 .authCard p { color: #536276; line-height: 1.65; }
 
 .authForm { display: grid; gap: 14px; margin: 24px 0 16px; }
-.authForm label { display: grid; gap: 8px; color: #66758a; font-size: 13px; font-weight: 900; }
 .authForm input {
   width: 100%;
   padding: 15px 16px;
@@ -856,3 +855,48 @@ td {
 .integrationStatus { width: fit-content; }
 
 .integrationCard button:disabled { opacity: .7; cursor: progress; }
+
+.authPage {
+  position: relative;
+}
+
+.authCard {
+  position: relative;
+  z-index: 2;
+}
+
+.authForm,
+.authForm label,
+.authForm input {
+  position: relative;
+  z-index: 3;
+}
+
+.authForm input {
+  cursor: text;
+  pointer-events: auto;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.authForm input:focus {
+  outline: 3px solid rgba(30, 93, 255, 0.18);
+  border-color: rgba(30, 93, 255, 0.55);
+}
+
+.clientSelect small {
+  color: #7d8aa0;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.authField {
+  display: grid;
+  gap: 8px;
+}
+
+.authField label {
+  color: #66758a;
+  font-size: 13px;
+  font-weight: 900;
+}

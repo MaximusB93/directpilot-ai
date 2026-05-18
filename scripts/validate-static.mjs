@@ -26,6 +26,7 @@ const checks = [
   ['single demo project', data.includes('fgrf.ru — демо-проект')],
   ['autopilot rules', data.includes('autopilotRules')],
   ['integrations view', js.includes('renderIntegrations') && js.includes('data-integration="yandex-direct"')],
+  ['no frontend auth bypass', !js.includes('demo-session') && !js.includes('data-demo-login')],
 ];
 
 const failed = checks.filter(([, ok]) => !ok);

@@ -13,6 +13,7 @@ const API_BASE = 'https://directpilot-ai.vercel.app/api/v1';
 const page = document.body.dataset.page ?? 'landing';
 const navItems = [
   { id: 'dashboard', label: 'Dashboard', icon: '📊' },
+  { id: 'clients', label: 'Клиенты', icon: '👥' },
   { id: 'audit', label: 'AI-аудит', icon: '⚡' },
   { id: 'recommendations', label: 'Рекомендации', icon: '✨' },
   { id: 'reports', label: 'Отчёты', icon: '📄' },
@@ -205,15 +206,15 @@ function renderLogin() {
         <h1>Войдите в личный кабинет</h1>
         <p>Мы отправим одноразовый код на почту. После подтверждения откроется отдельная страница кабинета.</p>
         <form class="authForm" data-auth-form>
-          <label>
-            <span>Email</span>
-            <input type="email" name="email" value="${authEmail}" placeholder="you@agency.ru" required />
-          </label>
+          <div class="authField">
+            <label for="login-email">Email</label>
+            <input id="login-email" type="email" name="email" placeholder="you@agency.ru" autocomplete="email" inputmode="email" autofocus required />
+          </div>
           ${authStep === 'code' ? `
-            <label>
-              <span>Код из письма</span>
-              <input type="text" name="code" inputmode="numeric" maxlength="6" placeholder="000000" required />
-            </label>
+            <div class="authField">
+              <label for="login-code">Код из письма</label>
+              <input id="login-code" type="text" name="code" inputmode="numeric" maxlength="6" placeholder="000000" autocomplete="one-time-code" required />
+            </div>
           ` : ''}
           <button class="primaryButton" type="submit">${authStep === 'code' ? 'Подтвердить код' : 'Получить код'}</button>
         </form>
@@ -292,10 +293,13 @@ function renderShell(content) {
             <span class="muted">Выбранный клиент</span>
             <h1>${client.name}</h1>
           </div>
-          <div class="clientSelect">
-            <span>Демо-проект</span>
-            <strong>${client.segment}</strong>
-          </div>
+          <label class="clientSelect">
+            <span>Клиент</span>
+            <select data-client-select>
+              ${clients.map((item) => `<option value="${item.id}" ${item.id === selectedClientId ? 'selected' : ''}>${item.name}</option>`).join('')}
+            </select>
+            <small>Direct: ${client.directLogin} · Метрика: ${client.metricaCounter}</small>
+          </label>
         </header>
         ${content}
       </section>
@@ -309,7 +313,7 @@ function renderDashboard() {
     <div class="pageIntro">
       <span class="eyebrow">📊 Agency overview</span>
       <h2>Центр управления рекламой и AI-рекомендациями</h2>
-      <p>Сводка по клиентам, проблемам, бюджету и действиям, которые ИИ предлагает выполнить сегодня.</p>
+      <p>Сводка по выбранному клиенту, проблемам, бюджету и действиям, которые ИИ предлагает выполнить сегодня.</p>
     </div>
     <div class="metricGrid">${agencyMetrics.map(metricCard).join('')}</div>
     <div class="dashboardLayout">
@@ -342,7 +346,7 @@ function renderDashboard() {
 
 function renderClients() {
   return renderShell(`
-    <div class="pageIntro"><span class="eyebrow">👥 Клиенты</span><h2>Портфель агентства</h2><p>Быстрый выбор клиента, KPI и состояние рекламных аккаунтов.</p></div>
+    <div class="pageIntro"><span class="eyebrow">👥 Клиенты</span><h2>Клиенты как отдельные сущности</h2><p>У каждого клиента будет своё подключение Директа, Метрики, настройки, KPI, статистика и политики автопилота.</p></div>
     <div class="clientGrid">
       ${clients.map((client) => `
         <button class="clientCard ${client.id === selectedClientId ? 'selected' : ''}" data-client-id="${client.id}">
@@ -467,6 +471,10 @@ function render() {
   };
   app.innerHTML = views[activeView]();
   document.body.dataset.view = activeView;
+  if (activeView === 'login') {
+    const emailInput = app.querySelector('input[name="email"]');
+    if (emailInput) emailInput.value = authEmail;
+  }
   if (activeView === 'integrations' && !integrationStatus.message && integrationStatus.connected === undefined) {
     loadIntegrationStatus();
   }
@@ -532,9 +540,15 @@ app.addEventListener('submit', async (event) => {
       return;
     }
   } catch (error) {
-    authStatus = error.message;
+    authStatus = `${error.message}. Проверьте SMTP-настройки backend или включите EMAIL_AUTH_DEV_MODE=true только для локальной разработки.`;
   }
   render();
+});
+
+app.addEventListener('input', (event) => {
+  if (event.target.matches('input[name="email"]')) {
+    authEmail = event.target.value;
+  }
 });
 
 app.addEventListener('change', (event) => {
