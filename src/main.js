@@ -52,6 +52,14 @@ let aiChatToolTraces = [];
 
 let selectedClientId = accountClients[0]?.id || '';
 
+
+let pointerInteractionStartedInTextField = false;
+
+app.addEventListener('pointerdown', (event) => {
+  pointerInteractionStartedInTextField = Boolean(event.target.closest('input, textarea, select'));
+});
+
+
 async function loadClientsFromApi() {
   if (clientsLoaded) return;
   clientsLoaded = true;
@@ -902,6 +910,10 @@ function render() {
 }
 
 app.addEventListener('click', async (event) => {
+  if (pointerInteractionStartedInTextField) {
+    pointerInteractionStartedInTextField = false;
+    return;
+  }
   const viewButton = event.target.closest('[data-view]');
   const clientButton = event.target.closest('[data-client-id]');
   const integrationButton = event.target.closest('[data-integration]');
