@@ -34,6 +34,9 @@ let aiPrompt = 'Проанализируй демо-клиента DirectPilot A
 let aiResponse = null;
 let aiError = '';
 let aiLoading = false;
+let clientAiRecommendations = null;
+let clientAiLoading = false;
+let clientAiError = '';
 
 let selectedClientId = clients[0].id;
 
@@ -305,6 +308,29 @@ async function requestAiInsight() {
   }
 }
 
+
+async function requestClientAiRecommendations() {
+  clientAiLoading = true;
+  clientAiError = '';
+  clientAiRecommendations = null;
+  render();
+  try {
+    const response = await fetch(`${API_BASE}/clients/${selectedClientId}/ai/recommendations`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: aiModel }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.detail || 'Не удалось сформировать AI-рекомендации');
+    clientAiRecommendations = payload;
+  } catch (error) {
+    clientAiError = error.message;
+  } finally {
+    clientAiLoading = false;
+    render();
+  }
+}
+
 async function loadIntegrationStatus() {
   try {
     const response = await fetch(`${API_BASE}/auth/yandex/status`);
@@ -429,9 +455,49 @@ function renderAudit() {
   `);
 }
 
+function renderClientAiRecommendations() {
+  if (clientAiLoading) {
+    return '<section class="panel aiDraftPanel"><h3>AI анализирует клиента...</h3><p>Собираем контекст клиента, аудит, кампании и guardrails.</p></section>';
+  }
+  if (clientAiError) {
+    return `<section class="panel aiDraftPanel"><h3>AI-рекомендации недоступны</h3><p>${escapeHtml(clientAiError)}</p></section>`;
+  }
+  if (!clientAiRecommendations) return '';
+  return `
+    <section class="panel aiDraftPanel">
+      <div class="panelHeader">
+        <div>
+          <h3>AI-черновик по контексту клиента</h3>
+          <p>${escapeHtml(clientAiRecommendations.summary)}</p>
+        </div>
+        <span class="aiStatusBadge ready">${escapeHtml(clientAiRecommendations.source)}</span>
+      </div>
+      <div class="aiDraftGrid">
+        ${clientAiRecommendations.recommendations.map((item) => `
+          <article>
+            <div class="actionTop"><span>${escapeHtml(item.risk)} риск</span><strong>${item.requires_approval ? 'Approval' : 'Read-only'}</strong></div>
+            <h4>${escapeHtml(item.title)}</h4>
+            <ul>${item.evidence.map((fact) => `<li>${escapeHtml(fact)}</li>`).join('')}</ul>
+            <p><strong>Эффект:</strong> ${escapeHtml(item.expected_impact)}</p>
+            <p><strong>Следующий шаг:</strong> ${escapeHtml(item.next_step)}</p>
+          </article>
+        `).join('')}
+      </div>
+    </section>
+  `;
+}
+
 function renderRecommendations() {
   return renderShell(`
     <div class="pageIntro"><span class="eyebrow">✨ Рекомендации</span><h2>Действия с объяснениями и контролем риска</h2><p>В production каждая карточка будет иметь dry-run, diff, approval и rollback-данные.</p></div>
+    <section class="panel aiRecommendationCta">
+      <div>
+        <h3>Сформировать AI-рекомендации по клиентскому контексту</h3>
+        <p>Backend соберёт профиль клиента, кампании, аудит, текущие рекомендации и guardrails, а затем вернёт структурированный черновик. Если OpenRouter не настроен, покажем безопасный fallback.</p>
+      </div>
+      <button class="approveButton" data-client-ai-recommendations ${clientAiLoading ? 'disabled' : ''}>${clientAiLoading ? 'Генерируем...' : 'Сгенерировать AI-черновик'}</button>
+    </section>
+    ${renderClientAiRecommendations()}
     <div class="recommendationGrid">
       ${recommendations.map((item) => `
         <article class="actionCard">
@@ -596,6 +662,12 @@ app.addEventListener('click', async (event) => {
   const viewButton = event.target.closest('[data-view]');
   const clientButton = event.target.closest('[data-client-id]');
   const integrationButton = event.target.closest('[data-integration]');
+  const clientAiButton = event.target.closest('[data-client-ai-recommendations]');
+
+  if (clientAiButton) {
+    await requestClientAiRecommendations();
+    return;
+  }
 
   if (integrationButton) {
     const integration = integrationButton.dataset.integration;
@@ -623,6 +695,8 @@ app.addEventListener('click', async (event) => {
 
   if (clientButton) {
     selectedClientId = clientButton.dataset.clientId;
+    clientAiRecommendations = null;
+    clientAiError = '';
     activeView = 'dashboard';
     render();
   }
@@ -679,6 +753,8 @@ app.addEventListener('input', (event) => {
 app.addEventListener('change', (event) => {
   if (event.target.matches('[data-client-select]')) {
     selectedClientId = event.target.value;
+    clientAiRecommendations = null;
+    clientAiError = '';
     render();
   }
   if (event.target.matches('[data-ai-model]')) {

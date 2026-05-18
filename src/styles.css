@@ -981,3 +981,64 @@ td {
 @media (max-width: 920px) {
   .aiGrid { grid-template-columns: 1fr; }
 }
+
+.aiRecommendationCta,
+.aiDraftPanel {
+  margin-bottom: 18px;
+}
+
+.aiRecommendationCta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.aiRecommendationCta h3,
+.aiDraftPanel h3,
+.aiDraftPanel h4 {
+  margin: 0;
+  color: #101928;
+}
+
+.aiRecommendationCta p,
+.aiDraftPanel p {
+  margin: 8px 0 0;
+  color: #536276;
+  line-height: 1.6;
+}
+
+.aiDraftGrid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+  margin-top: 18px;
+}
+
+.aiDraftGrid article {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid rgba(30, 93, 255, 0.12);
+  border-radius: 20px;
+  background: #f8fbff;
+}
+
+.aiDraftGrid ul {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding-left: 18px;
+  color: #536276;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+@media (max-width: 920px) {
+  .aiRecommendationCta {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .aiDraftGrid { grid-template-columns: 1fr; }
+}

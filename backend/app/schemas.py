@@ -253,6 +253,28 @@ class AiPromptRequest(BaseModel):
     prompt: str = Field(min_length=10, max_length=4000)
 
 
+class AiClientRecommendationRequest(BaseModel):
+    model: str | None = None
+
+
+class AiGeneratedRecommendation(BaseModel):
+    title: str
+    evidence: list[str]
+    risk: str
+    expected_impact: str
+    next_step: str
+    requires_approval: bool
+
+
+class AiRecommendationResponse(BaseModel):
+    client_id: str
+    source: str
+    model: str | None = None
+    summary: str
+    recommendations: list[AiGeneratedRecommendation]
+    raw_response: str | None = None
+
+
 class AiPromptResponse(BaseModel):
     model: str
     content: str
