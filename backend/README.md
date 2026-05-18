@@ -1,0 +1,297 @@
+# DirectPilot AI Backend
+
+Минимальный backend-каркас для будущего API DirectPilot AI. Сейчас API работает на mock-данных и повторяет сущности фронтенд-прототипа: клиенты, кампании, AI-аудит, рекомендации, отчёты, интеграции и безопасный автопилот.
+
+## Локальный запуск
+
+```bash
+cd backend
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+uvicorn app.main:app --reload --port 8000
+```
+
+После запуска:
+
+```text
+http://localhost:8000/health
+http://localhost:8000/docs
+```
+
+## Первые endpoint'ы
+
+- `GET /health` — health-check сервиса.
+- `GET /api/v1/clients` — список клиентов агентства.
+- `GET /api/v1/clients/{client_id}` — карточка клиента.
+- `GET /api/v1/clients/{client_id}/campaigns` — кампании клиента.
+- `GET /api/v1/audit/issues` — mock AI-аудит.
+- `GET /api/v1/recommendations` — список рекомендаций.
+- `GET /api/v1/recommendations/{recommendation_id}` — детальная рекомендация.
+- `GET /api/v1/integrations` — статусы будущих интеграций.
+- `GET /api/v1/auth/yandex/callback` — принять confirmation code от Яндекса.
+- `GET /api/v1/auth/yandex/start` — сформировать OAuth-ссылку подключения Яндекса.
+- `GET /api/v1/auth/yandex/status` — статус подключённых Яндекс-аккаунтов.
+- `GET /api/v1/yandex-direct/connection` — проверить наличие токена для Direct API.
+- `GET /api/v1/yandex-direct/campaigns` — получить кампании через read-only Direct API connector.
+- `POST /api/v1/recommendations/{recommendation_id}/preview` — dry-run preview рекомендации.
+- `POST /api/v1/approvals` — создать запрос на подтверждение.
+- `POST /api/v1/approvals/{approval_id}/approve` — подтвердить preview.
+- `POST /api/v1/approvals/{approval_id}/reject` — отклонить preview.
+- `GET /api/v1/audit-log` — журнал preview/approval событий.
+
+## Деплой на Vercel
+
+Backend можно деплоить из корня репозитория на Vercel. Для этого в корне есть:
+
+- `index.py` — entrypoint, который экспортирует FastAPI-приложение `app`;
+- `backend/index.py` — такой же entrypoint для варианта, где Root Directory в Vercel установлен как `backend`;
+- `requirements.txt` — подключает зависимости из `backend/requirements.txt`.
+
+Проверочные URL после деплоя:
+
+```text
+/
+/health
+/docs
+/api/v1/clients
+/api/v1/recommendations
+```
+
+Корневой route `/` добавлен специально для Vercel-домена, чтобы открытие `https://directpilot-ai.vercel.app/` показывало статус API, а не стандартный FastAPI 404 `{"detail":"Not Found"}`.
+
+## Yandex Direct OAuth
+
+Для реального подключения аккаунта нужно зарегистрировать OAuth-приложение Яндекса, запросить доступ к Direct API и задать переменные окружения:
+
+```bash
+export DATABASE_URL=postgresql+psycopg://<db-user>:<db-password>@<db-host>:5432/<db-name>
+export TOKEN_ENCRYPTION_KEY=<fernet-key>
+export YANDEX_CLIENT_ID=<client-id>
+export YANDEX_CLIENT_SECRET=<client-secret>
+export YANDEX_REDIRECT_URI=http://localhost:8000/api/v1/auth/yandex/callback
+```
+
+После этого endpoint `GET /api/v1/auth/yandex/start` вернёт `auth_url`, которую пользователь должен открыть для выдачи доступа. Callback меняет confirmation code на access token, получает информацию Яндекс ID и сохраняет OAuth token в Postgres в зашифрованном виде.
+
+## Реальное подключение Яндекс.Директа и Postgres
+
+Backend теперь поддерживает production-путь подключения Яндекса:
+
+1. `GET /api/v1/auth/yandex/start` формирует OAuth URL со scopes `direct:api`, `metrika:read`, `login:info`.
+2. `GET /api/v1/auth/yandex/callback` меняет `code` на OAuth token, получает базовую информацию Яндекс ID и сохраняет подключение.
+3. OAuth tokens сохраняются в Postgres в зашифрованном виде.
+4. `GET /api/v1/auth/yandex/status` показывает подключённые аккаунты.
+5. `GET /api/v1/yandex-direct/connection` проверяет наличие токена для Direct API.
+6. `GET /api/v1/yandex-direct/campaigns` делает первый read-only запрос в Yandex Direct API.
+7. `GET /api/v1/yandex-direct/reports/campaigns?days=30` получает кампанийную статистику из Yandex Direct Reports API: показы, клики, расход, CTR, средний CPC и конверсии.
+
+Для Vercel нужно добавить Environment Variables без коммита секретов в репозиторий:
+
+```text
+ENVIRONMENT=production
+DATABASE_URL=postgresql+psycopg://<db-user>:<db-password>@<db-host>:5432/<db-name>
+TOKEN_ENCRYPTION_KEY=<fernet-key>
+YANDEX_CLIENT_ID=<client-id>
+YANDEX_CLIENT_SECRET=<client-secret>
+YANDEX_REDIRECT_URI=https://directpilot-ai.vercel.app/api/v1/auth/yandex/callback
+YANDEX_OAUTH_SCOPES=direct:api metrika:read login:info
+```
+
+Ключ шифрования можно сгенерировать локально:
+
+```bash
+python - <<'PY'
+from cryptography.fernet import Fernet
+print(Fernet.generate_key().decode())
+PY
+```
+
+
+
+Если `/api/v1/auth/yandex/start` возвращает `auth_url`, где `client_id` выглядит как `%E2%80%A2%E2%80%A2...`, значит в `YANDEX_CLIENT_ID` случайно вставлено замаскированное значение из UI Vercel. Нужно нажать Edit у переменной и вставить реальный Client ID из кабинета Яндекса. Backend теперь считает такие значения невалидными и возвращает понятное сообщение вместо генерации OAuth URL с bullets.
+
+Для проверки реально задеплоенных маршрутов есть диагностический endpoint:
+
+```text
+GET /api/v1/debug/routes
+```
+
+
+
+Проверить первый отчёт по кампаниям после подключения аккаунта:
+
+```text
+GET /api/v1/yandex-direct/reports/campaigns?days=30
+```
+
+
+
+Если в аккаунте нет свежих кампаний, можно запросить весь доступный период статистики:
+
+```text
+GET /api/v1/yandex-direct/reports/campaigns?date_range=ALL_TIME
+```
+
+Важно: Yandex Direct хранит статистику за три года до текущего месяца. Если запросить слишком старую дату, например `date_from` раньше доступного периода, backend вернёт понятную ошибку с минимальной допустимой датой вместо общего `400 Bad Request` от Direct API.
+
+
+
+По умолчанию отчёты запрашиваются с `processing_mode=auto`: если Яндекс не может построить отчёт online, он ставит отчёт в offline-очередь, а backend несколько раз повторяет тот же запрос в пределах `max_wait_seconds`. Если отчёт ещё не готов, повторите тот же URL позже.
+
+```text
+GET /api/v1/yandex-direct/reports/campaigns?date_from=2025-11-01&date_to=2025-12-31&processing_mode=auto&max_wait_seconds=20
+```
+
+Для агентских аккаунтов можно передать логин клиента:
+
+```text
+GET /api/v1/yandex-direct/reports/campaigns?days=30&client_login=<client-login>
+```
+
+Секреты, пароль базы и OAuth secret нельзя коммитить в Git. Примеры переменных без реальных значений лежат в `.env.example` и `backend/.env.example`.
+
+
+
+## Личный кабинет без предзагруженных демо-аккаунтов
+
+В кабинете больше нет заранее созданных клиентов и рекламных показателей. Пользователь добавляет клиента вручную в разделе **Клиенты**: название проекта, логин Яндекс.Директа и ID счётчика Метрики. Это временно сохраняется в `localStorage` как клиентская карточка до подключения backend-хранилища клиентов.
+
+Подключение Яндекса остаётся через backend OAuth-flow: секреты и токены не попадают во frontend. Следующий production-шаг — сохранять связи `client -> yandex direct login -> metrica counter` в базе данных и загружать кампании/цели для выбранного клиента.
+
+OpenRouter API key также нельзя добавлять в код. Его нужно задавать только через переменную окружения `OPENROUTER_API_KEY` на backend/Vercel; static validation дополнительно проверяет, что `sk-or-` не попал во frontend-файлы.
+
+## OpenRouter и AI-модели
+
+AI-слой подключается через backend, чтобы OpenRouter API key не попадал в браузер и GitHub Pages. Frontend вызывает только наши endpoints:
+
+```text
+GET /api/v1/ai/openrouter/status
+POST /api/v1/ai/openrouter/generate
+```
+
+Для production задайте переменные окружения на backend/Vercel:
+
+```text
+OPENROUTER_API_KEY=<openrouter-api-key>
+OPENROUTER_DEFAULT_MODEL=openrouter/auto
+OPENROUTER_ALLOW_CUSTOM_MODELS=true
+OPENROUTER_MODELS=openrouter/auto,openai/gpt-4o-mini,anthropic/claude-3.5-sonnet,google/gemini-flash-1.5
+OPENROUTER_SITE_URL=https://directpilot-ai.vercel.app
+OPENROUTER_APP_NAME=DirectPilot AI
+```
+
+Список быстрых вариантов управляется через `OPENROUTER_MODELS`: добавляйте туда модели, которые готовы использовать по качеству, цене и лимитам. Если `OPENROUTER_ALLOW_CUSTOM_MODELS=true`, в интерфейсе кабинета можно выбрать пункт **«Ввести модель вручную»** и указать точный id модели OpenRouter. Лучший UX — держать 3–5 проверенных моделей в выпадающем списке, а ручной ввод использовать для тестов новых моделей без redeploy.
+
+Важно: не вставляйте реальные OpenRouter-ключи в код, README, frontend или Pull Request. Если ключ уже был отправлен в чат или коммит, его нужно отозвать в OpenRouter и выпустить новый.
+
+### Как правильно использовать ИИ в DirectPilot AI
+
+Рекомендуемый путь — не начинать с fine-tuning. Для рекламного продукта лучше идти по этапам:
+
+1. **Данные и контекст.** Нормализовать выгрузки Direct API, Метрики и CRM: расходы, клики, конверсии, цели, выручку, маржу, статусы кампаний, историю изменений.
+2. **RAG/контекстное обогащение.** Передавать модели только релевантный срез данных клиента, правила агентства, KPI и ограничения. Это дешевле и безопаснее обучения.
+3. **Guardrails.** Запретить модели применять изменения напрямую: только аудит, объяснение, dry-run, diff, approval и журнал действий.
+4. **Оценка качества.** Собрать набор эталонных кейсов: хорошие/плохие рекомендации, типовые ошибки, формат ответа. Проверять модели на этом наборе перед заменой default model.
+5. **Fine-tuning позже.** Обучать модель стоит только когда накопятся сотни/тысячи проверенных примеров с ожидаемыми ответами. Fine-tuning полезен для стиля, классификации и стабильного формата, но не заменяет свежие данные из API.
+
+
+### AI-чат через MCP-инструменты
+
+Для интерактивной аналитики добавлен endpoint:
+
+```text
+POST /api/v1/ai/chat
+```
+
+Чат принимает `client_id`, `message`, выбранную `model` и короткую историю диалога. Backend сам выбирает MCP-инструменты по тексту вопроса: профиль клиента, кампании Яндекс.Директа, цели Яндекс.Метрики, audit issues, рекомендации и интеграции. Сейчас MCP-инструменты используют нормализованные mock-данные и безопасные read-only/fallback-ответы; после подключения реальных Direct/Metrica connectors этот слой можно заменить на реальные tool calls без изменения UI-контракта.
+
+Пример запроса:
+
+```json
+{
+  "client_id": "furniture",
+  "model": "openrouter/auto",
+  "message": "Почему растёт CPA и какие цели Метрики проверить?",
+  "history": [],
+  "client_context": {
+    "id": "client-1",
+    "name": "Новый клиент",
+    "directLogin": "client-login",
+    "metricaCounter": "12345"
+  }
+}
+```
+
+Ответ содержит текст аналитики и `tool_traces` — список MCP tools, которые были вызваны для ответа. Если OpenRouter не настроен, чат возвращает deterministic fallback по MCP-контексту, чтобы demo оставалось рабочим без секретов.
+
+### Структурированные AI-рекомендации клиента
+
+Помимо свободного prompt-поля есть продуктовый endpoint, который собирает контекст клиента на backend: профиль клиента, кампании, найденные audit issues, текущие рекомендации и guardrails. Он возвращает структурированный черновик рекомендаций для UI и будущего approval-flow:
+
+```text
+POST /api/v1/clients/{client_id}/ai/recommendations
+```
+
+Тело запроса опционально:
+
+```json
+{ "model": "openrouter/auto", "client_context": { "id": "client-1", "name": "Новый клиент" } }
+```
+
+Если `OPENROUTER_API_KEY` не настроен, endpoint не падает: он возвращает безопасный deterministic fallback на mock-данных, чтобы интерфейс рекомендаций можно было демонстрировать без production-секретов. В production OpenRouter-ответ должен оставаться черновиком: специалист проверяет evidence, запускает dry-run/preview и только затем отправляет изменение на approval.
+
+## Email-авторизация
+
+Добавлен passwordless-вход по email-коду:
+
+```text
+POST /api/v1/auth/email/request-code
+POST /api/v1/auth/email/verify-code
+```
+
+Для отправки писем в production задайте SMTP-переменные окружения:
+
+```text
+SMTP_HOST=<smtp-host>
+SMTP_PORT=587
+SMTP_USERNAME=<smtp-username>
+SMTP_PASSWORD=<smtp-password>
+SMTP_FROM_EMAIL=noreply@directpilot.ai
+SMTP_USE_TLS=true
+```
+
+Для локальной разработки можно временно включить `EMAIL_AUTH_DEV_MODE=true`; тогда код вернётся в `dev_code` в ответе API, но в production так делать нельзя.
+
+### Где взять SMTP-переменные
+
+SMTP — это данные почтового сервера, через который backend отправляет письма с кодом входа. Их нужно брать не в Vercel, а у почтового провайдера/сервиса рассылок:
+
+- если у вас корпоративная почта на домене — в настройках почты домена, например Яндекс 360, Google Workspace, Zoho и т.п.;
+- если хотите transactional email — в сервисах Postmark, Mailgun, SendGrid, Brevo и аналогах;
+- `SMTP_HOST` — адрес SMTP-сервера провайдера;
+- `SMTP_PORT` — обычно `587` для TLS/STARTTLS;
+- `SMTP_USERNAME` — логин SMTP-ящика или API user;
+- `SMTP_PASSWORD` — пароль приложения/API key SMTP;
+- `SMTP_FROM_EMAIL` — адрес отправителя, например `noreply@your-domain.ru`;
+- `SMTP_USE_TLS=true` — включить защищённое соединение.
+
+`EMAIL_AUTH_DEV_MODE=true` — только режим разработки: backend не отправляет письмо, а возвращает код в поле `dev_code` ответа API. Это удобно локально, но в production так делать нельзя, потому что код входа будет виден в ответе браузеру.
+
+## MCP server v1
+
+Добавлен read-only MCP-сервер на FastMCP поверх mock-данных backend-сервиса. Он предназначен для AI-клиентов и будущих агентов, которым нужно безопасно читать клиентов, кампании, аудит, рекомендации и интеграции.
+
+```bash
+cd backend
+python -m app.mcp.server
+```
+
+MCP tools ничего не меняют в Яндекс.Директе. В v2 добавлен только dry-run preview и чтение audit log; реальные write-операции должны появляться только после policy checks, approval workflow и rollback snapshots.
+
+## Что дальше
+
+1. Подключить реальное хранилище: PostgreSQL для сущностей и ClickHouse для статистики.
+2. Реализовать OAuth Яндекса и безопасное хранение токенов.
+3. Добавить connector к Yandex Direct API и Yandex Metrica API.
+4. Перевести frontend с mock-данных на эти endpoint'ы.
