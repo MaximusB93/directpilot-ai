@@ -37,6 +37,13 @@ let aiLoading = false;
 let clientAiRecommendations = null;
 let clientAiLoading = false;
 let clientAiError = '';
+let aiChatMessages = [
+  { role: 'assistant', content: 'Здравствуйте! Я AI-аналитик DirectPilot. Спросите про Директ, Метрику, CPA, цели или рекомендации — я соберу данные через MCP-инструменты и отвечу по контексту.' },
+];
+let aiChatInput = 'Почему растёт CPA и что проверить в Яндекс.Метрике?';
+let aiChatLoading = false;
+let aiChatError = '';
+let aiChatToolTraces = [];
 
 let selectedClientId = clients[0].id;
 
@@ -309,6 +316,35 @@ async function requestAiInsight() {
 }
 
 
+
+async function requestAiChatAnswer() {
+  const message = aiChatInput.trim();
+  if (!message) return;
+  const history = aiChatMessages.slice(-8);
+  aiChatMessages = [...aiChatMessages, { role: 'user', content: message }];
+  aiChatInput = '';
+  aiChatLoading = true;
+  aiChatError = '';
+  aiChatToolTraces = [];
+  render();
+  try {
+    const response = await fetch(`${API_BASE}/ai/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_id: selectedClientId, model: aiModel, message, history }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.detail || 'AI-чат не вернул ответ');
+    aiChatMessages = [...aiChatMessages, { role: 'assistant', content: payload.answer, source: payload.source }];
+    aiChatToolTraces = payload.tool_traces || [];
+  } catch (error) {
+    aiChatError = error.message;
+  } finally {
+    aiChatLoading = false;
+    render();
+  }
+}
+
 async function requestClientAiRecommendations() {
   clientAiLoading = true;
   clientAiError = '';
@@ -555,6 +591,41 @@ function renderIntegrations() {
   `);
 }
 
+function renderAiChat() {
+  return `
+    <section class="panel aiChatPanel">
+      <div class="panelHeader">
+        <div>
+          <h3>AI-чат с MCP-инструментами</h3>
+          <p>Чат отвечает на вопросы пользователя, собирая контекст через MCP tools: клиенты, кампании Директа, цели Метрики, аудит и рекомендации.</p>
+        </div>
+        <span class="aiStatusBadge ready">MCP tools</span>
+      </div>
+      <div class="aiChatMessages">
+        ${aiChatMessages.map((item) => `
+          <article class="aiChatMessage ${item.role}">
+            <strong>${item.role === 'user' ? 'Вы' : 'DirectPilot AI'}</strong>
+            <pre>${escapeHtml(item.content)}</pre>
+            ${item.source ? `<small>${escapeHtml(item.source)}</small>` : ''}
+          </article>
+        `).join('')}
+        ${aiChatLoading ? '<article class="aiChatMessage assistant"><strong>DirectPilot AI</strong><pre>Собираю контекст через MCP tools...</pre></article>' : ''}
+      </div>
+      ${aiChatError ? `<div class="authStatus aiError">${escapeHtml(aiChatError)}</div>` : ''}
+      <form class="aiChatForm" data-ai-chat-form>
+        <textarea name="message" rows="3" data-ai-chat-input placeholder="Например: какие кампании дают расход без конверсий и какие цели Метрики проверить?">${escapeHtml(aiChatInput)}</textarea>
+        <button class="approveButton" type="submit" ${aiChatLoading ? 'disabled' : ''}>${aiChatLoading ? 'Думаю...' : 'Отправить в AI-чат'}</button>
+      </form>
+      ${aiChatToolTraces.length ? `
+        <details class="aiToolTrace">
+          <summary>Какие MCP-инструменты использовались (${aiChatToolTraces.length})</summary>
+          <div>${aiChatToolTraces.map((trace) => `<code>${escapeHtml(trace.name)} ${escapeHtml(JSON.stringify(trace.arguments))}</code>`).join('')}</div>
+        </details>
+      ` : ''}
+    </section>
+  `;
+}
+
 function renderAiAssistant() {
   const client = currentClient();
   const models = aiStatus.models?.length ? aiStatus.models : [{ id: aiModel, name: aiModel, description: 'Модель будет загружена из backend.' }];
@@ -564,6 +635,7 @@ function renderAiAssistant() {
       <h2>AI-слой с выбором модели</h2>
       <p>Ключ OpenRouter хранится только на backend. Интерфейс отправляет задачу в наш API, выбирает модель и показывает ответ как черновик для специалиста.</p>
     </div>
+    ${renderAiChat()}
     <div class="aiGrid">
       <section class="panel aiConsole">
         <div class="panelHeader">
@@ -697,12 +769,22 @@ app.addEventListener('click', async (event) => {
     selectedClientId = clientButton.dataset.clientId;
     clientAiRecommendations = null;
     clientAiError = '';
+    aiChatToolTraces = [];
     activeView = 'dashboard';
     render();
   }
 });
 
 app.addEventListener('submit', async (event) => {
+  const aiChatForm = event.target.closest('[data-ai-chat-form]');
+  if (aiChatForm) {
+    event.preventDefault();
+    const formData = new FormData(aiChatForm);
+    aiChatInput = String(formData.get('message') || '').trim();
+    await requestAiChatAnswer();
+    return;
+  }
+
   const aiForm = event.target.closest('[data-ai-form]');
   if (aiForm) {
     event.preventDefault();
@@ -748,6 +830,9 @@ app.addEventListener('input', (event) => {
   if (event.target.matches('[data-ai-prompt]')) {
     aiPrompt = event.target.value;
   }
+  if (event.target.matches('[data-ai-chat-input]')) {
+    aiChatInput = event.target.value;
+  }
 });
 
 app.addEventListener('change', (event) => {
@@ -755,6 +840,7 @@ app.addEventListener('change', (event) => {
     selectedClientId = event.target.value;
     clientAiRecommendations = null;
     clientAiError = '';
+    aiChatToolTraces = [];
     render();
   }
   if (event.target.matches('[data-ai-model]')) {

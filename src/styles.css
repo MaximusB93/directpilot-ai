@@ -1042,3 +1042,106 @@ td {
 
   .aiDraftGrid { grid-template-columns: 1fr; }
 }
+
+.aiChatPanel {
+  display: grid;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.aiChatPanel .panelHeader p {
+  margin: 8px 0 0;
+  color: #536276;
+  line-height: 1.6;
+}
+
+.aiChatMessages {
+  display: grid;
+  gap: 12px;
+  max-height: 460px;
+  overflow: auto;
+  padding: 4px;
+}
+
+.aiChatMessage {
+  width: min(88%, 760px);
+  padding: 14px 16px;
+  border-radius: 20px;
+  background: #f1f5f9;
+}
+
+.aiChatMessage.user {
+  justify-self: end;
+  color: #fff;
+  background: #1e5dff;
+}
+
+.aiChatMessage.assistant {
+  justify-self: start;
+  border: 1px solid rgba(30, 93, 255, 0.12);
+  background: #f8fbff;
+}
+
+.aiChatMessage strong,
+.aiChatMessage small {
+  display: block;
+  font-size: 12px;
+  font-weight: 900;
+  opacity: .78;
+}
+
+.aiChatMessage pre {
+  margin: 8px 0 0;
+  white-space: pre-wrap;
+  font: inherit;
+  font-weight: 700;
+  line-height: 1.55;
+}
+
+.aiChatForm {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.aiChatForm textarea {
+  width: 100%;
+  min-height: 86px;
+  padding: 14px 16px;
+  border: 1px solid rgba(19, 34, 56, 0.12);
+  border-radius: 16px;
+  color: #132238;
+  background: #fff;
+  font: inherit;
+  font-weight: 800;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.aiToolTrace {
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: #f7f9fc;
+  color: #536276;
+  font-weight: 800;
+}
+
+.aiToolTrace div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.aiToolTrace code {
+  padding: 8px 10px;
+  border-radius: 999px;
+  color: #1e5dff;
+  background: #edf3ff;
+}
+
+@media (max-width: 760px) {
+  .aiChatForm { grid-template-columns: 1fr; }
+  .aiChatMessage { width: 100%; }
+}

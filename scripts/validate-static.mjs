@@ -28,6 +28,7 @@ const checks = [
   ['integrations view', js.includes('renderIntegrations') && js.includes('data-integration="yandex-direct"')],
   ['openrouter ai view', js.includes('renderAiAssistant') && js.includes('/ai/openrouter/generate') && css.includes('.aiGrid')],
   ['client ai recommendations', js.includes('/clients/${selectedClientId}/ai/recommendations') && css.includes('.aiDraftGrid')],
+  ['mcp ai chat', js.includes('/ai/chat') && js.includes('renderAiChat') && css.includes('.aiChatPanel')],
   ['no frontend auth bypass', !js.includes('demo-session') && !js.includes('data-demo-login')],
 ];
 

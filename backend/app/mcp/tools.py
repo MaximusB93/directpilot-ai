@@ -55,6 +55,26 @@ TOOLS: list[JsonObject] = [
         },
     },
     {
+        "name": "list_yandex_direct_campaigns",
+        "description": "Read Yandex.Direct campaign analytics for a client through the MCP tool layer. Current demo returns normalized mock Direct data.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"client_id": {"type": "string", "description": "Client identifier"}},
+            "required": ["client_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "list_yandex_metrica_goals",
+        "description": "Read Yandex.Metrica goals for a client through the MCP tool layer. Current demo returns normalized mock goal data.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"client_id": {"type": "string", "description": "Client identifier"}},
+            "required": ["client_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "list_audit_issues",
         "description": "List AI audit issues detected for a client.",
         "inputSchema": {
@@ -125,6 +145,21 @@ def call_tool(name: str, arguments: JsonObject | None = None) -> Any:
     if name == "list_campaigns":
         _find_client(args["client_id"])
         return _dump(CAMPAIGNS)
+    if name == "list_yandex_direct_campaigns":
+        _find_client(args["client_id"])
+        return _dump(CAMPAIGNS)
+    if name == "list_yandex_metrica_goals":
+        client = _find_client(args["client_id"])
+        return [
+            {
+                "client_id": client.id,
+                "counter_id": "demo-counter",
+                "goal_id": 1,
+                "name": "Заявка / лид",
+                "type": "conversion",
+                "status": "mock_until_metrica_connector_is_enabled",
+            }
+        ]
     if name == "list_audit_issues":
         _find_client(args["client_id"])
         return _dump(AUDIT_ISSUES)

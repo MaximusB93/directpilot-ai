@@ -275,6 +275,32 @@ class AiRecommendationResponse(BaseModel):
     raw_response: str | None = None
 
 
+class AiChatMessage(BaseModel):
+    role: str
+    content: str = Field(min_length=1, max_length=4000)
+
+
+class AiChatRequest(BaseModel):
+    client_id: str = "furniture"
+    model: str | None = None
+    message: str = Field(min_length=2, max_length=4000)
+    history: list[AiChatMessage] = Field(default_factory=list)
+
+
+class AiToolTrace(BaseModel):
+    name: str
+    arguments: dict
+    result: object
+
+
+class AiChatResponse(BaseModel):
+    client_id: str
+    model: str | None = None
+    source: str
+    answer: str
+    tool_traces: list[AiToolTrace]
+
+
 class AiPromptResponse(BaseModel):
     model: str
     content: str
