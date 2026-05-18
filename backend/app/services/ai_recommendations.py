@@ -22,13 +22,22 @@ def _find_client(client_id: str) -> Any:
     raise HTTPException(status_code=404, detail="Client not found")
 
 
-def build_client_ai_context(client_id: str) -> dict[str, Any]:
-    client = _find_client(client_id)
+def build_client_ai_context(client_id: str, client_context: dict[str, Any] | None = None) -> dict[str, Any]:
+    if client_context:
+        client = {**client_context, "id": client_context.get("id") or client_id}
+        campaigns = []
+        audit_issues = []
+        existing_recommendations = []
+    else:
+        client = _dump_model(_find_client(client_id))
+        campaigns = [_dump_model(campaign) for campaign in CAMPAIGNS]
+        audit_issues = [_dump_model(issue) for issue in AUDIT_ISSUES]
+        existing_recommendations = [_dump_model(recommendation) for recommendation in RECOMMENDATIONS]
     return {
-        "client": _dump_model(client),
-        "campaigns": [_dump_model(campaign) for campaign in CAMPAIGNS],
-        "audit_issues": [_dump_model(issue) for issue in AUDIT_ISSUES],
-        "existing_recommendations": [_dump_model(recommendation) for recommendation in RECOMMENDATIONS],
+        "client": client,
+        "campaigns": campaigns,
+        "audit_issues": audit_issues,
+        "existing_recommendations": existing_recommendations,
         "guardrails": {
             "allowed_actions": ["audit", "explain", "create_draft", "create_dry_run_preview"],
             "forbidden_actions": ["apply_changes_without_approval", "increase_total_budget_without_client_approval"],
@@ -74,7 +83,7 @@ def _fallback_recommendations(context: dict[str, Any]) -> AiRecommendationRespon
         ),
         AiGeneratedRecommendation(
             title="Сверить цели Метрики перед оптимизацией CPA",
-            evidence=["В аудите отмечено, что не все кампании связаны с целями Метрики", "Текущий AI score клиента: %s/100" % client["score"]],
+            evidence=["Цели Метрики нужно связать с KPI клиента", "Текущий AI score клиента: %s/100" % client.get("score", 0)],
             risk="medium",
             expected_impact="Более точный расчёт CPA и меньше ложных рекомендаций",
             next_step="Подключить цели заявки, звонка, корзины и покупки; затем пересчитать рекомендации",
@@ -93,7 +102,7 @@ def _fallback_recommendations(context: dict[str, Any]) -> AiRecommendationRespon
         client_id=client["id"],
         source="deterministic_fallback",
         model=None,
-        summary=f"OpenRouter не настроен, поэтому показан безопасный локальный черновик для клиента «{client['name']}».",
+        summary=f"OpenRouter не настроен, поэтому показан безопасный локальный черновик для клиента «{client.get('name', client['id'])}».",
         recommendations=recommendations,
         raw_response=None,
     )
@@ -112,8 +121,12 @@ def _extract_json_object(content: str) -> dict[str, Any]:
     return json.loads(stripped[start : end + 1])
 
 
-async def generate_client_recommendations(client_id: str, model: str | None = None) -> AiRecommendationResponse:
-    context = build_client_ai_context(client_id)
+async def generate_client_recommendations(
+    client_id: str,
+    model: str | None = None,
+    client_context: dict[str, Any] | None = None,
+) -> AiRecommendationResponse:
+    context = build_client_ai_context(client_id, client_context=client_context)
     if not settings.openrouter_configured:
         return _fallback_recommendations(context)
 

@@ -255,6 +255,7 @@ class AiPromptRequest(BaseModel):
 
 class AiClientRecommendationRequest(BaseModel):
     model: str | None = None
+    client_context: dict | None = None
 
 
 class AiGeneratedRecommendation(BaseModel):
@@ -285,6 +286,7 @@ class AiChatRequest(BaseModel):
     model: str | None = None
     message: str = Field(min_length=2, max_length=4000)
     history: list[AiChatMessage] = Field(default_factory=list)
+    client_context: dict | None = None
 
 
 class AiToolTrace(BaseModel):

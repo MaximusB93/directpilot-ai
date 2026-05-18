@@ -148,6 +148,14 @@ GET /api/v1/yandex-direct/reports/campaigns?days=30&client_login=<client-login>
 
 
 
+## Личный кабинет без предзагруженных демо-аккаунтов
+
+В кабинете больше нет заранее созданных клиентов и рекламных показателей. Пользователь добавляет клиента вручную в разделе **Клиенты**: название проекта, логин Яндекс.Директа и ID счётчика Метрики. Это временно сохраняется в `localStorage` как клиентская карточка до подключения backend-хранилища клиентов.
+
+Подключение Яндекса остаётся через backend OAuth-flow: секреты и токены не попадают во frontend. Следующий production-шаг — сохранять связи `client -> yandex direct login -> metrica counter` в базе данных и загружать кампании/цели для выбранного клиента.
+
+OpenRouter API key также нельзя добавлять в код. Его нужно задавать только через переменную окружения `OPENROUTER_API_KEY` на backend/Vercel; static validation дополнительно проверяет, что `sk-or-` не попал во frontend-файлы.
+
 ## OpenRouter и AI-модели
 
 AI-слой подключается через backend, чтобы OpenRouter API key не попадал в браузер и GitHub Pages. Frontend вызывает только наши endpoints:
@@ -199,7 +207,13 @@ POST /api/v1/ai/chat
   "client_id": "furniture",
   "model": "openrouter/auto",
   "message": "Почему растёт CPA и какие цели Метрики проверить?",
-  "history": []
+  "history": [],
+  "client_context": {
+    "id": "client-1",
+    "name": "Новый клиент",
+    "directLogin": "client-login",
+    "metricaCounter": "12345"
+  }
 }
 ```
 
@@ -216,7 +230,7 @@ POST /api/v1/clients/{client_id}/ai/recommendations
 Тело запроса опционально:
 
 ```json
-{ "model": "openrouter/auto" }
+{ "model": "openrouter/auto", "client_context": { "id": "client-1", "name": "Новый клиент" } }
 ```
 
 Если `OPENROUTER_API_KEY` не настроен, endpoint не падает: он возвращает безопасный deterministic fallback на mock-данных, чтобы интерфейс рекомендаций можно было демонстрировать без production-секретов. В production OpenRouter-ответ должен оставаться черновиком: специалист проверяет evidence, запускает dry-run/preview и только затем отправляет изменение на approval.

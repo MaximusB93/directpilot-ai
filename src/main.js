@@ -3,7 +3,7 @@ import {
   auditIssues,
   autopilotRules,
   campaigns,
-  clients,
+  clients as initialClients,
   recommendations,
   reportBullets,
 } from './data.js';
@@ -28,9 +28,10 @@ let authStatus = '';
 let authStep = 'email';
 let devCode = null;
 let integrationStatus = {};
+let accountClients = loadAccountClients();
 let aiStatus = { models: [], configured: false, message: 'Статус OpenRouter ещё не загружен.' };
 let aiModel = 'openrouter/auto';
-let aiPrompt = 'Проанализируй демо-клиента DirectPilot AI: какие 3 действия стоит выполнить в Яндекс.Директе на этой неделе и какие данные нужно проверить перед применением?';
+let aiPrompt = 'Проанализируй выбранного клиента DirectPilot AI: какие данные нужны из Яндекс.Директа и Метрики, чтобы сформировать первые рекомендации?';
 let aiResponse = null;
 let aiError = '';
 let aiLoading = false;
@@ -45,10 +46,51 @@ let aiChatLoading = false;
 let aiChatError = '';
 let aiChatToolTraces = [];
 
-let selectedClientId = clients[0].id;
+let selectedClientId = accountClients[0]?.id || '';
+
+function emptyClient() {
+  return {
+    id: '',
+    name: 'Клиент не выбран',
+    segment: 'Добавьте клиента',
+    spend: '—',
+    leads: 0,
+    cpa: '—',
+    roas: '—',
+    trend: 'Нет подключённых аккаунтов',
+    score: 0,
+    status: 'Ожидает подключения',
+    directLogin: 'Не подключен',
+    metricaCounter: 'Не подключен',
+  };
+}
+
+function loadAccountClients() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('directpilot_clients') || '[]');
+    return Array.isArray(saved) ? saved : initialClients;
+  } catch (error) {
+    return initialClients;
+  }
+}
+
+function saveAccountClients() {
+  localStorage.setItem('directpilot_clients', JSON.stringify(accountClients));
+}
+
+function makeClientId(name) {
+  const slug = name.toLowerCase().replace(/[^a-z0-9а-яё]+/gi, '-').replace(/^-|-$/g, '').slice(0, 32);
+  return `${slug || 'client'}-${Date.now().toString(36)}`;
+}
 
 function currentClient() {
-  return clients.find((client) => client.id === selectedClientId) ?? clients[0];
+  return accountClients.find((client) => client.id === selectedClientId) ?? accountClients[0] ?? emptyClient();
+}
+
+function resetClientDerivedState() {
+  clientAiRecommendations = null;
+  clientAiError = '';
+  aiChatToolTraces = [];
 }
 
 function escapeHtml(value) {
@@ -318,6 +360,11 @@ async function requestAiInsight() {
 
 
 async function requestAiChatAnswer() {
+  if (!selectedClientId) {
+    aiChatError = 'Сначала добавьте клиента: чат анализирует данные в контексте выбранного клиента.';
+    render();
+    return;
+  }
   const message = aiChatInput.trim();
   if (!message) return;
   const history = aiChatMessages.slice(-8);
@@ -331,7 +378,7 @@ async function requestAiChatAnswer() {
     const response = await fetch(`${API_BASE}/ai/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ client_id: selectedClientId, model: aiModel, message, history }),
+      body: JSON.stringify({ client_id: selectedClientId, model: aiModel, message, history, client_context: currentClient() }),
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || 'AI-чат не вернул ответ');
@@ -346,6 +393,11 @@ async function requestAiChatAnswer() {
 }
 
 async function requestClientAiRecommendations() {
+  if (!selectedClientId) {
+    clientAiError = 'Сначала добавьте клиента и подключите аккаунты Яндекс.Директа/Метрики.';
+    render();
+    return;
+  }
   clientAiLoading = true;
   clientAiError = '';
   clientAiRecommendations = null;
@@ -354,7 +406,7 @@ async function requestClientAiRecommendations() {
     const response = await fetch(`${API_BASE}/clients/${selectedClientId}/ai/recommendations`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: aiModel }),
+      body: JSON.stringify({ model: aiModel, client_context: currentClient() }),
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || 'Не удалось сформировать AI-рекомендации');
@@ -386,7 +438,7 @@ function renderShell(content) {
           <span class="brandIcon">✦</span>
           <span>DirectPilot AI</span>
         </a>
-        <nav class="sideNav" aria-label="Навигация демо-кабинета">
+        <nav class="sideNav" aria-label="Навигация личного кабинета">
           ${navItems.map((item) => `
             <button class="sideNavItem ${activeView === item.id ? 'active' : ''}" data-view="${item.id}">
               <span>${item.icon}</span>${item.label}
@@ -394,8 +446,8 @@ function renderShell(content) {
           `).join('')}
         </nav>
         <div class="sidebarNote">
-          <strong>Режим демо</strong>
-          <p>Демо-проект один. Интеграции подключаются к рабочему backend на Vercel.</p>
+          <strong>Рабочий кабинет</strong>
+          <p>Добавляйте клиентов отдельно и подключайте для каждого Яндекс.Директ и Метрику.</p>
         </div>
       </aside>
 
@@ -408,7 +460,7 @@ function renderShell(content) {
           <label class="clientSelect">
             <span>Клиент</span>
             <select data-client-select>
-              ${clients.map((item) => `<option value="${item.id}" ${item.id === selectedClientId ? 'selected' : ''}>${item.name}</option>`).join('')}
+              ${accountClients.length ? accountClients.map((item) => `<option value="${item.id}" ${item.id === selectedClientId ? 'selected' : ''}>${item.name}</option>`).join('') : '<option value="">Добавьте клиента</option>'}
             </select>
             <small>Direct: ${client.directLogin} · Метрика: ${client.metricaCounter}</small>
           </label>
@@ -421,73 +473,107 @@ function renderShell(content) {
 
 function renderDashboard() {
   const client = currentClient();
+  const hasClient = Boolean(client.id);
   return renderShell(`
     <div class="pageIntro">
       <span class="eyebrow">📊 Agency overview</span>
       <h2>Центр управления рекламой и AI-рекомендациями</h2>
-      <p>Сводка по выбранному клиенту, проблемам, бюджету и действиям, которые ИИ предлагает выполнить сегодня.</p>
+      <p>${hasClient ? 'Сводка по выбранному клиенту, источникам данных и действиям, которые ИИ сможет предложить после загрузки статистики.' : 'В личном кабинете больше нет предзагруженных демо-данных. Добавьте первого клиента и подключите его аккаунты.'}</p>
     </div>
     <div class="metricGrid">${agencyMetrics.map(metricCard).join('')}</div>
-    <div class="dashboardLayout">
-      <section class="panel scorePanel">
-        <div class="scoreRing" style="--score: ${client.score}%"><strong>${client.score}</strong><span>/100</span></div>
-        <div>
-          <span class="muted">AI score аккаунта</span>
-          <h3>${client.status}</h3>
-          <p>ИИ оценил связку кампаний, целей, расходов и конверсий. Главный риск — расход без целей в РСЯ.</p>
-        </div>
+    ${!hasClient ? `
+      <section class="panel emptyStatePanel">
+        <h3>Добавьте первого клиента</h3>
+        <p>Каждый клиент хранится отдельно: название проекта, логин Яндекс.Директа и счётчик Метрики. После подключения источников здесь появятся кампании, цели, CPA и рекомендации.</p>
+        <button class="approveButton" data-view="clients">Перейти к клиентам</button>
       </section>
-      <section class="panel">
-        <div class="panelHeader"><h3>Что сделать сегодня</h3><button data-view="recommendations">Все рекомендации</button></div>
-        <div class="taskList">
-          ${recommendations.slice(0, 3).map((item) => `<article><strong>${item.title}</strong><span>${item.impact}</span><p>${item.mode}</p></article>`).join('')}
-        </div>
-      </section>
-    </div>
-    <section class="panel">
-      <div class="panelHeader"><h3>Кампании клиента</h3><button data-view="audit">Открыть аудит</button></div>
-      <div class="tableWrap">
-        <table>
-          <thead><tr><th>Кампания</th><th>Расход</th><th>Лиды</th><th>CPA</th><th>Статус</th></tr></thead>
-          <tbody>${campaigns.map((campaign) => `<tr><td>${campaign.name}</td><td>${campaign.spend}</td><td>${campaign.leads}</td><td>${campaign.cpa}</td><td><span class="tableStatus">${campaign.status}</span></td></tr>`).join('')}</tbody>
-        </table>
+    ` : `
+      <div class="dashboardLayout">
+        <section class="panel scorePanel">
+          <div class="scoreRing" style="--score: ${client.score}%"><strong>${client.score}</strong><span>/100</span></div>
+          <div>
+            <span class="muted">AI score аккаунта</span>
+            <h3>${client.status}</h3>
+            <p>Оценка появится после синхронизации Директа, Метрики и минимального периода анализа.</p>
+          </div>
+        </section>
+        <section class="panel">
+          <div class="panelHeader"><h3>Что сделать сегодня</h3><button data-view="integrations">Подключить источники</button></div>
+          <div class="taskList">
+            <article><strong>Подключить Яндекс.Директ</strong><span>Источник расходов</span><p>${client.directLogin}</p></article>
+            <article><strong>Подключить Яндекс.Метрику</strong><span>Источник целей</span><p>${client.metricaCounter}</p></article>
+            <article><strong>Запустить AI-анализ</strong><span>После синхронизации</span><p>Рекомендации строятся только по данным клиента.</p></article>
+          </div>
+        </section>
       </div>
-    </section>
+      <section class="panel">
+        <div class="panelHeader"><h3>Кампании клиента</h3><button data-view="integrations">Проверить подключение</button></div>
+        ${campaigns.length ? `
+          <div class="tableWrap">
+            <table>
+              <thead><tr><th>Кампания</th><th>Расход</th><th>Лиды</th><th>CPA</th><th>Статус</th></tr></thead>
+              <tbody>${campaigns.map((campaign) => `<tr><td>${campaign.name}</td><td>${campaign.spend}</td><td>${campaign.leads}</td><td>${campaign.cpa}</td><td><span class="tableStatus">${campaign.status}</span></td></tr>`).join('')}</tbody>
+            </table>
+          </div>
+        ` : `<div class="emptyStatePanel compact"><h3>Кампании ещё не загружены</h3><p>Подключите OAuth Яндекса и выберите логин клиента, чтобы загрузить реальные кампании из Direct API.</p></div>`}
+      </section>
+    `}
   `);
 }
 
 function renderClients() {
   return renderShell(`
-    <div class="pageIntro"><span class="eyebrow">👥 Клиенты</span><h2>Клиенты как отдельные сущности</h2><p>У каждого клиента будет своё подключение Директа, Метрики, настройки, KPI, статистика и политики автопилота.</p></div>
-    <div class="clientGrid">
-      ${clients.map((client) => `
-        <button class="clientCard ${client.id === selectedClientId ? 'selected' : ''}" data-client-id="${client.id}">
-          <span>${client.segment}</span>
-          <strong>${client.name}</strong>
-          <div class="clientStats"><small>Расход ${client.spend}</small><small>CPA ${client.cpa}</small><small>Score ${client.score}/100</small></div>
-          <em>${client.trend}</em>
-        </button>
-      `).join('')}
-    </div>
+    <div class="pageIntro"><span class="eyebrow">👥 Клиенты</span><h2>Клиенты как отдельные сущности</h2><p>Создайте отдельную карточку клиента для каждого аккаунта/проекта и укажите логин Яндекс.Директа и счётчик Метрики.</p></div>
+    <section class="panel clientConnectPanel">
+      <div>
+        <h3>Добавить клиента</h3>
+        <p>Данные сохраняются в браузере до подключения backend-хранилища клиентов. OAuth Яндекса подключается через раздел «Интеграции».</p>
+      </div>
+      <form class="clientConnectForm" data-client-form>
+        <input name="name" placeholder="Название клиента" required />
+        <input name="directLogin" placeholder="Логин Яндекс.Директа" />
+        <input name="metricaCounter" placeholder="ID счётчика Метрики" />
+        <button class="approveButton" type="submit">Добавить клиента</button>
+      </form>
+    </section>
+    ${accountClients.length ? `
+      <div class="clientGrid">
+        ${accountClients.map((client) => `
+          <button class="clientCard ${client.id === selectedClientId ? 'selected' : ''}" data-client-id="${client.id}">
+            <span>${client.segment}</span>
+            <strong>${client.name}</strong>
+            <div class="clientStats"><small>Direct: ${client.directLogin}</small><small>Метрика: ${client.metricaCounter}</small><small>Score ${client.score}/100</small></div>
+            <em>${client.trend}</em>
+          </button>
+        `).join('')}
+      </div>
+    ` : `
+      <section class="panel emptyStatePanel compact">
+        <h3>Клиентов пока нет</h3>
+        <p>Мы убрали все демо-аккаунты из личного кабинета. Добавьте реального клиента и подключите его источники данных.</p>
+      </section>
+    `}
   `);
 }
 
 function renderAudit() {
   return renderShell(`
     <div class="pageIntro"><span class="eyebrow">⚡ AI-аудит</span><h2>Проблемы, которые влияют на эффективность</h2><p>Каждый пункт содержит доказательство, объект в Директе и рекомендуемое действие.</p></div>
-    <div class="auditList">
-      ${auditIssues.map((issue) => `
-        <article class="auditItem ${issue.priority}">
-          <div class="priorityBadge">${priorityLabel(issue.priority)}</div>
-          <div>
-            <h3>${issue.title}</h3>
-            <span>${issue.object}</span>
-            <p>${issue.evidence}</p>
-            <strong>Рекомендация: ${issue.action}</strong>
-          </div>
-        </article>
-      `).join('')}
-    </div>
+    ${auditIssues.length ? `
+      <div class="auditList">
+        ${auditIssues.map((issue) => `
+          <article class="auditItem ${issue.priority}">
+            <div class="priorityBadge">${priorityLabel(issue.priority)}</div>
+            <div>
+              <h3>${issue.title}</h3>
+              <span>${issue.object}</span>
+              <p>${issue.evidence}</p>
+              <strong>Рекомендация: ${issue.action}</strong>
+            </div>
+          </article>
+        `).join('')}
+      </div>
+    ` : `<section class="panel emptyStatePanel compact"><h3>Аудит пока пуст</h3><p>Подключите клиента к Директу и Метрике, чтобы AI-аудит работал на реальных данных.</p></section>`}
   `);
 }
 
@@ -534,17 +620,19 @@ function renderRecommendations() {
       <button class="approveButton" data-client-ai-recommendations ${clientAiLoading ? 'disabled' : ''}>${clientAiLoading ? 'Генерируем...' : 'Сгенерировать AI-черновик'}</button>
     </section>
     ${renderClientAiRecommendations()}
-    <div class="recommendationGrid">
-      ${recommendations.map((item) => `
-        <article class="actionCard">
-          <div class="actionTop"><span>${item.risk} риск</span><strong>${item.impact}</strong></div>
-          <h3>${item.title}</h3>
-          <p>${item.reason}</p>
-          <small>${item.objects}</small>
-          <div class="actionButtons"><button>Подробнее</button><button class="approveButton">Применить после подтверждения</button></div>
-        </article>
-      `).join('')}
-    </div>
+    ${recommendations.length ? `
+      <div class="recommendationGrid">
+        ${recommendations.map((item) => `
+          <article class="actionCard">
+            <div class="actionTop"><span>${item.risk} риск</span><strong>${item.impact}</strong></div>
+            <h3>${item.title}</h3>
+            <p>${item.reason}</p>
+            <small>${item.objects}</small>
+            <div class="actionButtons"><button>Подробнее</button><button class="approveButton">Применить после подтверждения</button></div>
+          </article>
+        `).join('')}
+      </div>
+    ` : `<section class="panel emptyStatePanel compact"><h3>Рекомендаций пока нет</h3><p>Нажмите «Сгенерировать AI-черновик» после добавления клиента или подключите реальные источники данных.</p></section>`}
   `);
 }
 
@@ -563,8 +651,16 @@ function renderIntegrations() {
   const connected = integrationStatus.connected;
   const account = integrationStatus.accounts?.[0];
   const statusText = connected ? `Подключено: ${account.login}` : 'Не подключено';
+  const client = currentClient();
   return renderShell(`
     <div class="pageIntro"><span class="eyebrow">🔌 Интеграции</span><h2>Подключите рабочие источники данных</h2><p>Яндекс.Директ и Метрика подключаются через OAuth. Один доступ содержит scopes direct:api, metrika:read и login:info.</p></div>
+    <section class="panel clientSourcePanel">
+      <div>
+        <h3>${client.id ? `Источники клиента «${client.name}»` : 'Сначала добавьте клиента'}</h3>
+        <p>Direct login: ${client.directLogin} · Метрика: ${client.metricaCounter}. OAuth-доступ хранится на backend, а клиентская карточка связывает этот доступ с конкретным проектом.</p>
+      </div>
+      <button class="approveButton" data-view="clients">${client.id ? 'Изменить карточку клиента' : 'Добавить клиента'}</button>
+    </section>
     <div class="integrationGrid">
       <article class="integrationCard primaryIntegration">
         <div class="integrationTop"><span>Яндекс.Директ</span><strong>${statusText}</strong></div>
@@ -776,6 +872,37 @@ app.addEventListener('click', async (event) => {
 });
 
 app.addEventListener('submit', async (event) => {
+  const clientForm = event.target.closest('[data-client-form]');
+  if (clientForm) {
+    event.preventDefault();
+    const formData = new FormData(clientForm);
+    const name = String(formData.get('name') || '').trim();
+    if (!name) return;
+    const directLogin = String(formData.get('directLogin') || '').trim() || 'Не подключен';
+    const metricaCounter = String(formData.get('metricaCounter') || '').trim() || 'Не подключен';
+    const client = {
+      id: makeClientId(name),
+      name,
+      segment: 'Клиент',
+      spend: '—',
+      leads: 0,
+      cpa: '—',
+      roas: '—',
+      trend: 'Ожидает синхронизации',
+      score: 0,
+      status: 'Ожидает подключения данных',
+      directLogin,
+      metricaCounter,
+    };
+    accountClients = [...accountClients, client];
+    selectedClientId = client.id;
+    saveAccountClients();
+    resetClientDerivedState();
+    clientForm.reset();
+    render();
+    return;
+  }
+
   const aiChatForm = event.target.closest('[data-ai-chat-form]');
   if (aiChatForm) {
     event.preventDefault();

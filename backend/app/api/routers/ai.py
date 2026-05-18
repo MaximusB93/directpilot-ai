@@ -24,4 +24,5 @@ async def chat_with_ai(payload: AiChatRequest) -> AiChatResponse:
         message=payload.message,
         model=payload.model,
         history=payload.history,
+        client_context=payload.client_context,
     )

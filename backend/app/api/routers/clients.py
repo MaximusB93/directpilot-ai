@@ -38,4 +38,8 @@ async def create_client_ai_recommendations(
     client_id: str,
     payload: AiClientRecommendationRequest | None = None,
 ) -> AiRecommendationResponse:
-    return await generate_client_recommendations(client_id=client_id, model=payload.model if payload else None)
+    return await generate_client_recommendations(
+        client_id=client_id,
+        model=payload.model if payload else None,
+        client_context=payload.client_context if payload else None,
+    )

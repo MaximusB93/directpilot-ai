@@ -26,11 +26,35 @@ def _select_mcp_tools(message: str) -> list[tuple[str, Any]]:
     return tool_plan
 
 
-def _run_mcp_tools(client_id: str, message: str) -> list[AiToolTrace]:
+def _local_tool_result(name: str, client_id: str, client_context: dict[str, Any] | None) -> Any:
+    client = client_context or {"id": client_id, "name": client_id, "directLogin": "Не подключен", "metricaCounter": "Не подключен"}
+    if name == "get_client":
+        return client
+    if name in {"list_campaigns", "list_yandex_direct_campaigns", "list_audit_issues", "list_recommendations"}:
+        return []
+    if name == "list_yandex_metrica_goals":
+        return [
+            {
+                "client_id": client.get("id", client_id),
+                "counter_id": client.get("metricaCounter", "Не подключен"),
+                "goal_id": None,
+                "name": "Цели нужно загрузить из Метрики",
+                "status": "awaiting_real_metrica_connection",
+            }
+        ]
+    if name == "list_integrations":
+        return []
+    return {"message": "Нет локального результата для MCP tool"}
+
+
+def _run_mcp_tools(client_id: str, message: str, client_context: dict[str, Any] | None = None) -> list[AiToolTrace]:
     traces: list[AiToolTrace] = []
     for name, args_factory in _select_mcp_tools(message):
         arguments = args_factory(client_id)
-        result = call_tool(name, arguments)
+        try:
+            result = call_tool(name, arguments)
+        except ValueError:
+            result = _local_tool_result(name=name, client_id=client_id, client_context=client_context)
         traces.append(AiToolTrace(name=name, arguments=arguments, result=result))
     return traces
 
@@ -102,8 +126,14 @@ def _fallback_answer(client_id: str, message: str, traces: list[AiToolTrace]) ->
     return "\n".join(lines)
 
 
-async def answer_ai_chat(client_id: str, message: str, model: str | None, history: list[AiChatMessage]) -> AiChatResponse:
-    traces = _run_mcp_tools(client_id, message)
+async def answer_ai_chat(
+    client_id: str,
+    message: str,
+    model: str | None,
+    history: list[AiChatMessage],
+    client_context: dict[str, Any] | None = None,
+) -> AiChatResponse:
+    traces = _run_mcp_tools(client_id, message, client_context=client_context)
     if not settings.openrouter_configured:
         return AiChatResponse(
             client_id=client_id,
