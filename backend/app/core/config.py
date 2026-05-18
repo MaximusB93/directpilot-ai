@@ -34,6 +34,7 @@ class Settings:
 
     openrouter_api_key: str | None = os.getenv("OPENROUTER_API_KEY")
     openrouter_default_model: str = os.getenv("OPENROUTER_DEFAULT_MODEL", "openrouter/auto")
+    openrouter_allow_custom_models: bool = os.getenv("OPENROUTER_ALLOW_CUSTOM_MODELS", "true").lower() == "true"
     openrouter_site_url: str = os.getenv("OPENROUTER_SITE_URL", "https://directpilot-ai.vercel.app")
     openrouter_app_name: str = os.getenv("OPENROUTER_APP_NAME", "DirectPilot AI")
     openrouter_models: list[str] = field(

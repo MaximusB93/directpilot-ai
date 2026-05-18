@@ -28,6 +28,7 @@ const checks = [
   ['autopilot rules', data.includes('autopilotRules')],
   ['integrations view', js.includes('renderIntegrations') && js.includes('data-integration="yandex-direct"')],
   ['openrouter ai view', js.includes('renderAiAssistant') && js.includes('/ai/openrouter/generate') && css.includes('.aiGrid')],
+  ['custom openrouter model input', js.includes('CUSTOM_MODEL_VALUE') && js.includes('data-ai-custom-model') && js.includes('activeAiModel()')],
   ['client ai recommendations', js.includes('/clients/${selectedClientId}/ai/recommendations') && css.includes('.aiDraftGrid')],
   ['mcp ai chat', js.includes('/ai/chat') && js.includes('renderAiChat') && css.includes('.aiChatPanel')],
   ['no frontend auth bypass', !js.includes('demo-session') && !js.includes('data-demo-login')],

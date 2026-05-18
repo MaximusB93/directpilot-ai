@@ -175,12 +175,13 @@ POST /api/v1/ai/openrouter/generate
 ```text
 OPENROUTER_API_KEY=<openrouter-api-key>
 OPENROUTER_DEFAULT_MODEL=openrouter/auto
+OPENROUTER_ALLOW_CUSTOM_MODELS=true
 OPENROUTER_MODELS=openrouter/auto,openai/gpt-4o-mini,anthropic/claude-3.5-sonnet,google/gemini-flash-1.5
 OPENROUTER_SITE_URL=https://directpilot-ai.vercel.app
 OPENROUTER_APP_NAME=DirectPilot AI
 ```
 
-Список моделей управляется через `OPENROUTER_MODELS`: добавляйте туда только те модели, которые готовы использовать по качеству, цене и лимитам. В интерфейсе кабинета появился раздел **AI-модели**, где можно выбрать модель, написать задачу и получить черновик рекомендации.
+Список быстрых вариантов управляется через `OPENROUTER_MODELS`: добавляйте туда модели, которые готовы использовать по качеству, цене и лимитам. Если `OPENROUTER_ALLOW_CUSTOM_MODELS=true`, в интерфейсе кабинета можно выбрать пункт **«Ввести модель вручную»** и указать точный id модели OpenRouter. Лучший UX — держать 3–5 проверенных моделей в выпадающем списке, а ручной ввод использовать для тестов новых моделей без redeploy.
 
 Важно: не вставляйте реальные OpenRouter-ключи в код, README, frontend или Pull Request. Если ключ уже был отправлен в чат или коммит, его нужно отозвать в OpenRouter и выпустить новый.
 

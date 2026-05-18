@@ -30,7 +30,9 @@ let devCode = null;
 let integrationStatus = {};
 let accountClients = loadAccountClients();
 let aiStatus = { models: [], configured: false, message: 'Статус OpenRouter ещё не загружен.' };
+const CUSTOM_MODEL_VALUE = '__custom_openrouter_model__';
 let aiModel = 'openrouter/auto';
+let aiCustomModel = 'openai/gpt-4o';
 let aiPrompt = 'Проанализируй выбранного клиента DirectPilot AI: какие данные нужны из Яндекс.Директа и Метрики, чтобы сформировать первые рекомендации?';
 let aiResponse = null;
 let aiError = '';
@@ -38,6 +40,8 @@ let aiLoading = false;
 let clientAiRecommendations = null;
 let clientAiLoading = false;
 let clientAiError = '';
+let clientFormStatus = '';
+let clientsLoaded = false;
 let aiChatMessages = [
   { role: 'assistant', content: 'Здравствуйте! Я AI-аналитик DirectPilot. Спросите про Директ, Метрику, CPA, цели или рекомендации — я соберу данные через MCP-инструменты и отвечу по контексту.' },
 ];
@@ -47,6 +51,43 @@ let aiChatError = '';
 let aiChatToolTraces = [];
 
 let selectedClientId = accountClients[0]?.id || '';
+
+async function loadClientsFromApi() {
+  if (clientsLoaded) return;
+  clientsLoaded = true;
+  try {
+    const response = await fetch(`${API_BASE}/clients`);
+    if (!response.ok) return;
+    const payload = await response.json();
+    if (Array.isArray(payload)) {
+      accountClients = payload;
+      if (!selectedClientId || !accountClients.some((client) => client.id === selectedClientId)) {
+        selectedClientId = accountClients[0]?.id || '';
+      }
+      saveAccountClients();
+      if (!isEditingTextField()) render();
+    }
+  } catch (error) {
+    clientsLoaded = false;
+  }
+}
+
+async function createClientOnApi(client) {
+  const response = await fetch(`${API_BASE}/clients`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      id: client.id,
+      name: client.name,
+      direct_login: client.directLogin === 'Не подключен' ? null : client.directLogin,
+      metrica_counter: client.metricaCounter === 'Не подключен' ? null : client.metricaCounter,
+      segment: client.segment,
+    }),
+  });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.detail || 'Не удалось сохранить клиента в базе данных');
+  return payload;
+}
 
 function emptyClient() {
   return {
@@ -78,9 +119,28 @@ function saveAccountClients() {
   localStorage.setItem('directpilot_clients', JSON.stringify(accountClients));
 }
 
+function isEditingTextField() {
+  const element = document.activeElement;
+  return Boolean(element?.matches?.('input, textarea, select'));
+}
+
 function makeClientId(name) {
   const slug = name.toLowerCase().replace(/[^a-z0-9а-яё]+/gi, '-').replace(/^-|-$/g, '').slice(0, 32);
   return `${slug || 'client'}-${Date.now().toString(36)}`;
+}
+
+function getConfiguredAiModelIds() {
+  return aiStatus.models?.map((model) => model.id) || [];
+}
+
+function isCustomAiModel() {
+  const configuredIds = getConfiguredAiModelIds();
+  if (configuredIds.length === 0) return false;
+  return Boolean(aiModel && !configuredIds.includes(aiModel));
+}
+
+function activeAiModel() {
+  return (isCustomAiModel() ? aiCustomModel : aiModel).trim() || aiStatus.default_model || 'openrouter/auto';
 }
 
 function currentClient() {
@@ -328,6 +388,7 @@ async function loadAiStatus() {
     const response = await fetch(`${API_BASE}/ai/openrouter/status`);
     aiStatus = response.ok ? await response.json() : { models: [], configured: false, message: 'Не удалось получить статус OpenRouter.' };
     aiModel = aiStatus.default_model || aiStatus.models?.[0]?.id || aiModel;
+    if (isCustomAiModel()) aiCustomModel = aiModel;
     if (activeView === 'ai') render();
   } catch (error) {
     aiStatus = { models: [], configured: false, message: 'Backend OpenRouter недоступен.' };
@@ -344,7 +405,7 @@ async function requestAiInsight() {
     const response = await fetch(`${API_BASE}/ai/openrouter/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: aiModel, prompt: aiPrompt }),
+      body: JSON.stringify({ model: activeAiModel(), prompt: aiPrompt }),
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || 'OpenRouter не вернул ответ');
@@ -378,7 +439,7 @@ async function requestAiChatAnswer() {
     const response = await fetch(`${API_BASE}/ai/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ client_id: selectedClientId, model: aiModel, message, history, client_context: currentClient() }),
+      body: JSON.stringify({ client_id: selectedClientId, model: activeAiModel(), message, history, client_context: currentClient() }),
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || 'AI-чат не вернул ответ');
@@ -406,7 +467,7 @@ async function requestClientAiRecommendations() {
     const response = await fetch(`${API_BASE}/clients/${selectedClientId}/ai/recommendations`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: aiModel, client_context: currentClient() }),
+      body: JSON.stringify({ model: activeAiModel(), client_context: currentClient() }),
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || 'Не удалось сформировать AI-рекомендации');
@@ -530,11 +591,12 @@ function renderClients() {
         <p>Данные сохраняются в браузере до подключения backend-хранилища клиентов. OAuth Яндекса подключается через раздел «Интеграции».</p>
       </div>
       <form class="clientConnectForm" data-client-form>
-        <input name="name" placeholder="Название клиента" required />
-        <input name="directLogin" placeholder="Логин Яндекс.Директа" />
-        <input name="metricaCounter" placeholder="ID счётчика Метрики" />
+        <input name="name" placeholder="Название клиента" autocomplete="organization" required />
+        <input name="directLogin" placeholder="Логин Яндекс.Директа" autocomplete="off" />
+        <input name="metricaCounter" placeholder="ID счётчика Метрики" inputmode="numeric" autocomplete="off" />
         <button class="approveButton" type="submit">Добавить клиента</button>
       </form>
+      ${clientFormStatus ? `<div class="authStatus integrationStatus">${escapeHtml(clientFormStatus)}</div>` : ''}
     </section>
     ${accountClients.length ? `
       <div class="clientGrid">
@@ -725,6 +787,8 @@ function renderAiChat() {
 function renderAiAssistant() {
   const client = currentClient();
   const models = aiStatus.models?.length ? aiStatus.models : [{ id: aiModel, name: aiModel, description: 'Модель будет загружена из backend.' }];
+  const customSelected = isCustomAiModel();
+  const customAllowed = aiStatus.allow_custom_models !== false;
   return renderShell(`
     <div class="pageIntro">
       <span class="eyebrow">🧠 OpenRouter</span>
@@ -741,10 +805,18 @@ function renderAiAssistant() {
         <form class="aiForm" data-ai-form>
           <label>
             <span>Модель</span>
-            <select name="model" data-ai-model>
-              ${models.map((model) => `<option value="${model.id}" ${model.id === aiModel ? 'selected' : ''}>${model.name}</option>`).join('')}
+            <select name="modelMode" data-ai-model>
+              ${models.map((model) => `<option value="${model.id}" ${model.id === aiModel && !customSelected ? 'selected' : ''}>${model.name}</option>`).join('')}
+              <option value="${CUSTOM_MODEL_VALUE}" ${customSelected ? 'selected' : ''} ${customAllowed ? '' : 'disabled'}>Ввести модель вручную</option>
             </select>
           </label>
+          ${customSelected ? `
+            <label>
+              <span>Своя модель OpenRouter</span>
+              <input name="customModel" data-ai-custom-model placeholder="openai/gpt-4o" value="${escapeHtml(aiCustomModel)}" autocomplete="off" />
+              <small>Введите точный id модели из OpenRouter, например <code>openai/gpt-4o</code> или <code>anthropic/claude-3.5-sonnet</code>.</small>
+            </label>
+          ` : ''}
           <label>
             <span>Задача для AI</span>
             <textarea name="prompt" rows="7" maxlength="4000" data-ai-prompt>${escapeHtml(aiPrompt)}</textarea>
@@ -824,6 +896,9 @@ function render() {
   if (activeView === 'ai' && aiStatus.message === 'Статус OpenRouter ещё не загружен.') {
     loadAiStatus();
   }
+  if (activeView !== 'landing' && activeView !== 'login') {
+    loadClientsFromApi();
+  }
 }
 
 app.addEventListener('click', async (event) => {
@@ -864,8 +939,8 @@ app.addEventListener('click', async (event) => {
   if (clientButton) {
     selectedClientId = clientButton.dataset.clientId;
     clientAiRecommendations = null;
-    clientAiError = '';
-    aiChatToolTraces = [];
+    resetClientDerivedState();
+    clientFormStatus = '';
     activeView = 'dashboard';
     render();
   }
@@ -894,11 +969,17 @@ app.addEventListener('submit', async (event) => {
       directLogin,
       metricaCounter,
     };
-    accountClients = [...accountClients, client];
-    selectedClientId = client.id;
-    saveAccountClients();
-    resetClientDerivedState();
-    clientForm.reset();
+    try {
+      const savedClient = await createClientOnApi(client);
+      accountClients = [savedClient, ...accountClients.filter((item) => item.id !== savedClient.id)];
+      selectedClientId = savedClient.id;
+      saveAccountClients();
+      resetClientDerivedState();
+      clientFormStatus = 'Клиент сохранён в базе данных.';
+      clientForm.reset();
+    } catch (error) {
+      clientFormStatus = error.message;
+    }
     render();
     return;
   }
@@ -916,7 +997,13 @@ app.addEventListener('submit', async (event) => {
   if (aiForm) {
     event.preventDefault();
     const formData = new FormData(aiForm);
-    aiModel = String(formData.get('model') || aiModel);
+    const modelMode = String(formData.get('modelMode') || aiModel);
+    if (modelMode === CUSTOM_MODEL_VALUE) {
+      aiCustomModel = String(formData.get('customModel') || aiCustomModel).trim();
+      aiModel = aiCustomModel;
+    } else {
+      aiModel = modelMode;
+    }
     aiPrompt = String(formData.get('prompt') || '').trim();
     await requestAiInsight();
     return;
@@ -957,6 +1044,10 @@ app.addEventListener('input', (event) => {
   if (event.target.matches('[data-ai-prompt]')) {
     aiPrompt = event.target.value;
   }
+  if (event.target.matches('[data-ai-custom-model]')) {
+    aiCustomModel = event.target.value;
+    aiModel = aiCustomModel;
+  }
   if (event.target.matches('[data-ai-chat-input]')) {
     aiChatInput = event.target.value;
   }
@@ -965,13 +1056,17 @@ app.addEventListener('input', (event) => {
 app.addEventListener('change', (event) => {
   if (event.target.matches('[data-client-select]')) {
     selectedClientId = event.target.value;
-    clientAiRecommendations = null;
-    clientAiError = '';
-    aiChatToolTraces = [];
+    resetClientDerivedState();
+    clientFormStatus = '';
     render();
   }
   if (event.target.matches('[data-ai-model]')) {
-    aiModel = event.target.value;
+    if (event.target.value === CUSTOM_MODEL_VALUE) {
+      aiModel = aiCustomModel;
+    } else {
+      aiModel = event.target.value;
+    }
+    render();
   }
 });
 

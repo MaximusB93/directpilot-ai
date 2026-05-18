@@ -20,6 +20,7 @@ class Organization(Base):
 
     users: Mapped[list["User"]] = relationship(back_populates="organization")
     accounts: Mapped[list["ConnectedAccount"]] = relationship(back_populates="organization")
+    clients: Mapped[list["ClientAccount"]] = relationship(back_populates="organization")
 
 
 class User(Base):
@@ -37,6 +38,24 @@ class User(Base):
     )
 
     organization: Mapped[Organization] = relationship(back_populates="users")
+
+
+class ClientAccount(Base):
+    __tablename__ = "client_accounts"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    organization_id: Mapped[str | None] = mapped_column(ForeignKey("organizations.id"), nullable=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    segment: Mapped[str] = mapped_column(String(128), nullable=False, default="Клиент")
+    direct_login: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    metrica_counter: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(String(128), nullable=False, default="Ожидает подключения данных")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    organization: Mapped[Organization | None] = relationship(back_populates="clients")
 
 
 class ConnectedAccount(Base):

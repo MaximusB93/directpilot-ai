@@ -14,6 +14,29 @@ class ClientSummary(BaseModel):
     status: str
 
 
+class ClientCreateRequest(BaseModel):
+    id: str | None = None
+    name: str = Field(min_length=1, max_length=255)
+    direct_login: str | None = None
+    metrica_counter: str | None = None
+    segment: str = "Клиент"
+
+
+class ClientAccountResponse(BaseModel):
+    id: str
+    name: str
+    segment: str
+    spend: str = "—"
+    leads: int = 0
+    cpa: str = "—"
+    roas: str = "—"
+    trend: str = "Ожидает синхронизации"
+    score: int = 0
+    status: str
+    directLogin: str = "Не подключен"
+    metricaCounter: str = "Не подключен"
+
+
 class AgencyMetric(BaseModel):
     label: str
     value: str
@@ -245,6 +268,7 @@ class AiStatusResponse(BaseModel):
     configured: bool
     default_model: str
     models: list[AiModelOption]
+    allow_custom_models: bool
     message: str
 
 

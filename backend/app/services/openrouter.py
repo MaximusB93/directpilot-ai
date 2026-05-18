@@ -35,6 +35,7 @@ def openrouter_status() -> dict[str, object]:
         "configured": configured,
         "default_model": settings.openrouter_default_model,
         "models": configured_models(),
+        "allow_custom_models": settings.openrouter_allow_custom_models,
         "message": (
             "OpenRouter подключён через backend. Ключ хранится только в переменных окружения сервера."
             if configured
@@ -51,11 +52,13 @@ async def generate_openrouter_response(model: str, prompt: str) -> dict[str, obj
         )
 
     allowed_models = set(settings.openrouter_models)
-    selected_model = model or settings.openrouter_default_model
-    if selected_model not in allowed_models:
+    selected_model = (model or settings.openrouter_default_model).strip()
+    if not selected_model or len(selected_model) > 200 or any(char.isspace() for char in selected_model):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Некорректный идентификатор модели OpenRouter.")
+    if selected_model not in allowed_models and not settings.openrouter_allow_custom_models:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Модель {selected_model} не разрешена. Добавьте её в OPENROUTER_MODELS.",
+            detail=f"Модель {selected_model} не разрешена. Добавьте её в OPENROUTER_MODELS или включите OPENROUTER_ALLOW_CUSTOM_MODELS=true.",
         )
 
     payload = {

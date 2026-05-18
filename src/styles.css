@@ -924,6 +924,7 @@ td {
 }
 
 .aiForm select,
+.aiForm input,
 .aiForm textarea {
   width: 100%;
   padding: 14px 16px;
@@ -933,6 +934,16 @@ td {
   background: #fff;
   font: inherit;
   font-weight: 800;
+}
+
+.aiForm small {
+  color: #7d8aa0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.aiForm code {
+  color: #1e5dff;
 }
 
 .aiForm textarea {
@@ -1197,4 +1208,38 @@ td {
 
 @media (max-width: 760px) {
   .clientConnectForm { grid-template-columns: 1fr; }
+}
+
+input,
+textarea,
+select {
+  position: relative;
+  z-index: 5;
+  pointer-events: auto;
+  user-select: text;
+  -webkit-user-select: text;
+  caret-color: #132238;
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+  outline: 3px solid rgba(30, 93, 255, 0.18);
+  border-color: rgba(30, 93, 255, 0.55);
+}
+
+form,
+label,
+.clientConnectForm,
+.aiChatForm,
+.aiForm {
+  position: relative;
+  z-index: 6;
+}
+
+button,
+.clientCard,
+.sideNavItem {
+  user-select: none;
+  -webkit-user-select: none;
 }
