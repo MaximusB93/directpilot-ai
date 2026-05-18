@@ -900,3 +900,301 @@ td {
   font-size: 13px;
   font-weight: 900;
 }
+
+.aiGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(280px, .8fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.aiConsole,
+.aiSide,
+.aiForm {
+  display: grid;
+  gap: 16px;
+}
+
+.aiForm label {
+  display: grid;
+  gap: 8px;
+  color: #66758a;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.aiForm select,
+.aiForm textarea {
+  width: 100%;
+  padding: 14px 16px;
+  border: 1px solid rgba(19, 34, 56, 0.12);
+  border-radius: 16px;
+  color: #132238;
+  background: #fff;
+  font: inherit;
+  font-weight: 800;
+}
+
+.aiForm textarea {
+  min-height: 180px;
+  resize: vertical;
+  line-height: 1.55;
+}
+
+.aiStatusBadge {
+  padding: 8px 10px;
+  border-radius: 999px;
+  background: #fff7e6;
+  color: #8a5a00;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.aiStatusBadge.ready {
+  color: #087a49;
+  background: #e9f9f1;
+}
+
+.aiError {
+  color: #b42318;
+  background: #fff0ee;
+}
+
+.aiResponse {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid rgba(30, 93, 255, 0.16);
+  border-radius: 22px;
+  background: #f8fbff;
+}
+
+.aiResponse pre {
+  margin: 0;
+  white-space: pre-wrap;
+  color: #263850;
+  font: inherit;
+  font-weight: 700;
+  line-height: 1.65;
+}
+
+@media (max-width: 920px) {
+  .aiGrid { grid-template-columns: 1fr; }
+}
+
+.aiRecommendationCta,
+.aiDraftPanel {
+  margin-bottom: 18px;
+}
+
+.aiRecommendationCta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.aiRecommendationCta h3,
+.aiDraftPanel h3,
+.aiDraftPanel h4 {
+  margin: 0;
+  color: #101928;
+}
+
+.aiRecommendationCta p,
+.aiDraftPanel p {
+  margin: 8px 0 0;
+  color: #536276;
+  line-height: 1.6;
+}
+
+.aiDraftGrid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+  margin-top: 18px;
+}
+
+.aiDraftGrid article {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid rgba(30, 93, 255, 0.12);
+  border-radius: 20px;
+  background: #f8fbff;
+}
+
+.aiDraftGrid ul {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding-left: 18px;
+  color: #536276;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+@media (max-width: 920px) {
+  .aiRecommendationCta {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .aiDraftGrid { grid-template-columns: 1fr; }
+}
+
+.aiChatPanel {
+  display: grid;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.aiChatPanel .panelHeader p {
+  margin: 8px 0 0;
+  color: #536276;
+  line-height: 1.6;
+}
+
+.aiChatMessages {
+  display: grid;
+  gap: 12px;
+  max-height: 460px;
+  overflow: auto;
+  padding: 4px;
+}
+
+.aiChatMessage {
+  width: min(88%, 760px);
+  padding: 14px 16px;
+  border-radius: 20px;
+  background: #f1f5f9;
+}
+
+.aiChatMessage.user {
+  justify-self: end;
+  color: #fff;
+  background: #1e5dff;
+}
+
+.aiChatMessage.assistant {
+  justify-self: start;
+  border: 1px solid rgba(30, 93, 255, 0.12);
+  background: #f8fbff;
+}
+
+.aiChatMessage strong,
+.aiChatMessage small {
+  display: block;
+  font-size: 12px;
+  font-weight: 900;
+  opacity: .78;
+}
+
+.aiChatMessage pre {
+  margin: 8px 0 0;
+  white-space: pre-wrap;
+  font: inherit;
+  font-weight: 700;
+  line-height: 1.55;
+}
+
+.aiChatForm {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.aiChatForm textarea {
+  width: 100%;
+  min-height: 86px;
+  padding: 14px 16px;
+  border: 1px solid rgba(19, 34, 56, 0.12);
+  border-radius: 16px;
+  color: #132238;
+  background: #fff;
+  font: inherit;
+  font-weight: 800;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.aiToolTrace {
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: #f7f9fc;
+  color: #536276;
+  font-weight: 800;
+}
+
+.aiToolTrace div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.aiToolTrace code {
+  padding: 8px 10px;
+  border-radius: 999px;
+  color: #1e5dff;
+  background: #edf3ff;
+}
+
+@media (max-width: 760px) {
+  .aiChatForm { grid-template-columns: 1fr; }
+  .aiChatMessage { width: 100%; }
+}
+
+.emptyStatePanel,
+.clientConnectPanel,
+.clientSourcePanel {
+  display: grid;
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.emptyStatePanel.compact {
+  margin: 0;
+  box-shadow: none;
+}
+
+.emptyStatePanel h3,
+.clientConnectPanel h3,
+.clientSourcePanel h3 {
+  margin: 0;
+  color: #101928;
+}
+
+.emptyStatePanel p,
+.clientConnectPanel p,
+.clientSourcePanel p {
+  margin: 0;
+  color: #536276;
+  line-height: 1.6;
+}
+
+.clientConnectForm {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+  gap: 10px;
+}
+
+.clientConnectForm input {
+  width: 100%;
+  padding: 13px 14px;
+  border: 1px solid rgba(19, 34, 56, 0.12);
+  border-radius: 14px;
+  color: #132238;
+  background: #fff;
+  font: inherit;
+  font-weight: 800;
+}
+
+@media (max-width: 1080px) {
+  .clientConnectForm { grid-template-columns: 1fr 1fr; }
+}
+
+@media (max-width: 760px) {
+  .clientConnectForm { grid-template-columns: 1fr; }
+}

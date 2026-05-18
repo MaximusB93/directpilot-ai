@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routers import approvals, audit, auth, clients, debug, health, integrations, recommendations, yandex_direct
+from app.api.routers import ai, approvals, audit, auth, clients, debug, health, integrations, recommendations, yandex_direct
 from app.core.config import settings
 from app.db import init_db
 
@@ -38,6 +38,7 @@ app.include_router(recommendations.router, prefix=settings.api_prefix)
 app.include_router(integrations.router, prefix=settings.api_prefix)
 app.include_router(approvals.router, prefix=settings.api_prefix)
 app.include_router(yandex_direct.router, prefix=settings.api_prefix)
+app.include_router(ai.router, prefix=settings.api_prefix)
 app.include_router(debug.router, prefix=settings.api_prefix)
 
 
@@ -59,6 +60,7 @@ def read_root() -> dict[str, object]:
             f"{settings.api_prefix}/auth/yandex/status",
             f"{settings.api_prefix}/yandex-direct/connection",
             f"{settings.api_prefix}/yandex-direct/reports/campaigns",
+            f"{settings.api_prefix}/ai/openrouter/status",
             f"{settings.api_prefix}/debug/routes",
         ],
     }

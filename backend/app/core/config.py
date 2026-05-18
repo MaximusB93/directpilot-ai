@@ -6,6 +6,10 @@ def _split_scopes(value: str) -> list[str]:
     return [scope.strip() for scope in value.replace(",", " ").split() if scope.strip()]
 
 
+def _split_models(value: str) -> list[str]:
+    return [model.strip() for model in value.replace("\n", ",").split(",") if model.strip()]
+
+
 def _looks_redacted(value: str | None) -> bool:
     if not value:
         return False
@@ -27,6 +31,19 @@ class Settings:
     smtp_password: str | None = os.getenv("SMTP_PASSWORD")
     smtp_from_email: str = os.getenv("SMTP_FROM_EMAIL", "noreply@directpilot.ai")
     smtp_use_tls: bool = os.getenv("SMTP_USE_TLS", "true").lower() == "true"
+
+    openrouter_api_key: str | None = os.getenv("OPENROUTER_API_KEY")
+    openrouter_default_model: str = os.getenv("OPENROUTER_DEFAULT_MODEL", "openrouter/auto")
+    openrouter_site_url: str = os.getenv("OPENROUTER_SITE_URL", "https://directpilot-ai.vercel.app")
+    openrouter_app_name: str = os.getenv("OPENROUTER_APP_NAME", "DirectPilot AI")
+    openrouter_models: list[str] = field(
+        default_factory=lambda: _split_models(
+            os.getenv(
+                "OPENROUTER_MODELS",
+                "openrouter/auto,openai/gpt-4o-mini,anthropic/claude-3.5-sonnet,google/gemini-flash-1.5",
+            )
+        )
+    )
     yandex_client_id: str | None = os.getenv("YANDEX_CLIENT_ID")
     yandex_client_secret: str | None = os.getenv("YANDEX_CLIENT_SECRET")
     yandex_redirect_uri: str = os.getenv(
@@ -62,6 +79,10 @@ class Settings:
     @property
     def smtp_configured(self) -> bool:
         return bool(self.smtp_host and self.smtp_username and self.smtp_password)
+
+    @property
+    def openrouter_configured(self) -> bool:
+        return bool(self.openrouter_api_key and not _looks_redacted(self.openrouter_api_key))
 
     @property
     def yandex_oauth_configured(self) -> bool:

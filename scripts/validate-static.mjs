@@ -23,10 +23,15 @@ const checks = [
   ['audit view', js.includes('renderAudit')],
   ['recommendations view', js.includes('renderRecommendations')],
   ['responsive styles', css.includes('@media')],
-  ['single demo project', data.includes('fgrf.ru — демо-проект')],
+  ['no seeded account data', data.includes('export const clients = []') && !data.includes('fgrf.ru') && !data.includes('Интернет-магазин мебели')],
+  ['client add form', js.includes('data-client-form') && js.includes('directpilot_clients')],
   ['autopilot rules', data.includes('autopilotRules')],
   ['integrations view', js.includes('renderIntegrations') && js.includes('data-integration="yandex-direct"')],
+  ['openrouter ai view', js.includes('renderAiAssistant') && js.includes('/ai/openrouter/generate') && css.includes('.aiGrid')],
+  ['client ai recommendations', js.includes('/clients/${selectedClientId}/ai/recommendations') && css.includes('.aiDraftGrid')],
+  ['mcp ai chat', js.includes('/ai/chat') && js.includes('renderAiChat') && css.includes('.aiChatPanel')],
   ['no frontend auth bypass', !js.includes('demo-session') && !js.includes('data-demo-login')],
+  ['no hardcoded OpenRouter secret', !js.includes('sk-or-') && !data.includes('sk-or-')],
 ];
 
 const failed = checks.filter(([, ok]) => !ok);

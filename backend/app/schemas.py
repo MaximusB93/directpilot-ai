@@ -233,3 +233,78 @@ class EmailCodeVerifyResponse(BaseModel):
     email: str
     session_token: str
     expires_at: str
+
+
+class AiModelOption(BaseModel):
+    id: str
+    name: str
+    description: str
+
+
+class AiStatusResponse(BaseModel):
+    configured: bool
+    default_model: str
+    models: list[AiModelOption]
+    message: str
+
+
+class AiPromptRequest(BaseModel):
+    model: str
+    prompt: str = Field(min_length=10, max_length=4000)
+
+
+class AiClientRecommendationRequest(BaseModel):
+    model: str | None = None
+    client_context: dict | None = None
+
+
+class AiGeneratedRecommendation(BaseModel):
+    title: str
+    evidence: list[str]
+    risk: str
+    expected_impact: str
+    next_step: str
+    requires_approval: bool
+
+
+class AiRecommendationResponse(BaseModel):
+    client_id: str
+    source: str
+    model: str | None = None
+    summary: str
+    recommendations: list[AiGeneratedRecommendation]
+    raw_response: str | None = None
+
+
+class AiChatMessage(BaseModel):
+    role: str
+    content: str = Field(min_length=1, max_length=4000)
+
+
+class AiChatRequest(BaseModel):
+    client_id: str = "furniture"
+    model: str | None = None
+    message: str = Field(min_length=2, max_length=4000)
+    history: list[AiChatMessage] = Field(default_factory=list)
+    client_context: dict | None = None
+
+
+class AiToolTrace(BaseModel):
+    name: str
+    arguments: dict
+    result: object
+
+
+class AiChatResponse(BaseModel):
+    client_id: str
+    model: str | None = None
+    source: str
+    answer: str
+    tool_traces: list[AiToolTrace]
+
+
+class AiPromptResponse(BaseModel):
+    model: str
+    content: str
+    usage: dict | None = None
+    id: str | None = None
