@@ -104,6 +104,8 @@ class ChangePreview(BaseModel):
     requires_approval: bool
     summary: str
     changes: list[PlannedChange]
+    policy_violations: list[str] = Field(default_factory=list)
+    risk_score: int = Field(default=0, ge=0, le=100)
 
 
 class ApprovalCreateRequest(BaseModel):
@@ -124,6 +126,8 @@ class ApprovalRecord(BaseModel):
     requested_by: str
     status: str
     created_at: str
+    policy_violations: list[str] = Field(default_factory=list)
+    risk_score: int = Field(default=0, ge=0, le=100)
     decided_by: str | None = None
     decided_at: str | None = None
     comment: str | None = None

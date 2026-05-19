@@ -68,6 +68,23 @@ def create_client(payload: ClientCreateRequest, db: Session | None = Depends(get
     return _client_response(client)
 
 
+
+
+@router.put("/{client_id}", response_model=ClientAccountResponse)
+def update_client(client_id: str, payload: ClientCreateRequest, db: Session | None = Depends(get_optional_db)) -> ClientAccountResponse:
+    db = _require_db(db)
+    client = db.get(ClientAccount, client_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+    client.name = payload.name.strip()
+    client.segment = payload.segment or client.segment
+    client.direct_login = (payload.direct_login or "").strip() or None
+    client.metrica_counter = (payload.metrica_counter or "").strip() or None
+    db.commit()
+    db.refresh(client)
+    return _client_response(client)
+
+
 @router.get("/metrics", response_model=list[AgencyMetric])
 def list_agency_metrics() -> list[AgencyMetric]:
     return AGENCY_METRICS
