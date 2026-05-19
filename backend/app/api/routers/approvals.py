@@ -1,6 +1,14 @@
 from fastapi import APIRouter, HTTPException
 
-from app.schemas import ApprovalCreateRequest, ApprovalDecisionRequest, ApprovalRecord, AuditLogEvent, ChangePreview
+from app.schemas import (
+    ApprovalCreateRequest,
+    ApprovalDecisionRequest,
+    ApprovalRecord,
+    AuditLogEvent,
+    ChangePreview,
+    RecommendationImpactCreateRequest,
+    RecommendationImpactEvent,
+)
 from app.services.approvals import (
     approve_approval,
     create_approval,
@@ -9,6 +17,7 @@ from app.services.approvals import (
     list_audit_log,
     reject_approval,
 )
+from app.services.impact_tracking import create_impact_event, list_impact_events
 
 router = APIRouter(tags=["approvals"])
 
@@ -53,3 +62,20 @@ def reject(approval_id: str, request: ApprovalDecisionRequest) -> ApprovalRecord
 @router.get("/audit-log", response_model=list[AuditLogEvent])
 def get_audit_log() -> list[AuditLogEvent]:
     return list_audit_log()
+
+
+@router.post("/recommendations/impact", response_model=RecommendationImpactEvent)
+def create_recommendation_impact(payload: RecommendationImpactCreateRequest) -> RecommendationImpactEvent:
+    return create_impact_event(
+        recommendation_id=payload.recommendation_id,
+        client_id=payload.client_id,
+        expected_impact=payload.expected_impact,
+        observed_impact=payload.observed_impact,
+        window_days=payload.window_days,
+        created_by=payload.created_by,
+    )
+
+
+@router.get("/recommendations/impact", response_model=list[RecommendationImpactEvent])
+def get_recommendation_impact(client_id: str | None = None) -> list[RecommendationImpactEvent]:
+    return list_impact_events(client_id=client_id)

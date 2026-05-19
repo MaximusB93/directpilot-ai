@@ -9,6 +9,7 @@ from app.schemas import (
     PlannedChange,
 )
 from app.services.mock_data import CLIENTS, RECOMMENDATIONS
+from app.services.policy_engine import evaluate_preview
 
 _PREVIEWS: dict[str, ChangePreview] = {}
 _APPROVALS: dict[str, ApprovalRecord] = {}
@@ -72,6 +73,8 @@ def create_preview(recommendation_id: str, client_id: str = "furniture", actor: 
         summary=f"Dry-run: {recommendation.title}. Planned changes: {len(changes)}.",
         changes=changes,
     )
+    verdict = evaluate_preview(preview)
+    preview = preview.model_copy(update={"policy_violations": verdict.violations, "risk_score": verdict.risk_score})
     _PREVIEWS[preview.id] = preview
     _append_event("preview_created", actor, f"Created dry-run preview for {recommendation.id}", preview.id)
     return preview
@@ -92,8 +95,11 @@ def create_approval(request: ApprovalCreateRequest) -> ApprovalRecord:
         recommendation_id=preview.recommendation_id,
         client_id=preview.client_id,
         requested_by=request.requested_by,
+        requested_by_role=request.requested_by_role,
         status="pending",
         created_at=_now(),
+        policy_violations=preview.policy_violations,
+        risk_score=preview.risk_score,
     )
     _APPROVALS[approval.id] = approval
     _append_event(
@@ -113,6 +119,9 @@ def _decide_approval(approval_id: str, request: ApprovalDecisionRequest, status:
 
     if approval.status != "pending":
         raise ValueError(f"Approval '{approval_id}' is already {approval.status}")
+
+    if status == "approved" and approval.risk_score >= 70 and request.decided_by_role not in {"lead", "owner"}:
+        raise ValueError("High-risk approval requires lead or owner role")
 
     updated = approval.model_copy(
         update={
