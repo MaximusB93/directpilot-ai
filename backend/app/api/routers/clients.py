@@ -28,6 +28,10 @@ def _client_response(client: ClientAccount) -> ClientAccountResponse:
         status=client.status,
         directLogin=client.direct_login or "Не подключен",
         metricaCounter=client.metrica_counter or "Не подключен",
+        syncStatus=getattr(client, "sync_status", "never_synced"),
+        syncError=getattr(client, "sync_error", None),
+        lastSyncedAt=client.last_synced_at.isoformat() if getattr(client, "last_synced_at", None) else None,
+        syncVersion=getattr(client, "sync_version", 0),
     )
 
 
@@ -63,6 +67,23 @@ def create_client(payload: ClientCreateRequest, db: Session | None = Depends(get
         metrica_counter=(payload.metrica_counter or "").strip() or None,
     )
     db.add(client)
+    db.commit()
+    db.refresh(client)
+    return _client_response(client)
+
+
+
+
+@router.put("/{client_id}", response_model=ClientAccountResponse)
+def update_client(client_id: str, payload: ClientCreateRequest, db: Session | None = Depends(get_optional_db)) -> ClientAccountResponse:
+    db = _require_db(db)
+    client = db.get(ClientAccount, client_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+    client.name = payload.name.strip()
+    client.segment = payload.segment or client.segment
+    client.direct_login = (payload.direct_login or "").strip() or None
+    client.metrica_counter = (payload.metrica_counter or "").strip() or None
     db.commit()
     db.refresh(client)
     return _client_response(client)
