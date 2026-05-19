@@ -9,8 +9,19 @@ import {
 } from './data.js';
 
 const app = document.querySelector('#app');
-const API_BASE = 'https://directpilot-ai.vercel.app/api/v1';
+const API_BASE = resolveApiBase();
 const page = document.body.dataset.page ?? 'landing';
+
+function resolveApiBase() {
+  const custom = window.localStorage.getItem('directpilot_api_base')?.trim();
+  if (custom) return custom.replace(/\/$/, '');
+  const { hostname, origin } = window.location;
+  if (hostname === 'localhost' || hostname === '127.0.0.1') {
+    return 'http://localhost:8000/api/v1';
+  }
+  return `${origin}/api/v1`;
+}
+
 const navItems = [
   { id: 'dashboard', label: 'Dashboard', icon: '📊' },
   { id: 'clients', label: 'Клиенты', icon: '👥' },
@@ -67,7 +78,6 @@ async function loadClientsFromApi() {
         selectedClientId = accountClients[0]?.id || '';
       }
       saveAccountClients();
-      if (!isEditingTextField()) render();
     }
   } catch (error) {
     clientsLoaded = false;
