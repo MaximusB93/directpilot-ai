@@ -9,6 +9,7 @@ from app.schemas import (
     PlannedChange,
 )
 from app.services.mock_data import CLIENTS, RECOMMENDATIONS
+from app.services.policy_engine import evaluate_preview
 
 _PREVIEWS: dict[str, ChangePreview] = {}
 _APPROVALS: dict[str, ApprovalRecord] = {}
@@ -72,6 +73,8 @@ def create_preview(recommendation_id: str, client_id: str = "furniture", actor: 
         summary=f"Dry-run: {recommendation.title}. Planned changes: {len(changes)}.",
         changes=changes,
     )
+    verdict = evaluate_preview(preview)
+    preview = preview.model_copy(update={"policy_violations": verdict.violations, "risk_score": verdict.risk_score})
     _PREVIEWS[preview.id] = preview
     _append_event("preview_created", actor, f"Created dry-run preview for {recommendation.id}", preview.id)
     return preview
@@ -94,6 +97,8 @@ def create_approval(request: ApprovalCreateRequest) -> ApprovalRecord:
         requested_by=request.requested_by,
         status="pending",
         created_at=_now(),
+        policy_violations=preview.policy_violations,
+        risk_score=preview.risk_score,
     )
     _APPROVALS[approval.id] = approval
     _append_event(
