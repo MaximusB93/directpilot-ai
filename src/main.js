@@ -53,24 +53,6 @@ let aiChatToolTraces = [];
 let selectedClientId = accountClients[0]?.id || '';
 
 
-let pointerInteractionStartedInTextField = false;
-let skipNextDelegatedClick = false;
-
-app.addEventListener('pointerdown', (event) => {
-  pointerInteractionStartedInTextField = Boolean(event.target.closest('input, textarea, select'));
-});
-
-app.addEventListener('pointerup', (event) => {
-  if (!pointerInteractionStartedInTextField) return;
-  const endedInTextField = Boolean(event.target.closest('input, textarea, select'));
-  skipNextDelegatedClick = !endedInTextField;
-  pointerInteractionStartedInTextField = false;
-});
-
-app.addEventListener('pointercancel', () => {
-  pointerInteractionStartedInTextField = false;
-});
-
 
 async function loadClientsFromApi() {
   if (clientsLoaded) return;
@@ -922,10 +904,6 @@ function render() {
 }
 
 app.addEventListener('click', async (event) => {
-  if (skipNextDelegatedClick) {
-    skipNextDelegatedClick = false;
-    return;
-  }
   const viewButton = event.target.closest('[data-view]');
   const clientButton = event.target.closest('[data-client-id]');
   const integrationButton = event.target.closest('[data-integration]');
