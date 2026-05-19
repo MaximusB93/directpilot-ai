@@ -1,7 +1,10 @@
 from typing import Any
 
+from app.db import SessionLocal
 from app.services.approvals import create_preview, list_audit_log
+from app.services.client_data import campaigns_from_direct, metrica_goals
 from app.services.mock_data import AUDIT_ISSUES, CAMPAIGNS, CLIENTS, INTEGRATIONS, RECOMMENDATIONS
+from app.services.performance_audit import build_audit_issues
 
 JsonObject = dict[str, Any]
 
@@ -146,23 +149,50 @@ def call_tool(name: str, arguments: JsonObject | None = None) -> Any:
         _find_client(args["client_id"])
         return _dump(CAMPAIGNS)
     if name == "list_yandex_direct_campaigns":
-        _find_client(args["client_id"])
-        return _dump(CAMPAIGNS)
+        client = _find_client(args["client_id"])
+        if SessionLocal is None:
+            return {"source": "mock", "items": _dump(CAMPAIGNS)}
+        with SessionLocal() as db:
+            try:
+                items, source = campaigns_from_direct(db=db, client_login=getattr(client, "directLogin", None))
+            except Exception:
+                return {"source": "mock", "items": _dump(CAMPAIGNS)}
+        normalized = [
+            {
+                "name": item.name,
+                "spend": item.spend,
+                "clicks": item.clicks,
+                "conversions": item.conversions,
+                "ctr": item.ctr,
+                "avg_cpc": item.avg_cpc,
+            }
+            for item in items
+        ]
+        return {"source": source, "items": normalized}
     if name == "list_yandex_metrica_goals":
         client = _find_client(args["client_id"])
-        return [
-            {
-                "client_id": client.id,
-                "counter_id": "demo-counter",
-                "goal_id": 1,
-                "name": "Заявка / лид",
-                "type": "conversion",
-                "status": "mock_until_metrica_connector_is_enabled",
-            }
-        ]
+        counter_id = getattr(client, "metricaCounter", None)
+        if SessionLocal is None:
+            return {"source": "mock", "items": []}
+        with SessionLocal() as db:
+            try:
+                goals, source = metrica_goals(db=db, counter_id=counter_id)
+            except Exception:
+                return {"source": "mock", "items": []}
+        return {"source": source, "items": goals}
     if name == "list_audit_issues":
         _find_client(args["client_id"])
-        return _dump(AUDIT_ISSUES)
+        if SessionLocal is None:
+            return {"source": "mock", "items": _dump(AUDIT_ISSUES)}
+        with SessionLocal() as db:
+            try:
+                campaigns, source = campaigns_from_direct(db=db)
+                issues = build_audit_issues(campaigns)
+                if issues:
+                    return {"source": source, "items": _dump(issues)}
+            except Exception:
+                pass
+        return {"source": "mock", "items": _dump(AUDIT_ISSUES)}
     if name == "list_recommendations":
         _find_client(args["client_id"])
         return _dump(RECOMMENDATIONS)
