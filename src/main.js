@@ -54,9 +54,21 @@ let selectedClientId = accountClients[0]?.id || '';
 
 
 let pointerInteractionStartedInTextField = false;
+let skipNextDelegatedClick = false;
 
 app.addEventListener('pointerdown', (event) => {
   pointerInteractionStartedInTextField = Boolean(event.target.closest('input, textarea, select'));
+});
+
+app.addEventListener('pointerup', (event) => {
+  if (!pointerInteractionStartedInTextField) return;
+  const endedInTextField = Boolean(event.target.closest('input, textarea, select'));
+  skipNextDelegatedClick = !endedInTextField;
+  pointerInteractionStartedInTextField = false;
+});
+
+app.addEventListener('pointercancel', () => {
+  pointerInteractionStartedInTextField = false;
 });
 
 
@@ -910,8 +922,8 @@ function render() {
 }
 
 app.addEventListener('click', async (event) => {
-  if (pointerInteractionStartedInTextField) {
-    pointerInteractionStartedInTextField = false;
+  if (skipNextDelegatedClick) {
+    skipNextDelegatedClick = false;
     return;
   }
   const viewButton = event.target.closest('[data-view]');
