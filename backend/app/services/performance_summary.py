@@ -51,7 +51,7 @@ def build_performance_summary(db: Session, client_id: str) -> dict:
             "period": None,
             "totals": {"cost": 0.0, "impressions": 0, "clicks": 0, "conversions": 0.0, "avg_cpc": 0.0, "cpa": None},
             "campaigns": [],
-            "message": "Нет загруженной статистики. Запустите синхронизацию.",
+            "message": "Нет сохранённых данных Яндекс.Директа. Запустите синхронизацию после подключения Яндекса.",
         }
 
     period_from = min(item.period_from for item in rows)

@@ -7,6 +7,9 @@ from app.connectors.yandex_direct import YandexDirectConnector
 from app.models import ClientAccount, DirectCampaignPeriodStat, SyncJob
 from app.services.connected_accounts import get_latest_yandex_access_token
 
+NO_TOKEN_MESSAGE = "Yandex OAuth token is not connected. Connect Yandex Direct before syncing real data."
+NO_DATA_MESSAGE = "No Yandex Direct data for selected period"
+
 
 def _int(v: str | None) -> int:
     return int(float(v or 0)) if v not in {None, "", "--"} else 0
@@ -14,13 +17,6 @@ def _int(v: str | None) -> int:
 
 def _float(v: str | None) -> float:
     return float(v or 0) if v not in {None, "", "--"} else 0.0
-
-
-def _demo_rows(now: datetime) -> list[dict]:
-    return [
-        {"CampaignId": "101", "CampaignName": "Поиск | Москва", "Impressions": "12000", "Clicks": "430", "Cost": "45200", "Ctr": "3.58", "AvgCpc": "105.12", "Conversions": "24", "CostPerConversion": "1883", "ConversionRate": "5.58"},
-        {"CampaignId": "202", "CampaignName": "РСЯ | Интересы", "Impressions": "54000", "Clicks": "510", "Cost": "38900", "Ctr": "0.94", "AvgCpc": "76.27", "Conversions": "0", "CostPerConversion": "--", "ConversionRate": "0"},
-    ]
 
 
 def run_client_sync(db: Session, client_id: str, days: int = 30) -> SyncJob:
@@ -41,16 +37,29 @@ def run_client_sync(db: Session, client_id: str, days: int = 30) -> SyncJob:
 
     try:
         token = get_latest_yandex_access_token(db)
-        rows: list[dict]
-        source_type = "yandex_direct"
-        if token:
-            connector = YandexDirectConnector(access_token=token, client_login=client.direct_login)
-            rows = connector.get_campaign_report(days=days, date_range_type="CUSTOM_DATE")
-        else:
-            rows = _demo_rows(now)
-            source_type = "demo_yandex_direct"
+        if not token:
+            db.execute(delete(DirectCampaignPeriodStat).where(DirectCampaignPeriodStat.client_id == client_id))
+            client.sync_status = "no_connection"
+            client.sync_error = NO_TOKEN_MESSAGE
+            client.last_synced_at = now
+            client.sync_version = (client.sync_version or 0) + 1
+
+            job.source_type = "yandex_direct"
+            job.status = "failed"
+            job.rows_loaded = 0
+            job.error = NO_TOKEN_MESSAGE
+            job.period_from = date_from
+            job.period_to = now
+            job.finished_at = datetime.now(UTC)
+            db.commit()
+            db.refresh(job)
+            return job
+
+        connector = YandexDirectConnector(access_token=token, client_login=client.direct_login)
+        rows = connector.get_campaign_report(days=days, date_range_type="CUSTOM_DATE")
 
         db.execute(delete(DirectCampaignPeriodStat).where(DirectCampaignPeriodStat.client_id == client_id))
+
         for row in rows:
             db.add(
                 DirectCampaignPeriodStat(
@@ -70,14 +79,20 @@ def run_client_sync(db: Session, client_id: str, days: int = 30) -> SyncJob:
                 )
             )
 
-        client.sync_status = "ok"
-        client.sync_error = None
+        if rows:
+            client.sync_status = "ok"
+            client.sync_error = None
+        else:
+            client.sync_status = "no_data"
+            client.sync_error = NO_DATA_MESSAGE
+
         client.last_synced_at = now
         client.sync_version = (client.sync_version or 0) + 1
 
-        job.source_type = source_type
+        job.source_type = "yandex_direct"
         job.status = "success"
         job.rows_loaded = len(rows)
+        job.error = None if rows else NO_DATA_MESSAGE
         job.period_from = date_from
         job.period_to = now
         job.finished_at = datetime.now(UTC)
@@ -89,8 +104,13 @@ def run_client_sync(db: Session, client_id: str, days: int = 30) -> SyncJob:
         client.sync_error = str(exc)[:500]
         client.last_synced_at = datetime.now(UTC)
         client.sync_version = (client.sync_version or 0) + 1
+
+        job.source_type = "yandex_direct"
         job.status = "failed"
+        job.rows_loaded = 0
         job.error = str(exc)[:500]
+        job.period_from = date_from
+        job.period_to = now
         job.finished_at = datetime.now(UTC)
         db.commit()
         db.refresh(job)

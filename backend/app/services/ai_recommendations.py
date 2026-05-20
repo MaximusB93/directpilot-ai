@@ -76,7 +76,7 @@ def build_client_ai_context(client_id: str, client_context: dict[str, Any] | Non
 
 def _build_prompt(context: dict[str, Any]) -> str:
     return f"""
-Сформируй 3 проверяемые AI-рекомендации для PPC-специалиста DirectPilot AI.
+Сформируй 3 проверяемые AI-рекомендации для PPC-специалиста DirectPilot AI. Не выдумывай метрики кампаний, если данных нет.
 
 Верни строго JSON без markdown в формате:
 {{
@@ -101,30 +101,42 @@ def _build_prompt(context: dict[str, Any]) -> str:
 def _fallback_recommendations(context: dict[str, Any]) -> AiRecommendationResponse:
     client = context["client"]
     campaigns = context.get("campaigns") or []
-    dynamic: list[AiGeneratedRecommendation] = []
-    if campaigns:
-        top = sorted(campaigns, key=lambda x: float(x.get("cost", 0)), reverse=True)[0]
-        dynamic.append(
+    totals_cost = sum(float(item.get("cost", 0) or 0) for item in campaigns) if campaigns else 0.0
+    totals_clicks = sum(int(float(item.get("clicks", 0) or 0)) for item in campaigns) if campaigns else 0
+    totals_conversions = sum(float(item.get("conversions", 0) or 0) for item in campaigns) if campaigns else 0.0
+
+    if (not campaigns) or (totals_cost == 0 and totals_clicks == 0 and totals_conversions == 0):
+        recommendations = [
             AiGeneratedRecommendation(
-                title=f"Проверить кампанию «{top.get('campaign_name', top.get('name', 'Без названия'))}»",
-                evidence=[
-                    f"Расход: {top.get('cost')} ₽",
-                    f"Конверсии: {top.get('conversions')}",
-                    f"CTR: {top.get('ctr')}%",
-                ],
-                risk="medium",
-                expected_impact="Снижение неэффективного расхода и стабилизация CPA",
-                next_step="Подготовить preview изменений и отправить на approval",
-                requires_approval=True,
+                title="Недостаточно данных для оптимизации",
+                evidence=["Нет сохранённых данных Яндекс.Директа по выбранному клиенту"],
+                risk="low",
+                expected_impact="Невозможно оценить до загрузки реальных данных",
+                next_step="Подключите Яндекс.Директ и запустите синхронизацию",
+                requires_approval=False,
             )
+        ]
+        return AiRecommendationResponse(
+            client_id=client["id"],
+            source="deterministic_fallback",
+            model=None,
+            summary="Недостаточно данных: рекомендации по оптимизации кампаний пока недоступны.",
+            recommendations=recommendations,
+            raw_response=None,
         )
-    recommendations = dynamic + [
+
+    top = sorted(campaigns, key=lambda x: float(x.get("cost", 0)), reverse=True)[0]
+    recommendations = [
         AiGeneratedRecommendation(
-            title="Проверить расход без конверсий в РСЯ",
-            evidence=["Кампания «РСЯ | Широкие интересы» потратила 48 700 ₽", "В кампании зафиксировано 0 лидов"],
-            risk="low",
-            expected_impact="Снижение wasted spend до проверки целей и поисковых запросов",
-            next_step="Создать dry-run preview на ограничение бюджета и список объектов для ручной проверки",
+            title=f"Проверить кампанию «{top.get('campaign_name', top.get('name', 'Без названия'))}»",
+            evidence=[
+                f"Расход: {top.get('cost')} ₽",
+                f"Конверсии: {top.get('conversions')}",
+                f"CTR: {top.get('ctr')}%",
+            ],
+            risk="medium",
+            expected_impact="Снижение неэффективного расхода и стабилизация CPA",
+            next_step="Подготовить preview изменений и отправить на approval",
             requires_approval=True,
         )
     ]

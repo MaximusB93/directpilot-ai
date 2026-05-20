@@ -537,7 +537,11 @@ async function runClientSync() {
     const response = await fetch(`${API_BASE}/clients/${selectedClientId}/sync`, { method: 'POST' });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || 'Ошибка синхронизации');
-    syncStatusMessage = `Синхронизация: ${payload.status}, строк: ${payload.rows_loaded}, источник: ${payload.source_type}`;
+    if (payload.rows_loaded === 0 && (payload.status === 'failed' || payload.status === 'no_data' || payload.status === 'success')) {
+      syncStatusMessage = 'Данные не загружены: подключите Яндекс.Директ или проверьте выбранный период.';
+    } else {
+      syncStatusMessage = `Синхронизация: ${payload.status}, строк: ${payload.rows_loaded}, источник: ${payload.source_type}`;
+    }
     clientsLoaded = false;
     await loadClientsFromApi();
   } catch (error) {
@@ -676,7 +680,7 @@ function renderClients() {
     <section class="panel clientConnectPanel">
       <div>
         <h3>Добавить клиента</h3>
-        <p>При доступном backend клиенты сохраняются в API и загружаются оттуда при каждом обновлении страницы. Если backend недоступен — включается demo/fallback режим c localStorage.</p>
+        <p>При доступном backend клиенты сохраняются в API и загружаются оттуда при каждом обновлении страницы. Если backend недоступен — включается fallback режим c localStorage.</p>
       </div>
       <form class="clientConnectForm" data-client-form>
         <input name="name" placeholder="Название клиента" autocomplete="organization" required />
@@ -1094,7 +1098,7 @@ app.addEventListener('submit', async (event) => {
         saveSelectedClientId();
         saveAccountClients();
         resetClientDerivedState();
-        clientFormStatus = 'Backend недоступен: клиент сохранён локально (demo режим).';
+        clientFormStatus = 'Backend недоступен: клиент сохранён локально (локальный режим).';
         clientForm.reset();
       }
     } catch (error) {
