@@ -37,6 +37,8 @@ let activeView = page === 'login' ? 'login' : page === 'app' ? 'dashboard' : 'la
 let authEmail = '';
 let authStatus = '';
 let authStep = 'email';
+let authCode = '';
+let authLoading = false;
 let devCode = null;
 let integrationStatus = {};
 let accountClients = loadAccountClients();
@@ -52,6 +54,9 @@ let clientAiRecommendations = null;
 let clientAiLoading = false;
 let clientAiError = '';
 let clientFormStatus = '';
+let clientDraftName = '';
+let clientDraftDirectLogin = '';
+let clientDraftMetricaCounter = '';
 let syncStatusMessage = '';
 let syncLoading = false;
 let perfSummary = null;
@@ -372,15 +377,15 @@ function renderLogin() {
         <form class="authForm" data-auth-form>
           <div class="authField">
             <label for="login-email">Email</label>
-            <input id="login-email" type="email" name="email" placeholder="you@agency.ru" autocomplete="email" inputmode="email" autofocus required />
+            <input id="login-email" type="email" name="email" value="${escapeHtml(authEmail)}" placeholder="you@agency.ru" autocomplete="email" inputmode="email" autofocus required />
           </div>
           ${authStep === 'code' ? `
             <div class="authField">
               <label for="login-code">Код из письма</label>
-              <input id="login-code" type="text" name="code" inputmode="numeric" maxlength="6" placeholder="000000" autocomplete="one-time-code" required />
+              <input id="login-code" type="text" name="code" value="${escapeHtml(authCode)}" inputmode="numeric" maxlength="6" placeholder="000000" autocomplete="one-time-code" required />
             </div>
           ` : ''}
-          <button class="primaryButton" type="submit">${authStep === 'code' ? 'Подтвердить код' : 'Получить код'}</button>
+          <button class="primaryButton" type="submit" ${authLoading ? 'disabled' : ''}>${authLoading ? 'Отправляем...' : (authStep === 'code' ? 'Подтвердить код' : 'Получить код')}</button>
         </form>
         ${authStatus ? `<div class="authStatus">${authStatus}</div>` : ''}
         ${devCode ? `<div class="authStatus dev">Dev code: <strong>${devCode}</strong></div>` : ''}
@@ -683,9 +688,9 @@ function renderClients() {
         <p>При доступном backend клиенты сохраняются в API и загружаются оттуда при каждом обновлении страницы. Если backend недоступен — включается fallback режим c localStorage.</p>
       </div>
       <form class="clientConnectForm" data-client-form>
-        <input name="name" placeholder="Название клиента" autocomplete="organization" required />
-        <input name="directLogin" placeholder="Логин Яндекс.Директа" autocomplete="off" />
-        <input name="metricaCounter" placeholder="ID счётчика Метрики" inputmode="numeric" autocomplete="off" />
+        <input name="name" value="${escapeHtml(clientDraftName)}" placeholder="Название клиента" autocomplete="organization" required />
+        <input name="directLogin" value="${escapeHtml(clientDraftDirectLogin)}" placeholder="Логин Яндекс.Директа" autocomplete="off" />
+        <input name="metricaCounter" value="${escapeHtml(clientDraftMetricaCounter)}" placeholder="ID счётчика Метрики" inputmode="numeric" autocomplete="off" />
         <button class="approveButton" type="submit">Добавить клиента</button>
       </form>
       <div class="authStatus integrationStatus">${escapeHtml(backendClientsStatus)}</div>
@@ -1064,10 +1069,10 @@ app.addEventListener('submit', async (event) => {
   if (clientForm) {
     event.preventDefault();
     const formData = new FormData(clientForm);
-    const name = String(formData.get('name') || '').trim();
+    const name = String(formData.get('name') || clientDraftName).trim();
     if (!name) return;
-    const directLogin = String(formData.get('directLogin') || '').trim() || 'Не подключен';
-    const metricaCounter = String(formData.get('metricaCounter') || '').trim() || 'Не подключен';
+    const directLogin = String(formData.get('directLogin') || clientDraftDirectLogin).trim() || 'Не подключен';
+    const metricaCounter = String(formData.get('metricaCounter') || clientDraftMetricaCounter).trim() || 'Не подключен';
     const client = {
       id: makeClientId(name),
       name,
@@ -1091,6 +1096,9 @@ app.addEventListener('submit', async (event) => {
         saveAccountClients();
         resetClientDerivedState();
         clientFormStatus = 'Клиент сохранён в backend.';
+        clientDraftName = '';
+        clientDraftDirectLogin = '';
+        clientDraftMetricaCounter = '';
         clientForm.reset();
       } else {
         accountClients = [client, ...accountClients.filter((item) => item.id !== client.id)];
@@ -1099,6 +1107,9 @@ app.addEventListener('submit', async (event) => {
         saveAccountClients();
         resetClientDerivedState();
         clientFormStatus = 'Backend недоступен: клиент сохранён локально (локальный режим).';
+        clientDraftName = '';
+        clientDraftDirectLogin = '';
+        clientDraftMetricaCounter = '';
         clientForm.reset();
       }
     } catch (error) {
@@ -1140,6 +1151,8 @@ app.addEventListener('submit', async (event) => {
   const email = String(formData.get('email') || '').trim();
   const code = String(formData.get('code') || '').trim();
   authEmail = email;
+  authCode = code;
+  authLoading = true;
   authStatus = 'Отправляем запрос...';
   render();
   try {
@@ -1147,7 +1160,7 @@ app.addEventListener('submit', async (event) => {
       const result = await requestEmailCode(email);
       authStep = 'code';
       devCode = result.dev_code;
-      authStatus = 'Код отправлен на почту. Проверьте входящие и спам.';
+      authStatus = 'Код отправлен на почту. Проверьте входящие и спам.' + (result.dev_code ? ' Dev code доступен ниже.' : '');
     } else {
       const result = await verifyEmailCode(email, code);
       localStorage.setItem('directpilot_session', result.session_token);
@@ -1156,7 +1169,9 @@ app.addEventListener('submit', async (event) => {
       return;
     }
   } catch (error) {
-    authStatus = `${error.message}. Проверьте SMTP-настройки backend или включите EMAIL_AUTH_DEV_MODE=true только для локальной разработки.`;
+    authStatus = `${error.message}. Проверьте DATABASE_URL и EMAIL_AUTH_DEV_MODE=true для MVP-режима.`;
+  } finally {
+    authLoading = false;
   }
   render();
 });
@@ -1164,6 +1179,9 @@ app.addEventListener('submit', async (event) => {
 app.addEventListener('input', (event) => {
   if (event.target.matches('input[name="email"]')) {
     authEmail = event.target.value;
+  }
+  if (event.target.matches('input[name="code"]')) {
+    authCode = event.target.value;
   }
   if (event.target.matches('[data-ai-prompt]')) {
     aiPrompt = event.target.value;
@@ -1174,6 +1192,15 @@ app.addEventListener('input', (event) => {
   }
   if (event.target.matches('[data-ai-chat-input]')) {
     aiChatInput = event.target.value;
+  }
+  if (event.target.matches('[data-client-form] input[name="name"]')) {
+    clientDraftName = event.target.value;
+  }
+  if (event.target.matches('[data-client-form] input[name="directLogin"]')) {
+    clientDraftDirectLogin = event.target.value;
+  }
+  if (event.target.matches('[data-client-form] input[name="metricaCounter"]')) {
+    clientDraftMetricaCounter = event.target.value;
   }
 });
 
