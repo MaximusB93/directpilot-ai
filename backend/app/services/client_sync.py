@@ -5,9 +5,10 @@ from sqlalchemy.orm import Session
 
 from app.connectors.yandex_direct import YandexDirectConnector
 from app.models import ClientAccount, DirectCampaignPeriodStat, SyncJob
-from app.services.connected_accounts import get_latest_yandex_access_token
+from app.services.connected_accounts import get_yandex_access_token_for_account
 
-NO_TOKEN_MESSAGE = "Yandex OAuth token is not connected. Connect Yandex Direct before syncing real data."
+NO_BOUND_ACCOUNT_MESSAGE = "Yandex account is not bound to this client. Bind a Yandex account before syncing."
+NO_TOKEN_MESSAGE = "Yandex OAuth token is not connected for the bound account. Reconnect Yandex Direct before syncing real data."
 NO_DATA_MESSAGE = "No Yandex Direct data for selected period"
 
 
@@ -36,7 +37,25 @@ def run_client_sync(db: Session, client_id: str, days: int = 30) -> SyncJob:
     db.commit()
 
     try:
-        token = get_latest_yandex_access_token(db)
+        if not client.yandex_account_id:
+            db.execute(delete(DirectCampaignPeriodStat).where(DirectCampaignPeriodStat.client_id == client_id))
+            client.sync_status = "no_connection"
+            client.sync_error = NO_BOUND_ACCOUNT_MESSAGE
+            client.last_synced_at = now
+            client.sync_version = (client.sync_version or 0) + 1
+
+            job.source_type = "yandex_direct"
+            job.status = "failed"
+            job.rows_loaded = 0
+            job.error = NO_BOUND_ACCOUNT_MESSAGE
+            job.period_from = date_from
+            job.period_to = now
+            job.finished_at = datetime.now(UTC)
+            db.commit()
+            db.refresh(job)
+            return job
+
+        token = get_yandex_access_token_for_account(db, client.yandex_account_id)
         if not token:
             db.execute(delete(DirectCampaignPeriodStat).where(DirectCampaignPeriodStat.client_id == client_id))
             client.sync_status = "no_connection"

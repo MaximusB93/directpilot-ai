@@ -51,6 +51,10 @@ let authCode = '';
 let authLoading = false;
 let devCode = null;
 let integrationStatus = {};
+let clientYandexIntegration = null;
+let clientYandexLoading = false;
+let clientYandexStatus = '';
+let clientYandexLoadedFor = '';
 let accountClients = loadAccountClients();
 let aiStatus = { models: [], configured: false, message: 'Статус OpenRouter ещё не загружен.' };
 const CUSTOM_MODEL_VALUE = '__custom_openrouter_model__';
@@ -132,11 +136,33 @@ async function createClientOnApi(client) {
       name: client.name,
       direct_login: client.directLogin === 'Не подключен' ? null : client.directLogin,
       metrica_counter: client.metricaCounter === 'Не подключен' ? null : client.metricaCounter,
+      yandex_account_id: client.yandexAccountId || null,
+      target_cpa: client.targetCpa || null,
+      main_goal_id: client.mainGoalId || null,
+      notes: client.notes || null,
       segment: client.segment,
     }),
   });
   const payload = await response.json();
   if (!response.ok) throw new Error(payload.detail || 'Не удалось сохранить клиента в базе данных');
+  return payload;
+}
+
+async function updateClientOnApi(clientId, values) {
+  const response = await fetch(`${API_BASE}/clients/${clientId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(values),
+  });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.detail || 'Не удалось сохранить настройки клиента');
+  return payload;
+}
+
+async function deleteClientOnApi(clientId) {
+  const response = await fetch(`${API_BASE}/clients/${clientId}`, { method: 'DELETE' });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.detail || 'Не удалось удалить клиента');
   return payload;
 }
 
@@ -595,6 +621,69 @@ async function loadIntegrationStatus() {
   }
 }
 
+async function loadClientYandexIntegration(force = false) {
+  if (!selectedClientId || clientYandexLoading) return;
+  if (!force && clientYandexLoadedFor === selectedClientId && clientYandexIntegration) return;
+  clientYandexLoading = true;
+  try {
+    const response = await fetch(`${API_BASE}/clients/${selectedClientId}/integrations/yandex`);
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.detail || 'Не удалось загрузить привязку Яндекса');
+    clientYandexIntegration = payload;
+    clientYandexLoadedFor = selectedClientId;
+    clientYandexStatus = payload.message || '';
+  } catch (error) {
+    clientYandexIntegration = null;
+    clientYandexLoadedFor = selectedClientId;
+    clientYandexStatus = error.message;
+  } finally {
+    clientYandexLoading = false;
+    if (activeView === 'integrations') render();
+  }
+}
+
+async function bindClientYandexAccount(accountId) {
+  if (!selectedClientId || !accountId) return;
+  clientYandexStatus = 'Привязываем Яндекс-аккаунт...';
+  render();
+  try {
+    const response = await fetch(`${API_BASE}/clients/${selectedClientId}/integrations/yandex`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ yandex_account_id: accountId }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.detail || 'Не удалось привязать аккаунт');
+    clientYandexStatus = 'Яндекс-аккаунт привязан к клиенту.';
+    await loadClientYandexIntegration(true);
+    clientsLoaded = false;
+    await loadClientsFromApi();
+  } catch (error) {
+    clientYandexStatus = error.message;
+  } finally {
+    render();
+  }
+}
+
+async function unbindClientYandexAccount() {
+  if (!selectedClientId) return;
+  clientYandexStatus = 'Отвязываем Яндекс-аккаунт...';
+  render();
+  try {
+    const response = await fetch(`${API_BASE}/clients/${selectedClientId}/integrations/yandex`, { method: 'DELETE' });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.detail || 'Не удалось отвязать аккаунт');
+    clientYandexStatus = 'Яндекс-аккаунт отвязан от клиента.';
+    await loadClientYandexIntegration(true);
+    clientsLoaded = false;
+    await loadClientsFromApi();
+  } catch (error) {
+    clientYandexStatus = error.message;
+  } finally {
+    render();
+  }
+}
+
 
 
 async function runClientSync() {
@@ -607,7 +696,7 @@ async function runClientSync() {
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || 'Ошибка синхронизации');
     if (payload.rows_loaded === 0 && (payload.status === 'failed' || payload.status === 'no_data' || payload.status === 'success')) {
-      syncStatusMessage = 'Данные не загружены: подключите Яндекс.Директ или проверьте выбранный период.';
+      syncStatusMessage = payload.error || 'Данные не загружены: подключите Яндекс.Директ или проверьте выбранный период.';
     } else {
       syncStatusMessage = `Синхронизация: ${payload.status}, строк: ${payload.rows_loaded}, источник: ${payload.source_type}`;
     }
@@ -744,6 +833,8 @@ function renderDashboard() {
 }
 
 function renderClients() {
+  const selected = currentClient();
+  const hasSelectedClient = Boolean(selected.id);
   return renderShell(`
     <div class="pageIntro"><span class="eyebrow">👥 Клиенты</span><h2>Клиенты как отдельные сущности</h2><p>Создайте отдельную карточку клиента для каждого аккаунта/проекта и укажите логин Яндекс.Директа и счётчик Метрики.</p></div>
     <section class="panel clientConnectPanel">
@@ -760,6 +851,24 @@ function renderClients() {
       <div class="authStatus integrationStatus">${escapeHtml(backendClientsStatus)}</div>
       ${clientFormStatus ? `<div class="authStatus integrationStatus">${escapeHtml(clientFormStatus)}</div>` : ''}
     </section>
+    ${hasSelectedClient ? `
+      <section class="panel clientConnectPanel">
+        <div>
+          <h3>Настройки клиента «${escapeHtml(selected.name)}»</h3>
+          <p>Настройки относятся только к выбранному клиенту. Привязка Яндекса настраивается отдельно во вкладке интеграций.</p>
+        </div>
+        <form class="clientConnectForm" data-client-settings-form>
+          <input name="name" value="${escapeHtml(selected.name)}" placeholder="Название клиента" autocomplete="organization" required />
+          <input name="directLogin" value="${escapeHtml(selected.directLogin === 'Не подключен' ? '' : selected.directLogin)}" placeholder="Логин Яндекс.Директа" autocomplete="off" />
+          <input name="metricaCounter" value="${escapeHtml(selected.metricaCounter === 'Не подключен' ? '' : selected.metricaCounter)}" placeholder="ID счётчика Метрики" inputmode="numeric" autocomplete="off" />
+          <input name="targetCpa" value="${escapeHtml(selected.targetCpa ?? '')}" placeholder="Целевой CPA" inputmode="numeric" autocomplete="off" />
+          <input name="mainGoalId" value="${escapeHtml(selected.mainGoalId ?? '')}" placeholder="ID основной цели" autocomplete="off" />
+          <textarea name="notes" rows="3" placeholder="Заметки по клиенту">${escapeHtml(selected.notes ?? '')}</textarea>
+          <button class="approveButton" type="submit">Сохранить настройки</button>
+          <button class="secondaryButton" type="button" data-delete-client="${escapeHtml(selected.id)}">Удалить клиента</button>
+        </form>
+      </section>
+    ` : ''}
     ${accountClients.length ? `
       <div class="clientGrid">
         ${accountClients.map((client) => `
@@ -879,10 +988,11 @@ function renderReports() {
 }
 
 function renderIntegrations() {
-  const connected = integrationStatus.connected;
-  const account = integrationStatus.accounts?.[0];
-  const statusText = connected ? `Подключено: ${account.login}` : 'Не подключено';
   const client = currentClient();
+  const accounts = clientYandexIntegration?.available_accounts || integrationStatus.accounts || [];
+  const boundAccount = clientYandexIntegration?.bound_account;
+  const clientConnected = Boolean(boundAccount);
+  const selectedAccountId = boundAccount?.id || accounts[0]?.id || '';
   return renderShell(`
     <div class="pageIntro"><span class="eyebrow">🔌 Интеграции</span><h2>Подключите рабочие источники данных</h2><p>Яндекс.Директ и Метрика подключаются через OAuth. Один доступ содержит scopes direct:api, metrika:read и login:info.</p></div>
     ${renderBackendApiConfig()}
@@ -895,18 +1005,31 @@ function renderIntegrations() {
     </section>
     <div class="integrationGrid">
       <article class="integrationCard primaryIntegration">
-        <div class="integrationTop"><span>Яндекс.Директ</span><strong>${statusText}</strong></div>
-        <h3>Рекламные кампании и отчёты</h3>
-        <p>Подключение уже работает: backend получает OAuth token, хранит его в Postgres и читает кампании/отчёты Direct API.</p>
+        <div class="integrationTop"><span>Яндекс.Директ</span><strong>${clientConnected ? `Привязан: ${escapeHtml(boundAccount.login || boundAccount.display_name || boundAccount.id)}` : 'Не привязан'}</strong></div>
+        <h3>Аккаунт клиента</h3>
+        <p>${client.id ? 'Привяжите один из доступных OAuth-аккаунтов к выбранному клиенту. Новые клиенты остаются чистыми, пока вы явно не выберете аккаунт.' : 'Сначала добавьте клиента.'}</p>
+        ${client.id ? `
+          <form class="authForm" data-yandex-bind-form>
+            <label>
+              <span>Доступные аккаунты</span>
+              <select name="yandexAccountId" ${accounts.length ? '' : 'disabled'}>
+                ${accounts.length ? accounts.map((item) => `<option value="${item.id}" ${item.id === selectedAccountId ? 'selected' : ''}>${escapeHtml(item.login || item.display_name || item.id)}</option>`).join('') : '<option value="">Нет подключённых аккаунтов</option>'}
+              </select>
+            </label>
+            <button class="approveButton" type="submit" ${accounts.length ? '' : 'disabled'}>Привязать аккаунт</button>
+            <button class="secondaryButton" type="button" data-unbind-yandex ${clientConnected ? '' : 'disabled'}>Отвязать</button>
+          </form>
+        ` : ''}
+        <div class="authStatus integrationStatus">${escapeHtml(clientYandexStatus || (clientConnected ? 'Яндекс-аккаунт привязан к этому клиенту.' : 'Сначала привяжите Яндекс-аккаунт к этому клиенту.'))}</div>
         <code>GET /api/v1/auth/yandex/start</code>
-        <button class="approveButton" data-integration="yandex-direct">${connected ? 'Переподключить Директ' : 'Подключить Яндекс.Директ'}</button>
+        <button class="approveButton" data-integration="yandex-direct">${accounts.length ? 'Подключить ещё аккаунт' : 'Подключить Яндекс.Директ'}</button>
       </article>
       <article class="integrationCard primaryIntegration">
-        <div class="integrationTop"><span>Яндекс.Метрика</span><strong>${connected ? 'Доступ выдан' : 'Требуется OAuth'}</strong></div>
-        <h3>Цели, конверсии и ecommerce</h3>
-        <p>Используем тот же OAuth-flow со scope metrika:read. Следующий backend-шаг — чтение счётчиков и целей Метрики.</p>
-        <code>scope: metrika:read</code>
-        <button class="approveButton" data-integration="yandex-metrica">${connected ? 'Обновить доступ Метрики' : 'Подключить Яндекс.Метрику'}</button>
+        <div class="integrationTop"><span>Доступные аккаунты</span><strong>${accounts.length}</strong></div>
+        <h3>Глобальный OAuth-доступ</h3>
+        <p>OAuth остаётся общим списком доступов, но подключённым к клиенту считается только явно привязанный аккаунт.</p>
+        <code>${accounts.map((item) => escapeHtml(item.login || item.display_name || item.id)).join(', ') || 'Нет аккаунтов'}</code>
+        <button class="approveButton" data-integration="yandex-metrica">${accounts.length ? 'Обновить OAuth-доступ' : 'Подключить Яндекс.Метрику'}</button>
       </article>
       <article class="integrationCard">
         <div class="integrationTop"><span>CRM</span><strong>План</strong></div>
@@ -1063,6 +1186,9 @@ function render() {
   if (activeView === 'integrations' && !integrationStatus.message && integrationStatus.connected === undefined) {
     loadIntegrationStatus();
   }
+  if (activeView === 'integrations' && selectedClientId) {
+    loadClientYandexIntegration();
+  }
   if (activeView === 'ai' && aiStatus.message === 'Статус OpenRouter ещё не загружен.') {
     loadAiStatus();
   }
@@ -1125,6 +1251,38 @@ app.addEventListener('click', async (event) => {
   const clientAiButton = event.target.closest('[data-client-ai-recommendations]');
   const syncButton = event.target.closest('[data-sync-client]');
   const summaryButton = event.target.closest('[data-load-summary]');
+  const deleteClientButton = event.target.closest('[data-delete-client]');
+  const unbindYandexButton = event.target.closest('[data-unbind-yandex]');
+
+  if (deleteClientButton) {
+    const clientId = deleteClientButton.dataset.deleteClient;
+    if (!clientId || !confirm('Удалить клиента? История синхронизаций по нему будет удалена.')) return;
+    try {
+      if (backendClientsAvailable) {
+        await deleteClientOnApi(clientId);
+      } else {
+        accountClients = accountClients.filter((item) => item.id !== clientId);
+        saveAccountClients();
+      }
+      selectedClientId = accountClients.find((item) => item.id !== clientId)?.id || '';
+      saveSelectedClientId();
+      clientsLoaded = false;
+      clientFormStatus = 'Клиент удалён.';
+      clientYandexIntegration = null;
+      clientYandexLoadedFor = '';
+      await loadClientsFromApi();
+      render();
+    } catch (error) {
+      clientFormStatus = `Ошибка удаления клиента: ${error.message}`;
+      render();
+    }
+    return;
+  }
+
+  if (unbindYandexButton) {
+    await unbindClientYandexAccount();
+    return;
+  }
 
   if (syncButton) {
     await runClientSync();
@@ -1170,6 +1328,8 @@ app.addEventListener('click', async (event) => {
     saveSelectedClientId();
     clientAiRecommendations = null;
     resetClientDerivedState();
+    clientYandexIntegration = null;
+    clientYandexLoadedFor = '';
     clientFormStatus = '';
     activeView = 'dashboard';
     render();
@@ -1177,6 +1337,42 @@ app.addEventListener('click', async (event) => {
 });
 
 app.addEventListener('submit', async (event) => {
+  const settingsForm = event.target.closest('[data-client-settings-form]');
+  if (settingsForm) {
+    event.preventDefault();
+    if (!selectedClientId) return;
+    const formData = new FormData(settingsForm);
+    const targetCpaValue = String(formData.get('targetCpa') || '').trim();
+    const payload = {
+      name: String(formData.get('name') || '').trim(),
+      direct_login: String(formData.get('directLogin') || '').trim() || null,
+      metrica_counter: String(formData.get('metricaCounter') || '').trim() || null,
+      yandex_account_id: currentClient().yandexAccountId || null,
+      target_cpa: targetCpaValue ? Number(targetCpaValue) : null,
+      main_goal_id: String(formData.get('mainGoalId') || '').trim() || null,
+      notes: String(formData.get('notes') || '').trim() || null,
+      segment: currentClient().segment || 'Клиент',
+    };
+    try {
+      const savedClient = await updateClientOnApi(selectedClientId, payload);
+      accountClients = accountClients.map((item) => (item.id === savedClient.id ? savedClient : item));
+      saveAccountClients();
+      clientFormStatus = 'Настройки клиента сохранены.';
+    } catch (error) {
+      clientFormStatus = `Ошибка сохранения настроек: ${error.message}`;
+    }
+    render();
+    return;
+  }
+
+  const yandexBindForm = event.target.closest('[data-yandex-bind-form]');
+  if (yandexBindForm) {
+    event.preventDefault();
+    const formData = new FormData(yandexBindForm);
+    await bindClientYandexAccount(String(formData.get('yandexAccountId') || ''));
+    return;
+  }
+
   const clientForm = event.target.closest('[data-client-form]');
   if (clientForm) {
     event.preventDefault();
@@ -1198,6 +1394,10 @@ app.addEventListener('submit', async (event) => {
       status: 'Ожидает подключения данных',
       directLogin,
       metricaCounter,
+      yandexAccountId: null,
+      targetCpa: null,
+      mainGoalId: null,
+      notes: null,
     };
     try {
       if (backendClientsAvailable) {
@@ -1324,6 +1524,8 @@ app.addEventListener('change', (event) => {
     selectedClientId = event.target.value;
     saveSelectedClientId();
     resetClientDerivedState();
+    clientYandexIntegration = null;
+    clientYandexLoadedFor = '';
     clientFormStatus = '';
     render();
   }

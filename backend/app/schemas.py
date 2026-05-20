@@ -19,6 +19,10 @@ class ClientCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     direct_login: str | None = None
     metrica_counter: str | None = None
+    yandex_account_id: str | None = None
+    target_cpa: int | None = None
+    main_goal_id: str | None = None
+    notes: str | None = None
     segment: str = "Клиент"
 
 
@@ -35,6 +39,10 @@ class ClientAccountResponse(BaseModel):
     status: str
     directLogin: str = "Не подключен"
     metricaCounter: str = "Не подключен"
+    yandexAccountId: str | None = None
+    targetCpa: int | None = None
+    mainGoalId: str | None = None
+    notes: str | None = None
     syncStatus: str = "never_synced"
     syncError: str | None = None
     lastSyncedAt: str | None = None
@@ -215,6 +223,24 @@ class ConnectedYandexAccount(BaseModel):
     connected_at: str
     updated_at: str
     token_expires_at: str | None = None
+
+
+class ClientYandexBindingRequest(BaseModel):
+    yandex_account_id: str
+
+
+class ClientYandexBindingStatus(BaseModel):
+    status: str
+    client_id: str
+    yandex_account_id: str | None = None
+
+
+class ClientYandexIntegrationStatus(BaseModel):
+    client_id: str
+    connected: bool
+    bound_account: ConnectedYandexAccount | None = None
+    available_accounts: list[ConnectedYandexAccount]
+    message: str
 
 
 class YandexConnectionStatus(BaseModel):
