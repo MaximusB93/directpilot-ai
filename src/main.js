@@ -175,10 +175,17 @@ function isPlainTextInputTarget(target) {
   return Boolean(target?.closest?.('input, textarea, select, label'));
 }
 
+function getViewActionTarget(target) {
+  const viewTarget = target?.closest?.('[data-view]');
+  if (!viewTarget || viewTarget === document.body) return null;
+  return viewTarget;
+}
+
 function isInteractiveActionTarget(target) {
-  return Boolean(target?.closest?.(
-    'button, a, [role="button"], [data-save-api-base], [data-view], [data-client-id], [data-integration], [data-client-ai-recommendations], [data-sync-client], [data-load-summary]'
-  ));
+  return Boolean(
+    target?.closest?.('button, a, [role="button"], [data-save-api-base], [data-client-id], [data-integration], [data-client-ai-recommendations], [data-sync-client], [data-load-summary]')
+    || getViewActionTarget(target)
+  );
 }
 
 function getEditableFieldTarget(target) {
@@ -1108,7 +1115,7 @@ app.addEventListener('click', async (event) => {
     return;
   }
 
-  const viewButton = event.target.closest('[data-view]');
+  const viewButton = getViewActionTarget(event.target);
   const clientButton = event.target.closest('[data-client-id]');
   const integrationButton = event.target.closest('[data-integration]');
   const clientAiButton = event.target.closest('[data-client-ai-recommendations]');
