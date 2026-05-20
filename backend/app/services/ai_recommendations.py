@@ -4,9 +4,11 @@ from typing import Any
 from fastapi import HTTPException
 
 from app.core.config import settings
+from app.db import SessionLocal
 from app.schemas import AiGeneratedRecommendation, AiRecommendationResponse
 from app.services.mock_data import AUDIT_ISSUES, CAMPAIGNS, CLIENTS, RECOMMENDATIONS
 from app.services.openrouter import generate_openrouter_response
+from app.services.performance_summary import build_performance_summary
 
 
 def _dump_model(value: Any) -> dict[str, Any]:
@@ -22,8 +24,34 @@ def _find_client(client_id: str) -> Any:
     raise HTTPException(status_code=404, detail="Client not found")
 
 
+def _summary_context(client_id: str) -> dict[str, Any] | None:
+    if SessionLocal is None:
+        return None
+    with SessionLocal() as db:
+        try:
+            summary = build_performance_summary(db=db, client_id=client_id)
+        except ValueError:
+            return None
+    return summary if summary.get("campaigns") else None
+
+
 def build_client_ai_context(client_id: str, client_context: dict[str, Any] | None = None) -> dict[str, Any]:
-    if client_context:
+    summary = _summary_context(client_id)
+    if summary:
+        client = summary["client"]
+        campaigns = summary["campaigns"]
+        audit_issues = [
+            {
+                "priority": "high" if "spend_without_conversions" in item.get("issue_flags", []) else "medium",
+                "title": f"Проверка кампании {item.get('campaign_name')}",
+                "object": item.get("campaign_name"),
+                "evidence": f"Расход {item.get('cost')} ₽, конверсии {item.get('conversions')}, CTR {item.get('ctr')}%",
+                "action": "Проверить ставки и отправить изменение на preview/approval.",
+            }
+            for item in campaigns[:5]
+        ]
+        existing_recommendations = []
+    elif client_context:
         client = {**client_context, "id": client_context.get("id") or client_id}
         campaigns = []
         audit_issues = []
@@ -48,7 +76,7 @@ def build_client_ai_context(client_id: str, client_context: dict[str, Any] | Non
 
 def _build_prompt(context: dict[str, Any]) -> str:
     return f"""
-Сформируй 3 проверяемые AI-рекомендации для PPC-специалиста DirectPilot AI.
+Сформируй 3 проверяемые AI-рекомендации для PPC-специалиста DirectPilot AI. Не выдумывай метрики кампаний, если данных нет.
 
 Верни строго JSON без markdown в формате:
 {{
@@ -72,37 +100,51 @@ def _build_prompt(context: dict[str, Any]) -> str:
 
 def _fallback_recommendations(context: dict[str, Any]) -> AiRecommendationResponse:
     client = context["client"]
+    campaigns = context.get("campaigns") or []
+    totals_cost = sum(float(item.get("cost", 0) or 0) for item in campaigns) if campaigns else 0.0
+    totals_clicks = sum(int(float(item.get("clicks", 0) or 0)) for item in campaigns) if campaigns else 0
+    totals_conversions = sum(float(item.get("conversions", 0) or 0) for item in campaigns) if campaigns else 0.0
+
+    if (not campaigns) or (totals_cost == 0 and totals_clicks == 0 and totals_conversions == 0):
+        recommendations = [
+            AiGeneratedRecommendation(
+                title="Недостаточно данных для оптимизации",
+                evidence=["Нет сохранённых данных Яндекс.Директа по выбранному клиенту"],
+                risk="low",
+                expected_impact="Невозможно оценить до загрузки реальных данных",
+                next_step="Подключите Яндекс.Директ и запустите синхронизацию",
+                requires_approval=False,
+            )
+        ]
+        return AiRecommendationResponse(
+            client_id=client["id"],
+            source="deterministic_fallback",
+            model=None,
+            summary="Недостаточно данных: рекомендации по оптимизации кампаний пока недоступны.",
+            recommendations=recommendations,
+            raw_response=None,
+        )
+
+    top = sorted(campaigns, key=lambda x: float(x.get("cost", 0)), reverse=True)[0]
     recommendations = [
         AiGeneratedRecommendation(
-            title="Проверить расход без конверсий в РСЯ",
-            evidence=["Кампания «РСЯ | Широкие интересы» потратила 48 700 ₽", "В кампании зафиксировано 0 лидов"],
-            risk="low",
-            expected_impact="Снижение wasted spend до проверки целей и поисковых запросов",
-            next_step="Создать dry-run preview на ограничение бюджета и список объектов для ручной проверки",
-            requires_approval=True,
-        ),
-        AiGeneratedRecommendation(
-            title="Сверить цели Метрики перед оптимизацией CPA",
-            evidence=["Цели Метрики нужно связать с KPI клиента", "Текущий AI score клиента: %s/100" % client.get("score", 0)],
+            title=f"Проверить кампанию «{top.get('campaign_name', top.get('name', 'Без названия'))}»",
+            evidence=[
+                f"Расход: {top.get('cost')} ₽",
+                f"Конверсии: {top.get('conversions')}",
+                f"CTR: {top.get('ctr')}%",
+            ],
             risk="medium",
-            expected_impact="Более точный расчёт CPA и меньше ложных рекомендаций",
-            next_step="Подключить цели заявки, звонка, корзины и покупки; затем пересчитать рекомендации",
-            requires_approval=False,
-        ),
-        AiGeneratedRecommendation(
-            title="Подготовить A/B-тест объявлений в поиске",
-            evidence=["12 объявлений имеют CTR ниже медианы аккаунта на 31%", "В офферах не используется сильное УТП"],
-            risk="low",
-            expected_impact="Потенциальный рост CTR на 10–15% без изменения бюджета",
-            next_step="Сгенерировать черновики объявлений и отправить специалисту на approval",
+            expected_impact="Снижение неэффективного расхода и стабилизация CPA",
+            next_step="Подготовить preview изменений и отправить на approval",
             requires_approval=True,
-        ),
+        )
     ]
     return AiRecommendationResponse(
         client_id=client["id"],
         source="deterministic_fallback",
         model=None,
-        summary=f"OpenRouter не настроен, поэтому показан безопасный локальный черновик для клиента «{client.get('name', client['id'])}».",
+        summary=f"OpenRouter не настроен, показан безопасный черновик для клиента «{client.get('name', client['id'])}».",
         recommendations=recommendations,
         raw_response=None,
     )
