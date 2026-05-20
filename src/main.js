@@ -22,6 +22,10 @@ function resolveApiBase() {
   return `${origin}/api/v1`;
 }
 
+function hasCustomApiBase() {
+  return Boolean(window.localStorage.getItem('directpilot_api_base')?.trim());
+}
+
 const navItems = [
   { id: 'dashboard', label: 'Dashboard', icon: '📊' },
   { id: 'clients', label: 'Клиенты', icon: '👥' },
@@ -201,6 +205,31 @@ function escapeHtml(value) {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#039;');
+}
+
+function renderBackendApiConfig() {
+  const githubPagesWarning = window.location.hostname === 'maximusb93.github.io' && !hasCustomApiBase()
+    ? '<div class="authStatus aiError">GitHub Pages не содержит backend. Укажите Vercel backend URL.</div>'
+    : '';
+
+  return `
+    <section class="panel backendApiConfig">
+      <div class="panelHeader">
+        <div>
+          <h3>Backend API URL</h3>
+          <p>Текущий Backend API URL: <code>${escapeHtml(API_BASE)}</code></p>
+        </div>
+      </div>
+      ${githubPagesWarning}
+      <form class="authForm" data-api-base-form>
+        <div class="authField">
+          <label for="backend-api-base">Backend API URL</label>
+          <input id="backend-api-base" type="url" name="apiBase" value="${escapeHtml(API_BASE)}" placeholder="https://your-backend.vercel.app/api/v1" autocomplete="url" required />
+        </div>
+        <button class="secondaryButton" type="submit">Сохранить backend URL</button>
+      </form>
+    </section>
+  `;
 }
 
 function priorityLabel(priority) {
@@ -389,6 +418,7 @@ function renderLogin() {
         </form>
         ${authStatus ? `<div class="authStatus">${authStatus}</div>` : ''}
         ${devCode ? `<div class="authStatus dev">Dev code: <strong>${devCode}</strong></div>` : ''}
+        ${renderBackendApiConfig()}
         <a class="secondaryButton" href="index.html">← На главную</a>
       </div>
     </section>
@@ -396,14 +426,18 @@ function renderLogin() {
 }
 
 async function requestEmailCode(email) {
-  const response = await fetch(`${API_BASE}/auth/email/request-code`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email }),
-  });
-  const payload = await response.json();
-  if (!response.ok) throw new Error(payload.detail || 'Не удалось отправить код');
-  return payload;
+  try {
+    const response = await fetch(`${API_BASE}/auth/email/request-code`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.detail || 'Не удалось отправить код');
+    return payload;
+  } catch (error) {
+    throw new Error(`Не удалось подключиться к backend. Проверьте Vercel URL или directpilot_api_base. Текущий API_BASE: ${API_BASE}`);
+  }
 }
 
 async function verifyEmailCode(email, code) {
@@ -821,6 +855,7 @@ function renderIntegrations() {
   const client = currentClient();
   return renderShell(`
     <div class="pageIntro"><span class="eyebrow">🔌 Интеграции</span><h2>Подключите рабочие источники данных</h2><p>Яндекс.Директ и Метрика подключаются через OAuth. Один доступ содержит scopes direct:api, metrika:read и login:info.</p></div>
+    ${renderBackendApiConfig()}
     <section class="panel clientSourcePanel">
       <div>
         <h3>${client.id ? `Источники клиента «${client.name}»` : 'Сначала добавьте клиента'}</h3>
@@ -1065,6 +1100,20 @@ app.addEventListener('click', async (event) => {
 });
 
 app.addEventListener('submit', async (event) => {
+  const apiBaseForm = event.target.closest('[data-api-base-form]');
+  if (apiBaseForm) {
+    event.preventDefault();
+    const formData = new FormData(apiBaseForm);
+    const apiBase = String(formData.get('apiBase') || '').trim().replace(/\/$/, '');
+    if (apiBase) {
+      localStorage.setItem('directpilot_api_base', apiBase);
+    } else {
+      localStorage.removeItem('directpilot_api_base');
+    }
+    window.location.reload();
+    return;
+  }
+
   const clientForm = event.target.closest('[data-client-form]');
   if (clientForm) {
     event.preventDefault();
