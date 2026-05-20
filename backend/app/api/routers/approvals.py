@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from sqlalchemy.orm import Session
 
+from app.api.deps import CurrentUser, get_current_session_user
 from app.db import get_optional_db
 from app.schemas import (
     ApprovalCreateRequest,
@@ -26,7 +27,12 @@ router = APIRouter(tags=["approvals"])
 
 
 @router.post("/recommendations/{recommendation_id}/preview", response_model=ChangePreview)
-def preview_recommendation(recommendation_id: str, client_id: str = "furniture", db: Session | None = Depends(get_optional_db)) -> ChangePreview:
+def preview_recommendation(
+    recommendation_id: str,
+    client_id: str = "furniture",
+    db: Session | None = Depends(get_optional_db),
+    current: CurrentUser = Depends(get_current_session_user),
+) -> ChangePreview:
     try:
         return create_preview(recommendation_id=recommendation_id, client_id=client_id, db=db)
     except ValueError as exc:
@@ -34,7 +40,11 @@ def preview_recommendation(recommendation_id: str, client_id: str = "furniture",
 
 
 @router.post("/approvals", response_model=ApprovalRecord)
-def request_approval(request: ApprovalCreateRequest, db: Session | None = Depends(get_optional_db)) -> ApprovalRecord:
+def request_approval(
+    request: ApprovalCreateRequest,
+    db: Session | None = Depends(get_optional_db),
+    current: CurrentUser = Depends(get_current_session_user),
+) -> ApprovalRecord:
     try:
         return create_approval(request, db=db)
     except ValueError as exc:
@@ -42,12 +52,20 @@ def request_approval(request: ApprovalCreateRequest, db: Session | None = Depend
 
 
 @router.get("/approvals", response_model=list[ApprovalRecord])
-def get_approvals(db: Session | None = Depends(get_optional_db)) -> list[ApprovalRecord]:
+def get_approvals(
+    db: Session | None = Depends(get_optional_db),
+    current: CurrentUser = Depends(get_current_session_user),
+) -> list[ApprovalRecord]:
     return list_approvals(db=db)
 
 
 @router.post("/approvals/{approval_id}/approve", response_model=ApprovalRecord)
-def approve(approval_id: str, request: ApprovalDecisionRequest, db: Session | None = Depends(get_optional_db)) -> ApprovalRecord:
+def approve(
+    approval_id: str,
+    request: ApprovalDecisionRequest,
+    db: Session | None = Depends(get_optional_db),
+    current: CurrentUser = Depends(get_current_session_user),
+) -> ApprovalRecord:
     try:
         return approve_approval(approval_id, request, db=db)
     except ValueError as exc:
@@ -55,7 +73,12 @@ def approve(approval_id: str, request: ApprovalDecisionRequest, db: Session | No
 
 
 @router.post("/approvals/{approval_id}/reject", response_model=ApprovalRecord)
-def reject(approval_id: str, request: ApprovalDecisionRequest, db: Session | None = Depends(get_optional_db)) -> ApprovalRecord:
+def reject(
+    approval_id: str,
+    request: ApprovalDecisionRequest,
+    db: Session | None = Depends(get_optional_db),
+    current: CurrentUser = Depends(get_current_session_user),
+) -> ApprovalRecord:
     try:
         return reject_approval(approval_id, request, db=db)
     except ValueError as exc:
@@ -63,12 +86,19 @@ def reject(approval_id: str, request: ApprovalDecisionRequest, db: Session | Non
 
 
 @router.get("/audit-log", response_model=list[AuditLogEvent])
-def get_audit_log(db: Session | None = Depends(get_optional_db)) -> list[AuditLogEvent]:
+def get_audit_log(
+    db: Session | None = Depends(get_optional_db),
+    current: CurrentUser = Depends(get_current_session_user),
+) -> list[AuditLogEvent]:
     return list_audit_log(db=db)
 
 
 @router.post("/recommendations/impact", response_model=RecommendationImpactEvent)
-def create_recommendation_impact(payload: RecommendationImpactCreateRequest, db: Session | None = Depends(get_optional_db)) -> RecommendationImpactEvent:
+def create_recommendation_impact(
+    payload: RecommendationImpactCreateRequest,
+    db: Session | None = Depends(get_optional_db),
+    current: CurrentUser = Depends(get_current_session_user),
+) -> RecommendationImpactEvent:
     return create_impact_event(
         recommendation_id=payload.recommendation_id,
         client_id=payload.client_id,
@@ -81,5 +111,9 @@ def create_recommendation_impact(payload: RecommendationImpactCreateRequest, db:
 
 
 @router.get("/recommendations/impact", response_model=list[RecommendationImpactEvent])
-def get_recommendation_impact(client_id: str | None = None, db: Session | None = Depends(get_optional_db)) -> list[RecommendationImpactEvent]:
+def get_recommendation_impact(
+    client_id: str | None = None,
+    db: Session | None = Depends(get_optional_db),
+    current: CurrentUser = Depends(get_current_session_user),
+) -> list[RecommendationImpactEvent]:
     return list_impact_events(client_id=client_id, db=db)

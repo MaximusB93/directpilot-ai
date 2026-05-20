@@ -316,6 +316,13 @@ class EmailCodeVerifyResponse(BaseModel):
     expires_at: str
 
 
+class AuthMeResponse(BaseModel):
+    authenticated: bool
+    email: str
+    organization_id: str
+    user_id: str
+
+
 class AiModelOption(BaseModel):
     id: str
     name: str

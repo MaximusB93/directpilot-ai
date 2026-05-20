@@ -41,8 +41,16 @@ def _account_to_schema(account: ConnectedAccount) -> ConnectedYandexAccount:
     )
 
 
-def save_yandex_connection(db: Session, token: YandexTokenResponse, user_info: YandexUserInfo | None) -> ConnectedYandexAccount:
-    organization = ensure_default_organization(db)
+def save_yandex_connection(
+    db: Session,
+    token: YandexTokenResponse,
+    user_info: YandexUserInfo | None,
+    organization_id: str | None = None,
+) -> ConnectedYandexAccount:
+    organization = db.get(Organization, organization_id) if organization_id else None
+    if organization is None:
+        # TODO: Bind OAuth callback to a verified browser session instead of this MVP fallback.
+        organization = ensure_default_organization(db)
     external_user_id = user_info.id if user_info else None
     login = user_info.login if user_info else None
     display_name = user_info.display_name if user_info else None
@@ -99,8 +107,11 @@ def save_yandex_connection(db: Session, token: YandexTokenResponse, user_info: Y
     return _account_to_schema(account)
 
 
-def list_yandex_accounts(db: Session) -> list[ConnectedYandexAccount]:
-    accounts = db.scalars(select(ConnectedAccount).where(ConnectedAccount.provider == "yandex")).unique().all()
+def list_yandex_accounts(db: Session, organization_id: str | None = None) -> list[ConnectedYandexAccount]:
+    query = select(ConnectedAccount).where(ConnectedAccount.provider == "yandex")
+    if organization_id:
+        query = query.where(ConnectedAccount.organization_id == organization_id)
+    accounts = db.scalars(query).unique().all()
     return [_account_to_schema(account) for account in accounts]
 
 
@@ -130,10 +141,10 @@ def get_yandex_access_token_for_account(db: Session, account_id: str) -> str | N
     return decrypt_secret(token.access_token_encrypted) if token else None
 
 
-def get_yandex_connection_status(db: Session | None) -> dict[str, Any]:
+def get_yandex_connection_status(db: Session | None, organization_id: str | None = None) -> dict[str, Any]:
     if db is None:
         return {"connected": False, "accounts": [], "message": "DATABASE_URL is not configured."}
-    accounts = list_yandex_accounts(db)
+    accounts = list_yandex_accounts(db, organization_id=organization_id)
     return {
         "connected": bool(accounts),
         "accounts": [account.model_dump() for account in accounts],

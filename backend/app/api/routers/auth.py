@@ -4,6 +4,7 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from app.api.deps import CurrentUser, get_current_session_user
 from app.core.config import settings
 from app.db import get_db, get_optional_db
 from app.schemas import (
@@ -11,6 +12,7 @@ from app.schemas import (
     EmailCodeRequestResponse,
     EmailCodeVerifyRequest,
     EmailCodeVerifyResponse,
+    AuthMeResponse,
     YandexAuthCallbackResponse,
     YandexAuthStartResponse,
     YandexConnectionStatus,
@@ -42,6 +44,16 @@ def verify_login_code(request: EmailCodeVerifyRequest, db: Session = Depends(get
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@router.get("/me", response_model=AuthMeResponse)
+def get_me(current: CurrentUser = Depends(get_current_session_user)) -> AuthMeResponse:
+    return AuthMeResponse(
+        authenticated=True,
+        email=current.email,
+        organization_id=current.organization.id,
+        user_id=current.user.id,
+    )
+
+
 def _oauth_env_message() -> str:
     if settings.yandex_env_has_redacted_values:
         return (
@@ -55,8 +67,8 @@ def _oauth_env_message() -> str:
 
 
 @router.get("/yandex/start", response_model=YandexAuthStartResponse)
-def start_yandex_oauth() -> YandexAuthStartResponse:
-    state = token_urlsafe(24)
+def start_yandex_oauth(current: CurrentUser = Depends(get_current_session_user)) -> YandexAuthStartResponse:
+    state = f"{current.organization.id}:{token_urlsafe(24)}"
 
     if not settings.yandex_client_id or settings.yandex_env_has_redacted_values:
         return YandexAuthStartResponse(
@@ -103,7 +115,8 @@ def yandex_oauth_callback(
     try:
         token = exchange_code_for_token(code)
         user_info = fetch_yandex_user_info(token.access_token)
-        account = save_yandex_connection(db=db, token=token, user_info=user_info)
+        organization_id = state.split(":", 1)[0] if state and ":" in state else None
+        account = save_yandex_connection(db=db, token=token, user_info=user_info, organization_id=organization_id)
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -118,8 +131,11 @@ def yandex_oauth_callback(
 
 @router.get("/yandex/status", response_model=YandexConnectionStatus)
 @router.get("/yandex/connection-status", response_model=YandexConnectionStatus, include_in_schema=False)
-def yandex_oauth_status(db: Session | None = Depends(get_optional_db)) -> YandexConnectionStatus:
-    status = get_yandex_connection_status(db)
+def yandex_oauth_status(
+    db: Session | None = Depends(get_optional_db),
+    current: CurrentUser = Depends(get_current_session_user),
+) -> YandexConnectionStatus:
+    status = get_yandex_connection_status(db, organization_id=current.organization.id)
     return YandexConnectionStatus(
         configured=settings.yandex_oauth_configured,
         database_configured=settings.postgres_configured,
