@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
+from app.api.deps import CurrentUser, get_current_session_user
 from app.db import get_optional_db
 from app.models import ClientAccount, ConnectedAccount, DirectCampaignPeriodStat, SyncJob
 from app.schemas import (
@@ -73,16 +74,35 @@ def _require_db(db: Session | None) -> Session:
     return db
 
 
+def _get_owned_client(db: Session, client_id: str, current: CurrentUser) -> ClientAccount:
+    client = db.get(ClientAccount, client_id)
+    if not client or client.organization_id != current.organization.id:
+        raise HTTPException(status_code=404, detail="Client not found")
+    return client
+
+
 @router.get("", response_model=list[ClientAccountResponse])
-def list_clients(db: Session | None = Depends(get_optional_db)) -> list[ClientAccountResponse]:
+def list_clients(
+    db: Session | None = Depends(get_optional_db),
+    current: CurrentUser = Depends(get_current_session_user),
+) -> list[ClientAccountResponse]:
     if db is None:
         return []
-    clients = db.query(ClientAccount).order_by(ClientAccount.created_at.desc()).all()
+    clients = (
+        db.query(ClientAccount)
+        .filter(ClientAccount.organization_id == current.organization.id)
+        .order_by(ClientAccount.created_at.desc())
+        .all()
+    )
     return [_client_response(client) for client in clients]
 
 
 @router.post("", response_model=ClientAccountResponse, status_code=status.HTTP_201_CREATED)
-def create_client(payload: ClientCreateRequest, db: Session | None = Depends(get_optional_db)) -> ClientAccountResponse:
+def create_client(
+    payload: ClientCreateRequest,
+    db: Session | None = Depends(get_optional_db),
+    current: CurrentUser = Depends(get_current_session_user),
+) -> ClientAccountResponse:
     db = _require_db(db)
     client_id = payload.id or str(uuid4())
     existing = db.get(ClientAccount, client_id)
@@ -90,6 +110,7 @@ def create_client(payload: ClientCreateRequest, db: Session | None = Depends(get
         raise HTTPException(status_code=409, detail="Client already exists")
     client = ClientAccount(
         id=client_id,
+        organization_id=current.organization.id,
         name=payload.name.strip(),
         segment=payload.segment or "Клиент",
         direct_login=(payload.direct_login or "").strip() or None,
@@ -108,16 +129,24 @@ def create_client(payload: ClientCreateRequest, db: Session | None = Depends(get
 
 
 @router.put("/{client_id}", response_model=ClientAccountResponse)
-def update_client(client_id: str, payload: ClientCreateRequest, db: Session | None = Depends(get_optional_db)) -> ClientAccountResponse:
+def update_client(
+    client_id: str,
+    payload: ClientCreateRequest,
+    db: Session | None = Depends(get_optional_db),
+    current: CurrentUser = Depends(get_current_session_user),
+) -> ClientAccountResponse:
     db = _require_db(db)
-    client = db.get(ClientAccount, client_id)
-    if not client:
-        raise HTTPException(status_code=404, detail="Client not found")
+    client = _get_owned_client(db, client_id, current)
     client.name = payload.name.strip()
     client.segment = payload.segment or client.segment
     client.direct_login = (payload.direct_login or "").strip() or None
     client.metrica_counter = (payload.metrica_counter or "").strip() or None
-    client.yandex_account_id = (payload.yandex_account_id or "").strip() or None
+    yandex_account_id = (payload.yandex_account_id or "").strip() or None
+    if yandex_account_id:
+        account = db.get(ConnectedAccount, yandex_account_id)
+        if not account or account.provider != "yandex" or account.organization_id != current.organization.id:
+            raise HTTPException(status_code=404, detail="Yandex account not found")
+    client.yandex_account_id = yandex_account_id
     client.target_cpa = payload.target_cpa
     client.main_goal_id = (payload.main_goal_id or "").strip() or None
     client.notes = (payload.notes or "").strip() or None
@@ -127,11 +156,13 @@ def update_client(client_id: str, payload: ClientCreateRequest, db: Session | No
 
 
 @router.delete("/{client_id}")
-def delete_client(client_id: str, db: Session | None = Depends(get_optional_db)) -> dict[str, str]:
+def delete_client(
+    client_id: str,
+    db: Session | None = Depends(get_optional_db),
+    current: CurrentUser = Depends(get_current_session_user),
+) -> dict[str, str]:
     db = _require_db(db)
-    client = db.get(ClientAccount, client_id)
-    if not client:
-        raise HTTPException(status_code=404, detail="Client not found")
+    client = _get_owned_client(db, client_id, current)
     db.execute(delete(SyncJob).where(SyncJob.client_id == client_id))
     db.execute(delete(DirectCampaignPeriodStat).where(DirectCampaignPeriodStat.client_id == client_id))
     db.delete(client)
@@ -139,8 +170,8 @@ def delete_client(client_id: str, db: Session | None = Depends(get_optional_db))
     return {"status": "deleted", "client_id": client_id}
 
 
-def _client_yandex_status(db: Session, client: ClientAccount) -> ClientYandexIntegrationStatus:
-    accounts = list_yandex_accounts(db)
+def _client_yandex_status(db: Session, client: ClientAccount, current: CurrentUser) -> ClientYandexIntegrationStatus:
+    accounts = list_yandex_accounts(db, organization_id=current.organization.id)
     bound_account = next((account for account in accounts if account.id == client.yandex_account_id), None)
     return ClientYandexIntegrationStatus(
         client_id=client.id,
@@ -152,12 +183,14 @@ def _client_yandex_status(db: Session, client: ClientAccount) -> ClientYandexInt
 
 
 @router.get("/{client_id}/integrations/yandex", response_model=ClientYandexIntegrationStatus)
-def get_client_yandex_integration(client_id: str, db: Session | None = Depends(get_optional_db)) -> ClientYandexIntegrationStatus:
+def get_client_yandex_integration(
+    client_id: str,
+    db: Session | None = Depends(get_optional_db),
+    current: CurrentUser = Depends(get_current_session_user),
+) -> ClientYandexIntegrationStatus:
     db = _require_db(db)
-    client = db.get(ClientAccount, client_id)
-    if not client:
-        raise HTTPException(status_code=404, detail="Client not found")
-    return _client_yandex_status(db, client)
+    client = _get_owned_client(db, client_id, current)
+    return _client_yandex_status(db, client, current)
 
 
 @router.put("/{client_id}/integrations/yandex", response_model=ClientYandexBindingStatus)
@@ -165,13 +198,12 @@ def bind_client_yandex_account(
     client_id: str,
     payload: ClientYandexBindingRequest,
     db: Session | None = Depends(get_optional_db),
+    current: CurrentUser = Depends(get_current_session_user),
 ) -> ClientYandexBindingStatus:
     db = _require_db(db)
-    client = db.get(ClientAccount, client_id)
-    if not client:
-        raise HTTPException(status_code=404, detail="Client not found")
+    client = _get_owned_client(db, client_id, current)
     account = db.get(ConnectedAccount, payload.yandex_account_id)
-    if not account or account.provider != "yandex":
+    if not account or account.provider != "yandex" or account.organization_id != current.organization.id:
         raise HTTPException(status_code=404, detail="Yandex account not found")
     client.yandex_account_id = account.id
     db.commit()
@@ -179,11 +211,13 @@ def bind_client_yandex_account(
 
 
 @router.delete("/{client_id}/integrations/yandex", response_model=ClientYandexBindingStatus)
-def unbind_client_yandex_account(client_id: str, db: Session | None = Depends(get_optional_db)) -> ClientYandexBindingStatus:
+def unbind_client_yandex_account(
+    client_id: str,
+    db: Session | None = Depends(get_optional_db),
+    current: CurrentUser = Depends(get_current_session_user),
+) -> ClientYandexBindingStatus:
     db = _require_db(db)
-    client = db.get(ClientAccount, client_id)
-    if not client:
-        raise HTTPException(status_code=404, detail="Client not found")
+    client = _get_owned_client(db, client_id, current)
     client.yandex_account_id = None
     db.commit()
     return ClientYandexBindingStatus(status="unbound", client_id=client_id, yandex_account_id=None)
@@ -195,20 +229,24 @@ def list_agency_metrics() -> list[AgencyMetric]:
 
 
 @router.get("/{client_id}", response_model=ClientSummary | ClientAccountResponse)
-def get_client(client_id: str, db: Session | None = Depends(get_optional_db)) -> ClientSummary | ClientAccountResponse:
+def get_client(
+    client_id: str,
+    db: Session | None = Depends(get_optional_db),
+    current: CurrentUser = Depends(get_current_session_user),
+) -> ClientSummary | ClientAccountResponse:
     if db is not None:
-        client = db.get(ClientAccount, client_id)
-        if client:
-            return _client_response(client)
-    for client in CLIENTS:
-        if client.id == client_id:
-            return client
+        return _client_response(_get_owned_client(db, client_id, current))
     raise HTTPException(status_code=404, detail="Client not found")
 
 
 @router.get("/{client_id}/campaigns", response_model=list[Campaign])
-def list_client_campaigns(client_id: str, db: Session | None = Depends(get_optional_db)) -> list[Campaign]:
-    if db is not None and db.get(ClientAccount, client_id):
+def list_client_campaigns(
+    client_id: str,
+    db: Session | None = Depends(get_optional_db),
+    current: CurrentUser = Depends(get_current_session_user),
+) -> list[Campaign]:
+    if db is not None:
+        _get_owned_client(db, client_id, current)
         return []
     client_ids = {client.id for client in CLIENTS}
     if client_id not in client_ids:
@@ -220,7 +258,11 @@ def list_client_campaigns(client_id: str, db: Session | None = Depends(get_optio
 async def create_client_ai_recommendations(
     client_id: str,
     payload: AiClientRecommendationRequest | None = None,
+    db: Session | None = Depends(get_optional_db),
+    current: CurrentUser = Depends(get_current_session_user),
 ) -> AiRecommendationResponse:
+    if db is not None:
+        _get_owned_client(db, client_id, current)
     return await generate_client_recommendations(
         client_id=client_id,
         model=payload.model if payload else None,
@@ -229,22 +271,37 @@ async def create_client_ai_recommendations(
 
 
 @router.post("/{client_id}/sync", response_model=SyncJobResponse)
-def sync_client(client_id: str, db: Session | None = Depends(get_optional_db)) -> SyncJobResponse:
+def sync_client(
+    client_id: str,
+    db: Session | None = Depends(get_optional_db),
+    current: CurrentUser = Depends(get_current_session_user),
+) -> SyncJobResponse:
     db = _require_db(db)
+    _get_owned_client(db, client_id, current)
     job = run_client_sync(db=db, client_id=client_id)
     return _sync_job_response(job)
 
 
 @router.get("/{client_id}/sync/jobs", response_model=list[SyncJobResponse])
-def get_client_sync_jobs(client_id: str, db: Session | None = Depends(get_optional_db)) -> list[SyncJobResponse]:
+def get_client_sync_jobs(
+    client_id: str,
+    db: Session | None = Depends(get_optional_db),
+    current: CurrentUser = Depends(get_current_session_user),
+) -> list[SyncJobResponse]:
     db = _require_db(db)
+    _get_owned_client(db, client_id, current)
     jobs = list_sync_jobs(db=db, client_id=client_id)
     return [_sync_job_response(item) for item in jobs]
 
 
 @router.get("/{client_id}/performance-summary", response_model=ClientPerformanceSummaryResponse)
-def get_client_performance_summary(client_id: str, db: Session | None = Depends(get_optional_db)) -> ClientPerformanceSummaryResponse:
+def get_client_performance_summary(
+    client_id: str,
+    db: Session | None = Depends(get_optional_db),
+    current: CurrentUser = Depends(get_current_session_user),
+) -> ClientPerformanceSummaryResponse:
     db = _require_db(db)
+    _get_owned_client(db, client_id, current)
     try:
         return ClientPerformanceSummaryResponse(**build_performance_summary(db=db, client_id=client_id))
     except ValueError as exc:

@@ -12,6 +12,12 @@ const app = document.querySelector('#app');
 const DEFAULT_PRODUCTION_API_BASE = 'https://directpilot-ai.vercel.app/api/v1';
 const API_BASE = resolveApiBase();
 const page = document.body.dataset.page ?? 'landing';
+const currentEmail = (window.localStorage.getItem('directpilot_email') || '').trim().toLowerCase();
+
+if (page === 'app' && !getSessionToken()) {
+  window.location.href = 'login.html';
+  throw new Error('Authentication required');
+}
 
 function resolveApiBase() {
   const custom = window.localStorage.getItem('directpilot_api_base')?.trim();
@@ -28,6 +34,30 @@ function resolveApiBase() {
 
 function hasCustomApiBase() {
   return Boolean(window.localStorage.getItem('directpilot_api_base')?.trim());
+}
+
+function getSessionToken() {
+  return window.localStorage.getItem('directpilot_session') || '';
+}
+
+function scopedStorageKey(key) {
+  return currentEmail ? `${key}_${currentEmail}` : key;
+}
+
+async function apiFetch(path, options = {}) {
+  const headers = new Headers(options.headers || {});
+  const token = getSessionToken();
+  if (token) headers.set('Authorization', `Bearer ${token}`);
+  if (options.body && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json');
+  }
+  const response = await fetch(`${API_BASE}${path}`, { ...options, headers });
+  if (response.status === 401) {
+    localStorage.removeItem('directpilot_session');
+    localStorage.removeItem('directpilot_email');
+    window.location.href = 'login.html';
+  }
+  return response;
 }
 
 const navItems = [
@@ -78,22 +108,25 @@ let perfLoading = false;
 let clientsLoaded = false;
 let backendClientsAvailable = false;
 let backendClientsStatus = 'Проверяем подключение backend...';
-let aiChatMessages = [
-  { role: 'assistant', content: 'Здравствуйте! Я AI-аналитик DirectPilot. Спросите про Директ, Метрику, CPA, цели или рекомендации — я соберу данные через MCP-инструменты и отвечу по контексту.' },
-];
+const initialAiChatMessage = { role: 'assistant', content: 'Здравствуйте! Я AI-аналитик DirectPilot. Спросите про Директ, Метрику, CPA, цели или рекомендации — я соберу данные через MCP-инструменты и отвечу по контексту.' };
+let aiChatMessages = [{ ...initialAiChatMessage }];
 let aiChatInput = 'Почему растёт CPA и что проверить в Яндекс.Метрике?';
 let aiChatLoading = false;
 let aiChatError = '';
 let aiChatToolTraces = [];
+const clientAiRecommendationsByClientId = {};
+const aiChatStateByClientId = {};
 
-let selectedClientId = window.localStorage.getItem('directpilot_selected_client_id') || accountClients[0]?.id || '';
+let selectedClientId = window.localStorage.getItem(scopedStorageKey('directpilot_selected_client_id')) || accountClients[0]?.id || '';
 
 
 
 
 function saveSelectedClientId() {
   if (selectedClientId) {
-    localStorage.setItem('directpilot_selected_client_id', selectedClientId);
+    localStorage.setItem(scopedStorageKey('directpilot_selected_client_id'), selectedClientId);
+  } else {
+    localStorage.removeItem(scopedStorageKey('directpilot_selected_client_id'));
   }
 }
 
@@ -101,7 +134,7 @@ async function loadClientsFromApi() {
   if (clientsLoaded) return;
   clientsLoaded = true;
   try {
-    const response = await fetch(`${API_BASE}/clients`);
+    const response = await apiFetch('/clients');
     if (!response.ok) throw new Error(`Backend responded with ${response.status}`);
     const payload = await response.json();
     if (!Array.isArray(payload)) throw new Error('Invalid clients payload');
@@ -128,7 +161,7 @@ async function loadClientsFromApi() {
 }
 
 async function createClientOnApi(client) {
-  const response = await fetch(`${API_BASE}/clients`, {
+  const response = await apiFetch('/clients', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -149,7 +182,7 @@ async function createClientOnApi(client) {
 }
 
 async function updateClientOnApi(clientId, values) {
-  const response = await fetch(`${API_BASE}/clients/${clientId}`, {
+  const response = await apiFetch(`/clients/${clientId}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(values),
@@ -160,7 +193,7 @@ async function updateClientOnApi(clientId, values) {
 }
 
 async function deleteClientOnApi(clientId) {
-  const response = await fetch(`${API_BASE}/clients/${clientId}`, { method: 'DELETE' });
+  const response = await apiFetch(`/clients/${clientId}`, { method: 'DELETE' });
   const payload = await response.json();
   if (!response.ok) throw new Error(payload.detail || 'Не удалось удалить клиента');
   return payload;
@@ -185,7 +218,7 @@ function emptyClient() {
 
 function loadAccountClients() {
   try {
-    const saved = JSON.parse(localStorage.getItem('directpilot_clients') || '[]');
+    const saved = JSON.parse(localStorage.getItem(scopedStorageKey('directpilot_clients')) || '[]');
     return Array.isArray(saved) ? saved : initialClients;
   } catch (error) {
     return initialClients;
@@ -193,7 +226,7 @@ function loadAccountClients() {
 }
 
 function saveAccountClients() {
-  localStorage.setItem('directpilot_clients', JSON.stringify(accountClients));
+  localStorage.setItem(scopedStorageKey('directpilot_clients'), JSON.stringify(accountClients));
 }
 
 function isEditingTextField() {
@@ -213,7 +246,7 @@ function getViewActionTarget(target) {
 
 function isInteractiveActionTarget(target) {
   return Boolean(
-    target?.closest?.('button, a, [role="button"], [data-save-api-base], [data-client-id], [data-integration], [data-client-ai-recommendations], [data-sync-client], [data-load-summary]')
+    target?.closest?.('button, a, [role="button"], [data-save-api-base], [data-client-id], [data-integration], [data-client-ai-recommendations], [data-sync-client], [data-load-summary], [data-logout]')
     || getViewActionTarget(target)
   );
 }
@@ -249,9 +282,26 @@ function currentClient() {
 }
 
 function resetClientDerivedState() {
-  clientAiRecommendations = null;
+  const clientId = selectedClientId || currentClient().id;
+  clientAiRecommendations = clientAiRecommendationsByClientId[clientId] || null;
   clientAiError = '';
-  aiChatToolTraces = [];
+  const chatState = aiChatStateByClientId[clientId];
+  aiChatMessages = chatState?.messages ? [...chatState.messages] : [{ ...initialAiChatMessage }];
+  aiChatInput = chatState?.input || 'Почему растёт CPA и что проверить в Яндекс.Метрике?';
+  aiChatError = '';
+  aiChatToolTraces = chatState?.toolTraces ? [...chatState.toolTraces] : [];
+}
+
+function saveActiveAiState() {
+  if (!selectedClientId) return;
+  if (clientAiRecommendations) {
+    clientAiRecommendationsByClientId[selectedClientId] = clientAiRecommendations;
+  }
+  aiChatStateByClientId[selectedClientId] = {
+    messages: [...aiChatMessages],
+    input: aiChatInput,
+    toolTraces: [...aiChatToolTraces],
+  };
 }
 
 function escapeHtml(value) {
@@ -508,7 +558,7 @@ async function verifyEmailCode(email, code) {
 }
 
 async function connectYandexIntegration() {
-  const response = await fetch(`${API_BASE}/auth/yandex/start`);
+  const response = await apiFetch('/auth/yandex/start');
   const payload = await response.json();
   if (!response.ok || !payload.auth_url) throw new Error(payload.detail || payload.message || 'OAuth URL не получен');
   window.location.href = payload.auth_url;
@@ -533,7 +583,7 @@ async function requestAiInsight() {
   aiResponse = null;
   render();
   try {
-    const response = await fetch(`${API_BASE}/ai/openrouter/generate`, {
+    const response = await apiFetch('/ai/openrouter/generate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: activeAiModel(), prompt: aiPrompt }),
@@ -567,7 +617,7 @@ async function requestAiChatAnswer() {
   aiChatToolTraces = [];
   render();
   try {
-    const response = await fetch(`${API_BASE}/ai/chat`, {
+    const response = await apiFetch('/ai/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ client_id: selectedClientId, model: activeAiModel(), message, history, client_context: currentClient() }),
@@ -580,6 +630,7 @@ async function requestAiChatAnswer() {
     aiChatError = error.message;
   } finally {
     aiChatLoading = false;
+    saveActiveAiState();
     render();
   }
 }
@@ -595,7 +646,7 @@ async function requestClientAiRecommendations() {
   clientAiRecommendations = null;
   render();
   try {
-    const response = await fetch(`${API_BASE}/clients/${selectedClientId}/ai/recommendations`, {
+    const response = await apiFetch(`/clients/${selectedClientId}/ai/recommendations`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: activeAiModel(), client_context: currentClient() }),
@@ -603,6 +654,7 @@ async function requestClientAiRecommendations() {
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || 'Не удалось сформировать AI-рекомендации');
     clientAiRecommendations = payload;
+    clientAiRecommendationsByClientId[selectedClientId] = payload;
   } catch (error) {
     clientAiError = error.message;
   } finally {
@@ -613,7 +665,7 @@ async function requestClientAiRecommendations() {
 
 async function loadIntegrationStatus() {
   try {
-    const response = await fetch(`${API_BASE}/auth/yandex/status`);
+    const response = await apiFetch('/auth/yandex/status');
     integrationStatus = response.ok ? await response.json() : {};
     if (activeView === 'integrations') render();
   } catch (error) {
@@ -626,7 +678,7 @@ async function loadClientYandexIntegration(force = false) {
   if (!force && clientYandexLoadedFor === selectedClientId && clientYandexIntegration) return;
   clientYandexLoading = true;
   try {
-    const response = await fetch(`${API_BASE}/clients/${selectedClientId}/integrations/yandex`);
+    const response = await apiFetch(`/clients/${selectedClientId}/integrations/yandex`);
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || 'Не удалось загрузить привязку Яндекса');
     clientYandexIntegration = payload;
@@ -647,7 +699,7 @@ async function bindClientYandexAccount(accountId) {
   clientYandexStatus = 'Привязываем Яндекс-аккаунт...';
   render();
   try {
-    const response = await fetch(`${API_BASE}/clients/${selectedClientId}/integrations/yandex`, {
+    const response = await apiFetch(`/clients/${selectedClientId}/integrations/yandex`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ yandex_account_id: accountId }),
@@ -670,7 +722,7 @@ async function unbindClientYandexAccount() {
   clientYandexStatus = 'Отвязываем Яндекс-аккаунт...';
   render();
   try {
-    const response = await fetch(`${API_BASE}/clients/${selectedClientId}/integrations/yandex`, { method: 'DELETE' });
+    const response = await apiFetch(`/clients/${selectedClientId}/integrations/yandex`, { method: 'DELETE' });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || 'Не удалось отвязать аккаунт');
     clientYandexStatus = 'Яндекс-аккаунт отвязан от клиента.';
@@ -692,7 +744,7 @@ async function runClientSync() {
   syncStatusMessage = 'Запускаем синхронизацию...';
   render();
   try {
-    const response = await fetch(`${API_BASE}/clients/${selectedClientId}/sync`, { method: 'POST' });
+    const response = await apiFetch(`/clients/${selectedClientId}/sync`, { method: 'POST' });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || 'Ошибка синхронизации');
     if (payload.rows_loaded === 0 && (payload.status === 'failed' || payload.status === 'no_data' || payload.status === 'success')) {
@@ -716,7 +768,7 @@ async function loadPerformanceSummary() {
   perfSummary = null;
   render();
   try {
-    const response = await fetch(`${API_BASE}/clients/${selectedClientId}/performance-summary`);
+    const response = await apiFetch(`/clients/${selectedClientId}/performance-summary`);
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || 'Не удалось загрузить сводку');
     perfSummary = payload;
@@ -746,7 +798,8 @@ function renderShell(content) {
         </nav>
         <div class="sidebarNote">
           <strong>Рабочий кабинет</strong>
-          <p>Добавляйте клиентов отдельно и подключайте для каждого Яндекс.Директ и Метрику.</p>
+          <p>${escapeHtml(currentEmail || 'Сессия не найдена')}</p>
+          <button class="secondaryButton" type="button" data-logout>Выйти</button>
         </div>
       </aside>
 
@@ -1253,6 +1306,14 @@ app.addEventListener('click', async (event) => {
   const summaryButton = event.target.closest('[data-load-summary]');
   const deleteClientButton = event.target.closest('[data-delete-client]');
   const unbindYandexButton = event.target.closest('[data-unbind-yandex]');
+  const logoutButton = event.target.closest('[data-logout]');
+
+  if (logoutButton) {
+    localStorage.removeItem('directpilot_session');
+    localStorage.removeItem('directpilot_email');
+    window.location.href = 'login.html';
+    return;
+  }
 
   if (deleteClientButton) {
     const clientId = deleteClientButton.dataset.deleteClient;
@@ -1324,6 +1385,7 @@ app.addEventListener('click', async (event) => {
   }
 
   if (clientButton) {
+    saveActiveAiState();
     selectedClientId = clientButton.dataset.clientId;
     saveSelectedClientId();
     clientAiRecommendations = null;
@@ -1521,6 +1583,7 @@ app.addEventListener('input', (event) => {
 
 app.addEventListener('change', (event) => {
   if (event.target.matches('[data-client-select]')) {
+    saveActiveAiState();
     selectedClientId = event.target.value;
     saveSelectedClientId();
     resetClientDerivedState();

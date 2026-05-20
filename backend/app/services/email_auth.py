@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.models import AuthSession, EmailAuthCode
+from app.models import AuthSession, EmailAuthCode, Organization, User
 from app.schemas import EmailCodeRequestResponse, EmailCodeVerifyResponse
 
 CODE_TTL_SECONDS = 10 * 60
@@ -32,11 +32,43 @@ def _hash(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def hash_session_token(value: str) -> str:
+    return _hash(value)
+
+
 def _normalize_email(email: str) -> str:
     normalized = email.strip().lower()
     if "@" not in normalized or normalized.startswith("@") or normalized.endswith("@"):
         raise ValueError("Enter a valid email address.")
     return normalized
+
+
+def normalize_email(email: str) -> str:
+    return _normalize_email(email)
+
+
+def ensure_user_for_email(db: Session, email: str) -> User:
+    normalized_email = _normalize_email(email)
+    user = db.scalar(select(User).where(User.email == normalized_email, User.provider == "email"))
+    if user:
+        return user
+
+    organization = db.scalar(select(Organization).where(Organization.name == f"Workspace: {normalized_email}"))
+    if organization is None:
+        organization = Organization(name=f"Workspace: {normalized_email}")
+        db.add(organization)
+        db.flush()
+
+    user = User(
+        organization_id=organization.id,
+        email=normalized_email,
+        name=normalized_email,
+        external_user_id=normalized_email,
+        provider="email",
+    )
+    db.add(user)
+    db.flush()
+    return user
 
 
 def _send_code_email(email: str, code: str) -> None:
@@ -118,6 +150,7 @@ def verify_email_code(db: Session, email: str, code: str) -> EmailCodeVerifyResp
             expires_at=expires_at,
         )
     )
+    ensure_user_for_email(db, normalized_email)
     db.commit()
     return EmailCodeVerifyResponse(
         authenticated=True,

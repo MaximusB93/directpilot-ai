@@ -3,6 +3,7 @@ from datetime import UTC, date, datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
+from app.api.deps import CurrentUser, get_current_session_user
 from app.connectors.yandex_direct import YandexDirectConnector
 from app.db import get_db
 from app.schemas import YandexCampaignReportRow, YandexDirectCampaign, YandexDirectConnectionCheck
@@ -45,7 +46,10 @@ def _connector(db: Session, client_login: str | None = None) -> YandexDirectConn
 
 
 @router.get("/connection", response_model=YandexDirectConnectionCheck)
-def check_yandex_direct_connection(db: Session = Depends(get_db)) -> YandexDirectConnectionCheck:
+def check_yandex_direct_connection(
+    db: Session = Depends(get_db),
+    current: CurrentUser = Depends(get_current_session_user),
+) -> YandexDirectConnectionCheck:
     token = get_latest_yandex_access_token(db)
     return YandexDirectConnectionCheck(
         configured=bool(token),
@@ -59,6 +63,7 @@ def list_yandex_direct_campaigns(
     limit: int = Query(default=10, ge=1, le=1000),
     client_login: str | None = None,
     db: Session = Depends(get_db),
+    current: CurrentUser = Depends(get_current_session_user),
 ) -> list[YandexDirectCampaign]:
     try:
         campaigns = _connector(db, client_login).list_campaigns(limit=limit)
@@ -90,6 +95,7 @@ def get_yandex_campaign_report(
     max_wait_seconds: int = Query(default=20, ge=0, le=50),
     client_login: str | None = None,
     db: Session = Depends(get_db),
+    current: CurrentUser = Depends(get_current_session_user),
 ) -> list[YandexCampaignReportRow]:
     date_range = date_range.upper()
     if date_range not in ALLOWED_REPORT_RANGES:

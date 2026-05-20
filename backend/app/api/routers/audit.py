@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
+from app.api.deps import CurrentUser, get_current_session_user
 from app.db import get_optional_db
 from app.schemas import AuditIssue
 from app.services.client_data import campaigns_from_direct
@@ -11,7 +12,11 @@ router = APIRouter(prefix="/audit", tags=["audit"])
 
 
 @router.get("/issues", response_model=list[AuditIssue])
-def list_audit_issues(client_id: str = "furniture", db: Session | None = Depends(get_optional_db)) -> list[AuditIssue]:
+def list_audit_issues(
+    client_id: str = "furniture",
+    db: Session | None = Depends(get_optional_db),
+    current: CurrentUser = Depends(get_current_session_user),
+) -> list[AuditIssue]:
     if db is None:
         return AUDIT_ISSUES
     try:
