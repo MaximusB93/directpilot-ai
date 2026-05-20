@@ -2,6 +2,7 @@ from secrets import token_urlsafe
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 from app.api.deps import CurrentUser, get_current_session_user
@@ -22,6 +23,7 @@ from app.services.email_auth import request_email_code, verify_email_code
 from app.services.yandex_oauth import exchange_code_for_token, fetch_yandex_user_info
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+DEFAULT_FRONTEND_APP_URL = "https://maximusb93.github.io/directpilot-ai/app.html"
 
 
 
@@ -95,13 +97,20 @@ def start_yandex_oauth(current: CurrentUser = Depends(get_current_session_user))
     )
 
 
-@router.get("/yandex/callback", response_model=YandexAuthCallbackResponse)
+def _oauth_redirect(status: str) -> RedirectResponse:
+    return RedirectResponse(f"{DEFAULT_FRONTEND_APP_URL}?view=integrations&yandex={status}")
+
+
+@router.get("/yandex/callback", response_model=None)
 def yandex_oauth_callback(
     code: str | None = None,
     state: str | None = None,
+    format: str | None = None,
     db: Session = Depends(get_db),
-) -> YandexAuthCallbackResponse:
+) -> YandexAuthCallbackResponse | RedirectResponse:
     if not code:
+        if format != "json":
+            return _oauth_redirect("missing_code")
         return YandexAuthCallbackResponse(
             status="missing_code",
             code_received=False,
@@ -118,15 +127,20 @@ def yandex_oauth_callback(
         organization_id = state.split(":", 1)[0] if state and ":" in state else None
         account = save_yandex_connection(db=db, token=token, user_info=user_info, organization_id=organization_id)
     except RuntimeError as exc:
+        if format != "json":
+            return _oauth_redirect("error")
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    return YandexAuthCallbackResponse(
+    response = YandexAuthCallbackResponse(
         status="connected",
         code_received=True,
         state=state,
         message="Yandex account connected and OAuth token stored encrypted.",
         account=account,
     )
+    if format == "json":
+        return response
+    return _oauth_redirect("connected")
 
 
 @router.get("/yandex/status", response_model=YandexConnectionStatus)

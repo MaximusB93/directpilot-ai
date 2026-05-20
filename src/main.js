@@ -71,7 +71,12 @@ const navItems = [
   { id: 'integrations', label: 'Интеграции', icon: '🔌' },
 ];
 
+const appQueryParams = new URLSearchParams(window.location.search);
+const oauthReturnStatus = appQueryParams.get('yandex');
 let activeView = page === 'login' ? 'login' : page === 'app' ? 'dashboard' : 'landing';
+if (page === 'app' && appQueryParams.get('view') === 'integrations') {
+  activeView = 'integrations';
+}
 let apiBaseDraft = API_BASE;
 let pendingEditableFocusTarget = null;
 let authEmail = '';
@@ -83,7 +88,13 @@ let devCode = null;
 let integrationStatus = {};
 let clientYandexIntegration = null;
 let clientYandexLoading = false;
-let clientYandexStatus = '';
+let clientYandexStatus = oauthReturnStatus === 'connected'
+  ? 'Яндекс-аккаунт подключён. Теперь выберите его и привяжите к клиенту.'
+  : oauthReturnStatus === 'missing_code'
+    ? 'Яндекс OAuth не вернул код подтверждения. Попробуйте подключить аккаунт ещё раз.'
+    : oauthReturnStatus === 'error'
+      ? 'Не удалось завершить подключение Яндекса. Попробуйте начать подключение из приложения ещё раз.'
+      : '';
 let clientYandexLoadedFor = '';
 let accountClients = loadAccountClients();
 let aiStatus = { models: [], configured: false, message: 'Статус OpenRouter ещё не загружен.' };
@@ -246,7 +257,7 @@ function getViewActionTarget(target) {
 
 function isInteractiveActionTarget(target) {
   return Boolean(
-    target?.closest?.('button, a, [role="button"], [data-save-api-base], [data-client-id], [data-integration], [data-client-ai-recommendations], [data-sync-client], [data-load-summary], [data-logout]')
+    target?.closest?.('button, a, [role="button"], [data-save-api-base], [data-client-id], [data-integration], [data-client-ai-recommendations], [data-sync-client], [data-load-summary], [data-refresh-yandex-status], [data-logout]')
     || getViewActionTarget(target)
   );
 }
@@ -1075,6 +1086,7 @@ function renderIntegrations() {
         ` : ''}
         <div class="authStatus integrationStatus">${escapeHtml(clientYandexStatus || (clientConnected ? 'Яндекс-аккаунт привязан к этому клиенту.' : 'Сначала привяжите Яндекс-аккаунт к этому клиенту.'))}</div>
         <code>GET /api/v1/auth/yandex/start</code>
+        <button class="secondaryButton" type="button" data-refresh-yandex-status>Обновить статус Яндекса</button>
         <button class="approveButton" data-integration="yandex-direct">${accounts.length ? 'Подключить ещё аккаунт' : 'Подключить Яндекс.Директ'}</button>
       </article>
       <article class="integrationCard primaryIntegration">
@@ -1307,11 +1319,24 @@ app.addEventListener('click', async (event) => {
   const deleteClientButton = event.target.closest('[data-delete-client]');
   const unbindYandexButton = event.target.closest('[data-unbind-yandex]');
   const logoutButton = event.target.closest('[data-logout]');
+  const refreshYandexButton = event.target.closest('[data-refresh-yandex-status]');
 
   if (logoutButton) {
     localStorage.removeItem('directpilot_session');
     localStorage.removeItem('directpilot_email');
     window.location.href = 'login.html';
+    return;
+  }
+
+  if (refreshYandexButton) {
+    integrationStatus = {};
+    clientYandexIntegration = null;
+    clientYandexLoadedFor = '';
+    clientYandexStatus = 'Обновляем статус Яндекса...';
+    render();
+    await loadIntegrationStatus();
+    await loadClientYandexIntegration(true);
+    render();
     return;
   }
 
@@ -1603,3 +1628,14 @@ app.addEventListener('change', (event) => {
 });
 
 render();
+
+if (page === 'app' && (oauthReturnStatus || appQueryParams.get('view'))) {
+  window.history.replaceState({}, document.title, window.location.pathname);
+  if (activeView === 'integrations' && oauthReturnStatus) {
+    integrationStatus = {};
+    clientYandexIntegration = null;
+    clientYandexLoadedFor = '';
+    loadIntegrationStatus();
+    loadClientYandexIntegration(true);
+  }
+}
