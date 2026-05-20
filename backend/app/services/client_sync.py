@@ -76,10 +76,22 @@ def run_client_sync(db: Session, client_id: str, days: int = 30) -> SyncJob:
 
         connector = YandexDirectConnector(access_token=token, client_login=client.direct_login)
         rows = connector.get_campaign_report(days=days, date_range_type="CUSTOM_DATE")
+        goal_id = (client.main_goal_id or "").strip() or None
 
         db.execute(delete(DirectCampaignPeriodStat).where(DirectCampaignPeriodStat.client_id == client_id))
 
         for row in rows:
+            total_conversions = _float(row.get("Conversions"))
+            goal_conversions = None
+            conversion_source = "yandex_direct_total"
+            if goal_id:
+                goal_value = row.get("GoalConversions") or row.get("Goals") or row.get(f"Goal_{goal_id}") or row.get(goal_id)
+                if goal_value not in {None, "", "--"}:
+                    goal_conversions = _float(str(goal_value))
+                    conversion_source = "yandex_direct_goal"
+                else:
+                    conversion_source = "unavailable"
+            goal_cpa = (_float(row.get("Cost")) / goal_conversions) if goal_conversions else None
             db.add(
                 DirectCampaignPeriodStat(
                     client_id=client_id,
@@ -92,15 +104,20 @@ def run_client_sync(db: Session, client_id: str, days: int = 30) -> SyncJob:
                     cost=_float(row.get("Cost")),
                     ctr=_float(row.get("Ctr")),
                     avg_cpc=_float(row.get("AvgCpc")),
-                    conversions=_float(row.get("Conversions")),
+                    conversions=total_conversions,
                     cost_per_conversion=None if row.get("CostPerConversion") in {None, "", "--"} else _float(row.get("CostPerConversion")),
                     conversion_rate=None if row.get("ConversionRate") in {None, "", "--"} else _float(row.get("ConversionRate")),
+                    goal_id=goal_id,
+                    goal_conversions=goal_conversions,
+                    goal_revenue=None,
+                    goal_cpa=goal_cpa,
+                    conversion_source=conversion_source,
                 )
             )
 
         if rows:
             client.sync_status = "ok"
-            client.sync_error = None
+            client.sync_error = "Goal conversions were unavailable; total Direct conversions are shown separately." if goal_id else None
         else:
             client.sync_status = "no_data"
             client.sync_error = NO_DATA_MESSAGE

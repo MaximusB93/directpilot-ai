@@ -45,8 +45,12 @@ def build_client_ai_context(client_id: str, client_context: dict[str, Any] | Non
                 "priority": "high" if "spend_without_conversions" in item.get("issue_flags", []) else "medium",
                 "title": f"Проверка кампании {item.get('campaign_name')}",
                 "object": item.get("campaign_name"),
-                "evidence": f"Расход {item.get('cost')} ₽, конверсии {item.get('conversions')}, CTR {item.get('ctr')}%",
-                "action": "Проверить ставки и отправить изменение на preview/approval.",
+                "evidence": (
+                    f"Расход {item.get('cost')} ₽, total conversions {item.get('total_conversions')}, "
+                    f"goal conversions {item.get('goal_conversions')}, используется {item.get('conversions_used')} "
+                    f"({item.get('conversion_source')}), CPA {item.get('cpa_used')}, flags {item.get('issue_flags')}"
+                ),
+                "action": item.get("recommended_focus") or "Проверить ставки и отправить изменение на preview/approval.",
             }
             for item in campaigns[:5]
         ]
@@ -66,6 +70,12 @@ def build_client_ai_context(client_id: str, client_context: dict[str, Any] | Non
         "campaigns": campaigns,
         "audit_issues": audit_issues,
         "existing_recommendations": existing_recommendations,
+        "conversion_context": {
+            "selected_goal_id": summary.get("selectedGoalId") if summary else None,
+            "has_goal_data": summary.get("hasGoalData") if summary else False,
+            "goal_conversions_total": summary.get("goalConversionsTotal") if summary else 0,
+            "conversions_source_message": summary.get("conversionsSourceMessage") if summary else "Нет сохранённой статистики.",
+        },
         "guardrails": {
             "allowed_actions": ["audit", "explain", "create_draft", "create_dry_run_preview"],
             "forbidden_actions": ["apply_changes_without_approval", "increase_total_budget_without_client_approval"],
@@ -76,7 +86,13 @@ def build_client_ai_context(client_id: str, client_context: dict[str, Any] | Non
 
 def _build_prompt(context: dict[str, Any]) -> str:
     return f"""
-Сформируй 3 проверяемые AI-рекомендации для PPC-специалиста DirectPilot AI. Не выдумывай метрики кампаний, если данных нет.
+Сформируй 3 проверяемые AI-рекомендации для PPC-специалиста DirectPilot AI.
+Правила:
+- Не выдумывай goal conversions.
+- Если goal data недоступна, явно скажи это.
+- Изменения в Яндекс.Директ не применялись.
+- Рекомендации являются черновиками действий и требуют review/approval.
+- Приоритизируй кампании по выбранной цели, если goal data доступна.
 
 Верни строго JSON без markdown в формате:
 {{
@@ -103,7 +119,7 @@ def _fallback_recommendations(context: dict[str, Any]) -> AiRecommendationRespon
     campaigns = context.get("campaigns") or []
     totals_cost = sum(float(item.get("cost", 0) or 0) for item in campaigns) if campaigns else 0.0
     totals_clicks = sum(int(float(item.get("clicks", 0) or 0)) for item in campaigns) if campaigns else 0
-    totals_conversions = sum(float(item.get("conversions", 0) or 0) for item in campaigns) if campaigns else 0.0
+    totals_conversions = sum(float(item.get("conversions_used", item.get("conversions", 0)) or 0) for item in campaigns) if campaigns else 0.0
 
     if (not campaigns) or (totals_cost == 0 and totals_clicks == 0 and totals_conversions == 0):
         recommendations = [
@@ -131,7 +147,8 @@ def _fallback_recommendations(context: dict[str, Any]) -> AiRecommendationRespon
             title=f"Проверить кампанию «{top.get('campaign_name', top.get('name', 'Без названия'))}»",
             evidence=[
                 f"Расход: {top.get('cost')} ₽",
-                f"Конверсии: {top.get('conversions')}",
+                f"Конверсии используются: {top.get('conversions_used', top.get('conversions'))}",
+                f"Источник конверсий: {top.get('conversion_source', 'unknown')}",
                 f"CTR: {top.get('ctr')}%",
             ],
             risk="medium",

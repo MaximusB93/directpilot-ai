@@ -47,6 +47,11 @@ def ensure_mvp_schema() -> None:
         "ALTER TABLE client_accounts ADD COLUMN IF NOT EXISTS target_cpa INTEGER",
         "ALTER TABLE client_accounts ADD COLUMN IF NOT EXISTS main_goal_id VARCHAR(64)",
         "ALTER TABLE client_accounts ADD COLUMN IF NOT EXISTS notes TEXT",
+        "ALTER TABLE direct_campaign_period_stats ADD COLUMN IF NOT EXISTS goal_id VARCHAR(64)",
+        "ALTER TABLE direct_campaign_period_stats ADD COLUMN IF NOT EXISTS goal_conversions FLOAT",
+        "ALTER TABLE direct_campaign_period_stats ADD COLUMN IF NOT EXISTS goal_revenue FLOAT",
+        "ALTER TABLE direct_campaign_period_stats ADD COLUMN IF NOT EXISTS goal_cpa FLOAT",
+        "ALTER TABLE direct_campaign_period_stats ADD COLUMN IF NOT EXISTS conversion_source VARCHAR(64)",
     ]
     with engine.begin() as connection:
         for statement in statements:

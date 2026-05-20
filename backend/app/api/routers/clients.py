@@ -19,12 +19,13 @@ from app.schemas import (
     ClientYandexIntegrationStatus,
     ClientSummary,
     ClientPerformanceSummaryResponse,
+    OptimizationPlanResponse,
     SyncJobResponse,
 )
 from app.services.ai_recommendations import generate_client_recommendations
 from app.services.client_sync import list_sync_jobs, run_client_sync
 from app.services.connected_accounts import list_yandex_accounts
-from app.services.performance_summary import build_performance_summary
+from app.services.performance_summary import build_optimization_plan, build_performance_summary
 from app.services.mock_data import AGENCY_METRICS, CAMPAIGNS, CLIENTS
 
 router = APIRouter(prefix="/clients", tags=["clients"])
@@ -304,5 +305,19 @@ def get_client_performance_summary(
     _get_owned_client(db, client_id, current)
     try:
         return ClientPerformanceSummaryResponse(**build_performance_summary(db=db, client_id=client_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/{client_id}/optimization-plan", response_model=OptimizationPlanResponse)
+def get_client_optimization_plan(
+    client_id: str,
+    db: Session | None = Depends(get_optional_db),
+    current: CurrentUser = Depends(get_current_session_user),
+) -> OptimizationPlanResponse:
+    db = _require_db(db)
+    _get_owned_client(db, client_id, current)
+    try:
+        return OptimizationPlanResponse(**build_optimization_plan(db=db, client_id=client_id))
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
