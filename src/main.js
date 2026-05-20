@@ -9,8 +9,31 @@ import {
 } from './data.js';
 
 const app = document.querySelector('#app');
-const API_BASE = 'https://directpilot-ai.vercel.app/api/v1';
+const API_BASE = resolveApiBase();
 const page = document.body.dataset.page ?? 'landing';
+
+function resolveApiBase() {
+  const custom = window.localStorage.getItem('directpilot_api_base')?.trim();
+  if (custom) return custom.replace(/\/$/, '');
+  const { hostname, origin } = window.location;
+  if (hostname === 'localhost' || hostname === '127.0.0.1') {
+    return 'http://localhost:8000/api/v1';
+  }
+  return `${origin}/api/v1`;
+}
+
+
+function saveApiBase(value) {
+  const normalized = String(value || '').trim().replace(/\/$/, '');
+  if (!normalized) return;
+  window.localStorage.setItem('directpilot_api_base', normalized);
+  window.location.reload();
+}
+
+function isGithubPagesHost() {
+  return window.location.hostname === 'maximusb93.github.io';
+}
+
 const navItems = [
   { id: 'dashboard', label: 'Dashboard', icon: '📊' },
   { id: 'clients', label: 'Клиенты', icon: '👥' },
@@ -26,7 +49,10 @@ let activeView = page === 'login' ? 'login' : page === 'app' ? 'dashboard' : 'la
 let authEmail = '';
 let authStatus = '';
 let authStep = 'email';
+let authCode = '';
+let authLoading = false;
 let devCode = null;
+let apiBaseDraft = API_BASE;
 let integrationStatus = {};
 let accountClients = loadAccountClients();
 let aiStatus = { models: [], configured: false, message: 'Статус OpenRouter ещё не загружен.' };
@@ -41,7 +67,16 @@ let clientAiRecommendations = null;
 let clientAiLoading = false;
 let clientAiError = '';
 let clientFormStatus = '';
+let clientDraftName = '';
+let clientDraftDirectLogin = '';
+let clientDraftMetricaCounter = '';
+let syncStatusMessage = '';
+let syncLoading = false;
+let perfSummary = null;
+let perfLoading = false;
 let clientsLoaded = false;
+let backendClientsAvailable = false;
+let backendClientsStatus = 'Проверяем подключение backend...';
 let aiChatMessages = [
   { role: 'assistant', content: 'Здравствуйте! Я AI-аналитик DirectPilot. Спросите про Директ, Метрику, CPA, цели или рекомендации — я соберу данные через MCP-инструменты и отвечу по контексту.' },
 ];
@@ -50,33 +85,44 @@ let aiChatLoading = false;
 let aiChatError = '';
 let aiChatToolTraces = [];
 
-let selectedClientId = accountClients[0]?.id || '';
+let selectedClientId = window.localStorage.getItem('directpilot_selected_client_id') || accountClients[0]?.id || '';
 
 
-let pointerInteractionStartedInTextField = false;
 
-app.addEventListener('pointerdown', (event) => {
-  pointerInteractionStartedInTextField = Boolean(event.target.closest('input, textarea, select'));
-});
 
+function saveSelectedClientId() {
+  if (selectedClientId) {
+    localStorage.setItem('directpilot_selected_client_id', selectedClientId);
+  }
+}
 
 async function loadClientsFromApi() {
   if (clientsLoaded) return;
   clientsLoaded = true;
   try {
     const response = await fetch(`${API_BASE}/clients`);
-    if (!response.ok) return;
+    if (!response.ok) throw new Error(`Backend responded with ${response.status}`);
     const payload = await response.json();
-    if (Array.isArray(payload)) {
-      accountClients = payload;
-      if (!selectedClientId || !accountClients.some((client) => client.id === selectedClientId)) {
-        selectedClientId = accountClients[0]?.id || '';
-      }
-      saveAccountClients();
-      if (!isEditingTextField()) render();
+    if (!Array.isArray(payload)) throw new Error('Invalid clients payload');
+
+    backendClientsAvailable = true;
+    backendClientsStatus = 'Backend режим: клиенты загружаются из API.';
+    accountClients = payload;
+    if (!selectedClientId || !accountClients.some((client) => client.id === selectedClientId)) {
+      selectedClientId = accountClients[0]?.id || '';
     }
+    saveSelectedClientId();
+    saveAccountClients();
+    render();
   } catch (error) {
-    clientsLoaded = false;
+    backendClientsAvailable = false;
+    backendClientsStatus = 'Backend недоступен. Включён demo/fallback режим (данные из localStorage).';
+    accountClients = loadAccountClients();
+    if (!selectedClientId || !accountClients.some((client) => client.id === selectedClientId)) {
+      selectedClientId = accountClients[0]?.id || '';
+    }
+    saveSelectedClientId();
+    render();
   }
 }
 
@@ -341,18 +387,21 @@ function renderLogin() {
         <span class="eyebrow">🔐 Вход по email-коду</span>
         <h1>Войдите в личный кабинет</h1>
         <p>Мы отправим одноразовый код на почту. После подтверждения откроется отдельная страница кабинета.</p>
+        <div class="authStatus integrationStatus">Backend API: ${escapeHtml(API_BASE)}</div>
+        ${isGithubPagesHost() && !window.localStorage.getItem('directpilot_api_base') ? '<div class="authStatus aiError">GitHub Pages не содержит backend. Укажите Vercel backend URL.</div>' : ''}
+        <details class="aiToolTrace"><summary>Настроить backend URL</summary><div class="clientConnectForm"><input name="apiBase" data-api-base-input value="${escapeHtml(apiBaseDraft)}" placeholder="https://your-backend.vercel.app/api/v1" autocomplete="off" /><button class="approveButton" type="button" data-save-api-base>Сохранить backend URL</button></div></details>
         <form class="authForm" data-auth-form>
           <div class="authField">
             <label for="login-email">Email</label>
-            <input id="login-email" type="email" name="email" placeholder="you@agency.ru" autocomplete="email" inputmode="email" autofocus required />
+            <input id="login-email" type="email" name="email" value="${escapeHtml(authEmail)}" placeholder="you@agency.ru" autocomplete="email" inputmode="email" autofocus required />
           </div>
           ${authStep === 'code' ? `
             <div class="authField">
               <label for="login-code">Код из письма</label>
-              <input id="login-code" type="text" name="code" inputmode="numeric" maxlength="6" placeholder="000000" autocomplete="one-time-code" required />
+              <input id="login-code" type="text" name="code" value="${escapeHtml(authCode)}" inputmode="numeric" maxlength="6" placeholder="000000" autocomplete="one-time-code" required />
             </div>
           ` : ''}
-          <button class="primaryButton" type="submit">${authStep === 'code' ? 'Подтвердить код' : 'Получить код'}</button>
+          <button class="primaryButton" type="submit" ${authLoading ? 'disabled' : ''}>${authLoading ? 'Отправляем...' : (authStep === 'code' ? 'Подтвердить код' : 'Получить код')}</button>
         </form>
         ${authStatus ? `<div class="authStatus">${authStatus}</div>` : ''}
         ${devCode ? `<div class="authStatus dev">Dev code: <strong>${devCode}</strong></div>` : ''}
@@ -369,7 +418,7 @@ async function requestEmailCode(email) {
     body: JSON.stringify({ email }),
   });
   const payload = await response.json();
-  if (!response.ok) throw new Error(payload.detail || 'Не удалось отправить код');
+  if (!response.ok) throw new Error(payload.detail || `Не удалось подключиться к backend. Проверьте Vercel URL или directpilot_api_base. Текущий API: ${API_BASE}`);
   return payload;
 }
 
@@ -498,6 +547,50 @@ async function loadIntegrationStatus() {
   }
 }
 
+
+
+async function runClientSync() {
+  if (!selectedClientId) return;
+  syncLoading = true;
+  syncStatusMessage = 'Запускаем синхронизацию...';
+  render();
+  try {
+    const response = await fetch(`${API_BASE}/clients/${selectedClientId}/sync`, { method: 'POST' });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.detail || 'Ошибка синхронизации');
+    if (payload.rows_loaded === 0 && (payload.status === 'failed' || payload.status === 'no_data' || payload.status === 'success')) {
+      syncStatusMessage = 'Данные не загружены: подключите Яндекс.Директ или проверьте выбранный период.';
+    } else {
+      syncStatusMessage = `Синхронизация: ${payload.status}, строк: ${payload.rows_loaded}, источник: ${payload.source_type}`;
+    }
+    clientsLoaded = false;
+    await loadClientsFromApi();
+  } catch (error) {
+    syncStatusMessage = `Ошибка синхронизации: ${error.message}`;
+  } finally {
+    syncLoading = false;
+    render();
+  }
+}
+
+async function loadPerformanceSummary() {
+  if (!selectedClientId) return;
+  perfLoading = true;
+  perfSummary = null;
+  render();
+  try {
+    const response = await fetch(`${API_BASE}/clients/${selectedClientId}/performance-summary`);
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.detail || 'Не удалось загрузить сводку');
+    perfSummary = payload;
+  } catch (error) {
+    syncStatusMessage = `Ошибка сводки: ${error.message}`;
+  } finally {
+    perfLoading = false;
+    render();
+  }
+}
+
 function renderShell(content) {
   const client = currentClient();
   return `
@@ -548,6 +641,11 @@ function renderDashboard() {
       <span class="eyebrow">📊 Agency overview</span>
       <h2>Центр управления рекламой и AI-рекомендациями</h2>
       <p>${hasClient ? 'Сводка по выбранному клиенту, источникам данных и действиям, которые ИИ сможет предложить после загрузки статистики.' : 'В личном кабинете больше нет предзагруженных демо-данных. Добавьте первого клиента и подключите его аккаунты.'}</p>
+      <div class="heroActions">
+        <button class="approveButton" data-sync-client ${!hasClient || syncLoading ? 'disabled' : ''}>${syncLoading ? 'Синхронизация...' : 'Запустить синхронизацию'}</button>
+        <button class="secondaryButton" data-load-summary ${!hasClient || perfLoading ? 'disabled' : ''}>${perfLoading ? 'Загружаем...' : 'Показать сводку'}</button>
+      </div>
+      ${syncStatusMessage ? `<div class="authStatus integrationStatus">${escapeHtml(syncStatusMessage)}</div>` : ''}
     </div>
     <div class="metricGrid">${agencyMetrics.map(metricCard).join('')}</div>
     ${!hasClient ? `
@@ -587,6 +685,13 @@ function renderDashboard() {
         ` : `<div class="emptyStatePanel compact"><h3>Кампании ещё не загружены</h3><p>Подключите OAuth Яндекса и выберите логин клиента, чтобы загрузить реальные кампании из Direct API.</p></div>`}
       </section>
     `}
+    ${perfSummary ? `
+      <section class="panel">
+        <h3>Сводка эффективности (${escapeHtml(perfSummary.message)})</h3>
+        <p>Расход: ${perfSummary.totals.cost} ₽ · Показы: ${perfSummary.totals.impressions} · Клики: ${perfSummary.totals.clicks} · Конверсии: ${perfSummary.totals.conversions}</p>
+        <p>Avg CPC: ${perfSummary.totals.avg_cpc} · CPA: ${perfSummary.totals.cpa ?? '—'}</p>
+      </section>
+    ` : ''}
   `);
 }
 
@@ -596,14 +701,15 @@ function renderClients() {
     <section class="panel clientConnectPanel">
       <div>
         <h3>Добавить клиента</h3>
-        <p>Данные сохраняются в браузере до подключения backend-хранилища клиентов. OAuth Яндекса подключается через раздел «Интеграции».</p>
+        <p>При доступном backend клиенты сохраняются в API и загружаются оттуда при каждом обновлении страницы. Если backend недоступен — включается fallback режим c localStorage.</p>
       </div>
       <form class="clientConnectForm" data-client-form>
-        <input name="name" placeholder="Название клиента" autocomplete="organization" required />
-        <input name="directLogin" placeholder="Логин Яндекс.Директа" autocomplete="off" />
-        <input name="metricaCounter" placeholder="ID счётчика Метрики" inputmode="numeric" autocomplete="off" />
+        <input name="name" value="${escapeHtml(clientDraftName)}" placeholder="Название клиента" autocomplete="organization" required />
+        <input name="directLogin" value="${escapeHtml(clientDraftDirectLogin)}" placeholder="Логин Яндекс.Директа" autocomplete="off" />
+        <input name="metricaCounter" value="${escapeHtml(clientDraftMetricaCounter)}" placeholder="ID счётчика Метрики" inputmode="numeric" autocomplete="off" />
         <button class="approveButton" type="submit">Добавить клиента</button>
       </form>
+      <div class="authStatus integrationStatus">${escapeHtml(backendClientsStatus)}</div>
       ${clientFormStatus ? `<div class="authStatus integrationStatus">${escapeHtml(clientFormStatus)}</div>` : ''}
     </section>
     ${accountClients.length ? `
@@ -623,6 +729,13 @@ function renderClients() {
         <p>Мы убрали все демо-аккаунты из личного кабинета. Добавьте реального клиента и подключите его источники данных.</p>
       </section>
     `}
+    ${perfSummary ? `
+      <section class="panel">
+        <h3>Сводка эффективности (${escapeHtml(perfSummary.message)})</h3>
+        <p>Расход: ${perfSummary.totals.cost} ₽ · Показы: ${perfSummary.totals.impressions} · Клики: ${perfSummary.totals.clicks} · Конверсии: ${perfSummary.totals.conversions}</p>
+        <p>Avg CPC: ${perfSummary.totals.avg_cpc} · CPA: ${perfSummary.totals.cpa ?? '—'}</p>
+      </section>
+    ` : ''}
   `);
 }
 
@@ -754,6 +867,8 @@ function renderIntegrations() {
       </article>
     </div>
     ${integrationStatus.message ? `<div class="authStatus integrationStatus">${integrationStatus.message}</div>` : ''}
+    <div class="authStatus integrationStatus">Backend API: ${escapeHtml(API_BASE)}</div>
+    <details class="aiToolTrace"><summary>Настроить backend URL</summary><div class="clientConnectForm"><input name="apiBase" data-api-base-input value="${escapeHtml(apiBaseDraft)}" placeholder="https://your-backend.vercel.app/api/v1" autocomplete="off" /><button class="approveButton" type="button" data-save-api-base>Сохранить backend URL</button></div></details>
   `);
 }
 
@@ -910,14 +1025,29 @@ function render() {
 }
 
 app.addEventListener('click', async (event) => {
-  if (pointerInteractionStartedInTextField) {
-    pointerInteractionStartedInTextField = false;
-    return;
-  }
   const viewButton = event.target.closest('[data-view]');
   const clientButton = event.target.closest('[data-client-id]');
   const integrationButton = event.target.closest('[data-integration]');
   const clientAiButton = event.target.closest('[data-client-ai-recommendations]');
+  const syncButton = event.target.closest('[data-sync-client]');
+  const summaryButton = event.target.closest('[data-load-summary]');
+  const saveApiBaseButton = event.target.closest('[data-save-api-base]');
+
+  if (saveApiBaseButton) {
+    const input = app.querySelector('[data-api-base-input]');
+    saveApiBase(input?.value || apiBaseDraft);
+    return;
+  }
+
+  if (syncButton) {
+    await runClientSync();
+    return;
+  }
+
+  if (summaryButton) {
+    await loadPerformanceSummary();
+    return;
+  }
 
   if (clientAiButton) {
     await requestClientAiRecommendations();
@@ -950,6 +1080,7 @@ app.addEventListener('click', async (event) => {
 
   if (clientButton) {
     selectedClientId = clientButton.dataset.clientId;
+    saveSelectedClientId();
     clientAiRecommendations = null;
     resetClientDerivedState();
     clientFormStatus = '';
@@ -963,10 +1094,10 @@ app.addEventListener('submit', async (event) => {
   if (clientForm) {
     event.preventDefault();
     const formData = new FormData(clientForm);
-    const name = String(formData.get('name') || '').trim();
+    const name = String(formData.get('name') || clientDraftName).trim();
     if (!name) return;
-    const directLogin = String(formData.get('directLogin') || '').trim() || 'Не подключен';
-    const metricaCounter = String(formData.get('metricaCounter') || '').trim() || 'Не подключен';
+    const directLogin = String(formData.get('directLogin') || clientDraftDirectLogin).trim() || 'Не подключен';
+    const metricaCounter = String(formData.get('metricaCounter') || clientDraftMetricaCounter).trim() || 'Не подключен';
     const client = {
       id: makeClientId(name),
       name,
@@ -982,15 +1113,32 @@ app.addEventListener('submit', async (event) => {
       metricaCounter,
     };
     try {
-      const savedClient = await createClientOnApi(client);
-      accountClients = [savedClient, ...accountClients.filter((item) => item.id !== savedClient.id)];
-      selectedClientId = savedClient.id;
-      saveAccountClients();
-      resetClientDerivedState();
-      clientFormStatus = 'Клиент сохранён в базе данных.';
-      clientForm.reset();
+      if (backendClientsAvailable) {
+        const savedClient = await createClientOnApi(client);
+        accountClients = [savedClient, ...accountClients.filter((item) => item.id !== savedClient.id)];
+        selectedClientId = savedClient.id;
+        saveSelectedClientId();
+        saveAccountClients();
+        resetClientDerivedState();
+        clientFormStatus = 'Клиент сохранён в backend.';
+        clientDraftName = '';
+        clientDraftDirectLogin = '';
+        clientDraftMetricaCounter = '';
+        clientForm.reset();
+      } else {
+        accountClients = [client, ...accountClients.filter((item) => item.id !== client.id)];
+        selectedClientId = client.id;
+        saveSelectedClientId();
+        saveAccountClients();
+        resetClientDerivedState();
+        clientFormStatus = 'Backend недоступен: клиент сохранён локально (локальный режим).';
+        clientDraftName = '';
+        clientDraftDirectLogin = '';
+        clientDraftMetricaCounter = '';
+        clientForm.reset();
+      }
     } catch (error) {
-      clientFormStatus = error.message;
+      clientFormStatus = `Ошибка сохранения в backend: ${error.message}`;
     }
     render();
     return;
@@ -1028,6 +1176,8 @@ app.addEventListener('submit', async (event) => {
   const email = String(formData.get('email') || '').trim();
   const code = String(formData.get('code') || '').trim();
   authEmail = email;
+  authCode = code;
+  authLoading = true;
   authStatus = 'Отправляем запрос...';
   render();
   try {
@@ -1035,7 +1185,7 @@ app.addEventListener('submit', async (event) => {
       const result = await requestEmailCode(email);
       authStep = 'code';
       devCode = result.dev_code;
-      authStatus = 'Код отправлен на почту. Проверьте входящие и спам.';
+      authStatus = 'Код отправлен на почту. Проверьте входящие и спам.' + (result.dev_code ? ' Dev code доступен ниже.' : '');
     } else {
       const result = await verifyEmailCode(email, code);
       localStorage.setItem('directpilot_session', result.session_token);
@@ -1044,7 +1194,9 @@ app.addEventListener('submit', async (event) => {
       return;
     }
   } catch (error) {
-    authStatus = `${error.message}. Проверьте SMTP-настройки backend или включите EMAIL_AUTH_DEV_MODE=true только для локальной разработки.`;
+    authStatus = `${error.message}. Проверьте DATABASE_URL и EMAIL_AUTH_DEV_MODE=true для MVP-режима. Текущий API: ${API_BASE}`;
+  } finally {
+    authLoading = false;
   }
   render();
 });
@@ -1052,6 +1204,9 @@ app.addEventListener('submit', async (event) => {
 app.addEventListener('input', (event) => {
   if (event.target.matches('input[name="email"]')) {
     authEmail = event.target.value;
+  }
+  if (event.target.matches('input[name="code"]')) {
+    authCode = event.target.value;
   }
   if (event.target.matches('[data-ai-prompt]')) {
     aiPrompt = event.target.value;
@@ -1063,11 +1218,24 @@ app.addEventListener('input', (event) => {
   if (event.target.matches('[data-ai-chat-input]')) {
     aiChatInput = event.target.value;
   }
+  if (event.target.matches('[data-api-base-input]')) {
+    apiBaseDraft = event.target.value;
+  }
+  if (event.target.matches('[data-client-form] input[name="name"]')) {
+    clientDraftName = event.target.value;
+  }
+  if (event.target.matches('[data-client-form] input[name="directLogin"]')) {
+    clientDraftDirectLogin = event.target.value;
+  }
+  if (event.target.matches('[data-client-form] input[name="metricaCounter"]')) {
+    clientDraftMetricaCounter = event.target.value;
+  }
 });
 
 app.addEventListener('change', (event) => {
   if (event.target.matches('[data-client-select]')) {
     selectedClientId = event.target.value;
+    saveSelectedClientId();
     resetClientDerivedState();
     clientFormStatus = '';
     render();
