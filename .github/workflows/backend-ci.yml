@@ -1,0 +1,51 @@
+name: Backend CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend-ci:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+
+      - name: Compile backend modules
+        run: |
+          python -m compileall -q backend/app index.py backend/index.py
+
+      - name: FastAPI import smoke test
+        run: |
+          python - <<'PY'
+          import sys
+          from pathlib import Path
+
+          sys.path.insert(0, str(Path('backend').resolve()))
+          from app.main import app
+
+          assert app.title
+          print(f"FastAPI app imported successfully: {app.title}")
+          PY
+
+      - name: Run backend tests (if present)
+        run: |
+          if [ -d backend/tests ]; then
+            echo "backend/tests found -> running pytest"
+            python -m pytest -q backend/tests
+          else
+            echo "backend/tests not found -> skipping pytest"
+          fi

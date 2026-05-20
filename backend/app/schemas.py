@@ -35,6 +35,10 @@ class ClientAccountResponse(BaseModel):
     status: str
     directLogin: str = "Не подключен"
     metricaCounter: str = "Не подключен"
+    syncStatus: str = "never_synced"
+    syncError: str | None = None
+    lastSyncedAt: str | None = None
+    syncVersion: int = 0
 
 
 class AgencyMetric(BaseModel):
@@ -104,15 +108,19 @@ class ChangePreview(BaseModel):
     requires_approval: bool
     summary: str
     changes: list[PlannedChange]
+    policy_violations: list[str] = Field(default_factory=list)
+    risk_score: int = Field(default=0, ge=0, le=100)
 
 
 class ApprovalCreateRequest(BaseModel):
     preview_id: str
     requested_by: str = "ppc-specialist"
+    requested_by_role: str = "specialist"
 
 
 class ApprovalDecisionRequest(BaseModel):
     decided_by: str = "ppc-lead"
+    decided_by_role: str = "lead"
     comment: str | None = None
 
 
@@ -122,11 +130,35 @@ class ApprovalRecord(BaseModel):
     recommendation_id: str
     client_id: str
     requested_by: str
+    requested_by_role: str = "specialist"
     status: str
     created_at: str
+    policy_violations: list[str] = Field(default_factory=list)
+    risk_score: int = Field(default=0, ge=0, le=100)
     decided_by: str | None = None
     decided_at: str | None = None
     comment: str | None = None
+
+
+
+
+class RecommendationImpactCreateRequest(BaseModel):
+    recommendation_id: str
+    client_id: str
+    expected_impact: str
+    observed_impact: str
+    window_days: int = Field(default=7, ge=1, le=90)
+    created_by: str = "ppc-specialist"
+
+class RecommendationImpactEvent(BaseModel):
+    id: str
+    recommendation_id: str
+    client_id: str
+    expected_impact: str
+    observed_impact: str
+    window_days: int
+    created_by: str
+    created_at: str
 
 
 class AuditLogEvent(BaseModel):
@@ -332,3 +364,25 @@ class AiPromptResponse(BaseModel):
     content: str
     usage: dict | None = None
     id: str | None = None
+
+
+class SyncJobResponse(BaseModel):
+    id: str
+    client_id: str
+    source_type: str
+    status: str
+    period_from: str | None = None
+    period_to: str | None = None
+    rows_loaded: int
+    error: str | None = None
+    started_at: str | None = None
+    finished_at: str | None = None
+    created_at: str
+
+
+class ClientPerformanceSummaryResponse(BaseModel):
+    client: dict
+    period: dict | None = None
+    totals: dict
+    campaigns: list[dict]
+    message: str
