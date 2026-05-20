@@ -170,6 +170,16 @@ function isEditingTextField() {
   return Boolean(element?.matches?.('input, textarea, select'));
 }
 
+function isPlainTextInputTarget(target) {
+  return Boolean(target?.closest?.('input, textarea, select, label'));
+}
+
+function isInteractiveActionTarget(target) {
+  return Boolean(target?.closest?.(
+    'button, a, [role="button"], [data-save-api-base], [data-view], [data-client-id], [data-integration], [data-client-ai-recommendations], [data-sync-client], [data-load-summary]'
+  ));
+}
+
 function makeClientId(name) {
   const slug = name.toLowerCase().replace(/[^a-z0-9а-яё]+/gi, '-').replace(/^-|-$/g, '').slice(0, 32);
   return `${slug || 'client'}-${Date.now().toString(36)}`;
@@ -1042,6 +1052,14 @@ function render() {
   }
 }
 
+['pointerdown', 'mousedown', 'mouseup', 'click'].forEach((eventName) => {
+  app.addEventListener(eventName, (event) => {
+    if (isPlainTextInputTarget(event.target) && !isInteractiveActionTarget(event.target)) {
+      event.stopPropagation();
+    }
+  }, true);
+});
+
 app.addEventListener('click', async (event) => {
   const saveApiBaseButton = event.target.closest('[data-save-api-base]');
   if (saveApiBaseButton) {
@@ -1058,8 +1076,7 @@ app.addEventListener('click', async (event) => {
     return;
   }
 
-  const explicitAction = event.target.closest('button, a, [role="button"], [data-view], [data-client-id], [data-integration], [data-client-ai-recommendations], [data-sync-client], [data-load-summary]');
-  if (event.target.closest('input, textarea, select, label') && !explicitAction) {
+  if (isPlainTextInputTarget(event.target) && !isInteractiveActionTarget(event.target)) {
     return;
   }
 
