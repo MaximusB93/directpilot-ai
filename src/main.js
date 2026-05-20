@@ -53,6 +53,8 @@ let clientAiLoading = false;
 let clientAiError = '';
 let clientFormStatus = '';
 let clientsLoaded = false;
+let backendClientsAvailable = false;
+let backendClientsStatus = 'Проверяем подключение backend...';
 let aiChatMessages = [
   { role: 'assistant', content: 'Здравствуйте! Я AI-аналитик DirectPilot. Спросите про Директ, Метрику, CPA, цели или рекомендации — я соберу данные через MCP-инструменты и отвечу по контексту.' },
 ];
@@ -61,26 +63,44 @@ let aiChatLoading = false;
 let aiChatError = '';
 let aiChatToolTraces = [];
 
-let selectedClientId = accountClients[0]?.id || '';
+let selectedClientId = window.localStorage.getItem('directpilot_selected_client_id') || accountClients[0]?.id || '';
 
 
+
+
+function saveSelectedClientId() {
+  if (selectedClientId) {
+    localStorage.setItem('directpilot_selected_client_id', selectedClientId);
+  }
+}
 
 async function loadClientsFromApi() {
   if (clientsLoaded) return;
   clientsLoaded = true;
   try {
     const response = await fetch(`${API_BASE}/clients`);
-    if (!response.ok) return;
+    if (!response.ok) throw new Error(`Backend responded with ${response.status}`);
     const payload = await response.json();
-    if (Array.isArray(payload)) {
-      accountClients = payload;
-      if (!selectedClientId || !accountClients.some((client) => client.id === selectedClientId)) {
-        selectedClientId = accountClients[0]?.id || '';
-      }
-      saveAccountClients();
+    if (!Array.isArray(payload)) throw new Error('Invalid clients payload');
+
+    backendClientsAvailable = true;
+    backendClientsStatus = 'Backend режим: клиенты загружаются из API.';
+    accountClients = payload;
+    if (!selectedClientId || !accountClients.some((client) => client.id === selectedClientId)) {
+      selectedClientId = accountClients[0]?.id || '';
     }
+    saveSelectedClientId();
+    saveAccountClients();
+    render();
   } catch (error) {
-    clientsLoaded = false;
+    backendClientsAvailable = false;
+    backendClientsStatus = 'Backend недоступен. Включён demo/fallback режим (данные из localStorage).';
+    accountClients = loadAccountClients();
+    if (!selectedClientId || !accountClients.some((client) => client.id === selectedClientId)) {
+      selectedClientId = accountClients[0]?.id || '';
+    }
+    saveSelectedClientId();
+    render();
   }
 }
 
@@ -600,7 +620,7 @@ function renderClients() {
     <section class="panel clientConnectPanel">
       <div>
         <h3>Добавить клиента</h3>
-        <p>Данные сохраняются в браузере до подключения backend-хранилища клиентов. OAuth Яндекса подключается через раздел «Интеграции».</p>
+        <p>При доступном backend клиенты сохраняются в API и загружаются оттуда при каждом обновлении страницы. Если backend недоступен — включается demo/fallback режим c localStorage.</p>
       </div>
       <form class="clientConnectForm" data-client-form>
         <input name="name" placeholder="Название клиента" autocomplete="organization" required />
@@ -608,6 +628,7 @@ function renderClients() {
         <input name="metricaCounter" placeholder="ID счётчика Метрики" inputmode="numeric" autocomplete="off" />
         <button class="approveButton" type="submit">Добавить клиента</button>
       </form>
+      <div class="authStatus integrationStatus">${escapeHtml(backendClientsStatus)}</div>
       ${clientFormStatus ? `<div class="authStatus integrationStatus">${escapeHtml(clientFormStatus)}</div>` : ''}
     </section>
     ${accountClients.length ? `
@@ -950,6 +971,7 @@ app.addEventListener('click', async (event) => {
 
   if (clientButton) {
     selectedClientId = clientButton.dataset.clientId;
+    saveSelectedClientId();
     clientAiRecommendations = null;
     resetClientDerivedState();
     clientFormStatus = '';
@@ -982,15 +1004,26 @@ app.addEventListener('submit', async (event) => {
       metricaCounter,
     };
     try {
-      const savedClient = await createClientOnApi(client);
-      accountClients = [savedClient, ...accountClients.filter((item) => item.id !== savedClient.id)];
-      selectedClientId = savedClient.id;
-      saveAccountClients();
-      resetClientDerivedState();
-      clientFormStatus = 'Клиент сохранён в базе данных.';
-      clientForm.reset();
+      if (backendClientsAvailable) {
+        const savedClient = await createClientOnApi(client);
+        accountClients = [savedClient, ...accountClients.filter((item) => item.id !== savedClient.id)];
+        selectedClientId = savedClient.id;
+        saveSelectedClientId();
+        saveAccountClients();
+        resetClientDerivedState();
+        clientFormStatus = 'Клиент сохранён в backend.';
+        clientForm.reset();
+      } else {
+        accountClients = [client, ...accountClients.filter((item) => item.id !== client.id)];
+        selectedClientId = client.id;
+        saveSelectedClientId();
+        saveAccountClients();
+        resetClientDerivedState();
+        clientFormStatus = 'Backend недоступен: клиент сохранён локально (demo режим).';
+        clientForm.reset();
+      }
     } catch (error) {
-      clientFormStatus = error.message;
+      clientFormStatus = `Ошибка сохранения в backend: ${error.message}`;
     }
     render();
     return;
@@ -1068,6 +1101,7 @@ app.addEventListener('input', (event) => {
 app.addEventListener('change', (event) => {
   if (event.target.matches('[data-client-select]')) {
     selectedClientId = event.target.value;
+    saveSelectedClientId();
     resetClientDerivedState();
     clientFormStatus = '';
     render();
