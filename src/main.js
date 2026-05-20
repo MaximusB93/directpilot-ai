@@ -9,6 +9,7 @@ import {
 } from './data.js';
 
 const app = document.querySelector('#app');
+const DEFAULT_PRODUCTION_API_BASE = 'https://directpilot-ai.vercel.app/api/v1';
 const API_BASE = resolveApiBase();
 const page = document.body.dataset.page ?? 'landing';
 
@@ -18,6 +19,9 @@ function resolveApiBase() {
   const { hostname, origin } = window.location;
   if (hostname === 'localhost' || hostname === '127.0.0.1') {
     return 'http://localhost:8000/api/v1';
+  }
+  if (hostname === 'maximusb93.github.io') {
+    return DEFAULT_PRODUCTION_API_BASE;
   }
   return `${origin}/api/v1`;
 }
@@ -234,7 +238,7 @@ function escapeHtml(value) {
 }
 
 function renderBackendApiConfig() {
-  const githubPagesWarning = window.location.hostname === 'maximusb93.github.io' && !hasCustomApiBase()
+  const githubPagesWarning = window.location.hostname === 'maximusb93.github.io' && API_BASE.includes('github.io/api/v1')
     ? '<div class="authStatus aiError">GitHub Pages не содержит backend. Укажите Vercel backend URL.</div>'
     : '';
 
