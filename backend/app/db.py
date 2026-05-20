@@ -1,6 +1,6 @@
 from collections.abc import Generator
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.core.config import settings
@@ -29,6 +29,24 @@ def init_db() -> None:
     import app.models_workflow  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
+    ensure_mvp_schema()
+
+
+def ensure_mvp_schema() -> None:
+    if engine is None:
+        return
+
+    # Temporary MVP schema patch for existing Postgres databases.
+    # Replace this with Alembic migrations once migrations are introduced.
+    statements = [
+        "ALTER TABLE client_accounts ADD COLUMN IF NOT EXISTS sync_status VARCHAR(64) NOT NULL DEFAULT 'never_synced'",
+        "ALTER TABLE client_accounts ADD COLUMN IF NOT EXISTS sync_error TEXT",
+        "ALTER TABLE client_accounts ADD COLUMN IF NOT EXISTS last_synced_at TIMESTAMPTZ",
+        "ALTER TABLE client_accounts ADD COLUMN IF NOT EXISTS sync_version INTEGER NOT NULL DEFAULT 0",
+    ]
+    with engine.begin() as connection:
+        for statement in statements:
+            connection.execute(text(statement))
 
 
 def get_db() -> Generator[Session, None, None]:
