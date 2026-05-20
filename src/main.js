@@ -38,6 +38,7 @@ const navItems = [
 ];
 
 let activeView = page === 'login' ? 'login' : page === 'app' ? 'dashboard' : 'landing';
+let apiBaseDraft = API_BASE;
 let authEmail = '';
 let authStatus = '';
 let authStep = 'email';
@@ -221,13 +222,13 @@ function renderBackendApiConfig() {
         </div>
       </div>
       ${githubPagesWarning}
-      <form class="authForm" data-api-base-form>
+      <div class="authForm" data-api-base-config>
         <div class="authField">
           <label for="backend-api-base">Backend API URL</label>
-          <input id="backend-api-base" type="url" name="apiBase" value="${escapeHtml(API_BASE)}" placeholder="https://your-backend.vercel.app/api/v1" autocomplete="url" required />
+          <input id="backend-api-base" type="text" data-api-base-input value="${escapeHtml(apiBaseDraft)}" placeholder="https://your-backend.vercel.app/api/v1" autocomplete="url" />
         </div>
-        <button class="secondaryButton" type="submit">Сохранить backend URL</button>
-      </form>
+        <button class="secondaryButton" type="button" data-save-api-base>Сохранить backend URL</button>
+      </div>
     </section>
   `;
 }
@@ -1042,6 +1043,26 @@ function render() {
 }
 
 app.addEventListener('click', async (event) => {
+  const saveApiBaseButton = event.target.closest('[data-save-api-base]');
+  if (saveApiBaseButton) {
+    event.preventDefault();
+    const apiBaseConfig = saveApiBaseButton.closest('[data-api-base-config]');
+    const apiBaseInput = apiBaseConfig?.querySelector('[data-api-base-input]') || app.querySelector('[data-api-base-input]');
+    const apiBase = String(apiBaseInput?.value || apiBaseDraft).trim().replace(/\/$/, '');
+    if (apiBase) {
+      localStorage.setItem('directpilot_api_base', apiBase);
+    } else {
+      localStorage.removeItem('directpilot_api_base');
+    }
+    window.location.reload();
+    return;
+  }
+
+  const explicitAction = event.target.closest('button, a, [role="button"], [data-view], [data-client-id], [data-integration], [data-client-ai-recommendations], [data-sync-client], [data-load-summary]');
+  if (event.target.closest('input, textarea, select, label') && !explicitAction) {
+    return;
+  }
+
   const viewButton = event.target.closest('[data-view]');
   const clientButton = event.target.closest('[data-client-id]');
   const integrationButton = event.target.closest('[data-integration]');
@@ -1100,20 +1121,6 @@ app.addEventListener('click', async (event) => {
 });
 
 app.addEventListener('submit', async (event) => {
-  const apiBaseForm = event.target.closest('[data-api-base-form]');
-  if (apiBaseForm) {
-    event.preventDefault();
-    const formData = new FormData(apiBaseForm);
-    const apiBase = String(formData.get('apiBase') || '').trim().replace(/\/$/, '');
-    if (apiBase) {
-      localStorage.setItem('directpilot_api_base', apiBase);
-    } else {
-      localStorage.removeItem('directpilot_api_base');
-    }
-    window.location.reload();
-    return;
-  }
-
   const clientForm = event.target.closest('[data-client-form]');
   if (clientForm) {
     event.preventDefault();
@@ -1226,6 +1233,9 @@ app.addEventListener('submit', async (event) => {
 });
 
 app.addEventListener('input', (event) => {
+  if (event.target.matches('[data-api-base-input]')) {
+    apiBaseDraft = event.target.value;
+  }
   if (event.target.matches('input[name="email"]')) {
     authEmail = event.target.value;
   }
