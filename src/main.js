@@ -39,6 +39,7 @@ const navItems = [
 
 let activeView = page === 'login' ? 'login' : page === 'app' ? 'dashboard' : 'landing';
 let apiBaseDraft = API_BASE;
+let pendingEditableFocusTarget = null;
 let authEmail = '';
 let authStatus = '';
 let authStep = 'email';
@@ -180,6 +181,13 @@ function isInteractiveActionTarget(target) {
   ));
 }
 
+function getEditableFieldTarget(target) {
+  const field = target?.closest?.('input, textarea, select');
+  if (!field) return null;
+  if (field.disabled || field.readOnly) return null;
+  return field;
+}
+
 function makeClientId(name) {
   const slug = name.toLowerCase().replace(/[^a-z0-9а-яё]+/gi, '-').replace(/^-|-$/g, '').slice(0, 32);
   return `${slug || 'client'}-${Date.now().toString(36)}`;
@@ -235,7 +243,7 @@ function renderBackendApiConfig() {
       <div class="authForm" data-api-base-config>
         <div class="authField">
           <label for="backend-api-base">Backend API URL</label>
-          <input id="backend-api-base" type="text" data-api-base-input value="${escapeHtml(apiBaseDraft)}" placeholder="https://your-backend.vercel.app/api/v1" autocomplete="url" />
+          <input id="backend-api-base" type="text" data-api-base-input data-debug-name="backend-api-base" value="${escapeHtml(apiBaseDraft)}" placeholder="https://your-backend.vercel.app/api/v1" autocomplete="url" />
         </div>
         <button class="secondaryButton" type="button" data-save-api-base>Сохранить backend URL</button>
       </div>
@@ -1060,12 +1068,32 @@ function render() {
   }, true);
 });
 
+['pointerdown', 'mousedown'].forEach((eventName) => {
+  app.addEventListener(eventName, (event) => {
+    if (isInteractiveActionTarget(event.target)) return;
+    pendingEditableFocusTarget = getEditableFieldTarget(event.target);
+  }, true);
+});
+
+['pointerup', 'mouseup', 'click'].forEach((eventName) => {
+  app.addEventListener(eventName, (event) => {
+    if (isInteractiveActionTarget(event.target)) return;
+    const field = getEditableFieldTarget(event.target) || pendingEditableFocusTarget;
+    if (!field) return;
+    setTimeout(() => {
+      if (document.body.contains(field)) {
+        field.focus({ preventScroll: true });
+      }
+    }, 0);
+  }, true);
+});
+
 app.addEventListener('click', async (event) => {
   const saveApiBaseButton = event.target.closest('[data-save-api-base]');
   if (saveApiBaseButton) {
     event.preventDefault();
     const apiBaseConfig = saveApiBaseButton.closest('[data-api-base-config]');
-    const apiBaseInput = apiBaseConfig?.querySelector('[data-api-base-input]') || app.querySelector('[data-api-base-input]');
+    const apiBaseInput = apiBaseConfig?.querySelector('[data-api-base-input]');
     const apiBase = String(apiBaseInput?.value || apiBaseDraft).trim().replace(/\/$/, '');
     if (apiBase) {
       localStorage.setItem('directpilot_api_base', apiBase);
