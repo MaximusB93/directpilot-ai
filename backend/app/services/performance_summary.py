@@ -22,17 +22,72 @@ class PerfTotals:
         return self.cost / self.conversions if self.conversions else None
 
 
-def _flags(cost: float, conversions: float, ctr: float, clicks: int, cpa: float | None) -> list[str]:
+def _conversion_source_message(goal_id: str | None, has_goal_data: bool) -> str:
+    if goal_id and has_goal_data:
+        return f"Используются конверсии выбранной цели {goal_id}."
+    if goal_id:
+        return f"Цель {goal_id} указана, но goal-конверсии в текущем отчёте недоступны. Диагностика использует total conversions отдельно от цели."
+    return "Основная цель не указана. Используются total conversions из Яндекс.Директа."
+
+
+def _severity(flags: list[str]) -> str:
+    if "spend_without_conversions" in flags or "high_cpa" in flags:
+        return "critical"
+    if "inefficient_spend_share" in flags or "low_ctr" in flags:
+        return "warning"
+    if "promising_campaign" in flags:
+        return "info"
+    return "ok"
+
+
+def _diagnostics(
+    *,
+    cost: float,
+    clicks: int,
+    impressions: int,
+    ctr: float,
+    conversions_used: float,
+    cpa_used: float | None,
+    target_cpa: int | None,
+    spend_share: float,
+    conversion_share: float,
+) -> list[str]:
     flags: list[str] = []
-    if cost >= 1000 and conversions <= 0:
+    if cost > 0 and conversions_used == 0:
         flags.append("spend_without_conversions")
-    if cpa is not None and cpa > 1700:
+    if cpa_used is not None and target_cpa and cpa_used > target_cpa * 1.25:
         flags.append("high_cpa")
     if ctr > 0 and ctr < 1.0:
         flags.append("low_ctr")
-    if clicks < 20:
+    if impressions < 100 or clicks < 20:
         flags.append("low_data")
+    if spend_share >= 0.25 and conversion_share < spend_share * 0.5:
+        flags.append("inefficient_spend_share")
+    if conversions_used > 0 and cpa_used is not None and target_cpa and cpa_used <= target_cpa:
+        flags.append("promising_campaign")
     return flags
+
+
+def _diagnostic_text(flags: list[str], source_message: str) -> tuple[str, str, str]:
+    if "spend_without_conversions" in flags:
+        return (
+            "Расход без конверсий",
+            f"Кампания тратит бюджет, но не даёт конверсий в выбранном источнике. {source_message}",
+            "Проверить поисковые запросы, посадочную страницу, цели и ограничить неэффективные сегменты.",
+        )
+    if "high_cpa" in flags:
+        return (
+            "CPA выше целевого",
+            "Стоимость конверсии заметно выше целевого CPA клиента.",
+            "Проверить ставки, минус-фразы, аудитории и распределение бюджета.",
+        )
+    if "low_ctr" in flags:
+        return ("Низкий CTR", "Объявления получают показы, но кликабельность ниже ориентира.", "Проверить тексты, быстрые ссылки и соответствие запросам.")
+    if "inefficient_spend_share" in flags:
+        return ("Неэффективная доля расхода", "Доля расхода выше доли конверсий.", "Сравнить с кампаниями-лидерами и перераспределить бюджет после approval.")
+    if "promising_campaign" in flags:
+        return ("Перспективная кампания", "Кампания даёт конверсии с CPA в пределах цели.", "Рассмотреть масштабирование после проверки качества лидов.")
+    return ("Без критичных сигналов", "Явных проблем по сохранённой статистике не найдено.", "Продолжать мониторинг и накопить больше данных.")
 
 
 def build_performance_summary(db: Session, client_id: str) -> dict:
@@ -45,27 +100,52 @@ def build_performance_summary(db: Session, client_id: str) -> dict:
         .where(DirectCampaignPeriodStat.client_id == client_id)
         .order_by(DirectCampaignPeriodStat.loaded_at.desc())
     ).all()
+    goal_id = (client.main_goal_id or "").strip() or None
     if not rows:
         return {
             "client": {"id": client.id, "name": client.name},
             "period": None,
             "totals": {"cost": 0.0, "impressions": 0, "clicks": 0, "conversions": 0.0, "avg_cpc": 0.0, "cpa": None},
             "campaigns": [],
+            "selectedGoalId": goal_id,
+            "hasGoalData": False,
+            "goalConversionsTotal": 0.0,
+            "conversionsSourceMessage": _conversion_source_message(goal_id, False),
             "message": "Нет сохранённых данных Яндекс.Директа. Запустите синхронизацию после подключения Яндекса.",
         }
 
+    has_goal_data = any(item.goal_conversions is not None for item in rows)
+    source_message = _conversion_source_message(goal_id, has_goal_data)
     period_from = min(item.period_from for item in rows)
     period_to = max(item.period_to for item in rows)
+    total_cost = sum(item.cost for item in rows)
+    total_conversions_used = sum((item.goal_conversions if item.goal_conversions is not None else item.conversions) for item in rows)
     totals = PerfTotals(
-        cost=sum(item.cost for item in rows),
+        cost=total_cost,
         impressions=sum(item.impressions for item in rows),
         clicks=sum(item.clicks for item in rows),
-        conversions=sum(item.conversions for item in rows),
+        conversions=total_conversions_used,
     )
 
     campaigns = []
     for item in rows:
-        cpa = item.cost / item.conversions if item.conversions else None
+        goal_conversions = item.goal_conversions
+        conversions_used = goal_conversions if goal_conversions is not None else item.conversions
+        cpa_used = item.cost / conversions_used if conversions_used else None
+        spend_share = item.cost / total_cost if total_cost else 0.0
+        conversion_share = conversions_used / total_conversions_used if total_conversions_used else 0.0
+        flags = _diagnostics(
+            cost=item.cost,
+            clicks=item.clicks,
+            impressions=item.impressions,
+            ctr=item.ctr,
+            conversions_used=conversions_used,
+            cpa_used=cpa_used,
+            target_cpa=client.target_cpa,
+            spend_share=spend_share,
+            conversion_share=conversion_share,
+        )
+        title, explanation, focus = _diagnostic_text(flags, source_message)
         campaigns.append(
             {
                 "campaign_id": item.campaign_id,
@@ -74,10 +154,26 @@ def build_performance_summary(db: Session, client_id: str) -> dict:
                 "impressions": item.impressions,
                 "clicks": item.clicks,
                 "conversions": item.conversions,
+                "total_conversions": item.conversions,
                 "ctr": item.ctr,
                 "avg_cpc": item.avg_cpc,
-                "cpa": cpa,
-                "issue_flags": _flags(item.cost, item.conversions, item.ctr, item.clicks, cpa),
+                "conversion_rate": item.conversion_rate,
+                "cpa": cpa_used,
+                "goal_id": item.goal_id,
+                "goal_conversions": goal_conversions,
+                "goal_revenue": item.goal_revenue,
+                "goal_cpa": item.goal_cpa,
+                "conversions_used": conversions_used,
+                "conversions_used_label": "Goal conversions" if goal_conversions is not None else "Total conversions",
+                "cpa_used": cpa_used,
+                "conversion_source": item.conversion_source or ("yandex_direct_goal" if goal_conversions is not None else "yandex_direct_total"),
+                "spend_share": spend_share,
+                "conversion_share": conversion_share,
+                "issue_flags": flags,
+                "severity": _severity(flags),
+                "diagnostic_title": title,
+                "diagnostic_explanation": explanation,
+                "recommended_focus": focus,
             }
         )
 
@@ -93,5 +189,46 @@ def build_performance_summary(db: Session, client_id: str) -> dict:
             "cpa": totals.cpa,
         },
         "campaigns": campaigns,
+        "selectedGoalId": goal_id,
+        "hasGoalData": has_goal_data,
+        "goalConversionsTotal": sum(item.goal_conversions or 0 for item in rows),
+        "conversionsSourceMessage": source_message,
         "message": "ok",
+    }
+
+
+def build_optimization_plan(db: Session, client_id: str) -> dict:
+    summary = build_performance_summary(db, client_id)
+    actions = []
+    for index, campaign in enumerate(summary["campaigns"], start=1):
+        flags = campaign.get("issue_flags", [])
+        if not flags or campaign.get("severity") == "ok":
+            continue
+        issue = campaign.get("diagnostic_title") or "Проверить кампанию"
+        actions.append(
+            {
+                "id": f"opt-{campaign.get('campaign_id') or index}",
+                "severity": campaign.get("severity", "warning"),
+                "category": "conversion_efficiency",
+                "campaign_name": campaign.get("campaign_name"),
+                "issue": issue,
+                "evidence": (
+                    f"Расход {campaign.get('cost')} ₽, клики {campaign.get('clicks')}, "
+                    f"конверсии {campaign.get('conversions_used')} ({campaign.get('conversions_used_label')}), "
+                    f"CPA {campaign.get('cpa_used') or '—'}."
+                ),
+                "draft_action": campaign.get("recommended_focus"),
+                "action_type": "manual_review",
+                "requires_approval": True,
+                "can_apply_automatically": False,
+                "safety_note": "Черновик действия. Изменения в Яндекс.Директ не применялись.",
+            }
+        )
+    return {
+        "client_id": client_id,
+        "selected_goal_id": summary.get("selectedGoalId"),
+        "has_data": bool(summary.get("campaigns")),
+        "has_goal_data": bool(summary.get("hasGoalData")),
+        "summary": summary.get("conversionsSourceMessage") or summary.get("message"),
+        "actions": actions,
     }

@@ -419,3 +419,30 @@ class ClientPerformanceSummaryResponse(BaseModel):
     totals: dict
     campaigns: list[dict]
     message: str
+    selectedGoalId: str | None = None
+    hasGoalData: bool = False
+    goalConversionsTotal: float = 0.0
+    conversionsSourceMessage: str | None = None
+
+
+class OptimizationActionDraft(BaseModel):
+    id: str
+    severity: str
+    category: str
+    campaign_name: str | None = None
+    issue: str
+    evidence: str
+    draft_action: str
+    action_type: str = "manual_review"
+    requires_approval: bool = True
+    can_apply_automatically: bool = False
+    safety_note: str
+
+
+class OptimizationPlanResponse(BaseModel):
+    client_id: str
+    selected_goal_id: str | None = None
+    has_data: bool
+    has_goal_data: bool
+    summary: str
+    actions: list[OptimizationActionDraft]

@@ -65,6 +65,7 @@ const navItems = [
   { id: 'clients', label: 'Клиенты', icon: '👥' },
   { id: 'audit', label: 'AI-аудит', icon: '⚡' },
   { id: 'recommendations', label: 'Рекомендации', icon: '✨' },
+  { id: 'optimization', label: 'Оптимизация', icon: '🎯' },
   { id: 'ai', label: 'AI-модели', icon: '🧠' },
   { id: 'reports', label: 'Отчёты', icon: '📄' },
   { id: 'autopilot', label: 'Автопилот', icon: '🛡️' },
@@ -119,6 +120,11 @@ let perfLoading = false;
 let syncJobs = [];
 let syncJobsLoading = false;
 let syncJobsStatus = '';
+let optimizationPlan = null;
+let optimizationPlanLoading = false;
+let optimizationPlanStatus = '';
+let optimizationFilter = 'all';
+const optimizationPlanByClientId = {};
 let clientsLoaded = false;
 let backendClientsAvailable = false;
 let backendClientsStatus = 'Проверяем подключение backend...';
@@ -260,7 +266,7 @@ function getViewActionTarget(target) {
 
 function isInteractiveActionTarget(target) {
   return Boolean(
-    target?.closest?.('button, a, [role="button"], [data-save-api-base], [data-client-id], [data-integration], [data-client-ai-recommendations], [data-sync-client], [data-load-summary], [data-load-sync-jobs], [data-refresh-yandex-status], [data-go-view], [data-logout]')
+    target?.closest?.('button, a, [role="button"], [data-save-api-base], [data-client-id], [data-integration], [data-client-ai-recommendations], [data-sync-client], [data-load-summary], [data-load-sync-jobs], [data-load-optimization-plan], [data-copy-optimization-plan], [data-copy-text], [data-optimization-filter], [data-refresh-yandex-status], [data-go-view], [data-logout]')
     || getViewActionTarget(target)
   );
 }
@@ -366,6 +372,8 @@ function getReadinessState() {
     { status: !hasClient ? 'blocked' : yandexBound ? 'ready' : 'action_needed', label: 'Яндекс-аккаунт привязан', description: yandexBound ? 'Аккаунт привязан к выбранному клиенту.' : 'Яндекс-аккаунт не привязан к этому клиенту.', nextAction: 'Привяжите Яндекс-аккаунт', targetView: 'integrations' },
     { status: !canRunSync() && !firstSyncDone ? 'blocked' : firstSyncDone ? 'ready' : 'action_needed', label: 'Первая синхронизация выполнена', description: formatSyncStatus(client.syncStatus), nextAction: 'Запустите синхронизацию', targetView: 'dashboard' },
     { status: statsReady ? 'ready' : firstSyncDone ? 'action_needed' : 'pending', label: 'Статистика кампаний доступна', description: statsReady ? `${perfSummary.campaigns.length} кампаний в сводке` : 'Нет сохранённых данных', nextAction: 'Обновите сводку или синхронизацию', targetView: 'dashboard' },
+    { status: !hasClient ? 'blocked' : client.mainGoalId ? 'ready' : 'action_needed', label: 'ID основной цели указан', description: client.mainGoalId || 'Цель не выбрана. CPA будет считаться по total conversions.', nextAction: 'Укажите ID основной цели в настройках клиента', targetView: 'clients' },
+    { status: !client.mainGoalId ? 'pending' : perfSummary?.hasGoalData ? 'ready' : 'action_needed', label: 'Конверсии по цели загружены', description: perfSummary?.conversionsSourceMessage || 'Цель указана, но конверсии по ней ещё не загружены', nextAction: 'Запустите синхронизацию и проверьте источник конверсий', targetView: 'dashboard' },
     { status: aiReady ? 'ready' : statsReady ? 'action_needed' : 'pending', label: 'AI-рекомендации сгенерированы', description: aiReady ? 'Черновик готов для ревью.' : 'AI-анализ станет доступнее после загрузки статистики.', nextAction: 'Откройте AI-рекомендации', targetView: 'recommendations' },
   ];
 }
@@ -850,6 +858,9 @@ async function runClientSync() {
     await loadClientsFromApi();
     await loadPerformanceSummary();
     await loadSyncJobs();
+    optimizationPlan = null;
+    optimizationPlanByClientId[selectedClientId] = null;
+    await loadOptimizationPlan();
   } catch (error) {
     syncStatusMessage = `Ошибка синхронизации: ${error.message}`;
     await loadSyncJobs();
@@ -884,6 +895,9 @@ function resetSelectedClientOperationalState() {
   syncStatusMessage = '';
   clientYandexIntegration = null;
   clientYandexLoadedFor = '';
+  optimizationPlan = optimizationPlanByClientId[selectedClientId] || null;
+  optimizationPlanStatus = '';
+  optimizationFilter = 'all';
 }
 
 async function loadSyncJobs() {
@@ -902,6 +916,26 @@ async function loadSyncJobs() {
   } finally {
     syncJobsLoading = false;
     if (activeView === 'dashboard') render();
+  }
+}
+
+async function loadOptimizationPlan() {
+  if (!selectedClientId) return;
+  optimizationPlanLoading = true;
+  optimizationPlanStatus = 'Формируем план оптимизации...';
+  if (activeView === 'optimization') render();
+  try {
+    const response = await apiFetch(`/clients/${selectedClientId}/optimization-plan`);
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.detail || 'Не удалось загрузить план оптимизации');
+    optimizationPlan = payload;
+    optimizationPlanByClientId[selectedClientId] = payload;
+    optimizationPlanStatus = payload.actions?.length ? `Черновиков действий: ${payload.actions.length}` : 'Критичных действий не найдено.';
+  } catch (error) {
+    optimizationPlanStatus = error.message;
+  } finally {
+    optimizationPlanLoading = false;
+    if (activeView === 'optimization') render();
   }
 }
 
@@ -1062,7 +1096,7 @@ function renderPerformanceSummaryPanel() {
       <div class="panelHeader">
         <div>
           <h3>Performance Summary</h3>
-          <p>${campaigns.length ? `Кампаний: ${campaigns.length}, флагов: ${issueCount}` : 'Нет сохранённых данных Яндекс.Директа. Запустите синхронизацию после подключения Яндекса.'}</p>
+          <p>${campaigns.length ? `Кампаний: ${campaigns.length}, флагов: ${issueCount}. ${escapeHtml(perfSummary.conversionsSourceMessage || '')}` : 'Нет сохранённых данных Яндекс.Директа. Запустите синхронизацию после подключения Яндекса.'}</p>
         </div>
         <span class="aiStatusBadge ${campaigns.length ? 'ready' : 'pending'}">${escapeHtml(perfSummary.message)}</span>
       </div>
@@ -1070,22 +1104,24 @@ function renderPerformanceSummaryPanel() {
         <article class="kpi green"><span>Расход</span><strong>${formatMoneySafe(totals.cost)}</strong></article>
         <article class="kpi blue"><span>Показы</span><strong>${formatNumberSafe(totals.impressions)}</strong></article>
         <article class="kpi orange"><span>Клики</span><strong>${formatNumberSafe(totals.clicks)}</strong></article>
-        <article class="kpi green"><span>Конверсии</span><strong>${formatNumberSafe(totals.conversions)}</strong></article>
+        <article class="kpi green"><span>Конверсии used</span><strong>${formatNumberSafe(totals.conversions)}</strong></article>
       </div>
+      <p>Цель: ${escapeHtml(perfSummary.selectedGoalId || 'не указана')} · Goal data: ${perfSummary.hasGoalData ? 'доступна' : 'недоступна'} · Goal conversions: ${formatNumberSafe(perfSummary.goalConversionsTotal)}</p>
       <p>Avg CPC: ${formatMoneySafe(totals.avg_cpc)} · CPA: ${totals.cpa == null ? '—' : formatMoneySafe(totals.cpa)} · CTR: ${formatPercentSafe(totals.clicks && totals.impressions ? (totals.clicks / totals.impressions) * 100 : 0)}</p>
       ${campaigns.length ? `
         <div class="tableWrap">
           <table>
-            <thead><tr><th>Кампания</th><th>Расход</th><th>Показы</th><th>Клики</th><th>Конверсии</th><th>CTR</th><th>CPA</th><th>Флаги</th></tr></thead>
+            <thead><tr><th>Кампания</th><th>Расход</th><th>Показы</th><th>Клики</th><th>Total conv.</th><th>Goal conv.</th><th>Used</th><th>CPA used</th><th>Флаги</th></tr></thead>
             <tbody>${campaigns.map((campaign) => `
               <tr>
                 <td>${escapeHtml(campaign.campaign_name)}</td>
                 <td>${formatMoneySafe(campaign.cost)}</td>
                 <td>${formatNumberSafe(campaign.impressions)}</td>
                 <td>${formatNumberSafe(campaign.clicks)}</td>
-                <td>${formatNumberSafe(campaign.conversions)}</td>
-                <td>${formatPercentSafe(campaign.ctr)}</td>
-                <td>${campaign.cpa == null ? '—' : formatMoneySafe(campaign.cpa)}</td>
+                <td>${formatNumberSafe(campaign.total_conversions ?? campaign.conversions)}</td>
+                <td>${campaign.goal_conversions == null ? '—' : formatNumberSafe(campaign.goal_conversions)}</td>
+                <td>${formatNumberSafe(campaign.conversions_used ?? campaign.conversions)}</td>
+                <td>${campaign.cpa_used == null ? '—' : formatMoneySafe(campaign.cpa_used)}</td>
                 <td>${escapeHtml((campaign.issue_flags || []).join(', ') || '—')}</td>
               </tr>
             `).join('')}</tbody>
@@ -1254,7 +1290,7 @@ function renderRecommendations() {
     <section class="panel aiRecommendationCta">
       <div>
         <h3>Сформировать AI-рекомендации по клиентскому контексту</h3>
-        <p>${canRunAiAnalysis() ? 'AI будет использовать сохранённые данные Яндекс.Директа.' : 'AI пока не видит статистику кампаний. Сначала запустите синхронизацию.'}</p>
+        <p>${canRunAiAnalysis() ? `AI будет использовать ${perfSummary?.hasGoalData ? 'goal conversions выбранной цели' : 'total conversions как fallback'}. ${escapeHtml(perfSummary?.conversionsSourceMessage || '')}` : 'AI пока не видит статистику кампаний. Сначала запустите синхронизацию.'}</p>
       </div>
       <button class="approveButton" data-client-ai-recommendations ${clientAiLoading ? 'disabled' : ''}>${clientAiLoading ? 'Генерируем...' : 'Сгенерировать AI-черновик'}</button>
     </section>
@@ -1269,6 +1305,7 @@ function renderRecommendations() {
         <article class="kpi orange"><span>Кампании</span><strong>${formatNumberSafe(campaignsCount)}</strong></article>
         <article class="kpi green"><span>Флаги</span><strong>${formatNumberSafe(issueCount)}</strong></article>
       </div>
+      <p>Основная цель: ${escapeHtml(perfSummary?.selectedGoalId || currentClient().mainGoalId || 'не указана')} · Источник: ${escapeHtml(perfSummary?.conversionsSourceMessage || 'Нет данных')}</p>
     </section>
     ${renderClientAiRecommendations()}
     ${recommendations.length ? `
@@ -1284,6 +1321,97 @@ function renderRecommendations() {
         `).join('')}
       </div>
     ` : `<section class="panel emptyStatePanel compact"><h3>Рекомендаций пока нет</h3><p>Нажмите «Сгенерировать AI-черновик» после добавления клиента или подключите реальные источники данных.</p></section>`}
+  `);
+}
+
+function campaignMatchesOptimizationFilter(campaign) {
+  const flags = campaign.issue_flags || [];
+  if (optimizationFilter === 'all') return true;
+  if (optimizationFilter === 'critical') return campaign.severity === 'critical';
+  if (optimizationFilter === 'warning') return campaign.severity === 'warning';
+  if (optimizationFilter === 'opportunities') return campaign.severity === 'info' || flags.includes('promising_campaign');
+  if (optimizationFilter === 'no_conversions') return flags.includes('spend_without_conversions');
+  if (optimizationFilter === 'high_cpa') return flags.includes('high_cpa');
+  if (optimizationFilter === 'low_ctr') return flags.includes('low_ctr');
+  if (optimizationFilter === 'goal_unavailable') return campaign.conversion_source === 'unavailable';
+  return true;
+}
+
+function renderOptimization() {
+  const client = currentClient();
+  const campaigns = (perfSummary?.campaigns || []).filter(campaignMatchesOptimizationFilter);
+  const actions = optimizationPlan?.actions || [];
+  const filters = [
+    ['all', 'Все'],
+    ['critical', 'Critical'],
+    ['warning', 'Warning'],
+    ['opportunities', 'Opportunities'],
+    ['no_conversions', 'Без конверсий'],
+    ['high_cpa', 'High CPA'],
+    ['low_ctr', 'Low CTR'],
+    ['goal_unavailable', 'Goal data unavailable'],
+  ];
+  return renderShell(`
+    <div class="pageIntro">
+      <span class="eyebrow">🎯 Оптимизация</span>
+      <h2>AI Optimization Workspace</h2>
+      <p>${escapeHtml(client.name)} · цель: ${escapeHtml(client.mainGoalId || 'не указана')} · ${escapeHtml(perfSummary?.conversionsSourceMessage || 'Сначала загрузите performance summary.')}</p>
+      <div class="heroActions">
+        <button class="secondaryButton" data-load-summary ${perfLoading ? 'disabled' : ''}>Обновить сводку</button>
+        <button class="approveButton" data-load-optimization-plan ${optimizationPlanLoading ? 'disabled' : ''}>${optimizationPlanLoading ? 'Формируем...' : 'AI plan'}</button>
+        <button class="secondaryButton" data-copy-optimization-plan ${actions.length ? '' : 'disabled'}>Скопировать план</button>
+      </div>
+      ${optimizationPlanStatus ? `<div class="authStatus integrationStatus">${escapeHtml(optimizationPlanStatus)}</div>` : ''}
+    </div>
+    <section class="panel">
+      <div class="panelHeader">
+        <div>
+          <h3>Диагностика кампаний</h3>
+          <p>${perfSummary?.hasGoalData ? 'CPA и диагностика используют goal conversions.' : 'Goal conversions недоступны: диагностика использует fallback total conversions и помечает источник.'}</p>
+        </div>
+        <span class="aiStatusBadge ${perfSummary?.campaigns?.length ? 'ready' : 'pending'}">${formatNumberSafe(perfSummary?.campaigns?.length || 0)} кампаний</span>
+      </div>
+      <div class="heroActions">
+        ${filters.map(([value, label]) => `<button class="${optimizationFilter === value ? 'approveButton' : 'secondaryButton'}" data-optimization-filter="${value}">${label}</button>`).join('')}
+      </div>
+      ${campaigns.length ? `<div class="featureGrid">
+        ${campaigns.map((campaign) => `
+          <article class="featureCard">
+            <span class="featureIcon">${campaign.severity === 'critical' ? '⛔' : campaign.severity === 'warning' ? '⚠️' : campaign.severity === 'info' ? '📈' : '✅'}</span>
+            <h3>${escapeHtml(campaign.campaign_name)}</h3>
+            <p>${escapeHtml(campaign.diagnostic_explanation || '')}</p>
+            <small>Расход ${formatMoneySafe(campaign.cost)} · клики ${formatNumberSafe(campaign.clicks)} · показы ${formatNumberSafe(campaign.impressions)} · total ${formatNumberSafe(campaign.total_conversions)} · goal ${campaign.goal_conversions == null ? '—' : formatNumberSafe(campaign.goal_conversions)} · used ${formatNumberSafe(campaign.conversions_used)} · CPA ${campaign.cpa_used == null ? '—' : formatMoneySafe(campaign.cpa_used)} · CTR ${formatPercentSafe(campaign.ctr)} · ${escapeHtml(campaign.conversion_source || 'unknown')}</small>
+            <p><strong>Фокус:</strong> ${escapeHtml(campaign.recommended_focus || '')}</p>
+            <p><strong>Флаги:</strong> ${escapeHtml((campaign.issue_flags || []).join(', ') || '—')}</p>
+          </article>
+        `).join('')}
+      </div>` : `<div class="emptyStatePanel compact"><h3>Нет кампаний для фильтра</h3><p>Обновите сводку или смените фильтр.</p></div>`}
+    </section>
+    <section class="panel">
+      <div class="panelHeader">
+        <div>
+          <h3>Черновики безопасных действий</h3>
+          <p>Это manual review. Изменения в Яндекс.Директ не применяются автоматически.</p>
+        </div>
+        <span class="aiStatusBadge pending">${formatNumberSafe(actions.length)} actions</span>
+      </div>
+      ${actions.length ? `<div class="auditList">
+        ${actions.map((action) => `
+          <article class="auditItem ${action.severity === 'critical' ? 'high' : action.severity === 'warning' ? 'medium' : 'low'}">
+            <div class="priorityBadge">${escapeHtml(action.severity)}</div>
+            <div>
+              <h3>${escapeHtml(action.issue)}</h3>
+              <span>${escapeHtml(action.campaign_name || 'Аккаунт')}</span>
+              <p>${escapeHtml(action.evidence)}</p>
+              <strong>${escapeHtml(action.draft_action)}</strong>
+              <p>${escapeHtml(action.safety_note)}</p>
+              <button class="secondaryButton" data-copy-text="${escapeHtml(`${action.issue}\n${action.evidence}\n${action.draft_action}`)}">Скопировать рекомендацию</button>
+              <button class="secondaryButton" type="button">Отметить как просмотрено</button>
+            </div>
+          </article>
+        `).join('')}
+      </div>` : `<div class="emptyStatePanel compact"><h3>План ещё не сформирован</h3><p>Нажмите AI plan. Endpoint вернёт детерминированные draft actions без LLM и без write-действий.</p></div>`}
+    </section>
   `);
 }
 
@@ -1488,6 +1616,7 @@ function render() {
     reports: renderReports,
     autopilot: renderAutopilot,
     integrations: renderIntegrations,
+    optimization: renderOptimization,
   };
   app.innerHTML = views[activeView]();
   document.body.dataset.view = activeView;
@@ -1508,6 +1637,10 @@ function render() {
   }
   if (activeView === 'recommendations' && selectedClientId && !perfSummary && !perfLoading) {
     loadPerformanceSummary();
+  }
+  if (activeView === 'optimization' && selectedClientId) {
+    if (!perfSummary && !perfLoading) loadPerformanceSummary();
+    if (!optimizationPlan && !optimizationPlanLoading) loadOptimizationPlan();
   }
   if (activeView === 'ai' && aiStatus.message === 'Статус OpenRouter ещё не загружен.') {
     loadAiStatus();
@@ -1577,6 +1710,10 @@ app.addEventListener('click', async (event) => {
   const refreshYandexButton = event.target.closest('[data-refresh-yandex-status]');
   const goViewButton = event.target.closest('[data-go-view]');
   const syncJobsButton = event.target.closest('[data-load-sync-jobs]');
+  const optimizationPlanButton = event.target.closest('[data-load-optimization-plan]');
+  const optimizationFilterButton = event.target.closest('[data-optimization-filter]');
+  const copyOptimizationPlanButton = event.target.closest('[data-copy-optimization-plan]');
+  const copyTextButton = event.target.closest('[data-copy-text]');
 
   if (logoutButton) {
     localStorage.removeItem('directpilot_session');
@@ -1606,6 +1743,32 @@ app.addEventListener('click', async (event) => {
 
   if (syncJobsButton) {
     await loadSyncJobs();
+    return;
+  }
+
+  if (optimizationPlanButton) {
+    await loadOptimizationPlan();
+    return;
+  }
+
+  if (optimizationFilterButton) {
+    optimizationFilter = optimizationFilterButton.dataset.optimizationFilter;
+    render();
+    return;
+  }
+
+  if (copyOptimizationPlanButton) {
+    const text = JSON.stringify(optimizationPlan || {}, null, 2);
+    await navigator.clipboard?.writeText(text);
+    optimizationPlanStatus = 'План скопирован.';
+    render();
+    return;
+  }
+
+  if (copyTextButton) {
+    await navigator.clipboard?.writeText(copyTextButton.dataset.copyText || '');
+    optimizationPlanStatus = 'Рекомендация скопирована.';
+    render();
     return;
   }
 
