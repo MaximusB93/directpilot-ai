@@ -43,6 +43,10 @@ def ensure_mvp_schema() -> None:
         "ALTER TABLE client_accounts ADD COLUMN IF NOT EXISTS sync_error TEXT",
         "ALTER TABLE client_accounts ADD COLUMN IF NOT EXISTS last_synced_at TIMESTAMPTZ",
         "ALTER TABLE client_accounts ADD COLUMN IF NOT EXISTS sync_version INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE client_accounts ADD COLUMN IF NOT EXISTS yandex_account_id VARCHAR(36)",
+        "ALTER TABLE client_accounts ADD COLUMN IF NOT EXISTS target_cpa INTEGER",
+        "ALTER TABLE client_accounts ADD COLUMN IF NOT EXISTS main_goal_id VARCHAR(64)",
+        "ALTER TABLE client_accounts ADD COLUMN IF NOT EXISTS notes TEXT",
     ]
     with engine.begin() as connection:
         for statement in statements:

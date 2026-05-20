@@ -115,6 +115,21 @@ def get_latest_yandex_access_token(db: Session) -> str | None:
     return decrypt_secret(token.access_token_encrypted) if token else None
 
 
+def get_yandex_access_token_for_account(db: Session, account_id: str) -> str | None:
+    token = db.scalar(
+        select(OAuthToken)
+        .join(ConnectedAccount)
+        .where(
+            ConnectedAccount.id == account_id,
+            ConnectedAccount.provider == "yandex",
+            ConnectedAccount.status == "connected",
+        )
+        .order_by(OAuthToken.created_at.desc())
+        .limit(1)
+    )
+    return decrypt_secret(token.access_token_encrypted) if token else None
+
+
 def get_yandex_connection_status(db: Session | None) -> dict[str, Any]:
     if db is None:
         return {"connected": False, "accounts": [], "message": "DATABASE_URL is not configured."}

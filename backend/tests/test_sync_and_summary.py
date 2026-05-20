@@ -20,7 +20,7 @@ def test_sync_without_token_creates_no_stats_and_zero_rows() -> None:
         job = run_client_sync(db, "client-1", days=14)
         assert job.status == "failed"
         assert job.rows_loaded == 0
-        assert "Yandex OAuth token is not connected" in (job.error or "")
+        assert "Yandex account is not bound to this client" in (job.error or "")
         count = db.query(DirectCampaignPeriodStat).filter(DirectCampaignPeriodStat.client_id == "client-1").count()
         assert count == 0
 
