@@ -1,7 +1,7 @@
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.models import ConnectedAccount, OAuthToken, Organization, User
@@ -27,18 +27,29 @@ def ensure_default_organization(db: Session) -> Organization:
 
 def _account_to_schema(account: ConnectedAccount) -> ConnectedYandexAccount:
     token = account.tokens[-1] if account.tokens else None
+    external_user_id = account.external_user_id
+    if external_user_id and external_user_id.endswith(f":{account.organization_id}"):
+        external_user_id = external_user_id[: -(len(account.organization_id) + 1)]
     return ConnectedYandexAccount(
         id=account.id,
         provider=account.provider,
         status=account.status,
         login=account.login,
         display_name=account.display_name,
-        external_user_id=account.external_user_id,
+        external_user_id=external_user_id,
         scope=account.scope,
         connected_at=account.connected_at.isoformat(),
         updated_at=account.updated_at.isoformat(),
         token_expires_at=token.expires_at.isoformat() if token and token.expires_at else None,
     )
+
+
+def _scoped_external_user_id(external_user_id: str | None, organization_id: str) -> str | None:
+    if not external_user_id:
+        return None
+    if external_user_id.endswith(f":{organization_id}"):
+        return external_user_id
+    return f"{external_user_id}:{organization_id}"
 
 
 def save_yandex_connection(
@@ -48,10 +59,13 @@ def save_yandex_connection(
     organization_id: str | None = None,
 ) -> ConnectedYandexAccount:
     organization = db.get(Organization, organization_id) if organization_id else None
+    if organization_id and organization is None:
+        raise RuntimeError("OAuth workspace was not found. Please restart Yandex connection from the app.")
     if organization is None:
         # TODO: Bind OAuth callback to a verified browser session instead of this MVP fallback.
         organization = ensure_default_organization(db)
     external_user_id = user_info.id if user_info else None
+    stored_external_user_id = _scoped_external_user_id(external_user_id, organization.id)
     login = user_info.login if user_info else None
     display_name = user_info.display_name if user_info else None
 
@@ -60,7 +74,11 @@ def save_yandex_connection(
         account = db.scalar(
             select(ConnectedAccount).where(
                 ConnectedAccount.provider == "yandex",
-                ConnectedAccount.external_user_id == external_user_id,
+                or_(
+                    ConnectedAccount.external_user_id == external_user_id,
+                    ConnectedAccount.external_user_id == stored_external_user_id,
+                ),
+                ConnectedAccount.organization_id == organization.id,
             )
         )
 
@@ -69,7 +87,7 @@ def save_yandex_connection(
         db.add(account)
         db.flush()
 
-    account.external_user_id = external_user_id
+    account.external_user_id = stored_external_user_id
     account.login = login
     account.display_name = display_name
     account.status = "connected"
@@ -78,16 +96,18 @@ def save_yandex_connection(
     if user_info:
         user = None
         if external_user_id:
+            stored_user_external_id = _scoped_external_user_id(external_user_id, organization.id)
             user = db.scalar(
                 select(User).where(
                     User.provider == "yandex",
-                    User.external_user_id == external_user_id,
+                    or_(User.external_user_id == external_user_id, User.external_user_id == stored_user_external_id),
+                    User.organization_id == organization.id,
                 )
             )
         if user is None:
             user = User(organization_id=organization.id, provider="yandex")
             db.add(user)
-        user.external_user_id = external_user_id
+        user.external_user_id = stored_user_external_id if external_user_id else None
         user.email = user_info.default_email
         user.name = display_name or login
 
