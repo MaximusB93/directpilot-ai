@@ -364,3 +364,25 @@ class AiPromptResponse(BaseModel):
     content: str
     usage: dict | None = None
     id: str | None = None
+
+
+class SyncJobResponse(BaseModel):
+    id: str
+    client_id: str
+    source_type: str
+    status: str
+    period_from: str | None = None
+    period_to: str | None = None
+    rows_loaded: int
+    error: str | None = None
+    started_at: str | None = None
+    finished_at: str | None = None
+    created_at: str
+
+
+class ClientPerformanceSummaryResponse(BaseModel):
+    client: dict
+    period: dict | None = None
+    totals: dict
+    campaigns: list[dict]
+    message: str

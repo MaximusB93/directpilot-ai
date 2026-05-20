@@ -52,6 +52,10 @@ let clientAiRecommendations = null;
 let clientAiLoading = false;
 let clientAiError = '';
 let clientFormStatus = '';
+let syncStatusMessage = '';
+let syncLoading = false;
+let perfSummary = null;
+let perfLoading = false;
 let clientsLoaded = false;
 let backendClientsAvailable = false;
 let backendClientsStatus = 'Проверяем подключение backend...';
@@ -522,6 +526,46 @@ async function loadIntegrationStatus() {
   }
 }
 
+
+
+async function runClientSync() {
+  if (!selectedClientId) return;
+  syncLoading = true;
+  syncStatusMessage = 'Запускаем синхронизацию...';
+  render();
+  try {
+    const response = await fetch(`${API_BASE}/clients/${selectedClientId}/sync`, { method: 'POST' });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.detail || 'Ошибка синхронизации');
+    syncStatusMessage = `Синхронизация: ${payload.status}, строк: ${payload.rows_loaded}, источник: ${payload.source_type}`;
+    clientsLoaded = false;
+    await loadClientsFromApi();
+  } catch (error) {
+    syncStatusMessage = `Ошибка синхронизации: ${error.message}`;
+  } finally {
+    syncLoading = false;
+    render();
+  }
+}
+
+async function loadPerformanceSummary() {
+  if (!selectedClientId) return;
+  perfLoading = true;
+  perfSummary = null;
+  render();
+  try {
+    const response = await fetch(`${API_BASE}/clients/${selectedClientId}/performance-summary`);
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.detail || 'Не удалось загрузить сводку');
+    perfSummary = payload;
+  } catch (error) {
+    syncStatusMessage = `Ошибка сводки: ${error.message}`;
+  } finally {
+    perfLoading = false;
+    render();
+  }
+}
+
 function renderShell(content) {
   const client = currentClient();
   return `
@@ -572,6 +616,11 @@ function renderDashboard() {
       <span class="eyebrow">📊 Agency overview</span>
       <h2>Центр управления рекламой и AI-рекомендациями</h2>
       <p>${hasClient ? 'Сводка по выбранному клиенту, источникам данных и действиям, которые ИИ сможет предложить после загрузки статистики.' : 'В личном кабинете больше нет предзагруженных демо-данных. Добавьте первого клиента и подключите его аккаунты.'}</p>
+      <div class="heroActions">
+        <button class="approveButton" data-sync-client ${!hasClient || syncLoading ? 'disabled' : ''}>${syncLoading ? 'Синхронизация...' : 'Запустить синхронизацию'}</button>
+        <button class="secondaryButton" data-load-summary ${!hasClient || perfLoading ? 'disabled' : ''}>${perfLoading ? 'Загружаем...' : 'Показать сводку'}</button>
+      </div>
+      ${syncStatusMessage ? `<div class="authStatus integrationStatus">${escapeHtml(syncStatusMessage)}</div>` : ''}
     </div>
     <div class="metricGrid">${agencyMetrics.map(metricCard).join('')}</div>
     ${!hasClient ? `
@@ -611,6 +660,13 @@ function renderDashboard() {
         ` : `<div class="emptyStatePanel compact"><h3>Кампании ещё не загружены</h3><p>Подключите OAuth Яндекса и выберите логин клиента, чтобы загрузить реальные кампании из Direct API.</p></div>`}
       </section>
     `}
+    ${perfSummary ? `
+      <section class="panel">
+        <h3>Сводка эффективности (${escapeHtml(perfSummary.message)})</h3>
+        <p>Расход: ${perfSummary.totals.cost} ₽ · Показы: ${perfSummary.totals.impressions} · Клики: ${perfSummary.totals.clicks} · Конверсии: ${perfSummary.totals.conversions}</p>
+        <p>Avg CPC: ${perfSummary.totals.avg_cpc} · CPA: ${perfSummary.totals.cpa ?? '—'}</p>
+      </section>
+    ` : ''}
   `);
 }
 
@@ -648,6 +704,13 @@ function renderClients() {
         <p>Мы убрали все демо-аккаунты из личного кабинета. Добавьте реального клиента и подключите его источники данных.</p>
       </section>
     `}
+    ${perfSummary ? `
+      <section class="panel">
+        <h3>Сводка эффективности (${escapeHtml(perfSummary.message)})</h3>
+        <p>Расход: ${perfSummary.totals.cost} ₽ · Показы: ${perfSummary.totals.impressions} · Клики: ${perfSummary.totals.clicks} · Конверсии: ${perfSummary.totals.conversions}</p>
+        <p>Avg CPC: ${perfSummary.totals.avg_cpc} · CPA: ${perfSummary.totals.cpa ?? '—'}</p>
+      </section>
+    ` : ''}
   `);
 }
 
@@ -939,6 +1002,18 @@ app.addEventListener('click', async (event) => {
   const clientButton = event.target.closest('[data-client-id]');
   const integrationButton = event.target.closest('[data-integration]');
   const clientAiButton = event.target.closest('[data-client-ai-recommendations]');
+  const syncButton = event.target.closest('[data-sync-client]');
+  const summaryButton = event.target.closest('[data-load-summary]');
+
+  if (syncButton) {
+    await runClientSync();
+    return;
+  }
+
+  if (summaryButton) {
+    await loadPerformanceSummary();
+    return;
+  }
 
   if (clientAiButton) {
     await requestClientAiRecommendations();
