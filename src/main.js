@@ -116,6 +116,9 @@ let syncStatusMessage = '';
 let syncLoading = false;
 let perfSummary = null;
 let perfLoading = false;
+let syncJobs = [];
+let syncJobsLoading = false;
+let syncJobsStatus = '';
 let clientsLoaded = false;
 let backendClientsAvailable = false;
 let backendClientsStatus = 'Проверяем подключение backend...';
@@ -257,7 +260,7 @@ function getViewActionTarget(target) {
 
 function isInteractiveActionTarget(target) {
   return Boolean(
-    target?.closest?.('button, a, [role="button"], [data-save-api-base], [data-client-id], [data-integration], [data-client-ai-recommendations], [data-sync-client], [data-load-summary], [data-refresh-yandex-status], [data-logout]')
+    target?.closest?.('button, a, [role="button"], [data-save-api-base], [data-client-id], [data-integration], [data-client-ai-recommendations], [data-sync-client], [data-load-summary], [data-load-sync-jobs], [data-refresh-yandex-status], [data-go-view], [data-logout]')
     || getViewActionTarget(target)
   );
 }
@@ -290,6 +293,86 @@ function activeAiModel() {
 
 function currentClient() {
   return accountClients.find((client) => client.id === selectedClientId) ?? accountClients[0] ?? emptyClient();
+}
+
+function getSelectedClient() {
+  return currentClient();
+}
+
+function formatNumberSafe(value) {
+  const number = Number(value || 0);
+  return Number.isFinite(number) ? new Intl.NumberFormat('ru-RU').format(number) : '0';
+}
+
+function formatMoneySafe(value) {
+  const number = Number(value || 0);
+  return Number.isFinite(number) ? `${new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 }).format(number)} ₽` : '0 ₽';
+}
+
+function formatPercentSafe(value) {
+  const number = Number(value || 0);
+  return Number.isFinite(number) ? `${number.toFixed(2)}%` : '0.00%';
+}
+
+function formatDateSafe(value) {
+  if (!value) return '—';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('ru-RU');
+}
+
+function hasClientValue(value) {
+  return Boolean(value && value !== 'Не подключен' && value !== '—');
+}
+
+function hasPerformanceData() {
+  return Boolean(perfSummary?.campaigns?.length || Number(perfSummary?.totals?.clicks || 0) > 0);
+}
+
+function canRunSync() {
+  const client = getSelectedClient();
+  return Boolean(client.id && hasClientValue(client.directLogin) && clientYandexIntegration?.connected);
+}
+
+function canRunAiAnalysis() {
+  return Boolean(getSelectedClient().id && hasPerformanceData());
+}
+
+function formatSyncStatus(value) {
+  return {
+    never_synced: 'Синхронизация ещё не запускалась',
+    no_connection: 'Нет подключения к данным',
+    no_data: 'Нет сохранённых данных',
+    ok: 'Данные загружены',
+    error: 'Ошибка синхронизации',
+  }[value || 'never_synced'] || value || 'Неизвестно';
+}
+
+function getReadinessState() {
+  const client = getSelectedClient();
+  const hasClient = Boolean(client.id);
+  const directReady = hasClientValue(client.directLogin);
+  const metricaReady = hasClientValue(client.metricaCounter);
+  const yandexBound = Boolean(clientYandexIntegration?.connected);
+  const firstSyncDone = Boolean(client.lastSyncedAt || client.syncVersion > 0);
+  const statsReady = hasPerformanceData();
+  const aiReady = Boolean(clientAiRecommendationsByClientId[client.id] || clientAiRecommendations);
+
+  return [
+    { status: getSessionToken() ? 'ready' : 'blocked', label: 'Пользователь авторизован', description: currentEmail || 'Нет активной сессии', nextAction: 'Войдите по email', targetView: 'login' },
+    { status: backendClientsAvailable ? 'ready' : 'pending', label: 'Backend API подключён', description: backendClientsStatus, nextAction: 'Проверьте Backend API URL', targetView: 'integrations' },
+    { status: hasClient ? 'ready' : 'action_needed', label: 'Клиент выбран', description: hasClient ? client.name : 'Нет клиента', nextAction: 'Добавьте клиента', targetView: 'clients' },
+    { status: !hasClient ? 'blocked' : directReady ? 'ready' : 'action_needed', label: 'Direct login указан', description: directReady ? client.directLogin : 'Укажите логин Яндекс.Директа в настройках клиента.', nextAction: 'Укажите Direct login', targetView: 'clients' },
+    { status: !hasClient ? 'blocked' : metricaReady ? 'ready' : 'action_needed', label: 'Счётчик Метрики указан', description: metricaReady ? client.metricaCounter : 'Укажите ID счётчика Метрики.', nextAction: 'Укажите счётчик Метрики', targetView: 'clients' },
+    { status: !hasClient ? 'blocked' : yandexBound ? 'ready' : 'action_needed', label: 'Яндекс-аккаунт привязан', description: yandexBound ? 'Аккаунт привязан к выбранному клиенту.' : 'Яндекс-аккаунт не привязан к этому клиенту.', nextAction: 'Привяжите Яндекс-аккаунт', targetView: 'integrations' },
+    { status: !canRunSync() && !firstSyncDone ? 'blocked' : firstSyncDone ? 'ready' : 'action_needed', label: 'Первая синхронизация выполнена', description: formatSyncStatus(client.syncStatus), nextAction: 'Запустите синхронизацию', targetView: 'dashboard' },
+    { status: statsReady ? 'ready' : firstSyncDone ? 'action_needed' : 'pending', label: 'Статистика кампаний доступна', description: statsReady ? `${perfSummary.campaigns.length} кампаний в сводке` : 'Нет сохранённых данных', nextAction: 'Обновите сводку или синхронизацию', targetView: 'dashboard' },
+    { status: aiReady ? 'ready' : statsReady ? 'action_needed' : 'pending', label: 'AI-рекомендации сгенерированы', description: aiReady ? 'Черновик готов для ревью.' : 'AI-анализ станет доступнее после загрузки статистики.', nextAction: 'Откройте AI-рекомендации', targetView: 'recommendations' },
+  ];
+}
+
+function getNextBestAction() {
+  const item = getReadinessState().find((entry) => entry.status === 'action_needed' || entry.status === 'blocked' || entry.status === 'pending');
+  return item || { label: 'MVP поток готов', nextAction: 'Откройте AI-рекомендации', targetView: 'recommendations' };
 }
 
 function resetClientDerivedState() {
@@ -765,8 +848,11 @@ async function runClientSync() {
     }
     clientsLoaded = false;
     await loadClientsFromApi();
+    await loadPerformanceSummary();
+    await loadSyncJobs();
   } catch (error) {
     syncStatusMessage = `Ошибка синхронизации: ${error.message}`;
+    await loadSyncJobs();
   } finally {
     syncLoading = false;
     render();
@@ -788,6 +874,34 @@ async function loadPerformanceSummary() {
   } finally {
     perfLoading = false;
     render();
+  }
+}
+
+function resetSelectedClientOperationalState() {
+  perfSummary = null;
+  syncJobs = [];
+  syncJobsStatus = '';
+  syncStatusMessage = '';
+  clientYandexIntegration = null;
+  clientYandexLoadedFor = '';
+}
+
+async function loadSyncJobs() {
+  if (!selectedClientId) return;
+  syncJobsLoading = true;
+  syncJobsStatus = 'Загружаем историю синхронизаций...';
+  if (activeView === 'dashboard') render();
+  try {
+    const response = await apiFetch(`/clients/${selectedClientId}/sync/jobs`);
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.detail || 'Не удалось загрузить историю синхронизаций');
+    syncJobs = Array.isArray(payload) ? payload : [];
+    syncJobsStatus = syncJobs.length ? `Загружено заданий: ${syncJobs.length}` : 'Синхронизация ещё не запускалась';
+  } catch (error) {
+    syncJobsStatus = error.message;
+  } finally {
+    syncJobsLoading = false;
+    if (activeView === 'dashboard') render();
   }
 }
 
@@ -834,21 +948,173 @@ function renderShell(content) {
   `;
 }
 
+function readinessIcon(status) {
+  return { ready: '✅', action_needed: '⚠️', blocked: '⛔', pending: '⏳' }[status] || '⏳';
+}
+
+function readinessLabel(status) {
+  return { ready: 'Готово', action_needed: 'Нужно действие', blocked: 'Блокер', pending: 'Ожидает' }[status] || 'Ожидает';
+}
+
+function renderReadinessPanel(readiness, nextAction) {
+  const client = getSelectedClient();
+  return `
+    <section class="panel">
+      <div class="panelHeader">
+        <div>
+          <h3>Готовность MVP по клиенту</h3>
+          <p>${client.id ? escapeHtml(client.name) : 'Нет клиента'}</p>
+        </div>
+        <span class="aiStatusBadge ${nextAction.status === 'ready' ? 'ready' : 'pending'}">${escapeHtml(nextAction.nextAction)}</span>
+      </div>
+      <div class="authStatus integrationStatus"><strong>Следующий шаг:</strong> ${escapeHtml(nextAction.nextAction)}</div>
+      <div class="featureGrid">
+        ${readiness.map((item) => `
+          <article class="featureCard">
+            <span class="featureIcon">${readinessIcon(item.status)}</span>
+            <h3>${escapeHtml(item.label)}</h3>
+            <p>${escapeHtml(item.description)}</p>
+            <small>${readinessLabel(item.status)} · ${escapeHtml(item.nextAction)}</small>
+          </article>
+        `).join('')}
+      </div>
+      <div class="heroActions">
+        <button class="secondaryButton" data-go-view="clients">Клиенты</button>
+        <button class="secondaryButton" data-go-view="integrations">Интеграции</button>
+        <button class="approveButton" data-sync-client ${canRunSync() && !syncLoading ? '' : 'disabled'}>${syncLoading ? 'Синхронизация...' : 'Запустить синхронизацию'}</button>
+        <button class="approveButton" data-go-view="recommendations">AI-рекомендации</button>
+      </div>
+    </section>
+  `;
+}
+
+function renderSyncCenter() {
+  const client = getSelectedClient();
+  const lastJob = syncJobs[0];
+  const yandexBound = Boolean(clientYandexIntegration?.connected);
+  const directReady = hasClientValue(client.directLogin);
+  const helper = !yandexBound
+    ? 'Сначала привяжите Яндекс-аккаунт к этому клиенту.'
+    : !directReady
+      ? 'Укажите логин Яндекс.Директа в настройках клиента.'
+      : 'Можно запускать синхронизацию. Backend загрузит сохранённые данные Яндекс.Директа.';
+
+  return `
+    <section class="panel">
+      <div class="panelHeader">
+        <div>
+          <h3>Синхронизация данных</h3>
+          <p>${escapeHtml(client.name)} · ${escapeHtml(helper)}</p>
+        </div>
+        <span class="aiStatusBadge ${client.syncStatus === 'ok' ? 'ready' : 'pending'}">${escapeHtml(formatSyncStatus(client.syncStatus))}</span>
+      </div>
+      <div class="kpiGrid">
+        <article class="kpi blue"><span>Яндекс</span><strong>${yandexBound ? 'Привязан' : 'Не привязан'}</strong></article>
+        <article class="kpi green"><span>Версия sync</span><strong>${formatNumberSafe(client.syncVersion || 0)}</strong></article>
+        <article class="kpi orange"><span>Последний sync</span><strong>${escapeHtml(formatDateSafe(client.lastSyncedAt))}</strong></article>
+      </div>
+      ${client.syncError ? `<div class="authStatus aiError">${escapeHtml(client.syncError)}</div>` : ''}
+      ${syncStatusMessage ? `<div class="authStatus integrationStatus">${escapeHtml(syncStatusMessage)}</div>` : ''}
+      <div class="heroActions">
+        <button class="approveButton" data-sync-client ${canRunSync() && !syncLoading ? '' : 'disabled'}>${syncLoading ? 'Синхронизация...' : 'Запустить синхронизацию'}</button>
+        <button class="secondaryButton" data-load-summary ${perfLoading ? 'disabled' : ''}>${perfLoading ? 'Загружаем...' : 'Обновить сводку'}</button>
+        <button class="secondaryButton" data-load-sync-jobs ${syncJobsLoading ? 'disabled' : ''}>История синхронизаций</button>
+      </div>
+      <div class="authStatus integrationStatus">${escapeHtml(syncJobsStatus || (lastJob ? `Последнее задание: ${lastJob.status}, строк: ${lastJob.rows_loaded}` : 'Синхронизация ещё не запускалась'))}</div>
+      ${lastJob ? `<p>Последний результат: ${escapeHtml(lastJob.status)} · ${formatNumberSafe(lastJob.rows_loaded)} строк · ${escapeHtml(lastJob.source_type)}${lastJob.error ? ` · ${escapeHtml(lastJob.error)}` : ''}</p>` : ''}
+      ${syncJobs.length ? `
+        <div class="tableWrap">
+          <table>
+            <thead><tr><th>Статус</th><th>Строки</th><th>Источник</th><th>Период</th><th>Завершено</th><th>Ошибка</th></tr></thead>
+            <tbody>${syncJobs.slice(0, 5).map((job) => `
+              <tr>
+                <td><span class="tableStatus">${escapeHtml(job.status)}</span></td>
+                <td>${formatNumberSafe(job.rows_loaded)}</td>
+                <td>${escapeHtml(job.source_type)}</td>
+                <td>${escapeHtml(formatDateSafe(job.period_from))} — ${escapeHtml(formatDateSafe(job.period_to))}</td>
+                <td>${escapeHtml(formatDateSafe(job.finished_at || job.started_at || job.created_at))}</td>
+                <td>${escapeHtml(job.error || '—')}</td>
+              </tr>
+            `).join('')}</tbody>
+          </table>
+        </div>
+      ` : ''}
+    </section>
+  `;
+}
+
+function renderPerformanceSummaryPanel() {
+  if (!perfSummary) {
+    return `
+      <section class="panel emptyStatePanel compact">
+        <h3>Сводка эффективности не загружена</h3>
+        <p>Нет сохранённых данных Яндекс.Директа. Запустите синхронизацию после подключения Яндекса или обновите сводку.</p>
+        <button class="approveButton" data-load-summary ${perfLoading ? 'disabled' : ''}>${perfLoading ? 'Загружаем...' : 'Показать сводку'}</button>
+      </section>
+    `;
+  }
+
+  const totals = perfSummary.totals || {};
+  const campaigns = perfSummary.campaigns || [];
+  const issueCount = campaigns.reduce((sum, item) => sum + (item.issue_flags?.length || 0), 0);
+  return `
+    <section class="panel">
+      <div class="panelHeader">
+        <div>
+          <h3>Performance Summary</h3>
+          <p>${campaigns.length ? `Кампаний: ${campaigns.length}, флагов: ${issueCount}` : 'Нет сохранённых данных Яндекс.Директа. Запустите синхронизацию после подключения Яндекса.'}</p>
+        </div>
+        <span class="aiStatusBadge ${campaigns.length ? 'ready' : 'pending'}">${escapeHtml(perfSummary.message)}</span>
+      </div>
+      <div class="kpiGrid">
+        <article class="kpi green"><span>Расход</span><strong>${formatMoneySafe(totals.cost)}</strong></article>
+        <article class="kpi blue"><span>Показы</span><strong>${formatNumberSafe(totals.impressions)}</strong></article>
+        <article class="kpi orange"><span>Клики</span><strong>${formatNumberSafe(totals.clicks)}</strong></article>
+        <article class="kpi green"><span>Конверсии</span><strong>${formatNumberSafe(totals.conversions)}</strong></article>
+      </div>
+      <p>Avg CPC: ${formatMoneySafe(totals.avg_cpc)} · CPA: ${totals.cpa == null ? '—' : formatMoneySafe(totals.cpa)} · CTR: ${formatPercentSafe(totals.clicks && totals.impressions ? (totals.clicks / totals.impressions) * 100 : 0)}</p>
+      ${campaigns.length ? `
+        <div class="tableWrap">
+          <table>
+            <thead><tr><th>Кампания</th><th>Расход</th><th>Показы</th><th>Клики</th><th>Конверсии</th><th>CTR</th><th>CPA</th><th>Флаги</th></tr></thead>
+            <tbody>${campaigns.map((campaign) => `
+              <tr>
+                <td>${escapeHtml(campaign.campaign_name)}</td>
+                <td>${formatMoneySafe(campaign.cost)}</td>
+                <td>${formatNumberSafe(campaign.impressions)}</td>
+                <td>${formatNumberSafe(campaign.clicks)}</td>
+                <td>${formatNumberSafe(campaign.conversions)}</td>
+                <td>${formatPercentSafe(campaign.ctr)}</td>
+                <td>${campaign.cpa == null ? '—' : formatMoneySafe(campaign.cpa)}</td>
+                <td>${escapeHtml((campaign.issue_flags || []).join(', ') || '—')}</td>
+              </tr>
+            `).join('')}</tbody>
+          </table>
+        </div>
+      ` : ''}
+    </section>
+  `;
+}
+
 function renderDashboard() {
   const client = currentClient();
   const hasClient = Boolean(client.id);
+  const readiness = getReadinessState();
+  const nextAction = getNextBestAction();
   return renderShell(`
     <div class="pageIntro">
       <span class="eyebrow">📊 Agency overview</span>
       <h2>Центр управления рекламой и AI-рекомендациями</h2>
       <p>${hasClient ? 'Сводка по выбранному клиенту, источникам данных и действиям, которые ИИ сможет предложить после загрузки статистики.' : 'В личном кабинете больше нет предзагруженных демо-данных. Добавьте первого клиента и подключите его аккаунты.'}</p>
       <div class="heroActions">
+        <button class="secondaryButton" data-go-view="clients">Клиенты</button>
+        <button class="secondaryButton" data-go-view="integrations">Интеграции</button>
         <button class="approveButton" data-sync-client ${!hasClient || syncLoading ? 'disabled' : ''}>${syncLoading ? 'Синхронизация...' : 'Запустить синхронизацию'}</button>
-        <button class="secondaryButton" data-load-summary ${!hasClient || perfLoading ? 'disabled' : ''}>${perfLoading ? 'Загружаем...' : 'Показать сводку'}</button>
+        <button class="approveButton" data-go-view="recommendations">AI-рекомендации</button>
       </div>
       ${syncStatusMessage ? `<div class="authStatus integrationStatus">${escapeHtml(syncStatusMessage)}</div>` : ''}
     </div>
-    <div class="metricGrid">${agencyMetrics.map(metricCard).join('')}</div>
+    ${renderReadinessPanel(readiness, nextAction)}
     ${!hasClient ? `
       <section class="panel emptyStatePanel">
         <h3>Добавьте первого клиента</h3>
@@ -856,43 +1122,9 @@ function renderDashboard() {
         <button class="approveButton" data-view="clients">Перейти к клиентам</button>
       </section>
     ` : `
-      <div class="dashboardLayout">
-        <section class="panel scorePanel">
-          <div class="scoreRing" style="--score: ${client.score}%"><strong>${client.score}</strong><span>/100</span></div>
-          <div>
-            <span class="muted">AI score аккаунта</span>
-            <h3>${client.status}</h3>
-            <p>Оценка появится после синхронизации Директа, Метрики и минимального периода анализа.</p>
-          </div>
-        </section>
-        <section class="panel">
-          <div class="panelHeader"><h3>Что сделать сегодня</h3><button data-view="integrations">Подключить источники</button></div>
-          <div class="taskList">
-            <article><strong>Подключить Яндекс.Директ</strong><span>Источник расходов</span><p>${client.directLogin}</p></article>
-            <article><strong>Подключить Яндекс.Метрику</strong><span>Источник целей</span><p>${client.metricaCounter}</p></article>
-            <article><strong>Запустить AI-анализ</strong><span>После синхронизации</span><p>Рекомендации строятся только по данным клиента.</p></article>
-          </div>
-        </section>
-      </div>
-      <section class="panel">
-        <div class="panelHeader"><h3>Кампании клиента</h3><button data-view="integrations">Проверить подключение</button></div>
-        ${campaigns.length ? `
-          <div class="tableWrap">
-            <table>
-              <thead><tr><th>Кампания</th><th>Расход</th><th>Лиды</th><th>CPA</th><th>Статус</th></tr></thead>
-              <tbody>${campaigns.map((campaign) => `<tr><td>${campaign.name}</td><td>${campaign.spend}</td><td>${campaign.leads}</td><td>${campaign.cpa}</td><td><span class="tableStatus">${campaign.status}</span></td></tr>`).join('')}</tbody>
-            </table>
-          </div>
-        ` : `<div class="emptyStatePanel compact"><h3>Кампании ещё не загружены</h3><p>Подключите OAuth Яндекса и выберите логин клиента, чтобы загрузить реальные кампании из Direct API.</p></div>`}
-      </section>
+      ${renderSyncCenter()}
+      ${renderPerformanceSummaryPanel()}
     `}
-    ${perfSummary ? `
-      <section class="panel">
-        <h3>Сводка эффективности (${escapeHtml(perfSummary.message)})</h3>
-        <p>Расход: ${perfSummary.totals.cost} ₽ · Показы: ${perfSummary.totals.impressions} · Клики: ${perfSummary.totals.clicks} · Конверсии: ${perfSummary.totals.conversions}</p>
-        <p>Avg CPC: ${perfSummary.totals.avg_cpc} · CPA: ${perfSummary.totals.cpa ?? '—'}</p>
-      </section>
-    ` : ''}
   `);
 }
 
@@ -1014,14 +1246,29 @@ function renderClientAiRecommendations() {
 }
 
 function renderRecommendations() {
+  const campaignsCount = perfSummary?.campaigns?.length || 0;
+  const issueCount = perfSummary?.campaigns?.reduce((sum, item) => sum + (item.issue_flags?.length || 0), 0) || 0;
+  const totals = perfSummary?.totals || {};
   return renderShell(`
     <div class="pageIntro"><span class="eyebrow">✨ Рекомендации</span><h2>Действия с объяснениями и контролем риска</h2><p>В production каждая карточка будет иметь dry-run, diff, approval и rollback-данные.</p></div>
     <section class="panel aiRecommendationCta">
       <div>
         <h3>Сформировать AI-рекомендации по клиентскому контексту</h3>
-        <p>Backend соберёт профиль клиента, кампании, аудит, текущие рекомендации и guardrails, а затем вернёт структурированный черновик. Если OpenRouter не настроен, покажем безопасный fallback.</p>
+        <p>${canRunAiAnalysis() ? 'AI будет использовать сохранённые данные Яндекс.Директа.' : 'AI пока не видит статистику кампаний. Сначала запустите синхронизацию.'}</p>
       </div>
       <button class="approveButton" data-client-ai-recommendations ${clientAiLoading ? 'disabled' : ''}>${clientAiLoading ? 'Генерируем...' : 'Сгенерировать AI-черновик'}</button>
+    </section>
+    <section class="panel">
+      <div class="panelHeader">
+        <h3>Evidence preview</h3>
+        <span class="aiStatusBadge ${canRunAiAnalysis() ? 'ready' : 'pending'}">${canRunAiAnalysis() ? 'Реальные данные доступны' : 'Нужна статистика'}</span>
+      </div>
+      <div class="kpiGrid">
+        <article class="kpi green"><span>Расход</span><strong>${formatMoneySafe(totals.cost)}</strong></article>
+        <article class="kpi blue"><span>Конверсии</span><strong>${formatNumberSafe(totals.conversions)}</strong></article>
+        <article class="kpi orange"><span>Кампании</span><strong>${formatNumberSafe(campaignsCount)}</strong></article>
+        <article class="kpi green"><span>Флаги</span><strong>${formatNumberSafe(issueCount)}</strong></article>
+      </div>
     </section>
     ${renderClientAiRecommendations()}
     ${recommendations.length ? `
@@ -1254,6 +1501,14 @@ function render() {
   if (activeView === 'integrations' && selectedClientId) {
     loadClientYandexIntegration();
   }
+  if (activeView === 'dashboard' && selectedClientId) {
+    if (!syncJobs.length && !syncJobsLoading) loadSyncJobs();
+    if (!perfSummary && !perfLoading) loadPerformanceSummary();
+    if (!clientYandexIntegration && !clientYandexLoading) loadClientYandexIntegration();
+  }
+  if (activeView === 'recommendations' && selectedClientId && !perfSummary && !perfLoading) {
+    loadPerformanceSummary();
+  }
   if (activeView === 'ai' && aiStatus.message === 'Статус OpenRouter ещё не загружен.') {
     loadAiStatus();
   }
@@ -1320,6 +1575,8 @@ app.addEventListener('click', async (event) => {
   const unbindYandexButton = event.target.closest('[data-unbind-yandex]');
   const logoutButton = event.target.closest('[data-logout]');
   const refreshYandexButton = event.target.closest('[data-refresh-yandex-status]');
+  const goViewButton = event.target.closest('[data-go-view]');
+  const syncJobsButton = event.target.closest('[data-load-sync-jobs]');
 
   if (logoutButton) {
     localStorage.removeItem('directpilot_session');
@@ -1337,6 +1594,18 @@ app.addEventListener('click', async (event) => {
     await loadIntegrationStatus();
     await loadClientYandexIntegration(true);
     render();
+    return;
+  }
+
+  if (goViewButton) {
+    activeView = goViewButton.dataset.goView;
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    render();
+    return;
+  }
+
+  if (syncJobsButton) {
+    await loadSyncJobs();
     return;
   }
 
@@ -1415,8 +1684,7 @@ app.addEventListener('click', async (event) => {
     saveSelectedClientId();
     clientAiRecommendations = null;
     resetClientDerivedState();
-    clientYandexIntegration = null;
-    clientYandexLoadedFor = '';
+    resetSelectedClientOperationalState();
     clientFormStatus = '';
     activeView = 'dashboard';
     render();
@@ -1612,8 +1880,7 @@ app.addEventListener('change', (event) => {
     selectedClientId = event.target.value;
     saveSelectedClientId();
     resetClientDerivedState();
-    clientYandexIntegration = null;
-    clientYandexLoadedFor = '';
+    resetSelectedClientOperationalState();
     clientFormStatus = '';
     render();
   }
