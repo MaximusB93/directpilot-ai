@@ -2,10 +2,11 @@ import json
 from typing import Any
 
 from fastapi import HTTPException
+from sqlalchemy import select
 
 from app.core.config import settings
 from app.db import SessionLocal
-from app.models import ClientAccount
+from app.models import ClientAccount, ConnectedAccount, SyncJob
 from app.schemas import AiGeneratedRecommendation, AiRecommendationResponse
 from app.services.mock_data import AUDIT_ISSUES, CAMPAIGNS, CLIENTS, RECOMMENDATIONS
 from app.services.openrouter import generate_openrouter_response
@@ -91,9 +92,18 @@ def build_client_ai_context_from_db(db, client_id: str, selected_campaign_name: 
         raise ValueError("Client not found")
     summary = build_performance_summary(db, client_id)
     plan = build_optimization_plan(db, client_id)
+    latest_sync_job = db.scalar(
+        select(SyncJob)
+        .where(SyncJob.client_id == client_id)
+        .order_by(SyncJob.created_at.desc())
+        .limit(1)
+    )
+    bound_account = db.get(ConnectedAccount, client.yandex_account_id) if client.yandex_account_id else None
     campaigns = summary.get("campaigns", [])
+    selected_campaign = None
     if selected_campaign_name:
-        campaigns = [item for item in campaigns if item.get("campaign_name") == selected_campaign_name] or campaigns
+        selected_campaign = next((item for item in campaigns if item.get("campaign_name") == selected_campaign_name), None)
+        campaigns = [selected_campaign] if selected_campaign else campaigns
     warnings = list(summary.get("goalDataWarnings") or [])
     if client.conversion_goal_ids is None and client.main_goal_id is None:
         warnings.append("ID целей Метрики не указаны.")
@@ -106,7 +116,45 @@ def build_client_ai_context_from_db(db, client_id: str, selected_campaign_name: 
             "main_goal_id": client.main_goal_id,
             "conversion_goal_ids": client.conversion_goal_ids,
             "target_cpa": client.target_cpa,
+            "notes": client.notes,
+            "sync_status": client.sync_status,
+            "sync_error": client.sync_error,
+            "last_synced_at": client.last_synced_at.isoformat() if client.last_synced_at else None,
+            "sync_version": client.sync_version,
         },
+        "yandex_binding": {
+            "bound": bound_account is not None,
+            "account": (
+                {
+                    "id": bound_account.id,
+                    "provider": bound_account.provider,
+                    "status": bound_account.status,
+                    "login": bound_account.login,
+                    "display_name": bound_account.display_name,
+                    "connected_at": bound_account.connected_at.isoformat() if bound_account.connected_at else None,
+                    "updated_at": bound_account.updated_at.isoformat() if bound_account.updated_at else None,
+                }
+                if bound_account
+                else None
+            ),
+            "message": "Yandex account is bound to this client." if bound_account else "Yandex account is not bound to this client.",
+        },
+        "latest_sync_job": (
+            {
+                "id": latest_sync_job.id,
+                "source_type": latest_sync_job.source_type,
+                "status": latest_sync_job.status,
+                "period_from": latest_sync_job.period_from.isoformat() if latest_sync_job.period_from else None,
+                "period_to": latest_sync_job.period_to.isoformat() if latest_sync_job.period_to else None,
+                "rows_loaded": latest_sync_job.rows_loaded,
+                "error": latest_sync_job.error,
+                "started_at": latest_sync_job.started_at.isoformat() if latest_sync_job.started_at else None,
+                "finished_at": latest_sync_job.finished_at.isoformat() if latest_sync_job.finished_at else None,
+                "created_at": latest_sync_job.created_at.isoformat() if latest_sync_job.created_at else None,
+            }
+            if latest_sync_job
+            else None
+        ),
         "goals": {
             "selected_goal_ids": summary.get("selectedGoalIds", []),
             "has_goal_data": summary.get("hasGoalData", False),
@@ -125,6 +173,8 @@ def build_client_ai_context_from_db(db, client_id: str, selected_campaign_name: 
             for item in campaigns
         ],
         "optimization_plan": plan.get("actions", []),
+        "selected_campaign_name": selected_campaign_name,
+        "selected_campaign": selected_campaign,
         "warnings": warnings,
         "safety": {
             "no_write_actions": True,
@@ -235,6 +285,13 @@ async def generate_client_recommendations(
     client_context: dict[str, Any] | None = None,
 ) -> AiRecommendationResponse:
     context = build_client_ai_context(client_id, client_context=client_context)
+    return await generate_client_recommendations_from_context(context=context, model=model)
+
+
+async def generate_client_recommendations_from_context(
+    context: dict[str, Any],
+    model: str | None = None,
+) -> AiRecommendationResponse:
     if not settings.openrouter_configured:
         return _fallback_recommendations(context)
 
