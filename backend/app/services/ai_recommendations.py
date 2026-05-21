@@ -5,10 +5,11 @@ from fastapi import HTTPException
 
 from app.core.config import settings
 from app.db import SessionLocal
+from app.models import ClientAccount
 from app.schemas import AiGeneratedRecommendation, AiRecommendationResponse
 from app.services.mock_data import AUDIT_ISSUES, CAMPAIGNS, CLIENTS, RECOMMENDATIONS
 from app.services.openrouter import generate_openrouter_response
-from app.services.performance_summary import build_performance_summary
+from app.services.performance_summary import build_optimization_plan, build_performance_summary
 
 
 def _dump_model(value: Any) -> dict[str, Any]:
@@ -80,6 +81,54 @@ def build_client_ai_context(client_id: str, client_context: dict[str, Any] | Non
             "allowed_actions": ["audit", "explain", "create_draft", "create_dry_run_preview"],
             "forbidden_actions": ["apply_changes_without_approval", "increase_total_budget_without_client_approval"],
             "approval_required_for": ["budget_change", "strategy_change", "bulk_pause", "new_ads_launch"],
+        },
+    }
+
+
+def build_client_ai_context_from_db(db, client_id: str, selected_campaign_name: str | None = None) -> dict[str, Any]:
+    client = db.get(ClientAccount, client_id)
+    if not client:
+        raise ValueError("Client not found")
+    summary = build_performance_summary(db, client_id)
+    plan = build_optimization_plan(db, client_id)
+    campaigns = summary.get("campaigns", [])
+    if selected_campaign_name:
+        campaigns = [item for item in campaigns if item.get("campaign_name") == selected_campaign_name] or campaigns
+    warnings = list(summary.get("goalDataWarnings") or [])
+    if client.conversion_goal_ids is None and client.main_goal_id is None:
+        warnings.append("ID целей Метрики не указаны.")
+    return {
+        "client": {
+            "id": client.id,
+            "name": client.name,
+            "direct_login": client.direct_login,
+            "metrica_counter": client.metrica_counter,
+            "main_goal_id": client.main_goal_id,
+            "conversion_goal_ids": client.conversion_goal_ids,
+            "target_cpa": client.target_cpa,
+        },
+        "goals": {
+            "selected_goal_ids": summary.get("selectedGoalIds", []),
+            "has_goal_data": summary.get("hasGoalData", False),
+            "source_message": summary.get("conversionsSourceMessage"),
+        },
+        "summary": summary,
+        "campaigns": campaigns,
+        "diagnostics": [
+            {
+                "campaign_name": item.get("campaign_name"),
+                "severity": item.get("severity"),
+                "flags": item.get("issue_flags"),
+                "explanation": item.get("diagnostic_explanation"),
+                "recommended_focus": item.get("recommended_focus"),
+            }
+            for item in campaigns
+        ],
+        "optimization_plan": plan.get("actions", []),
+        "warnings": warnings,
+        "safety": {
+            "no_write_actions": True,
+            "message": "Все действия являются черновиками и требуют approval. Изменения в Яндекс.Директ не применялись.",
         },
     }
 

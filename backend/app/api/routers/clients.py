@@ -22,7 +22,7 @@ from app.schemas import (
     OptimizationPlanResponse,
     SyncJobResponse,
 )
-from app.services.ai_recommendations import generate_client_recommendations
+from app.services.ai_recommendations import build_client_ai_context_from_db, generate_client_recommendations
 from app.services.client_sync import list_sync_jobs, run_client_sync
 from app.services.connected_accounts import list_yandex_accounts
 from app.services.performance_summary import build_optimization_plan, build_performance_summary
@@ -58,6 +58,7 @@ def _client_response(client: ClientAccount) -> ClientAccountResponse:
         yandexAccountId=client.yandex_account_id,
         targetCpa=client.target_cpa,
         mainGoalId=client.main_goal_id,
+        conversionGoalIds=client.conversion_goal_ids,
         notes=client.notes,
         syncStatus=getattr(client, "sync_status", "never_synced"),
         syncError=getattr(client, "sync_error", None),
@@ -119,6 +120,7 @@ def create_client(
         yandex_account_id=None,
         target_cpa=payload.target_cpa,
         main_goal_id=(payload.main_goal_id or "").strip() or None,
+        conversion_goal_ids=(payload.conversion_goal_ids or "").strip() or None,
         notes=(payload.notes or "").strip() or None,
     )
     db.add(client)
@@ -150,6 +152,7 @@ def update_client(
     client.yandex_account_id = yandex_account_id
     client.target_cpa = payload.target_cpa
     client.main_goal_id = (payload.main_goal_id or "").strip() or None
+    client.conversion_goal_ids = (payload.conversion_goal_ids or "").strip() or None
     client.notes = (payload.notes or "").strip() or None
     db.commit()
     db.refresh(client)
@@ -269,6 +272,21 @@ async def create_client_ai_recommendations(
         model=payload.model if payload else None,
         client_context=payload.client_context if payload else None,
     )
+
+
+@router.get("/{client_id}/ai/context")
+def get_client_ai_context(
+    client_id: str,
+    selected_campaign_name: str | None = None,
+    db: Session | None = Depends(get_optional_db),
+    current: CurrentUser = Depends(get_current_session_user),
+) -> dict:
+    db = _require_db(db)
+    _get_owned_client(db, client_id, current)
+    try:
+        return build_client_ai_context_from_db(db, client_id, selected_campaign_name=selected_campaign_name)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.post("/{client_id}/sync", response_model=SyncJobResponse)
