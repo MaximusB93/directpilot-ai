@@ -4,6 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import ClientAccount, DirectCampaignPeriodStat
+from app.services.yandex_metrika import parse_goal_ids
 
 
 @dataclass
@@ -22,12 +23,12 @@ class PerfTotals:
         return self.cost / self.conversions if self.conversions else None
 
 
-def _conversion_source_message(goal_id: str | None, has_goal_data: bool) -> str:
-    if goal_id and has_goal_data:
-        return f"Используются конверсии выбранной цели {goal_id}."
-    if goal_id:
-        return f"Цель {goal_id} указана, но goal-конверсии в текущем отчёте недоступны. Диагностика использует total conversions отдельно от цели."
-    return "Основная цель не указана. Используются total conversions из Яндекс.Директа."
+def _conversion_source_message(goal_ids: list[str], has_goal_data: bool) -> str:
+    if goal_ids and has_goal_data:
+        return f"Используются конверсии целей Метрики: {', '.join(goal_ids)}."
+    if goal_ids:
+        return "Используются общие конверсии из Директа, данные по целям Метрики не получены."
+    return "ID целей Метрики не указаны. Используются общие конверсии из Директа."
 
 
 def _severity(flags: list[str]) -> str:
@@ -100,22 +101,26 @@ def build_performance_summary(db: Session, client_id: str) -> dict:
         .where(DirectCampaignPeriodStat.client_id == client_id)
         .order_by(DirectCampaignPeriodStat.loaded_at.desc())
     ).all()
-    goal_id = (client.main_goal_id or "").strip() or None
+    goal_ids = parse_goal_ids(client.conversion_goal_ids, fallback=client.main_goal_id)
     if not rows:
         return {
             "client": {"id": client.id, "name": client.name},
             "period": None,
             "totals": {"cost": 0.0, "impressions": 0, "clicks": 0, "conversions": 0.0, "avg_cpc": 0.0, "cpa": None},
             "campaigns": [],
-            "selectedGoalId": goal_id,
+            "selectedGoalId": goal_ids[0] if len(goal_ids) == 1 else None,
+            "selectedGoalIds": goal_ids,
             "hasGoalData": False,
             "goalConversionsTotal": 0.0,
-            "conversionsSourceMessage": _conversion_source_message(goal_id, False),
+            "totalConversionsFallback": 0.0,
+            "conversionsSourceMessage": _conversion_source_message(goal_ids, False),
+            "goalDataWarnings": [],
             "message": "Нет сохранённых данных Яндекс.Директа. Запустите синхронизацию после подключения Яндекса.",
         }
 
     has_goal_data = any(item.goal_conversions is not None for item in rows)
-    source_message = _conversion_source_message(goal_id, has_goal_data)
+    source_message = _conversion_source_message(goal_ids, has_goal_data)
+    warnings = sorted({item.conversion_warning for item in rows if item.conversion_warning})
     period_from = min(item.period_from for item in rows)
     period_to = max(item.period_to for item in rows)
     total_cost = sum(item.cost for item in rows)
@@ -160,6 +165,7 @@ def build_performance_summary(db: Session, client_id: str) -> dict:
                 "conversion_rate": item.conversion_rate,
                 "cpa": cpa_used,
                 "goal_id": item.goal_id,
+                "goal_ids": item.goal_ids,
                 "goal_conversions": goal_conversions,
                 "goal_revenue": item.goal_revenue,
                 "goal_cpa": item.goal_cpa,
@@ -167,6 +173,7 @@ def build_performance_summary(db: Session, client_id: str) -> dict:
                 "conversions_used_label": "Goal conversions" if goal_conversions is not None else "Total conversions",
                 "cpa_used": cpa_used,
                 "conversion_source": item.conversion_source or ("yandex_direct_goal" if goal_conversions is not None else "yandex_direct_total"),
+                "conversion_warning": item.conversion_warning,
                 "spend_share": spend_share,
                 "conversion_share": conversion_share,
                 "issue_flags": flags,
@@ -189,10 +196,13 @@ def build_performance_summary(db: Session, client_id: str) -> dict:
             "cpa": totals.cpa,
         },
         "campaigns": campaigns,
-        "selectedGoalId": goal_id,
+        "selectedGoalId": goal_ids[0] if len(goal_ids) == 1 else None,
+        "selectedGoalIds": goal_ids,
         "hasGoalData": has_goal_data,
         "goalConversionsTotal": sum(item.goal_conversions or 0 for item in rows),
+        "totalConversionsFallback": sum(item.conversions for item in rows),
         "conversionsSourceMessage": source_message,
+        "goalDataWarnings": warnings,
         "message": "ok",
     }
 

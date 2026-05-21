@@ -22,6 +22,7 @@ class ClientCreateRequest(BaseModel):
     yandex_account_id: str | None = None
     target_cpa: int | None = None
     main_goal_id: str | None = None
+    conversion_goal_ids: str | None = None
     notes: str | None = None
     segment: str = "Клиент"
 
@@ -42,6 +43,7 @@ class ClientAccountResponse(BaseModel):
     yandexAccountId: str | None = None
     targetCpa: int | None = None
     mainGoalId: str | None = None
+    conversionGoalIds: str | None = None
     notes: str | None = None
     syncStatus: str = "never_synced"
     syncError: str | None = None
@@ -376,6 +378,7 @@ class AiChatRequest(BaseModel):
     message: str = Field(min_length=2, max_length=4000)
     history: list[AiChatMessage] = Field(default_factory=list)
     client_context: dict | None = None
+    selected_campaign_name: str | None = None
 
 
 class AiToolTrace(BaseModel):
@@ -420,9 +423,12 @@ class ClientPerformanceSummaryResponse(BaseModel):
     campaigns: list[dict]
     message: str
     selectedGoalId: str | None = None
+    selectedGoalIds: list[str] = Field(default_factory=list)
     hasGoalData: bool = False
     goalConversionsTotal: float = 0.0
+    totalConversionsFallback: float = 0.0
     conversionsSourceMessage: str | None = None
+    goalDataWarnings: list[str] = Field(default_factory=list)
 
 
 class OptimizationActionDraft(BaseModel):

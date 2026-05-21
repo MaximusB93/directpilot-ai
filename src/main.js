@@ -134,6 +134,7 @@ let aiChatInput = 'Почему растёт CPA и что проверить в
 let aiChatLoading = false;
 let aiChatError = '';
 let aiChatToolTraces = [];
+let selectedAiCampaignName = '';
 const clientAiRecommendationsByClientId = {};
 const aiChatStateByClientId = {};
 
@@ -192,6 +193,7 @@ async function createClientOnApi(client) {
       yandex_account_id: client.yandexAccountId || null,
       target_cpa: client.targetCpa || null,
       main_goal_id: client.mainGoalId || null,
+      conversion_goal_ids: client.conversionGoalIds || client.mainGoalId || null,
       notes: client.notes || null,
       segment: client.segment,
     }),
@@ -266,7 +268,7 @@ function getViewActionTarget(target) {
 
 function isInteractiveActionTarget(target) {
   return Boolean(
-    target?.closest?.('button, a, [role="button"], [data-save-api-base], [data-client-id], [data-integration], [data-client-ai-recommendations], [data-sync-client], [data-load-summary], [data-load-sync-jobs], [data-load-optimization-plan], [data-copy-optimization-plan], [data-copy-text], [data-optimization-filter], [data-refresh-yandex-status], [data-go-view], [data-logout]')
+    target?.closest?.('button, a, [role="button"], [data-save-api-base], [data-client-id], [data-integration], [data-client-ai-recommendations], [data-sync-client], [data-load-summary], [data-load-sync-jobs], [data-load-optimization-plan], [data-copy-optimization-plan], [data-copy-text], [data-optimization-filter], [data-ai-quick-action], [data-clear-ai-chat], [data-refresh-yandex-status], [data-go-view], [data-logout]')
     || getViewActionTarget(target)
   );
 }
@@ -392,6 +394,7 @@ function resetClientDerivedState() {
   aiChatInput = chatState?.input || 'Почему растёт CPA и что проверить в Яндекс.Метрике?';
   aiChatError = '';
   aiChatToolTraces = chatState?.toolTraces ? [...chatState.toolTraces] : [];
+  selectedAiCampaignName = chatState?.selectedCampaignName || '';
 }
 
 function saveActiveAiState() {
@@ -403,6 +406,7 @@ function saveActiveAiState() {
     messages: [...aiChatMessages],
     input: aiChatInput,
     toolTraces: [...aiChatToolTraces],
+    selectedCampaignName: selectedAiCampaignName,
   };
 }
 
@@ -722,7 +726,7 @@ async function requestAiChatAnswer() {
     const response = await apiFetch('/ai/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ client_id: selectedClientId, model: activeAiModel(), message, history, client_context: currentClient() }),
+      body: JSON.stringify({ client_id: selectedClientId, model: activeAiModel(), message, history, client_context: currentClient(), selected_campaign_name: selectedAiCampaignName || null }),
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || 'AI-чат не вернул ответ');
@@ -1194,7 +1198,9 @@ function renderClients() {
           <input name="directLogin" value="${escapeHtml(selected.directLogin === 'Не подключен' ? '' : selected.directLogin)}" placeholder="Логин Яндекс.Директа" autocomplete="off" />
           <input name="metricaCounter" value="${escapeHtml(selected.metricaCounter === 'Не подключен' ? '' : selected.metricaCounter)}" placeholder="ID счётчика Метрики" inputmode="numeric" autocomplete="off" />
           <input name="targetCpa" value="${escapeHtml(selected.targetCpa ?? '')}" placeholder="Целевой CPA" inputmode="numeric" autocomplete="off" />
-          <input name="mainGoalId" value="${escapeHtml(selected.mainGoalId ?? '')}" placeholder="ID основной цели" autocomplete="off" />
+          <input name="conversionGoalIds" value="${escapeHtml(selected.conversionGoalIds ?? selected.mainGoalId ?? '')}" placeholder="ID целей Метрики: например 123456, 789012" autocomplete="off" />
+          <small>Используются для расчёта целевых конверсий, CPA и AI-анализа.</small>
+          <input name="mainGoalId" value="${escapeHtml(selected.mainGoalId ?? '')}" placeholder="Основная цель (backward compatibility)" autocomplete="off" />
           <textarea name="notes" rows="3" placeholder="Заметки по клиенту">${escapeHtml(selected.notes ?? '')}</textarea>
           <button class="approveButton" type="submit">Сохранить настройки</button>
           <button class="secondaryButton" type="button" data-delete-client="${escapeHtml(selected.id)}">Удалить клиента</button>
@@ -1483,15 +1489,37 @@ function renderIntegrations() {
 }
 
 function renderAiChat() {
+  const campaigns = perfSummary?.campaigns || [];
+  const quickActions = [
+    'Проанализируй аккаунт',
+    'Найди кампании с проблемами',
+    'Составь план оптимизации',
+    'Проверь цель и CPA',
+    'Что делать дальше?',
+    'Объясни данные простыми словами',
+  ];
   return `
     <section class="panel aiChatPanel">
       <div class="panelHeader">
         <div>
-          <h3>AI-чат с MCP-инструментами</h3>
-          <p>Чат отвечает на вопросы пользователя, собирая контекст через MCP tools: клиенты, кампании Директа, цели Метрики, аудит и рекомендации.</p>
+          <h3>Единый AI-чат по клиенту</h3>
+          <p>AI получает серверный контекст клиента, кампаний, целей Метрики, performance summary и optimization plan. Все действия — только черновики.</p>
         </div>
-        <span class="aiStatusBadge ready">MCP tools</span>
+        <span class="aiStatusBadge ${campaigns.length ? 'ready' : 'pending'}">${campaigns.length ? 'Кампании в контексте' : 'Нет sync data'}</span>
       </div>
+      <div class="kpiGrid">
+        <article class="kpi blue"><span>Цели</span><strong>${escapeHtml(perfSummary?.selectedGoalIds?.join(', ') || currentClient().conversionGoalIds || currentClient().mainGoalId || '—')}</strong></article>
+        <article class="kpi green"><span>Источник</span><strong>${escapeHtml(perfSummary?.hasGoalData ? 'Metrika goals' : perfSummary?.conversionsSourceMessage ? 'Fallback' : 'Нет данных')}</strong></article>
+        <article class="kpi orange"><span>Кампании</span><strong>${formatNumberSafe(campaigns.length)}</strong></article>
+      </div>
+      <div class="heroActions">${quickActions.map((text) => `<button class="secondaryButton" type="button" data-ai-quick-action="${escapeHtml(text)}">${escapeHtml(text)}</button>`).join('')}</div>
+      <label class="clientSelect">
+        <span>Контекст кампании</span>
+        <select data-ai-campaign-select>
+          <option value="">Весь аккаунт</option>
+          ${campaigns.map((campaign) => `<option value="${escapeHtml(campaign.campaign_name)}" ${campaign.campaign_name === selectedAiCampaignName ? 'selected' : ''}>${escapeHtml(campaign.campaign_name)}</option>`).join('')}
+        </select>
+      </label>
       <div class="aiChatMessages">
         ${aiChatMessages.map((item) => `
           <article class="aiChatMessage ${item.role}">
@@ -1506,6 +1534,7 @@ function renderAiChat() {
       <form class="aiChatForm" data-ai-chat-form>
         <textarea name="message" rows="3" data-ai-chat-input placeholder="Например: какие кампании дают расход без конверсий и какие цели Метрики проверить?">${escapeHtml(aiChatInput)}</textarea>
         <button class="approveButton" type="submit" ${aiChatLoading ? 'disabled' : ''}>${aiChatLoading ? 'Думаю...' : 'Отправить в AI-чат'}</button>
+        <button class="secondaryButton" type="button" data-clear-ai-chat>Очистить чат</button>
       </form>
       ${aiChatToolTraces.length ? `
         <details class="aiToolTrace">
@@ -1519,70 +1548,22 @@ function renderAiChat() {
 
 function renderAiAssistant() {
   const client = currentClient();
-  const models = aiStatus.models?.length ? aiStatus.models : [{ id: aiModel, name: aiModel, description: 'Модель будет загружена из backend.' }];
-  const customSelected = isCustomAiModel();
-  const customAllowed = aiStatus.allow_custom_models !== false;
   return renderShell(`
     <div class="pageIntro">
-      <span class="eyebrow">🧠 OpenRouter</span>
-      <h2>AI-слой с выбором модели</h2>
-      <p>Ключ OpenRouter хранится только на backend. Интерфейс отправляет задачу в наш API, выбирает модель и показывает ответ как черновик для специалиста.</p>
+      <span class="eyebrow">🧠 AI-аналитик</span>
+      <h2>Единое AI workspace по клиенту</h2>
+      <p>${client.id ? `Клиент: ${escapeHtml(client.name)}. ${escapeHtml(perfSummary?.conversionsSourceMessage || 'Сначала загрузите summary, чтобы AI видел кампании и цели.')}` : 'Сначала создайте клиента.'}</p>
     </div>
+    <section class="panel">
+      <div class="panelHeader">
+        <h3>Context preview</h3>
+        <span class="aiStatusBadge ${canRunAiAnalysis() ? 'ready' : 'pending'}">${canRunAiAnalysis() ? 'Данные готовы' : 'Нужна синхронизация'}</span>
+      </div>
+      <p>Direct: ${escapeHtml(client.directLogin)} · Метрика: ${escapeHtml(client.metricaCounter)} · Цели: ${escapeHtml(perfSummary?.selectedGoalIds?.join(', ') || client.conversionGoalIds || client.mainGoalId || 'не указаны')}</p>
+      <p>${!client.id ? 'Сначала создайте клиента.' : !clientYandexIntegration?.connected ? 'AI сможет анализировать настройки, но для данных нужна привязка Яндекса.' : !hasPerformanceData() ? 'Сначала запустите синхронизацию, чтобы AI увидел кампании.' : !client.conversionGoalIds && !client.mainGoalId ? 'Укажите ID целей Метрики для анализа целевых конверсий.' : 'AI использует summary, диагностику кампаний и optimization plan.'}</p>
+    </section>
     ${renderAiChat()}
-    <div class="aiGrid">
-      <section class="panel aiConsole">
-        <div class="panelHeader">
-          <h3>Запрос к AI</h3>
-          <span class="aiStatusBadge ${aiStatus.configured ? 'ready' : 'pending'}">${aiStatus.configured ? 'OpenRouter готов' : 'Нужен API key'}</span>
-        </div>
-        <form class="aiForm" data-ai-form>
-          <label>
-            <span>Модель</span>
-            <select name="modelMode" data-ai-model>
-              ${models.map((model) => `<option value="${model.id}" ${model.id === aiModel && !customSelected ? 'selected' : ''}>${model.name}</option>`).join('')}
-              <option value="${CUSTOM_MODEL_VALUE}" ${customSelected ? 'selected' : ''} ${customAllowed ? '' : 'disabled'}>Ввести модель вручную</option>
-            </select>
-          </label>
-          ${customSelected ? `
-            <label>
-              <span>Своя модель OpenRouter</span>
-              <input name="customModel" data-ai-custom-model placeholder="openai/gpt-4o" value="${escapeHtml(aiCustomModel)}" autocomplete="off" />
-              <small>Введите точный id модели из OpenRouter, например <code>openai/gpt-4o</code> или <code>anthropic/claude-3.5-sonnet</code>.</small>
-            </label>
-          ` : ''}
-          <label>
-            <span>Задача для AI</span>
-            <textarea name="prompt" rows="7" maxlength="4000" data-ai-prompt>${escapeHtml(aiPrompt)}</textarea>
-          </label>
-          <button class="approveButton" type="submit" ${aiLoading || !aiStatus.configured ? 'disabled' : ''}>${aiLoading ? 'Генерируем...' : 'Получить AI-рекомендацию'}</button>
-        </form>
-        <div class="authStatus integrationStatus">${escapeHtml(aiStatus.message || 'Статус неизвестен')}</div>
-        ${aiError ? `<div class="authStatus aiError">${escapeHtml(aiError)}</div>` : ''}
-        ${aiResponse ? `
-          <article class="aiResponse">
-            <div class="integrationTop"><span>Ответ модели</span><strong>${escapeHtml(aiResponse.model)}</strong></div>
-            <pre>${escapeHtml(aiResponse.content)}</pre>
-          </article>
-        ` : ''}
-      </section>
-      <aside class="aiSide">
-        <article class="integrationCard primaryIntegration">
-          <div class="integrationTop"><span>Контекст</span><strong>${escapeHtml(client.name)}</strong></div>
-          <h3>Что отдаём модели</h3>
-          <p>На старте отправляем только текстовую задачу и безопасный системный промпт. Следующий шаг — добавлять нормализованные KPI, аудит, рекомендации и approval-историю.</p>
-        </article>
-        <article class="integrationCard">
-          <div class="integrationTop"><span>Подход</span><strong>RAG + guardrails</strong></div>
-          <h3>Как использовать ИИ правильно</h3>
-          <p>Не «обучаем» модель на первом этапе. Сначала даём ей качественный контекст, схемы данных, проверяемые метрики и запрещаем применять изменения без dry-run и подтверждения.</p>
-        </article>
-        <article class="integrationCard">
-          <div class="integrationTop"><span>Модели</span><strong>${models.length}</strong></div>
-          <h3>Разные модели под разные задачи</h3>
-          <p>Быстрые модели — для сводок и черновиков. Более сильные — для стратегического анализа, сложных причинно-следственных выводов и ревью рекомендаций.</p>
-        </article>
-      </aside>
-    </div>
+    ${renderClientAiRecommendations()}
   `);
 }
 
@@ -1714,6 +1695,8 @@ app.addEventListener('click', async (event) => {
   const optimizationFilterButton = event.target.closest('[data-optimization-filter]');
   const copyOptimizationPlanButton = event.target.closest('[data-copy-optimization-plan]');
   const copyTextButton = event.target.closest('[data-copy-text]');
+  const aiQuickActionButton = event.target.closest('[data-ai-quick-action]');
+  const clearAiChatButton = event.target.closest('[data-clear-ai-chat]');
 
   if (logoutButton) {
     localStorage.removeItem('directpilot_session');
@@ -1768,6 +1751,22 @@ app.addEventListener('click', async (event) => {
   if (copyTextButton) {
     await navigator.clipboard?.writeText(copyTextButton.dataset.copyText || '');
     optimizationPlanStatus = 'Рекомендация скопирована.';
+    render();
+    return;
+  }
+
+  if (aiQuickActionButton) {
+    aiChatInput = aiQuickActionButton.dataset.aiQuickAction || '';
+    await requestAiChatAnswer();
+    return;
+  }
+
+  if (clearAiChatButton) {
+    aiChatMessages = [{ ...initialAiChatMessage }];
+    aiChatInput = '';
+    aiChatToolTraces = [];
+    aiChatError = '';
+    saveActiveAiState();
     render();
     return;
   }
@@ -1861,13 +1860,16 @@ app.addEventListener('submit', async (event) => {
     if (!selectedClientId) return;
     const formData = new FormData(settingsForm);
     const targetCpaValue = String(formData.get('targetCpa') || '').trim();
+    const conversionGoalIdsValue = String(formData.get('conversionGoalIds') || '').trim();
+    const fallbackMainGoalId = conversionGoalIdsValue.split(/[,\s]+/).filter(Boolean)[0] || '';
     const payload = {
       name: String(formData.get('name') || '').trim(),
       direct_login: String(formData.get('directLogin') || '').trim() || null,
       metrica_counter: String(formData.get('metricaCounter') || '').trim() || null,
       yandex_account_id: currentClient().yandexAccountId || null,
       target_cpa: targetCpaValue ? Number(targetCpaValue) : null,
-      main_goal_id: String(formData.get('mainGoalId') || '').trim() || null,
+      main_goal_id: String(formData.get('mainGoalId') || '').trim() || fallbackMainGoalId || null,
+      conversion_goal_ids: conversionGoalIdsValue || String(formData.get('mainGoalId') || '').trim() || null,
       notes: String(formData.get('notes') || '').trim() || null,
       segment: currentClient().segment || 'Клиент',
     };
@@ -1915,6 +1917,7 @@ app.addEventListener('submit', async (event) => {
       yandexAccountId: null,
       targetCpa: null,
       mainGoalId: null,
+      conversionGoalIds: null,
       notes: null,
     };
     try {
@@ -2045,6 +2048,11 @@ app.addEventListener('change', (event) => {
     resetClientDerivedState();
     resetSelectedClientOperationalState();
     clientFormStatus = '';
+    render();
+  }
+  if (event.target.matches('[data-ai-campaign-select]')) {
+    selectedAiCampaignName = event.target.value;
+    saveActiveAiState();
     render();
   }
   if (event.target.matches('[data-ai-model]')) {
