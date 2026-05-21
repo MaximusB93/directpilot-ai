@@ -274,6 +274,8 @@ async def create_client_ai_recommendations(
     return await generate_client_recommendations_from_context(
         context=context,
         model=payload.model if payload else None,
+        ai_preset=payload.ai_preset if payload else None,
+        max_tokens=payload.max_tokens if payload else None,
     )
 
 

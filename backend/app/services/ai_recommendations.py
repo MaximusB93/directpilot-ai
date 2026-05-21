@@ -4,7 +4,7 @@ from typing import Any
 from fastapi import HTTPException
 from sqlalchemy import select
 
-from app.core.config import settings
+from app.core.config import normalize_ai_request_options, settings
 from app.db import SessionLocal
 from app.models import ClientAccount, ConnectedAccount, SyncJob
 from app.schemas import AiGeneratedRecommendation, AiRecommendationResponse
@@ -192,6 +192,7 @@ def _build_prompt(context: dict[str, Any]) -> str:
 - Изменения в Яндекс.Директ не применялись.
 - Рекомендации являются черновиками действий и требуют review/approval.
 - Приоритизируй кампании по выбранной цели, если goal data доступна.
+- Если ai_model_settings.preset = economy, отвечай кратко; если advanced, можно дать более глубокую структуру.
 
 Верни строго JSON без markdown в формате:
 {{
@@ -291,11 +292,31 @@ async def generate_client_recommendations(
 async def generate_client_recommendations_from_context(
     context: dict[str, Any],
     model: str | None = None,
+    ai_preset: str | None = None,
+    max_tokens: int | None = None,
 ) -> AiRecommendationResponse:
+    ai_options = normalize_ai_request_options(
+        model=model,
+        ai_preset=ai_preset,
+        max_tokens=max_tokens,
+        models=settings.openrouter_models,
+        configured_default=settings.openrouter_default_model,
+    )
+    context = {
+        **context,
+        "ai_model_settings": {
+            "preset": ai_options["ai_preset"],
+            "model": ai_options["model"],
+            "max_tokens": ai_options["max_tokens"],
+            "max_tokens_cap": ai_options["max_tokens_cap"],
+            "cost_tier": ai_options["cost_tier"],
+            "custom_model": ai_options["is_custom_model"],
+        },
+    }
     if not settings.openrouter_configured:
         return _fallback_recommendations(context)
 
-    selected_model = model or settings.openrouter_default_model
+    selected_model = str(ai_options["model"])
     response = await generate_openrouter_response(model=selected_model, prompt=_build_prompt(context))
     raw_content = str(response.get("content", ""))
     try:

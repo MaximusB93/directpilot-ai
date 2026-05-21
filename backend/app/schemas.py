@@ -329,23 +329,44 @@ class AiModelOption(BaseModel):
     id: str
     name: str
     description: str
+    label: str | None = None
+    provider: str | None = None
+    cost_tier: str = "unknown"
+    recommended_for: list[str] = Field(default_factory=list)
+
+
+class AiModelPreset(BaseModel):
+    id: str
+    label: str
+    purpose: str
+    default_model: str
+    max_tokens: int
+    cost_tier: str
+    warning: str | None = None
 
 
 class AiStatusResponse(BaseModel):
     configured: bool
     default_model: str
     models: list[AiModelOption]
+    presets: list[AiModelPreset] = Field(default_factory=list)
+    recommended_default_preset: str = "economy"
+    recommended_default_model: str | None = None
     allow_custom_models: bool
     message: str
 
 
 class AiPromptRequest(BaseModel):
-    model: str
+    model: str | None = None
+    ai_preset: str | None = None
+    max_tokens: int | None = Field(default=None, ge=1, le=5000)
     prompt: str = Field(min_length=10, max_length=4000)
 
 
 class AiClientRecommendationRequest(BaseModel):
     model: str | None = None
+    ai_preset: str | None = None
+    max_tokens: int | None = Field(default=None, ge=1, le=5000)
     client_context: dict | None = None
 
 
@@ -375,6 +396,8 @@ class AiChatMessage(BaseModel):
 class AiChatRequest(BaseModel):
     client_id: str = "furniture"
     model: str | None = None
+    ai_preset: str | None = None
+    max_tokens: int | None = Field(default=None, ge=1, le=5000)
     message: str = Field(min_length=2, max_length=4000)
     history: list[AiChatMessage] = Field(default_factory=list)
     client_context: dict | None = None

@@ -102,6 +102,8 @@ let aiStatus = { models: [], configured: false, message: 'Статус OpenRoute
 const CUSTOM_MODEL_VALUE = '__custom_openrouter_model__';
 let aiModel = 'openrouter/auto';
 let aiCustomModel = 'openai/gpt-4o';
+let aiPreset = 'economy';
+let aiMaxTokensMode = 'compact';
 let aiPrompt = 'Проанализируй выбранного клиента DirectPilot AI: какие данные нужны из Яндекс.Директа и Метрики, чтобы сформировать первые рекомендации?';
 let aiResponse = null;
 let aiError = '';
@@ -298,6 +300,69 @@ function isCustomAiModel() {
 function activeAiModel() {
   return (isCustomAiModel() ? aiCustomModel : aiModel).trim() || aiStatus.default_model || 'openrouter/auto';
 }
+
+function getAiModelSettingsKey() {
+  return scopedStorageKey('directpilot_ai_model_settings');
+}
+
+function loadAiModelSettings() {
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(getAiModelSettingsKey()) || '{}');
+    if (saved.selectedModel) aiModel = String(saved.selectedModel);
+    if (saved.selectedPreset) aiPreset = String(saved.selectedPreset);
+    if (saved.customModel) aiCustomModel = String(saved.customModel);
+    if (saved.maxTokensMode) aiMaxTokensMode = String(saved.maxTokensMode);
+  } catch (error) {
+    window.localStorage.removeItem(getAiModelSettingsKey());
+  }
+}
+
+function saveAiModelSettings() {
+  window.localStorage.setItem(getAiModelSettingsKey(), JSON.stringify({
+    selectedModel: aiModel,
+    selectedPreset: aiPreset,
+    customModel: aiCustomModel,
+    maxTokensMode: aiMaxTokensMode,
+  }));
+}
+
+function getAiPresetOptions() {
+  return aiStatus.presets?.length ? aiStatus.presets : [
+    { id: 'economy', label: 'Эконом', purpose: 'Быстрые вопросы и первичный анализ', max_tokens: 1200, cost_tier: 'low' },
+    { id: 'balanced', label: 'Баланс', purpose: 'Обычный анализ кампаний', max_tokens: 2500, cost_tier: 'medium' },
+    { id: 'advanced', label: 'Максимум', purpose: 'Глубокий анализ и сложные рекомендации', max_tokens: 5000, cost_tier: 'high', warning: 'Может быть дороже' },
+  ];
+}
+
+function activeAiPresetInfo() {
+  return getAiPresetOptions().find((preset) => preset.id === aiPreset) || getAiPresetOptions()[0];
+}
+
+function activeAiModelInfo() {
+  const modelId = activeAiModel();
+  return aiStatus.models?.find((model) => model.id === modelId) || {
+    id: modelId,
+    label: modelId,
+    cost_tier: isCustomAiModel() ? 'unknown' : 'unknown',
+    recommended_for: ['Своя модель OpenRouter'],
+  };
+}
+
+function activeAiMaxTokens() {
+  const cap = Number(activeAiPresetInfo()?.max_tokens || 1200);
+  const factors = { compact: 0.5, normal: 0.8, detailed: 1 };
+  return Math.max(1, Math.round(cap * (factors[aiMaxTokensMode] || 0.5)));
+}
+
+function aiRequestOptions() {
+  return {
+    model: activeAiModel(),
+    ai_preset: aiPreset === 'custom' ? 'economy' : aiPreset,
+    max_tokens: activeAiMaxTokens(),
+  };
+}
+
+loadAiModelSettings();
 
 function currentClient() {
   return accountClients.find((client) => client.id === selectedClientId) ?? accountClients[0] ?? emptyClient();
@@ -674,7 +739,12 @@ async function loadAiStatus() {
   try {
     const response = await fetch(`${API_BASE}/ai/openrouter/status`);
     aiStatus = response.ok ? await response.json() : { models: [], configured: false, message: 'Не удалось получить статус OpenRouter.' };
-    aiModel = aiStatus.default_model || aiStatus.models?.[0]?.id || aiModel;
+    const hasSavedSettings = Boolean(window.localStorage.getItem(getAiModelSettingsKey()));
+    if (!hasSavedSettings) {
+      aiPreset = aiStatus.recommended_default_preset || 'economy';
+      aiModel = aiStatus.recommended_default_model || aiStatus.default_model || aiStatus.models?.[0]?.id || aiModel;
+      saveAiModelSettings();
+    }
     if (isCustomAiModel()) aiCustomModel = aiModel;
     if (activeView === 'ai') render();
   } catch (error) {
@@ -692,7 +762,7 @@ async function requestAiInsight() {
     const response = await apiFetch('/ai/openrouter/generate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: activeAiModel(), prompt: aiPrompt }),
+      body: JSON.stringify({ ...aiRequestOptions(), prompt: aiPrompt }),
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || 'OpenRouter не вернул ответ');
@@ -726,7 +796,7 @@ async function requestAiChatAnswer() {
     const response = await apiFetch('/ai/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ client_id: selectedClientId, model: activeAiModel(), message, history, client_context: currentClient(), selected_campaign_name: selectedAiCampaignName || null }),
+      body: JSON.stringify({ client_id: selectedClientId, ...aiRequestOptions(), message, history, client_context: currentClient(), selected_campaign_name: selectedAiCampaignName || null }),
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || 'AI-чат не вернул ответ');
@@ -755,7 +825,7 @@ async function requestClientAiRecommendations() {
     const response = await apiFetch(`/clients/${selectedClientId}/ai/recommendations`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: activeAiModel(), client_context: currentClient() }),
+      body: JSON.stringify({ ...aiRequestOptions(), client_context: currentClient() }),
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || 'Не удалось сформировать AI-рекомендации');
@@ -1488,6 +1558,58 @@ function renderIntegrations() {
   `);
 }
 
+function renderAiModelSettings() {
+  const preset = activeAiPresetInfo();
+  const model = activeAiModelInfo();
+  const modelOptions = aiStatus.models || [];
+  const presetOptions = getAiPresetOptions();
+  const selectedModelValue = isCustomAiModel() ? CUSTOM_MODEL_VALUE : activeAiModel();
+  const costLabel = { low: 'низкая стоимость', medium: 'средняя стоимость', high: 'дороже', unknown: 'стоимость неизвестна' }[model.cost_tier || 'unknown'] || 'стоимость неизвестна';
+  return `
+    <section class="panel">
+      <div class="panelHeader">
+        <div>
+          <h3>Настройки AI-модели</h3>
+          <p>Выберите режим и модель OpenRouter. Дорогие модели могут быстрее расходовать баланс OpenRouter.</p>
+        </div>
+        <span class="aiStatusBadge ${aiStatus.configured ? 'ready' : 'pending'}">${aiStatus.configured ? 'OpenRouter подключён' : 'OpenRouter не настроен'}</span>
+      </div>
+      <div class="clientSettingsGrid">
+        <label class="authField">
+          <span>Режим</span>
+          <select data-ai-preset>
+            ${presetOptions.map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === aiPreset ? 'selected' : ''}>${escapeHtml(item.label)} · ${escapeHtml(item.cost_tier || 'unknown')}</option>`).join('')}
+            <option value="custom" ${aiPreset === 'custom' ? 'selected' : ''}>Своя модель</option>
+          </select>
+        </label>
+        <label class="authField">
+          <span>Модель</span>
+          <select data-ai-model>
+            ${modelOptions.map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === selectedModelValue ? 'selected' : ''}>${escapeHtml(item.label || item.name || item.id)} · ${escapeHtml(item.cost_tier || 'unknown')}</option>`).join('')}
+            <option value="${CUSTOM_MODEL_VALUE}" ${selectedModelValue === CUSTOM_MODEL_VALUE ? 'selected' : ''}>Своя модель OpenRouter</option>
+          </select>
+        </label>
+        <label class="authField">
+          <span>Детализация</span>
+          <select data-ai-max-tokens-mode>
+            <option value="compact" ${aiMaxTokensMode === 'compact' ? 'selected' : ''}>compact</option>
+            <option value="normal" ${aiMaxTokensMode === 'normal' ? 'selected' : ''}>normal</option>
+            <option value="detailed" ${aiMaxTokensMode === 'detailed' ? 'selected' : ''}>detailed</option>
+          </select>
+        </label>
+        <label class="authField">
+          <span>Custom model</span>
+          <input data-ai-custom-model value="${escapeHtml(aiCustomModel)}" placeholder="Например: openai/gpt-4o-mini" ${selectedModelValue === CUSTOM_MODEL_VALUE || aiPreset === 'custom' ? '' : 'disabled'} />
+        </label>
+      </div>
+      <p><strong>Текущая модель:</strong> ${escapeHtml(activeAiModel())} · <strong>режим:</strong> ${escapeHtml(preset?.label || aiPreset)} · <strong>лимит:</strong> ${formatNumberSafe(activeAiMaxTokens())} tokens · <strong>${escapeHtml(costLabel)}</strong></p>
+      <p>${escapeHtml(preset?.purpose || 'Своя модель OpenRouter. Проверьте стоимость в кабинете OpenRouter.')}${preset?.warning ? ` ${escapeHtml(preset.warning)}` : ''}</p>
+      <p>${escapeHtml(aiStatus.message || '')}</p>
+      ${isCustomAiModel() ? '<div class="authStatus">Своя модель разрешена backend-настройками только если OPENROUTER_ALLOW_CUSTOM_MODELS=true. Проверьте стоимость вручную.</div>' : ''}
+    </section>
+  `;
+}
+
 function renderAiChat() {
   const campaigns = perfSummary?.campaigns || [];
   const quickActions = [
@@ -1562,6 +1684,7 @@ function renderAiAssistant() {
       <p>Direct: ${escapeHtml(client.directLogin)} · Метрика: ${escapeHtml(client.metricaCounter)} · Цели: ${escapeHtml(perfSummary?.selectedGoalIds?.join(', ') || client.conversionGoalIds || client.mainGoalId || 'не указаны')}</p>
       <p>${!client.id ? 'Сначала создайте клиента.' : !clientYandexIntegration?.connected ? 'AI сможет анализировать настройки, но для данных нужна привязка Яндекса.' : !hasPerformanceData() ? 'Сначала запустите синхронизацию, чтобы AI увидел кампании.' : !client.conversionGoalIds && !client.mainGoalId ? 'Укажите ID целей Метрики для анализа целевых конверсий.' : 'AI использует summary, диагностику кампаний и optimization plan.'}</p>
     </section>
+    ${renderAiModelSettings()}
     ${renderAiChat()}
     ${renderClientAiRecommendations()}
   `);
@@ -2025,6 +2148,7 @@ app.addEventListener('input', (event) => {
   if (event.target.matches('[data-ai-custom-model]')) {
     aiCustomModel = event.target.value;
     aiModel = aiCustomModel;
+    saveAiModelSettings();
   }
   if (event.target.matches('[data-ai-chat-input]')) {
     aiChatInput = event.target.value;
@@ -2058,9 +2182,25 @@ app.addEventListener('change', (event) => {
   if (event.target.matches('[data-ai-model]')) {
     if (event.target.value === CUSTOM_MODEL_VALUE) {
       aiModel = aiCustomModel;
+      aiPreset = 'custom';
     } else {
       aiModel = event.target.value;
+      if (aiPreset === 'custom') aiPreset = aiStatus.recommended_default_preset || 'economy';
     }
+    saveAiModelSettings();
+    render();
+  }
+  if (event.target.matches('[data-ai-preset]')) {
+    aiPreset = event.target.value;
+    if (aiPreset === 'custom') {
+      aiModel = aiCustomModel;
+    }
+    saveAiModelSettings();
+    render();
+  }
+  if (event.target.matches('[data-ai-max-tokens-mode]')) {
+    aiMaxTokensMode = event.target.value;
+    saveAiModelSettings();
     render();
   }
 });
