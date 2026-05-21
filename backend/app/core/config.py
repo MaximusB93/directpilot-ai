@@ -17,6 +17,104 @@ def _looks_redacted(value: str | None) -> bool:
     return "•" in stripped or stripped in {"********", "****"} or stripped.startswith("<")
 
 
+AI_MODEL_PRESETS: dict[str, dict[str, object]] = {
+    "economy": {
+        "id": "economy",
+        "label": "Эконом",
+        "purpose": "Быстрые вопросы и первичный анализ",
+        "cost_tier": "low",
+        "max_tokens": 1200,
+        "warning": None,
+    },
+    "balanced": {
+        "id": "balanced",
+        "label": "Баланс",
+        "purpose": "Обычный анализ кампаний",
+        "cost_tier": "medium",
+        "max_tokens": 2500,
+        "warning": None,
+    },
+    "advanced": {
+        "id": "advanced",
+        "label": "Максимум",
+        "purpose": "Глубокий анализ и сложные рекомендации",
+        "cost_tier": "high",
+        "max_tokens": 5000,
+        "warning": "Может быть дороже",
+    },
+}
+
+AI_RECOMMENDED_DEFAULT_PRESET = "economy"
+AI_FALLBACK_ECONOMY_MODEL = "openai/gpt-4o-mini"
+
+
+def ai_model_cost_tier(model_id: str) -> str:
+    normalized = model_id.lower()
+    if "mini" in normalized or "flash" in normalized or "haiku" in normalized:
+        return "low"
+    if "sonnet" in normalized or "opus" in normalized or ("gpt-4" in normalized and "mini" not in normalized):
+        return "high"
+    if normalized == "openrouter/auto":
+        return "unknown"
+    return "unknown"
+
+
+def ai_model_label(model_id: str) -> str:
+    labels = {
+        "openrouter/auto": "OpenRouter Auto",
+        "openai/gpt-4o-mini": "GPT-4o mini",
+        "anthropic/claude-3.5-sonnet": "Claude 3.5 Sonnet",
+        "google/gemini-flash-1.5": "Gemini Flash 1.5",
+    }
+    return labels.get(model_id, model_id)
+
+
+def ai_model_recommended_for(model_id: str) -> list[str]:
+    tier = ai_model_cost_tier(model_id)
+    if tier == "low":
+        return ["Быстрые вопросы", "Первичный анализ", "Короткие сводки"]
+    if tier == "high":
+        return ["Глубокий анализ", "Сложные рекомендации", "Стратегические разборы"]
+    return ["Обычный анализ", "Fallback-маршрутизация"]
+
+
+def ai_recommended_default_model(models: list[str], configured_default: str) -> str:
+    if configured_default and ai_model_cost_tier(configured_default) in {"low", "medium"}:
+        return configured_default
+    for model_id in models:
+        if ai_model_cost_tier(model_id) == "low":
+            return model_id
+    return AI_FALLBACK_ECONOMY_MODEL
+
+
+def ai_preset_cap(preset: str | None) -> int:
+    preset_id = preset if preset in AI_MODEL_PRESETS else AI_RECOMMENDED_DEFAULT_PRESET
+    return int(AI_MODEL_PRESETS[preset_id]["max_tokens"])
+
+
+def normalize_ai_request_options(
+    *,
+    model: str | None,
+    ai_preset: str | None,
+    max_tokens: int | None,
+    models: list[str],
+    configured_default: str,
+) -> dict[str, object]:
+    preset_id = ai_preset if ai_preset in AI_MODEL_PRESETS else AI_RECOMMENDED_DEFAULT_PRESET
+    selected_model = (model or ai_recommended_default_model(models, configured_default)).strip()
+    cap = ai_preset_cap(preset_id)
+    requested_tokens = max_tokens if max_tokens is not None else cap
+    effective_tokens = max(1, min(int(requested_tokens), cap))
+    return {
+        "model": selected_model,
+        "ai_preset": preset_id,
+        "max_tokens": effective_tokens,
+        "max_tokens_cap": cap,
+        "is_custom_model": bool(selected_model and selected_model not in set(models)),
+        "cost_tier": ai_model_cost_tier(selected_model),
+    }
+
+
 @dataclass(frozen=True)
 class Settings:
     api_prefix: str = "/api/v1"

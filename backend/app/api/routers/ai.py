@@ -4,6 +4,16 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.api.deps import CurrentUser, get_current_session_user
+from app.core.config import (
+    AI_MODEL_PRESETS,
+    AI_RECOMMENDED_DEFAULT_PRESET,
+    ai_model_cost_tier,
+    ai_model_label,
+    ai_model_recommended_for,
+    ai_recommended_default_model,
+    normalize_ai_request_options,
+    settings,
+)
 from app.db import get_optional_db
 from app.models import ClientAccount
 from app.schemas import AiChatRequest, AiChatResponse, AiPromptRequest, AiPromptResponse, AiStatusResponse
@@ -14,9 +24,55 @@ from app.services.openrouter import generate_openrouter_response, openrouter_sta
 router = APIRouter(prefix="/ai", tags=["ai"])
 
 
+def _provider_from_model(model_id: str) -> str:
+    return model_id.split("/", 1)[0] if "/" in model_id else "custom"
+
+
+def _ai_status_payload() -> dict[str, object]:
+    status = openrouter_status()
+    models = []
+    for item in status.get("models", []):
+        model_id = str(item.get("id", ""))
+        models.append(
+            {
+                **item,
+                "label": ai_model_label(model_id),
+                "provider": _provider_from_model(model_id),
+                "cost_tier": ai_model_cost_tier(model_id),
+                "recommended_for": ai_model_recommended_for(model_id),
+            }
+        )
+    recommended_model = ai_recommended_default_model(settings.openrouter_models, settings.openrouter_default_model)
+    presets = [
+        {
+            **preset,
+            "default_model": recommended_model if preset_id == "economy" else settings.openrouter_default_model,
+        }
+        for preset_id, preset in AI_MODEL_PRESETS.items()
+    ]
+    return {
+        **status,
+        "default_model": recommended_model,
+        "models": models,
+        "presets": presets,
+        "recommended_default_preset": AI_RECOMMENDED_DEFAULT_PRESET,
+        "recommended_default_model": recommended_model,
+    }
+
+
+def _resolved_ai_options(model: str | None, ai_preset: str | None, max_tokens: int | None) -> dict[str, object]:
+    return normalize_ai_request_options(
+        model=model,
+        ai_preset=ai_preset,
+        max_tokens=max_tokens,
+        models=settings.openrouter_models,
+        configured_default=settings.openrouter_default_model,
+    )
+
+
 @router.get("/openrouter/status", response_model=AiStatusResponse)
 def get_openrouter_status() -> dict[str, object]:
-    return openrouter_status()
+    return _ai_status_payload()
 
 
 @router.post("/openrouter/generate", response_model=AiPromptResponse)
@@ -24,7 +80,14 @@ async def generate_ai_response(
     payload: AiPromptRequest,
     current: CurrentUser = Depends(get_current_session_user),
 ) -> dict[str, object]:
-    return await generate_openrouter_response(model=payload.model, prompt=payload.prompt)
+    ai_options = _resolved_ai_options(payload.model, payload.ai_preset, payload.max_tokens)
+    prompt = (
+        f"{payload.prompt}\n\n"
+        f"AI mode: {ai_options['ai_preset']}. Token budget: {ai_options['max_tokens']} "
+        f"(cap {ai_options['max_tokens_cap']}). Keep the answer concise in economy mode; "
+        "advanced mode may use deeper structured analysis."
+    )
+    return await generate_openrouter_response(model=str(ai_options["model"]), prompt=prompt)
 
 
 @router.post("/chat", response_model=AiChatResponse)
@@ -33,6 +96,7 @@ async def chat_with_ai(
     db: Session | None = Depends(get_optional_db),
     current: CurrentUser = Depends(get_current_session_user),
 ) -> AiChatResponse:
+    ai_options = _resolved_ai_options(payload.model, payload.ai_preset, payload.max_tokens)
     server_context = payload.client_context
     if db is not None:
         client = db.get(ClientAccount, payload.client_id)
@@ -46,12 +110,15 @@ async def chat_with_ai(
             "Trusted server-side client context follows. Use it as the source of truth for client, campaigns, goals, "
             "sync state, diagnostics, and optimization drafts. Do not invent metrics, goal conversions, or applied "
             "changes. If goal data is missing, say it is missing. All Yandex actions are draft/manual-review only.\n"
+            f"AI mode: {ai_options['ai_preset']}. Token budget: {ai_options['max_tokens']} "
+            f"(cap {ai_options['max_tokens_cap']}). Keep answers concise in economy mode unless the user asks for detail; "
+            "advanced mode may use deeper structured analysis.\n"
             f"{json.dumps(server_context, ensure_ascii=False, indent=2)}"
         )
     return await answer_ai_chat(
         client_id=payload.client_id,
         message=enriched_message,
-        model=payload.model,
+        model=str(ai_options["model"]),
         history=payload.history,
         client_context=server_context,
     )
