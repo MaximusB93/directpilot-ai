@@ -6,7 +6,7 @@ from sqlalchemy import select
 
 from app.core.config import normalize_ai_request_options, settings
 from app.db import SessionLocal
-from app.models import ClientAccount, ConnectedAccount, SyncJob
+from app.models import ClientAccount, ConnectedAccount, OptimizationActionDraft, SyncJob
 from app.schemas import AiGeneratedRecommendation, AiRecommendationResponse
 from app.services.mock_data import AUDIT_ISSUES, CAMPAIGNS, CLIENTS, RECOMMENDATIONS
 from app.services.openrouter import generate_openrouter_response
@@ -101,6 +101,17 @@ def build_client_ai_context_from_db(db, client_id: str, selected_campaign_name: 
         .limit(1)
     )
     bound_account = db.get(ConnectedAccount, client.yandex_account_id) if client.yandex_account_id else None
+    saved_actions = db.scalars(
+        select(OptimizationActionDraft)
+        .where(
+            OptimizationActionDraft.client_id == client_id,
+            OptimizationActionDraft.organization_id == client.organization_id,
+        )
+        .order_by(OptimizationActionDraft.updated_at.desc())
+    ).all()
+    action_counts = {status: 0 for status in ["draft", "reviewed", "approved", "rejected", "needs_changes"]}
+    for action in saved_actions:
+        action_counts[action.status] = action_counts.get(action.status, 0) + 1
     campaigns = summary.get("campaigns", [])
     selected_campaign = None
     if selected_campaign_name:
@@ -175,6 +186,31 @@ def build_client_ai_context_from_db(db, client_id: str, selected_campaign_name: 
             for item in campaigns
         ],
         "optimization_plan": plan.get("actions", []),
+        "saved_optimization_actions": {
+            "total": len(saved_actions),
+            "count_by_status": action_counts,
+            "approved": [
+                {"id": action.id, "campaign_name": action.campaign_name, "issue": action.issue, "comment": action.user_comment}
+                for action in saved_actions
+                if action.status == "approved"
+            ][:5],
+            "rejected": [
+                {"id": action.id, "campaign_name": action.campaign_name, "issue": action.issue, "comment": action.user_comment}
+                for action in saved_actions
+                if action.status == "rejected"
+            ][:5],
+            "needs_changes": [
+                {"id": action.id, "campaign_name": action.campaign_name, "issue": action.issue, "comment": action.user_comment}
+                for action in saved_actions
+                if action.status == "needs_changes"
+            ][:5],
+            "latest_comments": [
+                {"id": action.id, "status": action.status, "comment": action.user_comment}
+                for action in saved_actions
+                if action.user_comment
+            ][:5],
+            "safety_note": "Approved means the user approved the draft only. No Yandex Direct changes were applied.",
+        },
         "selected_campaign_name": selected_campaign_name,
         "selected_campaign": selected_campaign,
         "warnings": warnings,

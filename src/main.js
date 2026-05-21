@@ -127,6 +127,13 @@ let optimizationPlanLoading = false;
 let optimizationPlanStatus = '';
 let optimizationFilter = 'all';
 const optimizationPlanByClientId = {};
+let optimizationActions = [];
+let optimizationActionsLoading = false;
+let optimizationActionsStatus = '';
+let optimizationActionFilter = 'all';
+let optimizationActionsLoadedFor = '';
+const optimizationActionsByClientId = {};
+const optimizationActionFilterByClientId = {};
 let clientsLoaded = false;
 let backendClientsAvailable = false;
 let backendClientsStatus = 'Проверяем подключение backend...';
@@ -272,7 +279,7 @@ function getViewActionTarget(target) {
 
 function isInteractiveActionTarget(target) {
   return Boolean(
-    target?.closest?.('button, a, [role="button"], [data-save-api-base], [data-client-id], [data-integration], [data-client-ai-recommendations], [data-sync-client], [data-load-summary], [data-load-sync-jobs], [data-load-optimization-plan], [data-copy-optimization-plan], [data-copy-text], [data-optimization-filter], [data-ai-quick-action], [data-ai-economy-fallback], [data-clear-ai-chat], [data-refresh-yandex-status], [data-go-view], [data-logout]')
+    target?.closest?.('button, a, [role="button"], [data-save-api-base], [data-client-id], [data-integration], [data-client-ai-recommendations], [data-sync-client], [data-load-summary], [data-load-sync-jobs], [data-load-optimization-plan], [data-load-optimization-actions], [data-save-optimization-actions], [data-update-optimization-action], [data-copy-optimization-plan], [data-copy-text], [data-optimization-filter], [data-optimization-action-filter], [data-ai-quick-action], [data-ai-economy-fallback], [data-clear-ai-chat], [data-refresh-yandex-status], [data-go-view], [data-logout]')
     || getViewActionTarget(target)
   );
 }
@@ -447,6 +454,24 @@ function canRunSync() {
 
 function canRunAiAnalysis() {
   return Boolean(getSelectedClient().id && hasPerformanceData());
+}
+
+function getOptimizationActionCounts(actions = optimizationActions) {
+  return actions.reduce((counts, action) => {
+    counts.total += 1;
+    counts[action.status] = (counts[action.status] || 0) + 1;
+    return counts;
+  }, { total: 0, draft: 0, reviewed: 0, approved: 0, rejected: 0, needs_changes: 0 });
+}
+
+function optimizationStatusLabel(status) {
+  return {
+    draft: 'Черновик',
+    reviewed: 'Просмотрено',
+    approved: 'Одобрено',
+    rejected: 'Отклонено',
+    needs_changes: 'Нужны правки',
+  }[status] || status || 'Черновик';
 }
 
 function formatSyncStatus(value) {
@@ -1024,6 +1049,10 @@ function resetSelectedClientOperationalState() {
   optimizationPlan = optimizationPlanByClientId[selectedClientId] || null;
   optimizationPlanStatus = '';
   optimizationFilter = 'all';
+  optimizationActions = optimizationActionsByClientId[selectedClientId] || [];
+  optimizationActionFilter = optimizationActionFilterByClientId[selectedClientId] || 'all';
+  optimizationActionsStatus = '';
+  optimizationActionsLoadedFor = optimizationActionsByClientId[selectedClientId] ? selectedClientId : '';
 }
 
 async function loadSyncJobs() {
@@ -1062,6 +1091,70 @@ async function loadOptimizationPlan() {
   } finally {
     optimizationPlanLoading = false;
     if (activeView === 'optimization') render();
+  }
+}
+
+async function loadOptimizationActions() {
+  if (!selectedClientId) return;
+  optimizationActionsLoading = true;
+  optimizationActionsStatus = 'Загружаем черновики согласования...';
+  if (activeView === 'optimization') render();
+  try {
+    const query = optimizationActionFilter && optimizationActionFilter !== 'all' ? `?status=${encodeURIComponent(optimizationActionFilter)}` : '';
+    const response = await apiFetch(`/clients/${selectedClientId}/optimization-actions${query}`);
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.detail || 'Не удалось загрузить черновики согласования');
+    optimizationActions = Array.isArray(payload.actions) ? payload.actions : [];
+    optimizationActionsByClientId[selectedClientId] = optimizationActions;
+    optimizationActionsLoadedFor = selectedClientId;
+    optimizationActionsStatus = optimizationActions.length ? `Сохранено черновиков: ${optimizationActions.length}` : 'Сохранённых черновиков пока нет.';
+  } catch (error) {
+    optimizationActionsStatus = error.message;
+  } finally {
+    optimizationActionsLoading = false;
+    if (activeView === 'optimization') render();
+  }
+}
+
+async function saveOptimizationPlanAsDrafts() {
+  if (!selectedClientId) return;
+  optimizationActionsLoading = true;
+  optimizationActionsStatus = 'Сохраняем текущий план как черновики...';
+  render();
+  try {
+    const response = await apiFetch(`/clients/${selectedClientId}/optimization-actions/from-plan`, { method: 'POST' });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.detail || 'Не удалось сохранить черновики');
+    optimizationActions = Array.isArray(payload.actions) ? payload.actions : [];
+    optimizationActionsByClientId[selectedClientId] = optimizationActions;
+    optimizationActionsStatus = optimizationActions.length ? `Черновики сохранены: ${optimizationActions.length}` : 'В плане нет действий для сохранения.';
+    await loadOptimizationActions();
+  } catch (error) {
+    optimizationActionsStatus = error.message;
+  } finally {
+    optimizationActionsLoading = false;
+    render();
+  }
+}
+
+async function updateOptimizationAction(actionId, statusValue, commentValue) {
+  if (!selectedClientId || !actionId) return;
+  optimizationActionsStatus = 'Обновляем статус черновика...';
+  render();
+  try {
+    const response = await apiFetch(`/clients/${selectedClientId}/optimization-actions/${actionId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status: statusValue, user_comment: commentValue || null }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.detail || 'Не удалось обновить черновик');
+    optimizationActions = optimizationActions.map((item) => (item.id === payload.id ? payload : item));
+    optimizationActionsByClientId[selectedClientId] = optimizationActions;
+    optimizationActionsStatus = `Статус обновлён: ${optimizationStatusLabel(payload.status)}.`;
+  } catch (error) {
+    optimizationActionsStatus = error.message;
+  } finally {
+    render();
   }
 }
 
@@ -1469,6 +1562,8 @@ function renderOptimization() {
   const client = currentClient();
   const campaigns = (perfSummary?.campaigns || []).filter(campaignMatchesOptimizationFilter);
   const actions = optimizationPlan?.actions || [];
+  const savedCounts = getOptimizationActionCounts();
+  const savedActionFilters = ['all', 'draft', 'reviewed', 'approved', 'rejected', 'needs_changes'];
   const filters = [
     ['all', 'Все'],
     ['critical', 'Critical'],
@@ -1514,6 +1609,49 @@ function renderOptimization() {
           </article>
         `).join('')}
       </div>` : `<div class="emptyStatePanel compact"><h3>Нет кампаний для фильтра</h3><p>Обновите сводку или смените фильтр.</p></div>`}
+    </section>
+    <section class="panel">
+      <div class="panelHeader">
+        <div>
+          <h3>Согласование действий</h3>
+          <p>Это черновики действий. Изменения в Яндекс.Директ не применяются. Одобрение фиксирует решение, но не запускает изменение в рекламном кабинете.</p>
+        </div>
+        <span class="aiStatusBadge ${savedCounts.total ? 'ready' : 'pending'}">${formatNumberSafe(savedCounts.total)} черновиков</span>
+      </div>
+      <div class="kpiGrid">
+        <article class="kpi blue"><span>Черновики</span><strong>${formatNumberSafe(savedCounts.draft)}</strong></article>
+        <article class="kpi green"><span>Одобрено</span><strong>${formatNumberSafe(savedCounts.approved)}</strong></article>
+        <article class="kpi orange"><span>Отклонено</span><strong>${formatNumberSafe(savedCounts.rejected)}</strong></article>
+        <article class="kpi blue"><span>Нужны правки</span><strong>${formatNumberSafe(savedCounts.needs_changes)}</strong></article>
+      </div>
+      <div class="heroActions">
+        <button class="approveButton" type="button" data-save-optimization-actions ${optimizationActionsLoading ? 'disabled' : ''}>${optimizationActionsLoading ? 'Сохраняем...' : 'Сохранить текущий план как черновики'}</button>
+        <button class="secondaryButton" type="button" data-load-optimization-actions ${optimizationActionsLoading ? 'disabled' : ''}>Обновить список</button>
+        ${savedActionFilters.map((statusValue) => `<button class="${optimizationActionFilter === statusValue ? 'approveButton' : 'secondaryButton'}" type="button" data-optimization-action-filter="${statusValue}">${statusValue === 'all' ? 'Все' : optimizationStatusLabel(statusValue)}</button>`).join('')}
+      </div>
+      ${optimizationActionsStatus ? `<div class="authStatus integrationStatus">${escapeHtml(optimizationActionsStatus)}</div>` : ''}
+      ${optimizationActions.length ? `<div class="featureGrid">
+        ${optimizationActions.map((action) => `
+          <article class="featureCard">
+            <span class="featureIcon">${action.status === 'approved' ? '✅' : action.status === 'rejected' ? '⛔' : action.status === 'needs_changes' ? '⚠️' : '📝'}</span>
+            <h3>${escapeHtml(action.issue)}</h3>
+            <small>${escapeHtml(action.source)} · ${escapeHtml(action.severity || 'info')} · ${escapeHtml(action.campaignName || 'аккаунт')} · ${escapeHtml(optimizationStatusLabel(action.status))}</small>
+            <p><strong>Evidence:</strong> ${escapeHtml(action.evidence || '—')}</p>
+            <p><strong>Draft action:</strong> ${escapeHtml(action.draftAction)}</p>
+            <p>${escapeHtml(action.safetyNote || 'Черновик действия. Изменения в Яндекс.Директ не применялись.')}</p>
+            <label class="authField">
+              <span>Комментарий</span>
+              <textarea rows="2" data-optimization-action-comment="${escapeHtml(action.id)}">${escapeHtml(action.userComment || '')}</textarea>
+            </label>
+            <div class="heroActions">
+              <button class="secondaryButton" type="button" data-update-optimization-action="${escapeHtml(action.id)}" data-action-status="reviewed">Просмотрено</button>
+              <button class="approveButton" type="button" data-update-optimization-action="${escapeHtml(action.id)}" data-action-status="approved">Одобрить</button>
+              <button class="secondaryButton" type="button" data-update-optimization-action="${escapeHtml(action.id)}" data-action-status="rejected">Отклонить</button>
+              <button class="secondaryButton" type="button" data-update-optimization-action="${escapeHtml(action.id)}" data-action-status="needs_changes">На доработку</button>
+            </div>
+          </article>
+        `).join('')}
+      </div>` : '<div class="emptyStatePanel compact"><h3>Нет сохранённых черновиков</h3><p>Сначала сформируйте optimization plan и сохраните его как черновики.</p></div>'}
     </section>
     <section class="panel">
       <div class="panelHeader">
@@ -1730,6 +1868,7 @@ function renderAiChat() {
 
 function renderAiAssistant() {
   const client = currentClient();
+  const actionCounts = getOptimizationActionCounts(optimizationActionsByClientId[selectedClientId] || optimizationActions);
   return renderShell(`
     <div class="pageIntro">
       <span class="eyebrow">🧠 AI-аналитик</span>
@@ -1742,6 +1881,7 @@ function renderAiAssistant() {
         <span class="aiStatusBadge ${canRunAiAnalysis() ? 'ready' : 'pending'}">${canRunAiAnalysis() ? 'Данные готовы' : 'Нужна синхронизация'}</span>
       </div>
       <p>Direct: ${escapeHtml(client.directLogin)} · Метрика: ${escapeHtml(client.metricaCounter)} · Цели: ${escapeHtml(perfSummary?.selectedGoalIds?.join(', ') || client.conversionGoalIds || client.mainGoalId || 'не указаны')}</p>
+      <p>Согласование: ${formatNumberSafe(actionCounts.total)} черновиков · одобрено ${formatNumberSafe(actionCounts.approved)} · отклонено ${formatNumberSafe(actionCounts.rejected)} · нужны правки ${formatNumberSafe(actionCounts.needs_changes)}.</p>
       <p>${!client.id ? 'Сначала создайте клиента.' : !clientYandexIntegration?.connected ? 'AI сможет анализировать настройки, но для данных нужна привязка Яндекса.' : !hasPerformanceData() ? 'Сначала запустите синхронизацию, чтобы AI увидел кампании.' : !client.conversionGoalIds && !client.mainGoalId ? 'Укажите ID целей Метрики для анализа целевых конверсий.' : 'AI использует summary, диагностику кампаний и optimization plan.'}</p>
     </section>
     ${renderAiModelSettings()}
@@ -1805,6 +1945,7 @@ function render() {
   if (activeView === 'optimization' && selectedClientId) {
     if (!perfSummary && !perfLoading) loadPerformanceSummary();
     if (!optimizationPlan && !optimizationPlanLoading) loadOptimizationPlan();
+    if (optimizationActionsLoadedFor !== selectedClientId && !optimizationActionsLoading) loadOptimizationActions();
   }
   if (activeView === 'ai' && aiStatus.message === 'Статус OpenRouter ещё не загружен.') {
     loadAiStatus();
@@ -1875,7 +2016,11 @@ app.addEventListener('click', async (event) => {
   const goViewButton = event.target.closest('[data-go-view]');
   const syncJobsButton = event.target.closest('[data-load-sync-jobs]');
   const optimizationPlanButton = event.target.closest('[data-load-optimization-plan]');
+  const loadOptimizationActionsButton = event.target.closest('[data-load-optimization-actions]');
+  const saveOptimizationActionsButton = event.target.closest('[data-save-optimization-actions]');
+  const updateOptimizationActionButton = event.target.closest('[data-update-optimization-action]');
   const optimizationFilterButton = event.target.closest('[data-optimization-filter]');
+  const optimizationActionFilterButton = event.target.closest('[data-optimization-action-filter]');
   const copyOptimizationPlanButton = event.target.closest('[data-copy-optimization-plan]');
   const copyTextButton = event.target.closest('[data-copy-text]');
   const aiQuickActionButton = event.target.closest('[data-ai-quick-action]');
@@ -1918,9 +2063,34 @@ app.addEventListener('click', async (event) => {
     return;
   }
 
+  if (loadOptimizationActionsButton) {
+    await loadOptimizationActions();
+    return;
+  }
+
+  if (saveOptimizationActionsButton) {
+    await saveOptimizationPlanAsDrafts();
+    return;
+  }
+
+  if (updateOptimizationActionButton) {
+    const actionId = updateOptimizationActionButton.dataset.updateOptimizationAction;
+    const nextStatus = updateOptimizationActionButton.dataset.actionStatus;
+    const comment = app.querySelector(`[data-optimization-action-comment="${CSS.escape(actionId)}"]`)?.value || '';
+    await updateOptimizationAction(actionId, nextStatus, comment);
+    return;
+  }
+
   if (optimizationFilterButton) {
     optimizationFilter = optimizationFilterButton.dataset.optimizationFilter;
     render();
+    return;
+  }
+
+  if (optimizationActionFilterButton) {
+    optimizationActionFilter = optimizationActionFilterButton.dataset.optimizationActionFilter || 'all';
+    optimizationActionFilterByClientId[selectedClientId] = optimizationActionFilter;
+    await loadOptimizationActions();
     return;
   }
 

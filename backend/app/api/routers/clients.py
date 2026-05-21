@@ -1,12 +1,20 @@
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import CurrentUser, get_current_session_user
 from app.db import get_optional_db
-from app.models import ClientAccount, ConnectedAccount, DirectCampaignPeriodStat, SyncJob
+from app.models import (
+    ClientAccount,
+    ConnectedAccount,
+    DirectCampaignPeriodStat,
+    OptimizationActionDraft as OptimizationActionDraftModel,
+    OptimizationActionEvent,
+    SyncJob,
+)
 from app.schemas import (
     AgencyMetric,
     AiClientRecommendationRequest,
@@ -20,6 +28,11 @@ from app.schemas import (
     ClientSummary,
     ClientPerformanceSummaryResponse,
     OptimizationPlanResponse,
+    OptimizationActionDraftCreate,
+    OptimizationActionDraftListResponse,
+    OptimizationActionDraftResponse,
+    OptimizationActionDraftUpdateStatus,
+    OptimizationActionEventResponse,
     SyncJobResponse,
 )
 from app.services.ai_recommendations import (
@@ -32,6 +45,18 @@ from app.services.performance_summary import build_optimization_plan, build_perf
 from app.services.mock_data import AGENCY_METRICS, CAMPAIGNS, CLIENTS
 
 router = APIRouter(prefix="/clients", tags=["clients"])
+
+ALLOWED_ACTION_TRANSITIONS = {
+    "draft": {"reviewed", "approved", "rejected", "needs_changes"},
+    "reviewed": {"approved", "rejected", "needs_changes"},
+    "needs_changes": {"reviewed", "rejected"},
+    "rejected": {"draft"},
+    "approved": set(),
+}
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
 
 
 def _sync_job_response(job) -> SyncJobResponse:
@@ -47,6 +72,68 @@ def _sync_job_response(job) -> SyncJobResponse:
         started_at=job.started_at.isoformat() if job.started_at else None,
         finished_at=job.finished_at.isoformat() if job.finished_at else None,
         created_at=job.created_at.isoformat(),
+    )
+
+
+def _optimization_action_response(action: OptimizationActionDraftModel) -> OptimizationActionDraftResponse:
+    return OptimizationActionDraftResponse(
+        id=action.id,
+        organizationId=action.organization_id,
+        clientId=action.client_id,
+        source=action.source,
+        status=action.status,
+        severity=action.severity,
+        category=action.category,
+        campaignName=action.campaign_name,
+        issue=action.issue,
+        evidence=action.evidence,
+        draftAction=action.draft_action,
+        actionType=action.action_type,
+        requiresApproval=action.requires_approval,
+        canApplyAutomatically=action.can_apply_automatically,
+        safetyNote=action.safety_note,
+        userComment=action.user_comment,
+        createdAt=action.created_at.isoformat(),
+        updatedAt=action.updated_at.isoformat() if action.updated_at else None,
+        reviewedAt=action.reviewed_at.isoformat() if action.reviewed_at else None,
+        approvedAt=action.approved_at.isoformat() if action.approved_at else None,
+        rejectedAt=action.rejected_at.isoformat() if action.rejected_at else None,
+    )
+
+
+def _optimization_event_response(event: OptimizationActionEvent) -> OptimizationActionEventResponse:
+    return OptimizationActionEventResponse(
+        id=event.id,
+        actionId=event.action_id,
+        organizationId=event.organization_id,
+        clientId=event.client_id,
+        eventType=event.event_type,
+        fromStatus=event.from_status,
+        toStatus=event.to_status,
+        comment=event.comment,
+        createdAt=event.created_at.isoformat(),
+    )
+
+
+def _append_action_event(
+    db: Session,
+    *,
+    action: OptimizationActionDraftModel,
+    event_type: str,
+    from_status: str | None = None,
+    to_status: str | None = None,
+    comment: str | None = None,
+) -> None:
+    db.add(
+        OptimizationActionEvent(
+            action_id=action.id,
+            organization_id=action.organization_id,
+            client_id=action.client_id,
+            event_type=event_type,
+            from_status=from_status,
+            to_status=to_status,
+            comment=comment,
+        )
     )
 
 
@@ -84,6 +171,18 @@ def _get_owned_client(db: Session, client_id: str, current: CurrentUser) -> Clie
     if not client or client.organization_id != current.organization.id:
         raise HTTPException(status_code=404, detail="Client not found")
     return client
+
+
+def _get_owned_action(
+    db: Session,
+    client_id: str,
+    action_id: str,
+    current: CurrentUser,
+) -> OptimizationActionDraftModel:
+    action = db.get(OptimizationActionDraftModel, action_id)
+    if not action or action.client_id != client_id or action.organization_id != current.organization.id:
+        raise HTTPException(status_code=404, detail="Optimization action not found")
+    return action
 
 
 @router.get("", response_model=list[ClientAccountResponse])
@@ -172,6 +271,8 @@ def delete_client(
     client = _get_owned_client(db, client_id, current)
     db.execute(delete(SyncJob).where(SyncJob.client_id == client_id))
     db.execute(delete(DirectCampaignPeriodStat).where(DirectCampaignPeriodStat.client_id == client_id))
+    db.execute(delete(OptimizationActionEvent).where(OptimizationActionEvent.client_id == client_id))
+    db.execute(delete(OptimizationActionDraftModel).where(OptimizationActionDraftModel.client_id == client_id))
     db.delete(client)
     db.commit()
     return {"status": "deleted", "client_id": client_id}
@@ -344,3 +445,171 @@ def get_client_optimization_plan(
         return OptimizationPlanResponse(**build_optimization_plan(db=db, client_id=client_id))
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/{client_id}/optimization-actions", response_model=OptimizationActionDraftListResponse)
+def list_client_optimization_actions(
+    client_id: str,
+    status: str | None = None,
+    source: str | None = None,
+    db: Session | None = Depends(get_optional_db),
+    current: CurrentUser = Depends(get_current_session_user),
+) -> OptimizationActionDraftListResponse:
+    db = _require_db(db)
+    _get_owned_client(db, client_id, current)
+    query = select(OptimizationActionDraftModel).where(
+        OptimizationActionDraftModel.client_id == client_id,
+        OptimizationActionDraftModel.organization_id == current.organization.id,
+    )
+    if status:
+        query = query.where(OptimizationActionDraftModel.status == status)
+    if source:
+        query = query.where(OptimizationActionDraftModel.source == source)
+    actions = db.scalars(query.order_by(OptimizationActionDraftModel.created_at.desc())).all()
+    return OptimizationActionDraftListResponse(actions=[_optimization_action_response(item) for item in actions])
+
+
+def _create_action_from_payload(
+    db: Session,
+    *,
+    client: ClientAccount,
+    payload: OptimizationActionDraftCreate,
+) -> OptimizationActionDraftModel:
+    action = OptimizationActionDraftModel(
+        organization_id=client.organization_id,
+        client_id=client.id,
+        source=payload.source,
+        status="draft",
+        severity=payload.severity,
+        category=payload.category,
+        campaign_name=payload.campaign_name,
+        issue=payload.issue,
+        evidence=payload.evidence,
+        draft_action=payload.draft_action,
+        action_type=payload.action_type,
+        requires_approval=payload.requires_approval,
+        can_apply_automatically=False,
+        safety_note=payload.safety_note or "Черновик действия. Изменения в Яндекс.Директ не применялись.",
+        user_comment=payload.user_comment,
+    )
+    db.add(action)
+    db.flush()
+    _append_action_event(db, action=action, event_type="created", to_status=action.status, comment=payload.user_comment)
+    if payload.user_comment:
+        _append_action_event(db, action=action, event_type="comment_added", comment=payload.user_comment)
+    return action
+
+
+@router.post("/{client_id}/optimization-actions/from-plan", response_model=OptimizationActionDraftListResponse)
+def save_optimization_plan_as_actions(
+    client_id: str,
+    db: Session | None = Depends(get_optional_db),
+    current: CurrentUser = Depends(get_current_session_user),
+) -> OptimizationActionDraftListResponse:
+    db = _require_db(db)
+    client = _get_owned_client(db, client_id, current)
+    plan = build_optimization_plan(db=db, client_id=client_id)
+    saved: list[OptimizationActionDraftModel] = []
+    for item in plan.get("actions", []):
+        existing = db.scalar(
+            select(OptimizationActionDraftModel).where(
+                OptimizationActionDraftModel.client_id == client_id,
+                OptimizationActionDraftModel.organization_id == current.organization.id,
+                OptimizationActionDraftModel.source == "rule_based",
+                OptimizationActionDraftModel.campaign_name == item.get("campaign_name"),
+                OptimizationActionDraftModel.issue == item.get("issue"),
+                OptimizationActionDraftModel.draft_action == item.get("draft_action"),
+            )
+        )
+        if existing:
+            saved.append(existing)
+            continue
+        payload = OptimizationActionDraftCreate(
+            source="rule_based",
+            severity=item.get("severity"),
+            category=item.get("category"),
+            campaign_name=item.get("campaign_name"),
+            issue=item.get("issue") or "Проверить кампанию",
+            evidence=item.get("evidence"),
+            draft_action=item.get("draft_action") or "Проверить кампанию вручную.",
+            action_type=item.get("action_type") or "manual_review",
+            requires_approval=bool(item.get("requires_approval", True)),
+            can_apply_automatically=False,
+            safety_note=item.get("safety_note") or "Черновик действия. Изменения в Яндекс.Директ не применялись.",
+        )
+        saved.append(_create_action_from_payload(db, client=client, payload=payload))
+    db.commit()
+    for action in saved:
+        db.refresh(action)
+    return OptimizationActionDraftListResponse(actions=[_optimization_action_response(item) for item in saved])
+
+
+@router.post("/{client_id}/optimization-actions", response_model=OptimizationActionDraftResponse, status_code=status.HTTP_201_CREATED)
+def create_client_optimization_action(
+    client_id: str,
+    payload: OptimizationActionDraftCreate,
+    db: Session | None = Depends(get_optional_db),
+    current: CurrentUser = Depends(get_current_session_user),
+) -> OptimizationActionDraftResponse:
+    db = _require_db(db)
+    client = _get_owned_client(db, client_id, current)
+    action = _create_action_from_payload(db, client=client, payload=payload)
+    db.commit()
+    db.refresh(action)
+    return _optimization_action_response(action)
+
+
+@router.patch("/{client_id}/optimization-actions/{action_id}", response_model=OptimizationActionDraftResponse)
+def update_client_optimization_action(
+    client_id: str,
+    action_id: str,
+    payload: OptimizationActionDraftUpdateStatus,
+    db: Session | None = Depends(get_optional_db),
+    current: CurrentUser = Depends(get_current_session_user),
+) -> OptimizationActionDraftResponse:
+    db = _require_db(db)
+    _get_owned_client(db, client_id, current)
+    action = _get_owned_action(db, client_id, action_id, current)
+    old_status = action.status
+    new_status = payload.status or old_status
+    if new_status != old_status:
+        if new_status not in ALLOWED_ACTION_TRANSITIONS.get(old_status, set()):
+            raise HTTPException(status_code=400, detail=f"Status transition {old_status} -> {new_status} is not allowed")
+        action.status = new_status
+        now = _now()
+        if new_status == "reviewed":
+            action.reviewed_at = now
+        if new_status == "approved":
+            action.approved_at = now
+        if new_status == "rejected":
+            action.rejected_at = now
+        _append_action_event(db, action=action, event_type="status_changed", from_status=old_status, to_status=new_status)
+    comment = (payload.user_comment or "").strip()
+    if comment and comment != (action.user_comment or ""):
+        action.user_comment = comment
+        _append_action_event(db, action=action, event_type="comment_added", comment=comment)
+    db.commit()
+    db.refresh(action)
+    return _optimization_action_response(action)
+
+
+@router.get("/{client_id}/optimization-actions/{action_id}/events", response_model=list[OptimizationActionEventResponse])
+def list_client_optimization_action_events(
+    client_id: str,
+    action_id: str,
+    db: Session | None = Depends(get_optional_db),
+    current: CurrentUser = Depends(get_current_session_user),
+) -> list[OptimizationActionEventResponse]:
+    db = _require_db(db)
+    _get_owned_client(db, client_id, current)
+    action = _get_owned_action(db, client_id, action_id, current)
+    events = db.scalars(
+        select(OptimizationActionEvent)
+        .where(
+            OptimizationActionEvent.action_id == action.id,
+            OptimizationActionEvent.client_id == client_id,
+            OptimizationActionEvent.organization_id == current.organization.id,
+        )
+        .order_by(OptimizationActionEvent.created_at.asc())
+    ).all()
+    return [_optimization_event_response(item) for item in events]

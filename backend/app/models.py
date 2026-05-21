@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -171,3 +171,45 @@ class DirectCampaignPeriodStat(Base):
     goal_ids: Mapped[str | None] = mapped_column(Text, nullable=True)
     conversion_warning: Mapped[str | None] = mapped_column(Text, nullable=True)
     loaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class OptimizationActionDraft(Base):
+    __tablename__ = "optimization_action_drafts"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    organization_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    client_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    source: Mapped[str] = mapped_column(String(64), nullable=False, default="rule_based")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="draft")
+    severity: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    category: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    campaign_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    issue: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
+    draft_action: Mapped[str] = mapped_column(Text, nullable=False)
+    action_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    requires_approval: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    can_apply_automatically: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    safety_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    user_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class OptimizationActionEvent(Base):
+    __tablename__ = "optimization_action_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    action_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    organization_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    client_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    from_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    to_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
