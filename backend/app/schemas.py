@@ -386,6 +386,11 @@ class AiRecommendationResponse(BaseModel):
     summary: str
     recommendations: list[AiGeneratedRecommendation]
     raw_response: str | None = None
+    error: bool = False
+    error_code: str | None = None
+    message: str | None = None
+    retryable: bool = False
+    suggested_preset: str | None = None
 
 
 class AiChatMessage(BaseModel):
@@ -416,13 +421,23 @@ class AiChatResponse(BaseModel):
     source: str
     answer: str
     tool_traces: list[AiToolTrace]
+    error: bool = False
+    error_code: str | None = None
+    message: str | None = None
+    retryable: bool = False
+    suggested_preset: str | None = None
 
 
 class AiPromptResponse(BaseModel):
     model: str
-    content: str
+    content: str = ""
     usage: dict | None = None
     id: str | None = None
+    error: bool = False
+    error_code: str | None = None
+    message: str | None = None
+    retryable: bool = False
+    suggested_preset: str | None = None
 
 
 class SyncJobResponse(BaseModel):

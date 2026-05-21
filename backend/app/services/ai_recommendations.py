@@ -12,6 +12,8 @@ from app.services.mock_data import AUDIT_ISSUES, CAMPAIGNS, CLIENTS, RECOMMENDAT
 from app.services.openrouter import generate_openrouter_response
 from app.services.performance_summary import build_optimization_plan, build_performance_summary
 
+AI_RATE_LIMIT_MESSAGE = "Выбранная AI-модель временно перегружена или ограничена по лимитам. Выберите другую модель или повторите позже."
+
 
 def _dump_model(value: Any) -> dict[str, Any]:
     if hasattr(value, "model_dump"):
@@ -280,6 +282,25 @@ def _extract_json_object(content: str) -> dict[str, Any]:
     return json.loads(stripped[start : end + 1])
 
 
+def _is_rate_limit_error(exc: HTTPException) -> bool:
+    detail = exc.detail
+    text = json.dumps(detail, ensure_ascii=False).lower() if isinstance(detail, (dict, list)) else str(detail).lower()
+    return exc.status_code == 429 or "429" in text or "rate limit" in text or "rate-limited" in text or "temporarily rate" in text
+
+
+def normalize_openrouter_error(exc: HTTPException, model: str) -> dict[str, object] | None:
+    if not _is_rate_limit_error(exc):
+        return None
+    return {
+        "error": True,
+        "error_code": "openrouter_rate_limited",
+        "message": AI_RATE_LIMIT_MESSAGE,
+        "model": model,
+        "retryable": True,
+        "suggested_preset": "economy",
+    }
+
+
 async def generate_client_recommendations(
     client_id: str,
     model: str | None = None,
@@ -317,7 +338,20 @@ async def generate_client_recommendations_from_context(
         return _fallback_recommendations(context)
 
     selected_model = str(ai_options["model"])
-    response = await generate_openrouter_response(model=selected_model, prompt=_build_prompt(context))
+    try:
+        response = await generate_openrouter_response(model=selected_model, prompt=_build_prompt(context))
+    except HTTPException as exc:
+        normalized = normalize_openrouter_error(exc, selected_model)
+        if normalized:
+            return AiRecommendationResponse(
+                client_id=context["client"]["id"],
+                source="openrouter_error_normalized",
+                model=selected_model,
+                summary=str(normalized["message"]),
+                recommendations=[],
+                **normalized,
+            )
+        raise
     raw_content = str(response.get("content", ""))
     try:
         parsed = _extract_json_object(raw_content)

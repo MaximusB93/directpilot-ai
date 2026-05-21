@@ -23,6 +23,8 @@ from app.services.openrouter import generate_openrouter_response, openrouter_sta
 
 router = APIRouter(prefix="/ai", tags=["ai"])
 
+AI_RATE_LIMIT_MESSAGE = "Выбранная AI-модель временно перегружена или ограничена по лимитам. Выберите другую модель или повторите позже."
+
 
 def _provider_from_model(model_id: str) -> str:
     return model_id.split("/", 1)[0] if "/" in model_id else "custom"
@@ -70,6 +72,25 @@ def _resolved_ai_options(model: str | None, ai_preset: str | None, max_tokens: i
     )
 
 
+def _is_rate_limit_error(exc: HTTPException) -> bool:
+    detail = exc.detail
+    text = json.dumps(detail, ensure_ascii=False).lower() if isinstance(detail, (dict, list)) else str(detail).lower()
+    return exc.status_code == 429 or "429" in text or "rate limit" in text or "rate-limited" in text or "temporarily rate" in text
+
+
+def _normalized_ai_error(exc: HTTPException, model: str) -> dict[str, object] | None:
+    if not _is_rate_limit_error(exc):
+        return None
+    return {
+        "error": True,
+        "error_code": "openrouter_rate_limited",
+        "message": AI_RATE_LIMIT_MESSAGE,
+        "model": model,
+        "retryable": True,
+        "suggested_preset": "economy",
+    }
+
+
 @router.get("/openrouter/status", response_model=AiStatusResponse)
 def get_openrouter_status() -> dict[str, object]:
     return _ai_status_payload()
@@ -87,7 +108,14 @@ async def generate_ai_response(
         f"(cap {ai_options['max_tokens_cap']}). Keep the answer concise in economy mode; "
         "advanced mode may use deeper structured analysis."
     )
-    return await generate_openrouter_response(model=str(ai_options["model"]), prompt=prompt)
+    selected_model = str(ai_options["model"])
+    try:
+        return await generate_openrouter_response(model=selected_model, prompt=prompt)
+    except HTTPException as exc:
+        normalized = _normalized_ai_error(exc, selected_model)
+        if normalized:
+            return {"content": "", **normalized}
+        raise
 
 
 @router.post("/chat", response_model=AiChatResponse)
@@ -115,10 +143,24 @@ async def chat_with_ai(
             "advanced mode may use deeper structured analysis.\n"
             f"{json.dumps(server_context, ensure_ascii=False, indent=2)}"
         )
-    return await answer_ai_chat(
-        client_id=payload.client_id,
-        message=enriched_message,
-        model=str(ai_options["model"]),
-        history=payload.history,
-        client_context=server_context,
-    )
+    selected_model = str(ai_options["model"])
+    try:
+        return await answer_ai_chat(
+            client_id=payload.client_id,
+            message=enriched_message,
+            model=selected_model,
+            history=payload.history,
+            client_context=server_context,
+        )
+    except HTTPException as exc:
+        normalized = _normalized_ai_error(exc, selected_model)
+        if normalized:
+            return AiChatResponse(
+                client_id=payload.client_id,
+                model=selected_model,
+                source="openrouter_error_normalized",
+                answer=str(normalized["message"]),
+                tool_traces=[],
+                **normalized,
+            )
+        raise

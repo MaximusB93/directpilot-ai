@@ -1,4 +1,6 @@
-from app.api.routers.ai import _ai_status_payload
+from fastapi import HTTPException
+
+from app.api.routers.ai import _ai_status_payload, _normalized_ai_error
 from app.core.config import normalize_ai_request_options
 
 
@@ -54,3 +56,20 @@ def test_max_tokens_are_capped_by_preset() -> None:
     assert economy["max_tokens"] == 1200
     assert balanced["max_tokens"] == 2500
     assert advanced["max_tokens"] == 5000
+
+
+def test_openrouter_429_error_is_normalized() -> None:
+    exc = HTTPException(
+        status_code=502,
+        detail='OpenRouter вернул ошибку: {"error":{"message":"Provider returned error","code":429,"metadata":{"raw":"temporarily rate-limited upstream"}}}',
+    )
+
+    payload = _normalized_ai_error(exc, "deepseek/deepseek-v4-flash:free")
+
+    assert payload is not None
+    assert payload["error"] is True
+    assert payload["error_code"] == "openrouter_rate_limited"
+    assert payload["model"] == "deepseek/deepseek-v4-flash:free"
+    assert payload["retryable"] is True
+    assert payload["suggested_preset"] == "economy"
+    assert "Provider returned error" not in payload["message"]

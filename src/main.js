@@ -135,10 +135,12 @@ let aiChatMessages = [{ ...initialAiChatMessage }];
 let aiChatInput = 'Почему растёт CPA и что проверить в Яндекс.Метрике?';
 let aiChatLoading = false;
 let aiChatError = '';
+let aiChatErrorDetails = null;
 let aiChatToolTraces = [];
 let selectedAiCampaignName = '';
 const clientAiRecommendationsByClientId = {};
 const aiChatStateByClientId = {};
+let lastAiAction = null;
 
 let selectedClientId = window.localStorage.getItem(scopedStorageKey('directpilot_selected_client_id')) || accountClients[0]?.id || '';
 
@@ -270,7 +272,7 @@ function getViewActionTarget(target) {
 
 function isInteractiveActionTarget(target) {
   return Boolean(
-    target?.closest?.('button, a, [role="button"], [data-save-api-base], [data-client-id], [data-integration], [data-client-ai-recommendations], [data-sync-client], [data-load-summary], [data-load-sync-jobs], [data-load-optimization-plan], [data-copy-optimization-plan], [data-copy-text], [data-optimization-filter], [data-ai-quick-action], [data-clear-ai-chat], [data-refresh-yandex-status], [data-go-view], [data-logout]')
+    target?.closest?.('button, a, [role="button"], [data-save-api-base], [data-client-id], [data-integration], [data-client-ai-recommendations], [data-sync-client], [data-load-summary], [data-load-sync-jobs], [data-load-optimization-plan], [data-copy-optimization-plan], [data-copy-text], [data-optimization-filter], [data-ai-quick-action], [data-ai-economy-fallback], [data-clear-ai-chat], [data-refresh-yandex-status], [data-go-view], [data-logout]')
     || getViewActionTarget(target)
   );
 }
@@ -360,6 +362,43 @@ function aiRequestOptions() {
     ai_preset: aiPreset === 'custom' ? 'economy' : aiPreset,
     max_tokens: activeAiMaxTokens(),
   };
+}
+
+function normalizeAiErrorPayload(payload, fallbackMessage) {
+  if (payload?.error) {
+    return {
+      message: payload.message || fallbackMessage,
+      code: payload.error_code || '',
+      model: payload.model || activeAiModel(),
+      retryable: Boolean(payload.retryable),
+      suggestedPreset: payload.suggested_preset || 'economy',
+    };
+  }
+  const detail = payload?.detail;
+  const rawMessage = typeof detail === 'string' ? detail : JSON.stringify(detail || payload || {});
+  if (rawMessage.includes('429') || rawMessage.toLowerCase().includes('rate')) {
+    return {
+      message: 'Выбранная AI-модель временно перегружена или ограничена по лимитам. Выберите другую модель или повторите позже.',
+      code: 'openrouter_rate_limited',
+      model: activeAiModel(),
+      retryable: true,
+      suggestedPreset: 'economy',
+    };
+  }
+  return {
+    message: rawMessage || fallbackMessage,
+    code: '',
+    model: activeAiModel(),
+    retryable: false,
+    suggestedPreset: '',
+  };
+}
+
+function applyEconomyFallback() {
+  aiPreset = 'economy';
+  aiModel = aiStatus.recommended_default_model || aiStatus.default_model || aiStatus.models?.[0]?.id || 'openai/gpt-4o-mini';
+  aiMaxTokensMode = 'compact';
+  saveAiModelSettings();
 }
 
 loadAiModelSettings();
@@ -458,6 +497,7 @@ function resetClientDerivedState() {
   aiChatMessages = chatState?.messages ? [...chatState.messages] : [{ ...initialAiChatMessage }];
   aiChatInput = chatState?.input || 'Почему растёт CPA и что проверить в Яндекс.Метрике?';
   aiChatError = '';
+  aiChatErrorDetails = chatState?.errorDetails || null;
   aiChatToolTraces = chatState?.toolTraces ? [...chatState.toolTraces] : [];
   selectedAiCampaignName = chatState?.selectedCampaignName || '';
 }
@@ -472,6 +512,7 @@ function saveActiveAiState() {
     input: aiChatInput,
     toolTraces: [...aiChatToolTraces],
     selectedCampaignName: selectedAiCampaignName,
+    errorDetails: aiChatErrorDetails,
   };
 }
 
@@ -786,10 +827,12 @@ async function requestAiChatAnswer() {
   const message = aiChatInput.trim();
   if (!message) return;
   const history = aiChatMessages.slice(-8);
+  lastAiAction = { type: 'chat', message };
   aiChatMessages = [...aiChatMessages, { role: 'user', content: message }];
   aiChatInput = '';
   aiChatLoading = true;
   aiChatError = '';
+  aiChatErrorDetails = null;
   aiChatToolTraces = [];
   render();
   try {
@@ -799,7 +842,11 @@ async function requestAiChatAnswer() {
       body: JSON.stringify({ client_id: selectedClientId, ...aiRequestOptions(), message, history, client_context: currentClient(), selected_campaign_name: selectedAiCampaignName || null }),
     });
     const payload = await response.json();
-    if (!response.ok) throw new Error(payload.detail || 'AI-чат не вернул ответ');
+    if (!response.ok || payload.error) {
+      const normalized = normalizeAiErrorPayload(payload, 'AI-чат не вернул ответ');
+      aiChatErrorDetails = normalized;
+      throw new Error(normalized.message);
+    }
     aiChatMessages = [...aiChatMessages, { role: 'assistant', content: payload.answer, source: payload.source }];
     aiChatToolTraces = payload.tool_traces || [];
   } catch (error) {
@@ -820,6 +867,7 @@ async function requestClientAiRecommendations() {
   clientAiLoading = true;
   clientAiError = '';
   clientAiRecommendations = null;
+  lastAiAction = { type: 'recommendations' };
   render();
   try {
     const response = await apiFetch(`/clients/${selectedClientId}/ai/recommendations`, {
@@ -828,11 +876,15 @@ async function requestClientAiRecommendations() {
       body: JSON.stringify({ ...aiRequestOptions(), client_context: currentClient() }),
     });
     const payload = await response.json();
-    if (!response.ok) throw new Error(payload.detail || 'Не удалось сформировать AI-рекомендации');
+    if (!response.ok || payload.error) {
+      const normalized = normalizeAiErrorPayload(payload, 'Не удалось сформировать AI-рекомендации');
+      clientAiError = `${normalized.message} Модель: ${normalized.model}. Free/custom модели могут часто получать rate limit.`;
+      throw new Error(clientAiError);
+    }
     clientAiRecommendations = payload;
     clientAiRecommendationsByClientId[selectedClientId] = payload;
   } catch (error) {
-    clientAiError = error.message;
+    clientAiError = clientAiError || error.message;
   } finally {
     clientAiLoading = false;
     render();
@@ -1330,7 +1382,7 @@ function renderClientAiRecommendations() {
     return '<section class="panel aiDraftPanel"><h3>AI анализирует клиента...</h3><p>Собираем контекст клиента, аудит, кампании и guardrails.</p></section>';
   }
   if (clientAiError) {
-    return `<section class="panel aiDraftPanel"><h3>AI-рекомендации недоступны</h3><p>${escapeHtml(clientAiError)}</p></section>`;
+    return `<section class="panel aiDraftPanel"><h3>AI-рекомендации недоступны</h3><p>${escapeHtml(clientAiError)}</p><p>Free/custom модели могут часто получать rate limit.</p><button class="secondaryButton" type="button" data-ai-economy-fallback="recommendations">Повторить на модели Эконом</button></section>`;
   }
   if (!clientAiRecommendations) return '';
   return `
@@ -1565,6 +1617,12 @@ function renderAiModelSettings() {
   const presetOptions = getAiPresetOptions();
   const selectedModelValue = isCustomAiModel() ? CUSTOM_MODEL_VALUE : activeAiModel();
   const costLabel = { low: 'низкая стоимость', medium: 'средняя стоимость', high: 'дороже', unknown: 'стоимость неизвестна' }[model.cost_tier || 'unknown'] || 'стоимость неизвестна';
+  const freeModelWarning = activeAiModel().includes(':free')
+    ? 'Free-модели часто ограничиваются провайдерами. Для стабильной работы выберите модель из списка.'
+    : '';
+  const customModelWarning = isCustomAiModel() || aiPreset === 'custom'
+    ? 'Своя/free модель может быть нестабильной: возможны лимиты, 429 и временная недоступность.'
+    : '';
   return `
     <section class="panel">
       <div class="panelHeader">
@@ -1606,6 +1664,8 @@ function renderAiModelSettings() {
       <p>${escapeHtml(preset?.purpose || 'Своя модель OpenRouter. Проверьте стоимость в кабинете OpenRouter.')}${preset?.warning ? ` ${escapeHtml(preset.warning)}` : ''}</p>
       <p>${escapeHtml(aiStatus.message || '')}</p>
       ${isCustomAiModel() ? '<div class="authStatus">Своя модель разрешена backend-настройками только если OPENROUTER_ALLOW_CUSTOM_MODELS=true. Проверьте стоимость вручную.</div>' : ''}
+      ${customModelWarning ? `<div class="authStatus">${escapeHtml(customModelWarning)}</div>` : ''}
+      ${freeModelWarning ? `<div class="authStatus aiError">${escapeHtml(freeModelWarning)}</div>` : ''}
     </section>
   `;
 }
@@ -1652,7 +1712,7 @@ function renderAiChat() {
         `).join('')}
         ${aiChatLoading ? '<article class="aiChatMessage assistant"><strong>DirectPilot AI</strong><pre>Собираю контекст через MCP tools...</pre></article>' : ''}
       </div>
-      ${aiChatError ? `<div class="authStatus aiError">${escapeHtml(aiChatError)}</div>` : ''}
+      ${aiChatError ? `<div class="authStatus aiError"><p>${escapeHtml(aiChatError)}</p>${aiChatErrorDetails?.model ? `<p>Модель: ${escapeHtml(aiChatErrorDetails.model)}. Free/custom модели могут часто получать rate limit.</p>` : ''}${aiChatErrorDetails?.retryable ? '<button class="secondaryButton" type="button" data-ai-economy-fallback="chat">Повторить на модели Эконом</button>' : ''}</div>` : ''}
       <form class="aiChatForm" data-ai-chat-form>
         <textarea name="message" rows="3" data-ai-chat-input placeholder="Например: какие кампании дают расход без конверсий и какие цели Метрики проверить?">${escapeHtml(aiChatInput)}</textarea>
         <button class="approveButton" type="submit" ${aiChatLoading ? 'disabled' : ''}>${aiChatLoading ? 'Думаю...' : 'Отправить в AI-чат'}</button>
@@ -1819,6 +1879,7 @@ app.addEventListener('click', async (event) => {
   const copyOptimizationPlanButton = event.target.closest('[data-copy-optimization-plan]');
   const copyTextButton = event.target.closest('[data-copy-text]');
   const aiQuickActionButton = event.target.closest('[data-ai-quick-action]');
+  const aiFallbackButton = event.target.closest('[data-ai-economy-fallback]');
   const clearAiChatButton = event.target.closest('[data-clear-ai-chat]');
 
   if (logoutButton) {
@@ -1884,11 +1945,29 @@ app.addEventListener('click', async (event) => {
     return;
   }
 
+  if (aiFallbackButton) {
+    const fallbackType = aiFallbackButton.dataset.aiEconomyFallback || lastAiAction?.type;
+    applyEconomyFallback();
+    aiChatError = '';
+    aiChatErrorDetails = null;
+    clientAiError = '';
+    if (fallbackType === 'recommendations') {
+      await requestClientAiRecommendations();
+    } else if (lastAiAction?.message) {
+      aiChatInput = lastAiAction.message;
+      await requestAiChatAnswer();
+    } else {
+      render();
+    }
+    return;
+  }
+
   if (clearAiChatButton) {
     aiChatMessages = [{ ...initialAiChatMessage }];
     aiChatInput = '';
     aiChatToolTraces = [];
     aiChatError = '';
+    aiChatErrorDetails = null;
     saveActiveAiState();
     render();
     return;
