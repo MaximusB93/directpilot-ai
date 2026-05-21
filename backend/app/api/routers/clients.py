@@ -22,7 +22,10 @@ from app.schemas import (
     OptimizationPlanResponse,
     SyncJobResponse,
 )
-from app.services.ai_recommendations import build_client_ai_context_from_db, generate_client_recommendations
+from app.services.ai_recommendations import (
+    build_client_ai_context_from_db,
+    generate_client_recommendations_from_context,
+)
 from app.services.client_sync import list_sync_jobs, run_client_sync
 from app.services.connected_accounts import list_yandex_accounts
 from app.services.performance_summary import build_optimization_plan, build_performance_summary
@@ -265,12 +268,12 @@ async def create_client_ai_recommendations(
     db: Session | None = Depends(get_optional_db),
     current: CurrentUser = Depends(get_current_session_user),
 ) -> AiRecommendationResponse:
-    if db is not None:
-        _get_owned_client(db, client_id, current)
-    return await generate_client_recommendations(
-        client_id=client_id,
+    db = _require_db(db)
+    _get_owned_client(db, client_id, current)
+    context = build_client_ai_context_from_db(db, client_id)
+    return await generate_client_recommendations_from_context(
+        context=context,
         model=payload.model if payload else None,
-        client_context=payload.client_context if payload else None,
     )
 
 

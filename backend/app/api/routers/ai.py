@@ -1,3 +1,5 @@
+import json
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -41,8 +43,10 @@ async def chat_with_ai(
     if server_context:
         enriched_message = (
             f"{payload.message}\n\n"
-            "Серверный контекст клиента, кампаний, целей, summary и optimization plan:\n"
-            f"{server_context}"
+            "Trusted server-side client context follows. Use it as the source of truth for client, campaigns, goals, "
+            "sync state, diagnostics, and optimization drafts. Do not invent metrics, goal conversions, or applied "
+            "changes. If goal data is missing, say it is missing. All Yandex actions are draft/manual-review only.\n"
+            f"{json.dumps(server_context, ensure_ascii=False, indent=2)}"
         )
     return await answer_ai_chat(
         client_id=payload.client_id,
