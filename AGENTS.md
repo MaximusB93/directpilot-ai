@@ -103,6 +103,11 @@ Backend checks/tests (when present):
 
 ---
 
+## Project Plan
+- Before implementation, read `PROJECT_PLAN.md` and follow its roadmap, safety rules, and current priority order.
+
+---
+
 ## 10) How Codex should work on tasks
 - Prefer small, focused PRs over giant patches.
 - First stabilize critical paths (client add, sync, AI chat, approval flow), then extend features.
