@@ -490,3 +490,63 @@ class OptimizationPlanResponse(BaseModel):
     has_goal_data: bool
     summary: str
     actions: list[OptimizationActionDraft]
+
+
+class OptimizationActionDraftCreate(BaseModel):
+    source: str = "manual"
+    severity: str | None = None
+    category: str | None = None
+    campaign_name: str | None = None
+    issue: str = Field(min_length=1)
+    evidence: str | None = None
+    draft_action: str = Field(min_length=1)
+    action_type: str | None = "manual_review"
+    requires_approval: bool = True
+    can_apply_automatically: bool = False
+    safety_note: str | None = None
+    user_comment: str | None = None
+
+
+class OptimizationActionDraftUpdateStatus(BaseModel):
+    status: str | None = None
+    user_comment: str | None = None
+
+
+class OptimizationActionEventResponse(BaseModel):
+    id: str
+    actionId: str
+    organizationId: str | None = None
+    clientId: str
+    eventType: str
+    fromStatus: str | None = None
+    toStatus: str | None = None
+    comment: str | None = None
+    createdAt: str
+
+
+class OptimizationActionDraftResponse(BaseModel):
+    id: str
+    organizationId: str | None = None
+    clientId: str
+    source: str
+    status: str
+    severity: str | None = None
+    category: str | None = None
+    campaignName: str | None = None
+    issue: str
+    evidence: str | None = None
+    draftAction: str
+    actionType: str | None = None
+    requiresApproval: bool
+    canApplyAutomatically: bool
+    safetyNote: str | None = None
+    userComment: str | None = None
+    createdAt: str
+    updatedAt: str | None = None
+    reviewedAt: str | None = None
+    approvedAt: str | None = None
+    rejectedAt: str | None = None
+
+
+class OptimizationActionDraftListResponse(BaseModel):
+    actions: list[OptimizationActionDraftResponse]

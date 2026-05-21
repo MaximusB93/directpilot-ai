@@ -55,6 +55,49 @@ def ensure_mvp_schema() -> None:
         "ALTER TABLE direct_campaign_period_stats ADD COLUMN IF NOT EXISTS conversion_source VARCHAR(64)",
         "ALTER TABLE direct_campaign_period_stats ADD COLUMN IF NOT EXISTS goal_ids TEXT",
         "ALTER TABLE direct_campaign_period_stats ADD COLUMN IF NOT EXISTS conversion_warning TEXT",
+        """
+        CREATE TABLE IF NOT EXISTS optimization_action_drafts (
+            id VARCHAR(36) PRIMARY KEY,
+            organization_id VARCHAR(36),
+            client_id VARCHAR(64) NOT NULL,
+            source VARCHAR(64) NOT NULL DEFAULT 'rule_based',
+            status VARCHAR(32) NOT NULL DEFAULT 'draft',
+            severity VARCHAR(32),
+            category VARCHAR(64),
+            campaign_name VARCHAR(255),
+            issue TEXT NOT NULL,
+            evidence TEXT,
+            draft_action TEXT NOT NULL,
+            action_type VARCHAR(64),
+            requires_approval BOOLEAN NOT NULL DEFAULT TRUE,
+            can_apply_automatically BOOLEAN NOT NULL DEFAULT FALSE,
+            safety_note TEXT,
+            user_comment TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            reviewed_at TIMESTAMPTZ,
+            approved_at TIMESTAMPTZ,
+            rejected_at TIMESTAMPTZ
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_optimization_action_drafts_organization_id ON optimization_action_drafts (organization_id)",
+        "CREATE INDEX IF NOT EXISTS ix_optimization_action_drafts_client_id ON optimization_action_drafts (client_id)",
+        """
+        CREATE TABLE IF NOT EXISTS optimization_action_events (
+            id VARCHAR(36) PRIMARY KEY,
+            action_id VARCHAR(36) NOT NULL,
+            organization_id VARCHAR(36),
+            client_id VARCHAR(64) NOT NULL,
+            event_type VARCHAR(64) NOT NULL,
+            from_status VARCHAR(32),
+            to_status VARCHAR(32),
+            comment TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_optimization_action_events_action_id ON optimization_action_events (action_id)",
+        "CREATE INDEX IF NOT EXISTS ix_optimization_action_events_organization_id ON optimization_action_events (organization_id)",
+        "CREATE INDEX IF NOT EXISTS ix_optimization_action_events_client_id ON optimization_action_events (client_id)",
     ]
     with engine.begin() as connection:
         for statement in statements:
