@@ -32,6 +32,7 @@ from app.schemas import (
     OptimizationActionDraftListResponse,
     OptimizationActionDraftResponse,
     OptimizationActionDraftUpdateStatus,
+    OptimizationActionExecutionPreviewResponse,
     OptimizationActionEventResponse,
     SyncJobResponse,
 )
@@ -112,6 +113,95 @@ def _optimization_event_response(event: OptimizationActionEvent) -> Optimization
         toStatus=event.to_status,
         comment=event.comment,
         createdAt=event.created_at.isoformat(),
+    )
+
+
+def _execution_preview_for_action(action: OptimizationActionDraftModel) -> OptimizationActionExecutionPreviewResponse:
+    action_type = (action.action_type or "manual_review").strip() or "manual_review"
+    base_required = ["campaign_name", "evidence"]
+    missing_data = []
+    if not action.campaign_name:
+        missing_data.append("campaign_name")
+    if not action.evidence:
+        missing_data.append("evidence")
+
+    preview_map = {
+        "manual_review": {
+            "would_do": ["Проверить кампанию вручную", "Сопоставить рекомендацию с фактическими данными клиента"],
+            "required_data": base_required,
+            "safety_checks": ["Проверка человеком обязательна", "Автоматическое применение отключено"],
+            "warnings": ["Автоматическое применение недоступно"],
+        },
+        "add_negative_keywords": {
+            "would_do": ["В будущем могла бы быть подготовлена заявка на добавление минус-фраз"],
+            "required_data": ["search query report", "negative keyword list", "match type", *base_required],
+            "safety_checks": ["Минус-фразы должны быть проверены человеком", "Нужно убедиться, что минус-фразы не блокируют целевые запросы"],
+            "warnings": ["Минус-фразы требуют проверки человеком"],
+        },
+        "adjust_budget": {
+            "would_do": ["В будущем могла бы быть подготовлена корректировка бюджета"],
+            "required_data": ["current budget", "target budget", "human confirmation", "date range", *base_required],
+            "safety_checks": ["Проверить влияние на расход и лидогенерацию", "Проверить ограничения бюджета и сезонность"],
+            "warnings": ["Изменение бюджета может повлиять на расход и лидогенерацию"],
+            "missing": ["current budget", "target budget", "date range"],
+        },
+        "pause_campaign": {
+            "would_do": ["В будущем могла бы быть подготовлена остановка кампании"],
+            "required_data": ["exact campaign id", "confirmation", "date range", *base_required],
+            "safety_checks": ["Проверить, что кампания действительно не приносит целевые конверсии", "Получить явное подтверждение пользователя"],
+            "warnings": ["Остановка кампании может остановить лидогенерацию", "Автоматическое применение отключено"],
+            "missing": ["exact campaign id", "confirmation", "date range"],
+        },
+        "change_bid": {
+            "would_do": ["В будущем могла бы быть подготовлена корректировка ставки"],
+            "required_data": ["current bid", "target bid", "bid strategy context", "human confirmation", *base_required],
+            "safety_checks": ["Проверить стратегию ставок и ограничения кампании", "Проверить CPA/ROAS до изменения"],
+            "warnings": ["Изменение ставок требует проверки стратегии"],
+            "missing": ["current bid", "target bid", "bid strategy context"],
+        },
+        "improve_ads": {
+            "would_do": ["В будущем могли бы быть подготовлены варианты улучшения объявлений"],
+            "required_data": ["ad text variants", "landing page context", "moderation constraints", *base_required],
+            "safety_checks": ["Проверить тексты объявлений вручную", "Учесть правила модерации Яндекса"],
+            "warnings": ["Новые объявления требуют проверки и модерации"],
+            "missing": ["ad text variants", "moderation constraints"],
+        },
+        "tracking_fix": {
+            "would_do": ["В будущем могла бы быть подготовлена проверка аналитики и целей"],
+            "required_data": ["Metrika counter", "goal ids", "tracking diagnosis", *base_required],
+            "safety_checks": ["Проверить корректность целей Метрики", "Не менять аналитику без подтверждения специалиста"],
+            "warnings": ["Проверьте корректность целей до изменения аналитики"],
+            "missing": ["tracking diagnosis"],
+        },
+    }
+    config = preview_map.get(action_type, preview_map["manual_review"])
+    missing_data.extend(item for item in config.get("missing", []) if item not in missing_data)
+    if action_type not in preview_map:
+        action_type = "unknown"
+
+    return OptimizationActionExecutionPreviewResponse(
+        action_id=action.id,
+        client_id=action.client_id,
+        status=action.status,
+        can_preview=True,
+        can_apply=False,
+        apply_enabled=False,
+        action_type=action_type,
+        campaign_name=action.campaign_name,
+        summary=f"Предпросмотр для черновика: {action.issue}",
+        would_do=config["would_do"],
+        required_data=config["required_data"],
+        missing_data=missing_data,
+        safety_checks=[
+            *config["safety_checks"],
+            "Yandex Direct write API is not called",
+            "can_apply=false and apply_enabled=false",
+        ],
+        warnings=[
+            *config["warnings"],
+            "Это только предпросмотр. Изменения в Яндекс.Директ не применяются.",
+        ],
+        next_step="Проверьте данные, комментарий и статус черновика. Реальное применение будет доступно только в будущей approval-based версии.",
     )
 
 
@@ -591,6 +681,22 @@ def update_client_optimization_action(
     db.commit()
     db.refresh(action)
     return _optimization_action_response(action)
+
+
+@router.get(
+    "/{client_id}/optimization-actions/{action_id}/execution-preview",
+    response_model=OptimizationActionExecutionPreviewResponse,
+)
+def get_client_optimization_action_execution_preview(
+    client_id: str,
+    action_id: str,
+    db: Session | None = Depends(get_optional_db),
+    current: CurrentUser = Depends(get_current_session_user),
+) -> OptimizationActionExecutionPreviewResponse:
+    db = _require_db(db)
+    _get_owned_client(db, client_id, current)
+    action = _get_owned_action(db, client_id, action_id, current)
+    return _execution_preview_for_action(action)
 
 
 @router.get("/{client_id}/optimization-actions/{action_id}/events", response_model=list[OptimizationActionEventResponse])
