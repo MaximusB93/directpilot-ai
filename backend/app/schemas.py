@@ -550,3 +550,21 @@ class OptimizationActionDraftResponse(BaseModel):
 
 class OptimizationActionDraftListResponse(BaseModel):
     actions: list[OptimizationActionDraftResponse]
+
+
+class OptimizationActionExecutionPreviewResponse(BaseModel):
+    action_id: str
+    client_id: str
+    status: str
+    can_preview: bool
+    can_apply: bool = False
+    apply_enabled: bool = False
+    action_type: str | None = None
+    campaign_name: str | None = None
+    summary: str
+    would_do: list[str] = Field(default_factory=list)
+    required_data: list[str] = Field(default_factory=list)
+    missing_data: list[str] = Field(default_factory=list)
+    safety_checks: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    next_step: str

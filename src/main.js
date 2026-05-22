@@ -108,6 +108,8 @@ let aiPrompt = 'Проанализируй выбранного клиента D
 let aiResponse = null;
 let aiError = '';
 let aiLoading = false;
+let aiModelTestLoading = false;
+let aiModelTestStatus = '';
 let clientAiRecommendations = null;
 let clientAiLoading = false;
 let clientAiError = '';
@@ -134,6 +136,8 @@ let optimizationActionFilter = 'all';
 let optimizationActionsLoadedFor = '';
 const optimizationActionsByClientId = {};
 const optimizationActionFilterByClientId = {};
+const optimizationExecutionPreviewsByActionId = {};
+let optimizationExecutionPreviewStatus = '';
 let clientsLoaded = false;
 let backendClientsAvailable = false;
 let backendClientsStatus = 'Проверяем подключение backend...';
@@ -279,7 +283,7 @@ function getViewActionTarget(target) {
 
 function isInteractiveActionTarget(target) {
   return Boolean(
-    target?.closest?.('button, a, [role="button"], [data-save-api-base], [data-client-id], [data-integration], [data-client-ai-recommendations], [data-sync-client], [data-load-summary], [data-load-sync-jobs], [data-load-optimization-plan], [data-load-optimization-actions], [data-save-optimization-actions], [data-update-optimization-action], [data-copy-optimization-plan], [data-copy-text], [data-optimization-filter], [data-optimization-action-filter], [data-ai-quick-action], [data-ai-economy-fallback], [data-clear-ai-chat], [data-refresh-yandex-status], [data-go-view], [data-logout]')
+    target?.closest?.('button, a, [role="button"], [data-save-api-base], [data-client-id], [data-integration], [data-client-ai-recommendations], [data-sync-client], [data-load-summary], [data-load-sync-jobs], [data-load-optimization-plan], [data-load-optimization-actions], [data-save-optimization-actions], [data-update-optimization-action], [data-load-execution-preview], [data-copy-optimization-plan], [data-copy-text], [data-optimization-filter], [data-optimization-action-filter], [data-ai-quick-action], [data-ai-economy-fallback], [data-test-ai-model], [data-clear-ai-chat], [data-refresh-yandex-status], [data-go-view], [data-logout]')
     || getViewActionTarget(target)
   );
 }
@@ -841,6 +845,37 @@ async function requestAiInsight() {
   }
 }
 
+async function testSelectedAiModel() {
+  aiModelTestLoading = true;
+  aiModelTestStatus = 'Проверяем модель коротким запросом...';
+  render();
+  try {
+    const response = await apiFetch('/ai/openrouter/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...aiRequestOptions(), prompt: 'Ответь одним словом: OK' }),
+    });
+    const payload = await response.json();
+    if (!response.ok || payload.error) {
+      const normalized = normalizeAiErrorPayload(payload, 'Модель не ответила на тестовый запрос.');
+      if (normalized.code === 'openrouter_rate_limited' || response.status === 429) {
+        aiModelTestStatus = `Модель временно ограничена по лимитам: ${normalized.model}. Free/custom модели могут чаще получать rate limit.`;
+      } else if (!aiStatus.configured || response.status === 503) {
+        aiModelTestStatus = 'OpenRouter не настроен или недоступен на backend.';
+      } else {
+        aiModelTestStatus = `${normalized.message} Модель: ${normalized.model}.`;
+      }
+      return;
+    }
+    aiModelTestStatus = `Модель отвечает. Фактическая модель: ${payload.model || activeAiModel()}.`;
+  } catch (error) {
+    aiModelTestStatus = `Не удалось проверить модель: ${error.message}`;
+  } finally {
+    aiModelTestLoading = false;
+    render();
+  }
+}
+
 
 
 async function requestAiChatAnswer() {
@@ -1052,6 +1087,7 @@ function resetSelectedClientOperationalState() {
   optimizationActions = optimizationActionsByClientId[selectedClientId] || [];
   optimizationActionFilter = optimizationActionFilterByClientId[selectedClientId] || 'all';
   optimizationActionsStatus = '';
+  optimizationExecutionPreviewStatus = '';
   optimizationActionsLoadedFor = optimizationActionsByClientId[selectedClientId] ? selectedClientId : '';
 }
 
@@ -1153,6 +1189,23 @@ async function updateOptimizationAction(actionId, statusValue, commentValue) {
     optimizationActionsStatus = `Статус обновлён: ${optimizationStatusLabel(payload.status)}.`;
   } catch (error) {
     optimizationActionsStatus = error.message;
+  } finally {
+    render();
+  }
+}
+
+async function loadOptimizationExecutionPreview(actionId) {
+  if (!selectedClientId || !actionId) return;
+  optimizationExecutionPreviewStatus = 'Загружаем безопасный предпросмотр...';
+  render();
+  try {
+    const response = await apiFetch(`/clients/${selectedClientId}/optimization-actions/${actionId}/execution-preview`);
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.detail || 'Не удалось загрузить предпросмотр применения');
+    optimizationExecutionPreviewsByActionId[actionId] = payload;
+    optimizationExecutionPreviewStatus = 'Предпросмотр загружен. Изменения в Яндекс.Директ не применялись.';
+  } catch (error) {
+    optimizationExecutionPreviewStatus = error.message;
   } finally {
     render();
   }
@@ -1558,11 +1611,32 @@ function campaignMatchesOptimizationFilter(campaign) {
   return true;
 }
 
+function renderExecutionPreview(preview) {
+  if (!preview) return '';
+  const renderList = (items) => (items?.length ? `<ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>` : '<p>—</p>');
+  return `
+    <div class="authStatus integrationStatus">
+      <strong>Это только предпросмотр. Изменения в Яндекс.Директ не применяются.</strong>
+      <p>${escapeHtml(preview.summary || '')}</p>
+      <p>can_apply: ${preview.can_apply ? 'true' : 'false'} · apply_enabled: ${preview.apply_enabled ? 'true' : 'false'}</p>
+      <div class="clientSettingsGrid">
+        <div><strong>would_do</strong>${renderList(preview.would_do || [])}</div>
+        <div><strong>required_data</strong>${renderList(preview.required_data || [])}</div>
+        <div><strong>missing_data</strong>${renderList(preview.missing_data || [])}</div>
+        <div><strong>safety_checks</strong>${renderList(preview.safety_checks || [])}</div>
+        <div><strong>warnings</strong>${renderList(preview.warnings || [])}</div>
+      </div>
+      <p><strong>Следующий шаг:</strong> ${escapeHtml(preview.next_step || '')}</p>
+    </div>
+  `;
+}
+
 function renderOptimization() {
   const client = currentClient();
   const campaigns = (perfSummary?.campaigns || []).filter(campaignMatchesOptimizationFilter);
   const actions = optimizationPlan?.actions || [];
   const savedCounts = getOptimizationActionCounts();
+  const previewReadyCount = (savedCounts.approved || 0) + (savedCounts.reviewed || 0);
   const savedActionFilters = ['all', 'draft', 'reviewed', 'approved', 'rejected', 'needs_changes'];
   const filters = [
     ['all', 'Все'],
@@ -1620,9 +1694,11 @@ function renderOptimization() {
       </div>
       <div class="kpiGrid">
         <article class="kpi blue"><span>Черновики</span><strong>${formatNumberSafe(savedCounts.draft)}</strong></article>
+        <article class="kpi green"><span>Просмотрено</span><strong>${formatNumberSafe(savedCounts.reviewed)}</strong></article>
         <article class="kpi green"><span>Одобрено</span><strong>${formatNumberSafe(savedCounts.approved)}</strong></article>
         <article class="kpi orange"><span>Отклонено</span><strong>${formatNumberSafe(savedCounts.rejected)}</strong></article>
         <article class="kpi blue"><span>Нужны правки</span><strong>${formatNumberSafe(savedCounts.needs_changes)}</strong></article>
+        <article class="kpi orange"><span>Готово к предпросмотру</span><strong>${formatNumberSafe(previewReadyCount)}</strong></article>
       </div>
       <div class="heroActions">
         <button class="approveButton" type="button" data-save-optimization-actions ${optimizationActionsLoading ? 'disabled' : ''}>${optimizationActionsLoading ? 'Сохраняем...' : 'Сохранить текущий план как черновики'}</button>
@@ -1630,6 +1706,7 @@ function renderOptimization() {
         ${savedActionFilters.map((statusValue) => `<button class="${optimizationActionFilter === statusValue ? 'approveButton' : 'secondaryButton'}" type="button" data-optimization-action-filter="${statusValue}">${statusValue === 'all' ? 'Все' : optimizationStatusLabel(statusValue)}</button>`).join('')}
       </div>
       ${optimizationActionsStatus ? `<div class="authStatus integrationStatus">${escapeHtml(optimizationActionsStatus)}</div>` : ''}
+      ${optimizationExecutionPreviewStatus ? `<div class="authStatus integrationStatus">${escapeHtml(optimizationExecutionPreviewStatus)}</div>` : ''}
       ${optimizationActions.length ? `<div class="featureGrid">
         ${optimizationActions.map((action) => `
           <article class="featureCard">
@@ -1648,7 +1725,9 @@ function renderOptimization() {
               <button class="approveButton" type="button" data-update-optimization-action="${escapeHtml(action.id)}" data-action-status="approved">Одобрить</button>
               <button class="secondaryButton" type="button" data-update-optimization-action="${escapeHtml(action.id)}" data-action-status="rejected">Отклонить</button>
               <button class="secondaryButton" type="button" data-update-optimization-action="${escapeHtml(action.id)}" data-action-status="needs_changes">На доработку</button>
+              <button class="secondaryButton" type="button" data-load-execution-preview="${escapeHtml(action.id)}">Предпросмотр применения</button>
             </div>
+            ${renderExecutionPreview(optimizationExecutionPreviewsByActionId[action.id])}
           </article>
         `).join('')}
       </div>` : '<div class="emptyStatePanel compact"><h3>Нет сохранённых черновиков</h3><p>Сначала сформируйте optimization plan и сохраните его как черновики.</p></div>'}
@@ -1754,11 +1833,14 @@ function renderAiModelSettings() {
   const modelOptions = aiStatus.models || [];
   const presetOptions = getAiPresetOptions();
   const selectedModelValue = isCustomAiModel() ? CUSTOM_MODEL_VALUE : activeAiModel();
+  const customModelActive = selectedModelValue === CUSTOM_MODEL_VALUE || aiPreset === 'custom';
+  const resolvedModel = activeAiModel();
+  const resolvedMaxTokens = activeAiMaxTokens();
   const costLabel = { low: 'низкая стоимость', medium: 'средняя стоимость', high: 'дороже', unknown: 'стоимость неизвестна' }[model.cost_tier || 'unknown'] || 'стоимость неизвестна';
-  const freeModelWarning = activeAiModel().includes(':free')
-    ? 'Free-модели часто ограничиваются провайдерами. Для стабильной работы выберите модель из списка.'
+  const freeModelWarning = resolvedModel.includes(':free')
+    ? 'Free-модели часто получают rate limit у провайдера. Для стабильной работы выберите модель из списка.'
     : '';
-  const customModelWarning = isCustomAiModel() || aiPreset === 'custom'
+  const customModelWarning = customModelActive
     ? 'Своя/free модель может быть нестабильной: возможны лимиты, 429 и временная недоступность.'
     : '';
   return `
@@ -1766,7 +1848,8 @@ function renderAiModelSettings() {
       <div class="panelHeader">
         <div>
           <h3>Настройки AI-модели</h3>
-          <p>Выберите режим и модель OpenRouter. Дорогие модели могут быстрее расходовать баланс OpenRouter.</p>
+          <p>Режимы Эконом/Баланс/Максимум — это настройки DirectPilot AI. OpenRouter получает конкретную модель и лимит токенов.</p>
+          <p>Режим влияет на модель по умолчанию, лимит ответа и подробность ответа. Дорогие модели могут быстрее расходовать баланс OpenRouter.</p>
         </div>
         <span class="aiStatusBadge ${aiStatus.configured ? 'ready' : 'pending'}">${aiStatus.configured ? 'OpenRouter подключён' : 'OpenRouter не настроен'}</span>
       </div>
@@ -1793,14 +1876,23 @@ function renderAiModelSettings() {
             <option value="detailed" ${aiMaxTokensMode === 'detailed' ? 'selected' : ''}>detailed</option>
           </select>
         </label>
-        <label class="authField">
-          <span>Custom model</span>
-          <input data-ai-custom-model value="${escapeHtml(aiCustomModel)}" placeholder="Например: openai/gpt-4o-mini" ${selectedModelValue === CUSTOM_MODEL_VALUE || aiPreset === 'custom' ? '' : 'disabled'} />
-        </label>
+        ${customModelActive ? `
+          <label class="authField">
+            <span>Своя модель OpenRouter</span>
+            <input data-ai-custom-model value="${escapeHtml(aiCustomModel)}" placeholder="Например: openai/gpt-4o-mini" />
+          </label>
+        ` : `
+          <div class="authStatus">Своя модель не используется, пока не выбран режим/модель "Своя модель".</div>
+        `}
       </div>
-      <p><strong>Текущая модель:</strong> ${escapeHtml(activeAiModel())} · <strong>режим:</strong> ${escapeHtml(preset?.label || aiPreset)} · <strong>лимит:</strong> ${formatNumberSafe(activeAiMaxTokens())} tokens · <strong>${escapeHtml(costLabel)}</strong></p>
+      <p><strong>Фактически будет использована модель:</strong> ${escapeHtml(resolvedModel)}</p>
+      <p><strong>Лимит ответа:</strong> ${formatNumberSafe(resolvedMaxTokens)} tokens · <strong>режим:</strong> ${escapeHtml(preset?.label || aiPreset)} · <strong>${escapeHtml(costLabel)}</strong></p>
       <p>${escapeHtml(preset?.purpose || 'Своя модель OpenRouter. Проверьте стоимость в кабинете OpenRouter.')}${preset?.warning ? ` ${escapeHtml(preset.warning)}` : ''}</p>
       <p>${escapeHtml(aiStatus.message || '')}</p>
+      <div class="heroActions">
+        <button class="secondaryButton" type="button" data-test-ai-model ${aiModelTestLoading ? 'disabled' : ''}>${aiModelTestLoading ? 'Проверяем...' : 'Проверить модель'}</button>
+      </div>
+      ${aiModelTestStatus ? `<div class="authStatus integrationStatus">${escapeHtml(aiModelTestStatus)}</div>` : ''}
       ${isCustomAiModel() ? '<div class="authStatus">Своя модель разрешена backend-настройками только если OPENROUTER_ALLOW_CUSTOM_MODELS=true. Проверьте стоимость вручную.</div>' : ''}
       ${customModelWarning ? `<div class="authStatus">${escapeHtml(customModelWarning)}</div>` : ''}
       ${freeModelWarning ? `<div class="authStatus aiError">${escapeHtml(freeModelWarning)}</div>` : ''}
@@ -2019,12 +2111,14 @@ app.addEventListener('click', async (event) => {
   const loadOptimizationActionsButton = event.target.closest('[data-load-optimization-actions]');
   const saveOptimizationActionsButton = event.target.closest('[data-save-optimization-actions]');
   const updateOptimizationActionButton = event.target.closest('[data-update-optimization-action]');
+  const executionPreviewButton = event.target.closest('[data-load-execution-preview]');
   const optimizationFilterButton = event.target.closest('[data-optimization-filter]');
   const optimizationActionFilterButton = event.target.closest('[data-optimization-action-filter]');
   const copyOptimizationPlanButton = event.target.closest('[data-copy-optimization-plan]');
   const copyTextButton = event.target.closest('[data-copy-text]');
   const aiQuickActionButton = event.target.closest('[data-ai-quick-action]');
   const aiFallbackButton = event.target.closest('[data-ai-economy-fallback]');
+  const testAiModelButton = event.target.closest('[data-test-ai-model]');
   const clearAiChatButton = event.target.closest('[data-clear-ai-chat]');
 
   if (logoutButton) {
@@ -2081,6 +2175,11 @@ app.addEventListener('click', async (event) => {
     return;
   }
 
+  if (executionPreviewButton) {
+    await loadOptimizationExecutionPreview(executionPreviewButton.dataset.loadExecutionPreview);
+    return;
+  }
+
   if (optimizationFilterButton) {
     optimizationFilter = optimizationFilterButton.dataset.optimizationFilter;
     render();
@@ -2129,6 +2228,11 @@ app.addEventListener('click', async (event) => {
     } else {
       render();
     }
+    return;
+  }
+
+  if (testAiModelButton) {
+    await testSelectedAiModel();
     return;
   }
 
