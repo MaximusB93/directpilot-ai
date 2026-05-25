@@ -56,6 +56,7 @@ async function apiFetch(path, options = {}) {
     localStorage.removeItem('directpilot_session');
     localStorage.removeItem('directpilot_email');
     window.location.href = 'login.html';
+    throw new Error('Authentication required');
   }
   return response;
 }
@@ -67,12 +68,27 @@ const navItems = [
   { id: 'ai', label: 'AI-аналитик', icon: '🧠' },
   { id: 'optimization', label: 'Оптимизация', icon: '🎯' },
 ];
+const primaryAppViews = new Set(navItems.map((item) => item.id));
+const legacyViewRedirects = {
+  audit: 'ai',
+  recommendations: 'ai',
+  reports: 'dashboard',
+  autopilot: 'optimization',
+  'ai-models': 'ai',
+  models: 'ai',
+};
+
+function normalizeAppView(view) {
+  if (page !== 'app') return view;
+  if (primaryAppViews.has(view)) return view;
+  return legacyViewRedirects[view] || 'dashboard';
+}
 
 const appQueryParams = new URLSearchParams(window.location.search);
 const oauthReturnStatus = appQueryParams.get('yandex');
 let activeView = page === 'login' ? 'login' : page === 'app' ? 'dashboard' : 'landing';
-if (page === 'app' && appQueryParams.get('view') === 'integrations') {
-  activeView = 'integrations';
+if (page === 'app' && appQueryParams.get('view')) {
+  activeView = normalizeAppView(appQueryParams.get('view'));
 }
 let apiBaseDraft = API_BASE;
 let pendingEditableFocusTarget = null;
@@ -165,6 +181,7 @@ function saveSelectedClientId() {
 async function loadClientsFromApi() {
   if (clientsLoaded) return;
   clientsLoaded = true;
+  const previousSelectedClientId = selectedClientId;
   try {
     const response = await apiFetch('/clients');
     if (!response.ok) throw new Error(`Backend responded with ${response.status}`);
@@ -178,9 +195,14 @@ async function loadClientsFromApi() {
       selectedClientId = accountClients[0]?.id || '';
     }
     saveSelectedClientId();
+    if (selectedClientId !== previousSelectedClientId) {
+      resetClientDerivedState();
+      resetSelectedClientOperationalState();
+    }
     saveAccountClients();
     render();
   } catch (error) {
+    if (error.message === 'Authentication required') return;
     backendClientsAvailable = false;
     backendClientsStatus = 'Backend недоступен. Включён demo/fallback режим (данные из localStorage).';
     accountClients = loadAccountClients();
@@ -188,6 +210,10 @@ async function loadClientsFromApi() {
       selectedClientId = accountClients[0]?.id || '';
     }
     saveSelectedClientId();
+    if (selectedClientId !== previousSelectedClientId) {
+      resetClientDerivedState();
+      resetSelectedClientOperationalState();
+    }
     render();
   }
 }
@@ -973,7 +999,9 @@ async function loadIntegrationStatus() {
     integrationStatus = response.ok ? await response.json() : {};
     if (activeView === 'integrations') render();
   } catch (error) {
+    if (error.message === 'Authentication required') return;
     integrationStatus = { message: 'Не удалось получить статус интеграций' };
+    if (activeView === 'integrations') render();
   }
 }
 
@@ -989,12 +1017,13 @@ async function loadClientYandexIntegration(force = false) {
     clientYandexLoadedFor = selectedClientId;
     clientYandexStatus = payload.message || '';
   } catch (error) {
+    if (error.message === 'Authentication required') return;
     clientYandexIntegration = null;
     clientYandexLoadedFor = selectedClientId;
     clientYandexStatus = error.message;
   } finally {
     clientYandexLoading = false;
-    if (activeView === 'integrations') render();
+    if (['dashboard', 'integrations', 'ai', 'optimization'].includes(activeView)) render();
   }
 }
 
@@ -1097,6 +1126,7 @@ function resetSelectedClientOperationalState() {
   syncStatusMessage = '';
   clientYandexIntegration = null;
   clientYandexLoadedFor = '';
+  clientYandexStatus = '';
   optimizationPlan = optimizationPlanByClientId[selectedClientId] || null;
   optimizationPlanStatus = '';
   optimizationFilter = 'all';
@@ -2093,6 +2123,7 @@ function renderAutopilot() {
 }
 
 function render() {
+  activeView = normalizeAppView(activeView);
   const views = {
     landing: renderLanding,
     login: renderLogin,
@@ -2106,7 +2137,8 @@ function render() {
     integrations: renderIntegrations,
     optimization: renderOptimization,
   };
-  app.innerHTML = views[activeView]();
+  const renderView = views[activeView] || renderDashboard;
+  app.innerHTML = renderView();
   document.body.dataset.view = activeView;
   if (activeView === 'login') {
     const emailInput = app.querySelector('input[name="email"]');
@@ -2233,7 +2265,7 @@ app.addEventListener('click', async (event) => {
   }
 
   if (goViewButton) {
-    activeView = goViewButton.dataset.goView;
+    activeView = normalizeAppView(goViewButton.dataset.goView);
     window.scrollTo({ top: 0, behavior: 'smooth' });
     render();
     return;
@@ -2351,10 +2383,10 @@ app.addEventListener('click', async (event) => {
       }
       selectedClientId = accountClients.find((item) => item.id !== clientId)?.id || '';
       saveSelectedClientId();
+      resetClientDerivedState();
+      resetSelectedClientOperationalState();
       clientsLoaded = false;
       clientFormStatus = 'Клиент удалён.';
-      clientYandexIntegration = null;
-      clientYandexLoadedFor = '';
       await loadClientsFromApi();
       render();
     } catch (error) {
@@ -2403,7 +2435,7 @@ app.addEventListener('click', async (event) => {
   }
 
   if (viewButton) {
-    activeView = viewButton.dataset.view;
+    activeView = normalizeAppView(viewButton.dataset.view);
     window.scrollTo({ top: 0, behavior: 'smooth' });
     render();
   }
@@ -2445,6 +2477,8 @@ app.addEventListener('submit', async (event) => {
       const savedClient = await updateClientOnApi(selectedClientId, payload);
       accountClients = accountClients.map((item) => (item.id === savedClient.id ? savedClient : item));
       saveAccountClients();
+      optimizationPlanByClientId[selectedClientId] = null;
+      resetSelectedClientOperationalState();
       clientFormStatus = 'Настройки клиента сохранены.';
     } catch (error) {
       clientFormStatus = `Ошибка сохранения настроек: ${error.message}`;
@@ -2496,6 +2530,7 @@ app.addEventListener('submit', async (event) => {
         saveSelectedClientId();
         saveAccountClients();
         resetClientDerivedState();
+        resetSelectedClientOperationalState();
         clientFormStatus = 'Клиент сохранён в backend.';
         clientDraftName = '';
         clientDraftDirectLogin = '';
@@ -2507,6 +2542,7 @@ app.addEventListener('submit', async (event) => {
         saveSelectedClientId();
         saveAccountClients();
         resetClientDerivedState();
+        resetSelectedClientOperationalState();
         clientFormStatus = 'Backend недоступен: клиент сохранён локально (локальный режим).';
         clientDraftName = '';
         clientDraftDirectLogin = '';
