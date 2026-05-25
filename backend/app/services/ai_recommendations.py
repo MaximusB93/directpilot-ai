@@ -189,6 +189,13 @@ def build_client_ai_context_from_db(db, client_id: str, selected_campaign_name: 
         "saved_optimization_actions": {
             "total": len(saved_actions),
             "count_by_status": action_counts,
+            "execution_preview": {
+                "available_for_statuses": ["approved", "reviewed"],
+                "ready_count": action_counts.get("approved", 0) + action_counts.get("reviewed", 0),
+                "can_apply": False,
+                "apply_enabled": False,
+                "message": "Execution preview is informational only. Approved drafts were not applied to Yandex Direct.",
+            },
             "approved": [
                 {"id": action.id, "campaign_name": action.campaign_name, "issue": action.issue, "comment": action.user_comment}
                 for action in saved_actions
@@ -216,7 +223,7 @@ def build_client_ai_context_from_db(db, client_id: str, selected_campaign_name: 
         "warnings": warnings,
         "safety": {
             "no_write_actions": True,
-            "message": "Все действия являются черновиками и требуют approval. Изменения в Яндекс.Директ не применялись.",
+            "message": "Все действия являются черновиками и требуют approval. Предпросмотр применения только информационный. Изменения в Яндекс.Директ не применялись.",
         },
     }
 
