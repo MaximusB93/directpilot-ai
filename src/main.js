@@ -61,15 +61,11 @@ async function apiFetch(path, options = {}) {
 }
 
 const navItems = [
-  { id: 'dashboard', label: 'Dashboard', icon: '📊' },
+  { id: 'dashboard', label: 'Обзор', icon: '📊' },
   { id: 'clients', label: 'Клиенты', icon: '👥' },
-  { id: 'audit', label: 'AI-аудит', icon: '⚡' },
-  { id: 'recommendations', label: 'Рекомендации', icon: '✨' },
-  { id: 'optimization', label: 'Оптимизация', icon: '🎯' },
-  { id: 'ai', label: 'AI-модели', icon: '🧠' },
-  { id: 'reports', label: 'Отчёты', icon: '📄' },
-  { id: 'autopilot', label: 'Автопилот', icon: '🛡️' },
   { id: 'integrations', label: 'Интеграции', icon: '🔌' },
+  { id: 'ai', label: 'AI-аналитик', icon: '🧠' },
+  { id: 'optimization', label: 'Оптимизация', icon: '🎯' },
 ];
 
 const appQueryParams = new URLSearchParams(window.location.search);
@@ -460,6 +456,26 @@ function canRunAiAnalysis() {
   return Boolean(getSelectedClient().id && hasPerformanceData());
 }
 
+function compactStatusLabel(status) {
+  return {
+    ready: 'Готово',
+    action_needed: 'Нужно действие',
+    blocked: 'Блокер',
+    pending: 'Нет данных',
+    loading: 'Загрузка',
+    error: 'Ошибка',
+    draft: 'Черновик',
+    reviewed: 'Просмотрено',
+    approved: 'Одобрено',
+    rejected: 'Отклонено',
+    needs_changes: 'Нужны правки',
+  }[status] || status || 'Нет данных';
+}
+
+function badgeClassForStatus(status) {
+  return status === 'ready' || status === 'approved' || status === 'reviewed' ? 'ready' : 'pending';
+}
+
 function getOptimizationActionCounts(actions = optimizationActions) {
   return actions.reduce((counts, action) => {
     counts.total += 1;
@@ -509,13 +525,13 @@ function getReadinessState() {
     { status: statsReady ? 'ready' : firstSyncDone ? 'action_needed' : 'pending', label: 'Статистика кампаний доступна', description: statsReady ? `${perfSummary.campaigns.length} кампаний в сводке` : 'Нет сохранённых данных', nextAction: 'Обновите сводку или синхронизацию', targetView: 'dashboard' },
     { status: !hasClient ? 'blocked' : client.mainGoalId ? 'ready' : 'action_needed', label: 'ID основной цели указан', description: client.mainGoalId || 'Цель не выбрана. CPA будет считаться по total conversions.', nextAction: 'Укажите ID основной цели в настройках клиента', targetView: 'clients' },
     { status: !client.mainGoalId ? 'pending' : perfSummary?.hasGoalData ? 'ready' : 'action_needed', label: 'Конверсии по цели загружены', description: perfSummary?.conversionsSourceMessage || 'Цель указана, но конверсии по ней ещё не загружены', nextAction: 'Запустите синхронизацию и проверьте источник конверсий', targetView: 'dashboard' },
-    { status: aiReady ? 'ready' : statsReady ? 'action_needed' : 'pending', label: 'AI-рекомендации сгенерированы', description: aiReady ? 'Черновик готов для ревью.' : 'AI-анализ станет доступнее после загрузки статистики.', nextAction: 'Откройте AI-рекомендации', targetView: 'recommendations' },
+    { status: aiReady ? 'ready' : statsReady ? 'action_needed' : 'pending', label: 'AI-анализ сгенерирован', description: aiReady ? 'AI-план готов для ревью.' : 'AI-анализ станет доступнее после загрузки статистики.', nextAction: 'Откройте AI-аналитик', targetView: 'ai' },
   ];
 }
 
 function getNextBestAction() {
   const item = getReadinessState().find((entry) => entry.status === 'action_needed' || entry.status === 'blocked' || entry.status === 'pending');
-  return item || { label: 'MVP поток готов', nextAction: 'Откройте AI-рекомендации', targetView: 'recommendations' };
+  return item || { status: 'ready', label: 'MVP поток готов', nextAction: 'Откройте AI-аналитик', targetView: 'ai' };
 }
 
 function resetClientDerivedState() {
@@ -1211,6 +1227,43 @@ async function loadOptimizationExecutionPreview(actionId) {
   }
 }
 
+function renderClientContextStrip() {
+  const client = currentClient();
+  const hasClient = Boolean(client.id);
+  const goals = perfSummary?.selectedGoalIds?.join(', ') || client.conversionGoalIds || client.mainGoalId || '';
+  const yandexStatus = clientYandexLoading
+    ? { status: 'loading', value: 'Загрузка' }
+    : clientYandexIntegration?.connected
+      ? { status: 'ready', value: 'Готово' }
+      : { status: hasClient ? 'action_needed' : 'pending', value: hasClient ? 'Нужно действие' : 'Нет данных' };
+  const syncStatus = syncLoading
+    ? { status: 'loading', value: 'Загрузка' }
+    : client.syncStatus === 'ok'
+      ? { status: 'ready', value: 'Готово' }
+      : client.syncStatus === 'error'
+        ? { status: 'error', value: 'Ошибка' }
+        : { status: hasClient ? 'pending' : 'blocked', value: hasClient ? 'Нет данных' : 'Блокер' };
+  const items = [
+    { label: 'Клиент', value: hasClient ? client.name : 'Не выбран', status: hasClient ? 'ready' : 'action_needed' },
+    { label: 'Direct', value: hasClientValue(client.directLogin) ? client.directLogin : 'Нужно действие', status: hasClientValue(client.directLogin) ? 'ready' : 'action_needed' },
+    { label: 'Метрика', value: hasClientValue(client.metricaCounter) ? client.metricaCounter : 'Нужно действие', status: hasClientValue(client.metricaCounter) ? 'ready' : 'action_needed' },
+    { label: 'Цели', value: goals || 'Нет данных', status: goals ? 'ready' : 'pending' },
+    { label: 'Яндекс', value: yandexStatus.value, status: yandexStatus.status },
+    { label: 'Sync', value: syncStatus.value, status: syncStatus.status },
+  ];
+  return `
+    <section class="panel clientSourcePanel">
+      ${items.map((item) => `
+        <div>
+          <span class="muted">${escapeHtml(item.label)}</span>
+          <strong>${escapeHtml(item.value)}</strong>
+          <small>${escapeHtml(compactStatusLabel(item.status))}</small>
+        </div>
+      `).join('')}
+    </section>
+  `;
+}
+
 function renderShell(content) {
   const client = currentClient();
   return `
@@ -1248,6 +1301,7 @@ function renderShell(content) {
             <small>Direct: ${client.directLogin} · Метрика: ${client.metricaCounter}</small>
           </label>
         </header>
+        ${renderClientContextStrip()}
         ${content}
       </section>
     </div>
@@ -1264,16 +1318,16 @@ function readinessLabel(status) {
 
 function renderReadinessPanel(readiness, nextAction) {
   const client = getSelectedClient();
+  const readyCount = readiness.filter((item) => item.status === 'ready').length;
   return `
     <section class="panel">
       <div class="panelHeader">
         <div>
-          <h3>Готовность MVP по клиенту</h3>
-          <p>${client.id ? escapeHtml(client.name) : 'Нет клиента'}</p>
+          <h3>Готовность MVP</h3>
+          <p>${client.id ? escapeHtml(client.name) : 'Создайте клиента, чтобы подключить данные и запустить анализ.'}</p>
         </div>
-        <span class="aiStatusBadge ${nextAction.status === 'ready' ? 'ready' : 'pending'}">${escapeHtml(nextAction.nextAction)}</span>
+        <span class="aiStatusBadge ${readyCount === readiness.length ? 'ready' : 'pending'}">${formatNumberSafe(readyCount)} из ${formatNumberSafe(readiness.length)}</span>
       </div>
-      <div class="authStatus integrationStatus"><strong>Следующий шаг:</strong> ${escapeHtml(nextAction.nextAction)}</div>
       <div class="featureGrid">
         ${readiness.map((item) => `
           <article class="featureCard">
@@ -1288,7 +1342,7 @@ function renderReadinessPanel(readiness, nextAction) {
         <button class="secondaryButton" data-go-view="clients">Клиенты</button>
         <button class="secondaryButton" data-go-view="integrations">Интеграции</button>
         <button class="approveButton" data-sync-client ${canRunSync() && !syncLoading ? '' : 'disabled'}>${syncLoading ? 'Синхронизация...' : 'Запустить синхронизацию'}</button>
-        <button class="approveButton" data-go-view="recommendations">AI-рекомендации</button>
+        <button class="approveButton" data-go-view="ai">AI-аналитик</button>
       </div>
     </section>
   `;
@@ -1354,7 +1408,11 @@ function renderPerformanceSummaryPanel() {
     return `
       <section class="panel emptyStatePanel compact">
         <h3>Сводка эффективности не загружена</h3>
-        <p>Нет сохранённых данных Яндекс.Директа. Запустите синхронизацию после подключения Яндекса или обновите сводку.</p>
+        <p>Нет сохранённых данных Яндекс.Директа. Запустите синхронизацию, чтобы AI увидел кампании, расходы и конверсии.</p>
+        <div class="heroActions">
+          <button class="secondaryButton" data-go-view="integrations">Проверить интеграции</button>
+          <button class="approveButton" data-sync-client ${canRunSync() && !syncLoading ? '' : 'disabled'}>${syncLoading ? 'Синхронизация...' : 'Запустить синхронизацию'}</button>
+        </div>
         <button class="approveButton" data-load-summary ${perfLoading ? 'disabled' : ''}>${perfLoading ? 'Загружаем...' : 'Показать сводку'}</button>
       </section>
     `;
@@ -1367,7 +1425,7 @@ function renderPerformanceSummaryPanel() {
     <section class="panel">
       <div class="panelHeader">
         <div>
-          <h3>Performance Summary</h3>
+          <h3>Сводка эффективности</h3>
           <p>${campaigns.length ? `Кампаний: ${campaigns.length}, флагов: ${issueCount}. ${escapeHtml(perfSummary.conversionsSourceMessage || '')}` : 'Нет сохранённых данных Яндекс.Директа. Запустите синхронизацию после подключения Яндекса.'}</p>
         </div>
         <span class="aiStatusBadge ${campaigns.length ? 'ready' : 'pending'}">${escapeHtml(perfSummary.message)}</span>
@@ -1376,14 +1434,14 @@ function renderPerformanceSummaryPanel() {
         <article class="kpi green"><span>Расход</span><strong>${formatMoneySafe(totals.cost)}</strong></article>
         <article class="kpi blue"><span>Показы</span><strong>${formatNumberSafe(totals.impressions)}</strong></article>
         <article class="kpi orange"><span>Клики</span><strong>${formatNumberSafe(totals.clicks)}</strong></article>
-        <article class="kpi green"><span>Конверсии used</span><strong>${formatNumberSafe(totals.conversions)}</strong></article>
+        <article class="kpi green"><span>Конверсии для анализа</span><strong>${formatNumberSafe(totals.conversions)}</strong></article>
       </div>
-      <p>Цель: ${escapeHtml(perfSummary.selectedGoalId || 'не указана')} · Goal data: ${perfSummary.hasGoalData ? 'доступна' : 'недоступна'} · Goal conversions: ${formatNumberSafe(perfSummary.goalConversionsTotal)}</p>
-      <p>Avg CPC: ${formatMoneySafe(totals.avg_cpc)} · CPA: ${totals.cpa == null ? '—' : formatMoneySafe(totals.cpa)} · CTR: ${formatPercentSafe(totals.clicks && totals.impressions ? (totals.clicks / totals.impressions) * 100 : 0)}</p>
+      <p>Цель: ${escapeHtml(perfSummary.selectedGoalId || 'не указана')} · Данные по целям: ${perfSummary.hasGoalData ? 'доступны' : 'недоступны'} · Конверсии по целям: ${formatNumberSafe(perfSummary.goalConversionsTotal)}</p>
+      <p>Средний CPC: ${formatMoneySafe(totals.avg_cpc)} · CPA: ${totals.cpa == null ? '—' : formatMoneySafe(totals.cpa)} · CTR: ${formatPercentSafe(totals.clicks && totals.impressions ? (totals.clicks / totals.impressions) * 100 : 0)}</p>
       ${campaigns.length ? `
         <div class="tableWrap">
           <table>
-            <thead><tr><th>Кампания</th><th>Расход</th><th>Показы</th><th>Клики</th><th>Total conv.</th><th>Goal conv.</th><th>Used</th><th>CPA used</th><th>Флаги</th></tr></thead>
+            <thead><tr><th>Кампания</th><th>Расход</th><th>Показы</th><th>Клики</th><th>Всего конв.</th><th>Конв. по цели</th><th>Для анализа</th><th>CPA для анализа</th><th>Флаги</th></tr></thead>
             <tbody>${campaigns.map((campaign) => `
               <tr>
                 <td>${escapeHtml(campaign.campaign_name)}</td>
@@ -1409,24 +1467,41 @@ function renderDashboard() {
   const hasClient = Boolean(client.id);
   const readiness = getReadinessState();
   const nextAction = getNextBestAction();
+  const readyCount = readiness.filter((item) => item.status === 'ready').length;
+  const nextTarget = nextAction.targetView || 'dashboard';
   return renderShell(`
     <div class="pageIntro">
-      <span class="eyebrow">📊 Agency overview</span>
-      <h2>Центр управления рекламой и AI-рекомендациями</h2>
-      <p>${hasClient ? 'Сводка по выбранному клиенту, источникам данных и действиям, которые ИИ сможет предложить после загрузки статистики.' : 'В личном кабинете больше нет предзагруженных демо-данных. Добавьте первого клиента и подключите его аккаунты.'}</p>
+      <span class="eyebrow">📊 Обзор</span>
+      <h2>${hasClient ? escapeHtml(client.name) : 'Подготовьте первого клиента к анализу'}</h2>
+      <p>${hasClient ? 'Здесь видно, что уже готово, что мешает синхронизации и какой следующий шаг даст максимум пользы.' : 'Создайте клиента, чтобы подключить данные, запустить синхронизацию и открыть AI-анализ.'}</p>
+    </div>
+    <section class="panel">
+      <div class="panelHeader">
+        <div>
+          <h3>Следующий шаг</h3>
+          <p>${escapeHtml(nextAction.description || nextAction.label || '')}</p>
+        </div>
+        <span class="aiStatusBadge ${badgeClassForStatus(nextAction.status)}">${escapeHtml(compactStatusLabel(nextAction.status))}</span>
+      </div>
+      <div class="authStatus integrationStatus"><strong>${escapeHtml(nextAction.nextAction)}</strong></div>
+      <div class="kpiGrid">
+        <article class="kpi green"><span>Готовность</span><strong>${formatNumberSafe(readyCount)} / ${formatNumberSafe(readiness.length)}</strong></article>
+        <article class="kpi blue"><span>Клиент</span><strong>${hasClient ? 'Готово' : 'Нужно действие'}</strong></article>
+        <article class="kpi orange"><span>Данные</span><strong>${hasPerformanceData() ? 'Готово' : 'Нет данных'}</strong></article>
+      </div>
       <div class="heroActions">
         <button class="secondaryButton" data-go-view="clients">Клиенты</button>
         <button class="secondaryButton" data-go-view="integrations">Интеграции</button>
-        <button class="approveButton" data-sync-client ${!hasClient || syncLoading ? 'disabled' : ''}>${syncLoading ? 'Синхронизация...' : 'Запустить синхронизацию'}</button>
-        <button class="approveButton" data-go-view="recommendations">AI-рекомендации</button>
+        <button class="approveButton" data-sync-client ${canRunSync() && !syncLoading ? '' : 'disabled'}>${syncLoading ? 'Синхронизация...' : 'Запустить синхронизацию'}</button>
+        <button class="approveButton" data-go-view="${escapeHtml(nextTarget)}">Перейти к шагу</button>
       </div>
       ${syncStatusMessage ? `<div class="authStatus integrationStatus">${escapeHtml(syncStatusMessage)}</div>` : ''}
-    </div>
+    </section>
     ${renderReadinessPanel(readiness, nextAction)}
     ${!hasClient ? `
       <section class="panel emptyStatePanel">
-        <h3>Добавьте первого клиента</h3>
-        <p>Каждый клиент хранится отдельно: название проекта, логин Яндекс.Директа и счётчик Метрики. После подключения источников здесь появятся кампании, цели, CPA и рекомендации.</p>
+        <h3>Нет клиента</h3>
+        <p>Создайте клиента, чтобы подключить данные и запустить анализ. После этого DirectPilot покажет готовность, синхронизацию, сводку и AI-план.</p>
         <button class="approveButton" data-view="clients">Перейти к клиентам</button>
       </section>
     ` : `
@@ -1570,7 +1645,7 @@ function renderRecommendations() {
     </section>
     <section class="panel">
       <div class="panelHeader">
-        <h3>Evidence preview</h3>
+        <h3>Предпросмотр данных</h3>
         <span class="aiStatusBadge ${canRunAiAnalysis() ? 'ready' : 'pending'}">${canRunAiAnalysis() ? 'Реальные данные доступны' : 'Нужна статистика'}</span>
       </div>
       <div class="kpiGrid">
@@ -1590,7 +1665,7 @@ function renderRecommendations() {
             <h3>${item.title}</h3>
             <p>${item.reason}</p>
             <small>${item.objects}</small>
-            <div class="actionButtons"><button>Подробнее</button><button class="approveButton">Применить после подтверждения</button></div>
+            <div class="actionButtons"><button>Подробнее</button><button class="approveButton">Сохранить как черновик</button></div>
           </article>
         `).join('')}
       </div>
@@ -1618,13 +1693,13 @@ function renderExecutionPreview(preview) {
     <div class="authStatus integrationStatus">
       <strong>Это только предпросмотр. Изменения в Яндекс.Директ не применяются.</strong>
       <p>${escapeHtml(preview.summary || '')}</p>
-      <p>can_apply: ${preview.can_apply ? 'true' : 'false'} · apply_enabled: ${preview.apply_enabled ? 'true' : 'false'}</p>
+      <p>Применение отключено: ${preview.can_apply || preview.apply_enabled ? 'нет' : 'да'}</p>
       <div class="clientSettingsGrid">
-        <div><strong>would_do</strong>${renderList(preview.would_do || [])}</div>
-        <div><strong>required_data</strong>${renderList(preview.required_data || [])}</div>
-        <div><strong>missing_data</strong>${renderList(preview.missing_data || [])}</div>
-        <div><strong>safety_checks</strong>${renderList(preview.safety_checks || [])}</div>
-        <div><strong>warnings</strong>${renderList(preview.warnings || [])}</div>
+        <div><strong>Что будет подготовлено</strong>${renderList(preview.would_do || [])}</div>
+        <div><strong>Какие данные нужны</strong>${renderList(preview.required_data || [])}</div>
+        <div><strong>Чего не хватает</strong>${renderList(preview.missing_data || [])}</div>
+        <div><strong>Проверки безопасности</strong>${renderList(preview.safety_checks || [])}</div>
+        <div><strong>Предупреждения</strong>${renderList(preview.warnings || [])}</div>
       </div>
       <p><strong>Следующий шаг:</strong> ${escapeHtml(preview.next_step || '')}</p>
     </div>
@@ -1640,22 +1715,22 @@ function renderOptimization() {
   const savedActionFilters = ['all', 'draft', 'reviewed', 'approved', 'rejected', 'needs_changes'];
   const filters = [
     ['all', 'Все'],
-    ['critical', 'Critical'],
-    ['warning', 'Warning'],
-    ['opportunities', 'Opportunities'],
+    ['critical', 'Критично'],
+    ['warning', 'Предупреждения'],
+    ['opportunities', 'Возможности'],
     ['no_conversions', 'Без конверсий'],
-    ['high_cpa', 'High CPA'],
-    ['low_ctr', 'Low CTR'],
-    ['goal_unavailable', 'Goal data unavailable'],
+    ['high_cpa', 'Высокий CPA'],
+    ['low_ctr', 'Низкий CTR'],
+    ['goal_unavailable', 'Данные по целям недоступны'],
   ];
   return renderShell(`
     <div class="pageIntro">
       <span class="eyebrow">🎯 Оптимизация</span>
-      <h2>AI Optimization Workspace</h2>
-      <p>${escapeHtml(client.name)} · цель: ${escapeHtml(client.mainGoalId || 'не указана')} · ${escapeHtml(perfSummary?.conversionsSourceMessage || 'Сначала загрузите performance summary.')}</p>
+      <h2>Оптимизация: диагностика, план, согласование</h2>
+      <p>${escapeHtml(client.name)} · цель: ${escapeHtml(client.mainGoalId || 'не указана')} · ${escapeHtml(perfSummary?.conversionsSourceMessage || 'Сначала загрузите сводку эффективности.')}</p>
       <div class="heroActions">
         <button class="secondaryButton" data-load-summary ${perfLoading ? 'disabled' : ''}>Обновить сводку</button>
-        <button class="approveButton" data-load-optimization-plan ${optimizationPlanLoading ? 'disabled' : ''}>${optimizationPlanLoading ? 'Формируем...' : 'AI plan'}</button>
+        <button class="approveButton" data-load-optimization-plan ${optimizationPlanLoading ? 'disabled' : ''}>${optimizationPlanLoading ? 'Формируем...' : 'AI-план'}</button>
         <button class="secondaryButton" data-copy-optimization-plan ${actions.length ? '' : 'disabled'}>Скопировать план</button>
       </div>
       ${optimizationPlanStatus ? `<div class="authStatus integrationStatus">${escapeHtml(optimizationPlanStatus)}</div>` : ''}
@@ -1663,8 +1738,9 @@ function renderOptimization() {
     <section class="panel">
       <div class="panelHeader">
         <div>
-          <h3>Диагностика кампаний</h3>
-          <p>${perfSummary?.hasGoalData ? 'CPA и диагностика используют goal conversions.' : 'Goal conversions недоступны: диагностика использует fallback total conversions и помечает источник.'}</p>
+          <span class="eyebrow">Этап 1</span>
+          <h3>Диагностика</h3>
+          <p>${perfSummary?.hasGoalData ? 'CPA и диагностика используют конверсии по выбранным целям.' : 'Данные по целям недоступны: диагностика использует резервные общие конверсии и помечает источник.'}</p>
         </div>
         <span class="aiStatusBadge ${perfSummary?.campaigns?.length ? 'ready' : 'pending'}">${formatNumberSafe(perfSummary?.campaigns?.length || 0)} кампаний</span>
       </div>
@@ -1677,7 +1753,7 @@ function renderOptimization() {
             <span class="featureIcon">${campaign.severity === 'critical' ? '⛔' : campaign.severity === 'warning' ? '⚠️' : campaign.severity === 'info' ? '📈' : '✅'}</span>
             <h3>${escapeHtml(campaign.campaign_name)}</h3>
             <p>${escapeHtml(campaign.diagnostic_explanation || '')}</p>
-            <small>Расход ${formatMoneySafe(campaign.cost)} · клики ${formatNumberSafe(campaign.clicks)} · показы ${formatNumberSafe(campaign.impressions)} · total ${formatNumberSafe(campaign.total_conversions)} · goal ${campaign.goal_conversions == null ? '—' : formatNumberSafe(campaign.goal_conversions)} · used ${formatNumberSafe(campaign.conversions_used)} · CPA ${campaign.cpa_used == null ? '—' : formatMoneySafe(campaign.cpa_used)} · CTR ${formatPercentSafe(campaign.ctr)} · ${escapeHtml(campaign.conversion_source || 'unknown')}</small>
+            <small>Расход ${formatMoneySafe(campaign.cost)} · клики ${formatNumberSafe(campaign.clicks)} · показы ${formatNumberSafe(campaign.impressions)} · всего конв. ${formatNumberSafe(campaign.total_conversions)} · конв. по цели ${campaign.goal_conversions == null ? '—' : formatNumberSafe(campaign.goal_conversions)} · для анализа ${formatNumberSafe(campaign.conversions_used)} · CPA ${campaign.cpa_used == null ? '—' : formatMoneySafe(campaign.cpa_used)} · CTR ${formatPercentSafe(campaign.ctr)} · ${escapeHtml(campaign.conversion_source || 'unknown')}</small>
             <p><strong>Фокус:</strong> ${escapeHtml(campaign.recommended_focus || '')}</p>
             <p><strong>Флаги:</strong> ${escapeHtml((campaign.issue_flags || []).join(', ') || '—')}</p>
           </article>
@@ -1687,7 +1763,8 @@ function renderOptimization() {
     <section class="panel">
       <div class="panelHeader">
         <div>
-          <h3>Согласование действий</h3>
+          <span class="eyebrow">Этап 3</span>
+          <h3>Согласование</h3>
           <p>Это черновики действий. Изменения в Яндекс.Директ не применяются. Одобрение фиксирует решение, но не запускает изменение в рекламном кабинете.</p>
         </div>
         <span class="aiStatusBadge ${savedCounts.total ? 'ready' : 'pending'}">${formatNumberSafe(savedCounts.total)} черновиков</span>
@@ -1713,8 +1790,8 @@ function renderOptimization() {
             <span class="featureIcon">${action.status === 'approved' ? '✅' : action.status === 'rejected' ? '⛔' : action.status === 'needs_changes' ? '⚠️' : '📝'}</span>
             <h3>${escapeHtml(action.issue)}</h3>
             <small>${escapeHtml(action.source)} · ${escapeHtml(action.severity || 'info')} · ${escapeHtml(action.campaignName || 'аккаунт')} · ${escapeHtml(optimizationStatusLabel(action.status))}</small>
-            <p><strong>Evidence:</strong> ${escapeHtml(action.evidence || '—')}</p>
-            <p><strong>Draft action:</strong> ${escapeHtml(action.draftAction)}</p>
+            <p><strong>Обоснование:</strong> ${escapeHtml(action.evidence || '—')}</p>
+            <p><strong>Черновик действия:</strong> ${escapeHtml(action.draftAction)}</p>
             <p>${escapeHtml(action.safetyNote || 'Черновик действия. Изменения в Яндекс.Директ не применялись.')}</p>
             <label class="authField">
               <span>Комментарий</span>
@@ -1725,20 +1802,21 @@ function renderOptimization() {
               <button class="approveButton" type="button" data-update-optimization-action="${escapeHtml(action.id)}" data-action-status="approved">Одобрить</button>
               <button class="secondaryButton" type="button" data-update-optimization-action="${escapeHtml(action.id)}" data-action-status="rejected">Отклонить</button>
               <button class="secondaryButton" type="button" data-update-optimization-action="${escapeHtml(action.id)}" data-action-status="needs_changes">На доработку</button>
-              <button class="secondaryButton" type="button" data-load-execution-preview="${escapeHtml(action.id)}">Предпросмотр применения</button>
+              <button class="secondaryButton" type="button" data-load-execution-preview="${escapeHtml(action.id)}">Этап 4: предпросмотр применения</button>
             </div>
             ${renderExecutionPreview(optimizationExecutionPreviewsByActionId[action.id])}
           </article>
         `).join('')}
-      </div>` : '<div class="emptyStatePanel compact"><h3>Нет сохранённых черновиков</h3><p>Сначала сформируйте optimization plan и сохраните его как черновики.</p></div>'}
+      </div>` : '<div class="emptyStatePanel compact"><h3>Нет сохранённых черновиков</h3><p>Сохраните план оптимизации как черновики, чтобы согласовать действия и добавить комментарии.</p><button class="approveButton" type="button" data-save-optimization-actions>Сохранить план как черновики</button></div>'}
     </section>
     <section class="panel">
       <div class="panelHeader">
         <div>
-          <h3>Черновики безопасных действий</h3>
+          <span class="eyebrow">Этап 2</span>
+          <h3>План действий</h3>
           <p>Это manual review. Изменения в Яндекс.Директ не применяются автоматически.</p>
         </div>
-        <span class="aiStatusBadge pending">${formatNumberSafe(actions.length)} actions</span>
+        <span class="aiStatusBadge pending">${formatNumberSafe(actions.length)} действий</span>
       </div>
       ${actions.length ? `<div class="auditList">
         ${actions.map((action) => `
@@ -1755,7 +1833,7 @@ function renderOptimization() {
             </div>
           </article>
         `).join('')}
-      </div>` : `<div class="emptyStatePanel compact"><h3>План ещё не сформирован</h3><p>Нажмите AI plan. Endpoint вернёт детерминированные draft actions без LLM и без write-действий.</p></div>`}
+      </div>` : `<div class="emptyStatePanel compact"><h3>План действий ещё не сформирован</h3><p>Сформируйте AI-план, чтобы увидеть черновики безопасных действий. Изменения в Яндекс.Директ не применяются.</p><button class="approveButton" data-load-optimization-plan ${optimizationPlanLoading ? 'disabled' : ''}>${optimizationPlanLoading ? 'Формируем...' : 'Сформировать AI-план'}</button></div>`}
     </section>
   `);
 }
@@ -1847,55 +1925,59 @@ function renderAiModelSettings() {
     <section class="panel">
       <div class="panelHeader">
         <div>
-          <h3>Настройки AI-модели</h3>
-          <p>Режимы Эконом/Баланс/Максимум — это настройки DirectPilot AI. OpenRouter получает конкретную модель и лимит токенов.</p>
-          <p>Режим влияет на модель по умолчанию, лимит ответа и подробность ответа. Дорогие модели могут быстрее расходовать баланс OpenRouter.</p>
+          <h3>AI-модель</h3>
+          <p>${escapeHtml(preset?.label || aiPreset)} · ${escapeHtml(resolvedModel)} · лимит ${formatNumberSafe(resolvedMaxTokens)} tokens</p>
         </div>
         <span class="aiStatusBadge ${aiStatus.configured ? 'ready' : 'pending'}">${aiStatus.configured ? 'OpenRouter подключён' : 'OpenRouter не настроен'}</span>
       </div>
-      <div class="clientSettingsGrid">
-        <label class="authField">
-          <span>Режим</span>
-          <select data-ai-preset>
-            ${presetOptions.map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === aiPreset ? 'selected' : ''}>${escapeHtml(item.label)} · ${escapeHtml(item.cost_tier || 'unknown')}</option>`).join('')}
-            <option value="custom" ${aiPreset === 'custom' ? 'selected' : ''}>Своя модель</option>
-          </select>
-        </label>
-        <label class="authField">
-          <span>Модель</span>
-          <select data-ai-model>
-            ${modelOptions.map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === selectedModelValue ? 'selected' : ''}>${escapeHtml(item.label || item.name || item.id)} · ${escapeHtml(item.cost_tier || 'unknown')}</option>`).join('')}
-            <option value="${CUSTOM_MODEL_VALUE}" ${selectedModelValue === CUSTOM_MODEL_VALUE ? 'selected' : ''}>Своя модель OpenRouter</option>
-          </select>
-        </label>
-        <label class="authField">
-          <span>Детализация</span>
-          <select data-ai-max-tokens-mode>
-            <option value="compact" ${aiMaxTokensMode === 'compact' ? 'selected' : ''}>compact</option>
-            <option value="normal" ${aiMaxTokensMode === 'normal' ? 'selected' : ''}>normal</option>
-            <option value="detailed" ${aiMaxTokensMode === 'detailed' ? 'selected' : ''}>detailed</option>
-          </select>
-        </label>
-        ${customModelActive ? `
-          <label class="authField">
-            <span>Своя модель OpenRouter</span>
-            <input data-ai-custom-model value="${escapeHtml(aiCustomModel)}" placeholder="Например: openai/gpt-4o-mini" />
-          </label>
-        ` : `
-          <div class="authStatus">Своя модель не используется, пока не выбран режим/модель "Своя модель".</div>
-        `}
-      </div>
-      <p><strong>Фактически будет использована модель:</strong> ${escapeHtml(resolvedModel)}</p>
-      <p><strong>Лимит ответа:</strong> ${formatNumberSafe(resolvedMaxTokens)} tokens · <strong>режим:</strong> ${escapeHtml(preset?.label || aiPreset)} · <strong>${escapeHtml(costLabel)}</strong></p>
-      <p>${escapeHtml(preset?.purpose || 'Своя модель OpenRouter. Проверьте стоимость в кабинете OpenRouter.')}${preset?.warning ? ` ${escapeHtml(preset.warning)}` : ''}</p>
       <p>${escapeHtml(aiStatus.message || '')}</p>
+      ${customModelWarning ? `<div class="authStatus">${escapeHtml(customModelWarning)}</div>` : ''}
+      ${freeModelWarning ? `<div class="authStatus aiError">${escapeHtml(freeModelWarning)}</div>` : ''}
+      <details>
+        <summary class="secondaryButton">Настройки модели</summary>
+        <p>Режимы Эконом/Баланс/Максимум — это настройки DirectPilot AI. OpenRouter получает конкретную модель и лимит токенов.</p>
+        <p>Режим влияет на модель по умолчанию, лимит ответа и подробность ответа. Дорогие модели могут быстрее расходовать баланс OpenRouter.</p>
+        <div class="clientSettingsGrid">
+          <label class="authField">
+            <span>Режим</span>
+            <select data-ai-preset>
+              ${presetOptions.map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === aiPreset ? 'selected' : ''}>${escapeHtml(item.label)} · ${escapeHtml(item.cost_tier || 'unknown')}</option>`).join('')}
+              <option value="custom" ${aiPreset === 'custom' ? 'selected' : ''}>Своя модель</option>
+            </select>
+          </label>
+          <label class="authField">
+            <span>Модель</span>
+            <select data-ai-model>
+              ${modelOptions.map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === selectedModelValue ? 'selected' : ''}>${escapeHtml(item.label || item.name || item.id)} · ${escapeHtml(item.cost_tier || 'unknown')}</option>`).join('')}
+              <option value="${CUSTOM_MODEL_VALUE}" ${selectedModelValue === CUSTOM_MODEL_VALUE ? 'selected' : ''}>Своя модель OpenRouter</option>
+            </select>
+          </label>
+          <label class="authField">
+            <span>Детализация</span>
+            <select data-ai-max-tokens-mode>
+              <option value="compact" ${aiMaxTokensMode === 'compact' ? 'selected' : ''}>compact</option>
+              <option value="normal" ${aiMaxTokensMode === 'normal' ? 'selected' : ''}>normal</option>
+              <option value="detailed" ${aiMaxTokensMode === 'detailed' ? 'selected' : ''}>detailed</option>
+            </select>
+          </label>
+          ${customModelActive ? `
+            <label class="authField">
+              <span>Своя модель OpenRouter</span>
+              <input data-ai-custom-model value="${escapeHtml(aiCustomModel)}" placeholder="Например: openai/gpt-4o-mini" />
+            </label>
+          ` : `
+            <div class="authStatus">Своя модель не используется, пока не выбран режим/модель "Своя модель".</div>
+          `}
+        </div>
+        <p><strong>Фактически будет использована модель:</strong> ${escapeHtml(resolvedModel)}</p>
+        <p><strong>Лимит ответа:</strong> ${formatNumberSafe(resolvedMaxTokens)} tokens · <strong>режим:</strong> ${escapeHtml(preset?.label || aiPreset)} · <strong>${escapeHtml(costLabel)}</strong></p>
+        <p>${escapeHtml(preset?.purpose || 'Своя модель OpenRouter. Проверьте стоимость в кабинете OpenRouter.')}${preset?.warning ? ` ${escapeHtml(preset.warning)}` : ''}</p>
+        ${isCustomAiModel() ? '<div class="authStatus">Своя модель разрешена backend-настройками только если OPENROUTER_ALLOW_CUSTOM_MODELS=true. Проверьте стоимость вручную.</div>' : ''}
+      </details>
       <div class="heroActions">
         <button class="secondaryButton" type="button" data-test-ai-model ${aiModelTestLoading ? 'disabled' : ''}>${aiModelTestLoading ? 'Проверяем...' : 'Проверить модель'}</button>
       </div>
       ${aiModelTestStatus ? `<div class="authStatus integrationStatus">${escapeHtml(aiModelTestStatus)}</div>` : ''}
-      ${isCustomAiModel() ? '<div class="authStatus">Своя модель разрешена backend-настройками только если OPENROUTER_ALLOW_CUSTOM_MODELS=true. Проверьте стоимость вручную.</div>' : ''}
-      ${customModelWarning ? `<div class="authStatus">${escapeHtml(customModelWarning)}</div>` : ''}
-      ${freeModelWarning ? `<div class="authStatus aiError">${escapeHtml(freeModelWarning)}</div>` : ''}
     </section>
   `;
 }
@@ -1915,13 +1997,13 @@ function renderAiChat() {
       <div class="panelHeader">
         <div>
           <h3>Единый AI-чат по клиенту</h3>
-          <p>AI получает серверный контекст клиента, кампаний, целей Метрики, performance summary и optimization plan. Все действия — только черновики.</p>
+          <p>AI получает серверный контекст клиента, кампаний, целей Метрики, сводки эффективности и плана оптимизации. Все действия — только черновики.</p>
         </div>
-        <span class="aiStatusBadge ${campaigns.length ? 'ready' : 'pending'}">${campaigns.length ? 'Кампании в контексте' : 'Нет sync data'}</span>
+        <span class="aiStatusBadge ${campaigns.length ? 'ready' : 'pending'}">${campaigns.length ? 'Кампании в контексте' : 'Нет данных sync'}</span>
       </div>
       <div class="kpiGrid">
         <article class="kpi blue"><span>Цели</span><strong>${escapeHtml(perfSummary?.selectedGoalIds?.join(', ') || currentClient().conversionGoalIds || currentClient().mainGoalId || '—')}</strong></article>
-        <article class="kpi green"><span>Источник</span><strong>${escapeHtml(perfSummary?.hasGoalData ? 'Metrika goals' : perfSummary?.conversionsSourceMessage ? 'Fallback' : 'Нет данных')}</strong></article>
+        <article class="kpi green"><span>Источник</span><strong>${escapeHtml(perfSummary?.hasGoalData ? 'Цели Метрики' : perfSummary?.conversionsSourceMessage ? 'Резервные данные' : 'Нет данных')}</strong></article>
         <article class="kpi orange"><span>Кампании</span><strong>${formatNumberSafe(campaigns.length)}</strong></article>
       </div>
       <div class="heroActions">${quickActions.map((text) => `<button class="secondaryButton" type="button" data-ai-quick-action="${escapeHtml(text)}">${escapeHtml(text)}</button>`).join('')}</div>
@@ -1961,6 +2043,15 @@ function renderAiChat() {
 function renderAiAssistant() {
   const client = currentClient();
   const actionCounts = getOptimizationActionCounts(optimizationActionsByClientId[selectedClientId] || optimizationActions);
+  const aiEmptyState = !client.id
+    ? { text: 'Сначала создайте клиента.', button: 'Создать клиента', view: 'clients' }
+    : !clientYandexIntegration?.connected
+      ? { text: 'Привяжите Яндекс-аккаунт к этому клиенту, чтобы AI видел реальные данные.', button: 'Открыть интеграции', view: 'integrations' }
+      : !hasPerformanceData()
+        ? { text: 'Запустите синхронизацию, чтобы AI увидел кампании.', button: 'Открыть обзор', view: 'dashboard' }
+        : !client.conversionGoalIds && !client.mainGoalId
+          ? { text: 'Укажите ID целей Метрики для расчёта CPA.', button: 'Открыть клиента', view: 'clients' }
+          : null;
   return renderShell(`
     <div class="pageIntro">
       <span class="eyebrow">🧠 AI-аналитик</span>
@@ -1974,7 +2065,8 @@ function renderAiAssistant() {
       </div>
       <p>Direct: ${escapeHtml(client.directLogin)} · Метрика: ${escapeHtml(client.metricaCounter)} · Цели: ${escapeHtml(perfSummary?.selectedGoalIds?.join(', ') || client.conversionGoalIds || client.mainGoalId || 'не указаны')}</p>
       <p>Согласование: ${formatNumberSafe(actionCounts.total)} черновиков · одобрено ${formatNumberSafe(actionCounts.approved)} · отклонено ${formatNumberSafe(actionCounts.rejected)} · нужны правки ${formatNumberSafe(actionCounts.needs_changes)}.</p>
-      <p>${!client.id ? 'Сначала создайте клиента.' : !clientYandexIntegration?.connected ? 'AI сможет анализировать настройки, но для данных нужна привязка Яндекса.' : !hasPerformanceData() ? 'Сначала запустите синхронизацию, чтобы AI увидел кампании.' : !client.conversionGoalIds && !client.mainGoalId ? 'Укажите ID целей Метрики для анализа целевых конверсий.' : 'AI использует summary, диагностику кампаний и optimization plan.'}</p>
+      <p>${!client.id ? 'Сначала создайте клиента.' : !clientYandexIntegration?.connected ? 'AI сможет анализировать настройки, но для данных нужна привязка Яндекса.' : !hasPerformanceData() ? 'Сначала запустите синхронизацию, чтобы AI увидел кампании.' : !client.conversionGoalIds && !client.mainGoalId ? 'Укажите ID целей Метрики для анализа целевых конверсий.' : 'AI использует сводку, диагностику кампаний и план оптимизации.'}</p>
+      ${aiEmptyState ? `<div class="authStatus integrationStatus"><strong>${escapeHtml(aiEmptyState.text)}</strong><div class="heroActions"><button class="approveButton" data-go-view="${escapeHtml(aiEmptyState.view)}">${escapeHtml(aiEmptyState.button)}</button></div></div>` : ''}
     </section>
     ${renderAiModelSettings()}
     ${renderAiChat()}
