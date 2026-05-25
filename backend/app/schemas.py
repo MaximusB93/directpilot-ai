@@ -467,6 +467,7 @@ class ClientPerformanceSummaryResponse(BaseModel):
     totalConversionsFallback: float = 0.0
     conversionsSourceMessage: str | None = None
     goalDataWarnings: list[str] = Field(default_factory=list)
+    syncDiagnostics: dict = Field(default_factory=dict)
 
 
 class OptimizationActionDraft(BaseModel):

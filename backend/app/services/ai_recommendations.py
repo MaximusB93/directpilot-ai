@@ -8,6 +8,7 @@ from app.core.config import normalize_ai_request_options, settings
 from app.db import SessionLocal
 from app.models import ClientAccount, ConnectedAccount, OptimizationActionDraft, SyncJob
 from app.schemas import AiGeneratedRecommendation, AiRecommendationResponse
+from app.services.direct_analyst_playbook import build_direct_analyst_instructions
 from app.services.mock_data import AUDIT_ISSUES, CAMPAIGNS, CLIENTS, RECOMMENDATIONS
 from app.services.openrouter import generate_openrouter_response
 from app.services.performance_summary import build_optimization_plan, build_performance_summary
@@ -79,7 +80,9 @@ def build_client_ai_context(client_id: str, client_context: dict[str, Any] | Non
             "has_goal_data": summary.get("hasGoalData") if summary else False,
             "goal_conversions_total": summary.get("goalConversionsTotal") if summary else 0,
             "conversions_source_message": summary.get("conversionsSourceMessage") if summary else "Нет сохранённой статистики.",
+            "sync_diagnostics": summary.get("syncDiagnostics") if summary else {},
         },
+        "direct_analyst_playbook": build_direct_analyst_instructions(summary or {}),
         "guardrails": {
             "allowed_actions": ["audit", "explain", "create_draft", "create_dry_run_preview"],
             "forbidden_actions": ["apply_changes_without_approval", "increase_total_budget_without_client_approval"],
@@ -174,6 +177,8 @@ def build_client_ai_context_from_db(db, client_id: str, selected_campaign_name: 
             "source_message": summary.get("conversionsSourceMessage"),
         },
         "summary": summary,
+        "sync_diagnostics": summary.get("syncDiagnostics", {}),
+        "direct_analyst_playbook": build_direct_analyst_instructions({"summary": summary, "goals": {"selected_goal_ids": summary.get("selectedGoalIds", [])}}),
         "campaigns": campaigns,
         "diagnostics": [
             {
@@ -229,8 +234,14 @@ def build_client_ai_context_from_db(db, client_id: str, selected_campaign_name: 
 
 
 def _build_prompt(context: dict[str, Any]) -> str:
+    playbook = build_direct_analyst_instructions(context)
     return f"""
 Сформируй 3 проверяемые AI-рекомендации для PPC-специалиста DirectPilot AI.
+Используй методику DirectPilot ниже. Сохраняй порядок анализа: качество данных → цели → обзор аккаунта → сегменты кампаний → проблемы → черновики действий.
+
+Методика DirectPilot:
+{playbook}
+
 Правила:
 - Не выдумывай goal conversions.
 - Если goal data недоступна, явно скажи это.

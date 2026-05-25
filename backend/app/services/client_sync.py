@@ -94,6 +94,7 @@ def run_client_sync(db: Session, client_id: str, days: int = 30) -> SyncJob:
 
         db.execute(delete(DirectCampaignPeriodStat).where(DirectCampaignPeriodStat.client_id == client_id))
 
+        matched_goal_campaigns = 0
         for row in rows:
             total_conversions = _float(row.get("Conversions"))
             goal_conversions = None
@@ -104,6 +105,7 @@ def run_client_sync(db: Session, client_id: str, days: int = 30) -> SyncJob:
             if goal_ids:
                 matched = metrika_by_campaign.get(campaign_name.lower()) or metrika_by_campaign.get(campaign_id.lower())
                 if matched is not None:
+                    matched_goal_campaigns += 1
                     goal_conversions = matched
                     conversion_source = "metrika_goals" if len(goal_ids) > 1 else "metrika_goal"
                 else:
@@ -137,7 +139,10 @@ def run_client_sync(db: Session, client_id: str, days: int = 30) -> SyncJob:
 
         if rows:
             client.sync_status = "ok"
-            client.sync_error = metrika_warning if goal_ids and metrika_warning else None
+            if goal_ids and matched_goal_campaigns == 0:
+                client.sync_error = metrika_warning or "Metrika goal conversions were not matched to Direct campaigns. Check UTM campaign mapping, counter id, and goal ids."
+            else:
+                client.sync_error = metrika_warning if goal_ids and metrika_warning else None
         else:
             client.sync_status = "no_data"
             client.sync_error = NO_DATA_MESSAGE

@@ -31,6 +31,60 @@ def _conversion_source_message(goal_ids: list[str], has_goal_data: bool) -> str:
     return "ID целей Метрики не указаны. Используются общие конверсии из Директа."
 
 
+def _build_sync_diagnostics(
+    *,
+    client: ClientAccount,
+    rows: list[DirectCampaignPeriodStat],
+    goal_ids: list[str],
+    has_goal_data: bool,
+    warnings: list[str],
+) -> dict:
+    source_counts: dict[str, int] = {}
+    for item in rows:
+        source = item.conversion_source or "unknown"
+        source_counts[source] = source_counts.get(source, 0) + 1
+
+    direct_rows_loaded = len(rows)
+    goal_matched = sum(1 for item in rows if item.goal_conversions is not None)
+    goal_unmatched = sum(
+        1
+        for item in rows
+        if goal_ids and (item.conversion_source or "") == "metrika_goal_unavailable"
+    )
+    diagnostic_warnings = list(warnings)
+    if not direct_rows_loaded:
+        level = "critical"
+        message = "Нет сохранённых строк Яндекс.Директа. Запустите синхронизацию после привязки Яндекс-аккаунта."
+    elif not goal_ids:
+        level = "warning"
+        message = "ID целей Метрики не указаны. CPA считается по общим конверсиям Директа."
+        diagnostic_warnings.append("Укажите ID целей Метрики в настройках клиента.")
+    elif not has_goal_data:
+        level = "critical" if goal_unmatched else "warning"
+        message = "Цели указаны, но конверсии по целям Метрики не сопоставлены с кампаниями."
+        diagnostic_warnings.append("Проверьте Metrika counter, goal IDs и UTM/campaign mapping.")
+    elif goal_unmatched:
+        level = "warning"
+        message = "Часть кампаний не получила конверсии по целям Метрики. Проверьте UTM/campaign mapping."
+    else:
+        level = "ok"
+        message = "Данные Директа загружены, конверсии по целям сопоставлены с кампаниями."
+
+    return {
+        "clientId": client.id,
+        "directRowsLoaded": direct_rows_loaded,
+        "selectedGoalIds": goal_ids,
+        "hasGoalIds": bool(goal_ids),
+        "hasGoalData": has_goal_data,
+        "goalMatchedCampaigns": goal_matched,
+        "goalUnmatchedCampaigns": goal_unmatched,
+        "conversionSourceCounts": source_counts,
+        "warnings": sorted(set(diagnostic_warnings)),
+        "dataQualityLevel": level,
+        "message": message,
+    }
+
+
 def _severity(flags: list[str]) -> str:
     if "spend_without_conversions" in flags or "high_cpa" in flags:
         return "critical"
@@ -103,6 +157,13 @@ def build_performance_summary(db: Session, client_id: str) -> dict:
     ).all()
     goal_ids = parse_goal_ids(client.conversion_goal_ids, fallback=client.main_goal_id)
     if not rows:
+        diagnostics = _build_sync_diagnostics(
+            client=client,
+            rows=[],
+            goal_ids=goal_ids,
+            has_goal_data=False,
+            warnings=[],
+        )
         return {
             "client": {"id": client.id, "name": client.name},
             "period": None,
@@ -115,12 +176,20 @@ def build_performance_summary(db: Session, client_id: str) -> dict:
             "totalConversionsFallback": 0.0,
             "conversionsSourceMessage": _conversion_source_message(goal_ids, False),
             "goalDataWarnings": [],
+            "syncDiagnostics": diagnostics,
             "message": "Нет сохранённых данных Яндекс.Директа. Запустите синхронизацию после подключения Яндекса.",
         }
 
     has_goal_data = any(item.goal_conversions is not None for item in rows)
     source_message = _conversion_source_message(goal_ids, has_goal_data)
     warnings = sorted({item.conversion_warning for item in rows if item.conversion_warning})
+    sync_diagnostics = _build_sync_diagnostics(
+        client=client,
+        rows=rows,
+        goal_ids=goal_ids,
+        has_goal_data=has_goal_data,
+        warnings=warnings,
+    )
     period_from = min(item.period_from for item in rows)
     period_to = max(item.period_to for item in rows)
     total_cost = sum(item.cost for item in rows)
@@ -203,6 +272,7 @@ def build_performance_summary(db: Session, client_id: str) -> dict:
         "totalConversionsFallback": sum(item.conversions for item in rows),
         "conversionsSourceMessage": source_message,
         "goalDataWarnings": warnings,
+        "syncDiagnostics": sync_diagnostics,
         "message": "ok",
     }
 
