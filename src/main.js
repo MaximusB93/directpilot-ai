@@ -1433,6 +1433,65 @@ function renderSyncCenter() {
   `;
 }
 
+function renderSyncDiagnosticsPanel(compact = false) {
+  const client = getSelectedClient();
+  const diagnostics = perfSummary?.syncDiagnostics || {};
+  const sourceCounts = diagnostics.conversionSourceCounts || {};
+  const warnings = diagnostics.warnings || perfSummary?.goalDataWarnings || [];
+  const goalIds = diagnostics.selectedGoalIds?.length
+    ? diagnostics.selectedGoalIds
+    : (perfSummary?.selectedGoalIds || String(client.conversionGoalIds || client.mainGoalId || '').split(/[,\s]+/).filter(Boolean));
+  const hasDiagnostics = Boolean(perfSummary);
+  const level = diagnostics.dataQualityLevel || (hasDiagnostics ? 'warning' : 'pending');
+  const levelLabel = {
+    ok: 'Готово',
+    warning: 'Нужно действие',
+    critical: 'Блокер',
+    pending: 'Нет данных',
+  }[level] || 'Нет данных';
+  const message = diagnostics.message || (
+    hasDiagnostics
+      ? (perfSummary?.conversionsSourceMessage || 'Проверьте источник конверсий и синхронизацию.')
+      : 'Сводка ещё не загружена. Запустите синхронизацию или обновите сводку, чтобы увидеть качество данных.'
+  );
+  const nextAction = !client.id
+    ? { text: 'Создайте клиента', view: 'clients' }
+    : !clientYandexIntegration?.connected
+      ? { text: 'Привяжите Яндекс', view: 'integrations' }
+      : !hasDiagnostics || !diagnostics.directRowsLoaded
+        ? { text: 'Запустите синхронизацию', action: 'sync' }
+        : !goalIds.length
+          ? { text: 'Укажите цели Метрики', view: 'clients' }
+          : diagnostics.hasGoalIds && !diagnostics.hasGoalData
+            ? { text: 'Проверьте UTM и названия кампаний', view: 'clients' }
+            : { text: 'Открыть AI-анализ', view: 'ai' };
+  return `
+    <section class="panel ${compact ? 'compact' : ''}">
+      <div class="panelHeader">
+        <div>
+          <h3>Диагностика синхронизации</h3>
+          <p>${escapeHtml(message)}</p>
+        </div>
+        <span class="aiStatusBadge ${level === 'ok' ? 'ready' : 'pending'}">${escapeHtml(levelLabel)}</span>
+      </div>
+      <div class="kpiGrid">
+        <article class="kpi blue"><span>Строки Direct</span><strong>${formatNumberSafe(diagnostics.directRowsLoaded || 0)}</strong></article>
+        <article class="kpi green"><span>Цели Метрики</span><strong>${escapeHtml(goalIds.join(', ') || 'не указаны')}</strong></article>
+        <article class="kpi orange"><span>Сопоставлено</span><strong>${formatNumberSafe(diagnostics.goalMatchedCampaigns || 0)}</strong></article>
+        <article class="kpi orange"><span>Не сопоставлено</span><strong>${formatNumberSafe(diagnostics.goalUnmatchedCampaigns || 0)}</strong></article>
+      </div>
+      <p>Источник конверсий: ${escapeHtml(Object.entries(sourceCounts).map(([key, value]) => `${key}: ${value}`).join(', ') || perfSummary?.conversionsSourceMessage || 'нет данных')}</p>
+      ${warnings.length ? `<div class="authStatus aiError">${warnings.map((item) => `<p>${escapeHtml(item)}</p>`).join('')}</div>` : ''}
+      <div class="heroActions">
+        ${nextAction.action === 'sync'
+          ? `<button class="approveButton" data-sync-client ${canRunSync() && !syncLoading ? '' : 'disabled'}>${escapeHtml(nextAction.text)}</button>`
+          : `<button class="secondaryButton" data-go-view="${escapeHtml(nextAction.view)}">${escapeHtml(nextAction.text)}</button>`}
+        <button class="secondaryButton" data-load-summary ${perfLoading ? 'disabled' : ''}>Обновить сводку</button>
+      </div>
+    </section>
+  `;
+}
+
 function renderPerformanceSummaryPanel() {
   if (!perfSummary) {
     return `
@@ -1536,6 +1595,7 @@ function renderDashboard() {
       </section>
     ` : `
       ${renderSyncCenter()}
+      ${renderSyncDiagnosticsPanel(true)}
       ${renderPerformanceSummaryPanel()}
     `}
   `);
@@ -1765,6 +1825,7 @@ function renderOptimization() {
       </div>
       ${optimizationPlanStatus ? `<div class="authStatus integrationStatus">${escapeHtml(optimizationPlanStatus)}</div>` : ''}
     </div>
+    ${renderSyncDiagnosticsPanel(true)}
     <section class="panel">
       <div class="panelHeader">
         <div>
@@ -2015,6 +2076,10 @@ function renderAiModelSettings() {
 function renderAiChat() {
   const campaigns = perfSummary?.campaigns || [];
   const quickActions = [
+    'Проверь качество данных',
+    'Проанализируй по методике DirectPilot',
+    'Найди проблемы маппинга целей',
+    'Составь план по критичным кампаниям',
     'Проанализируй аккаунт',
     'Найди кампании с проблемами',
     'Составь план оптимизации',
@@ -2090,6 +2155,26 @@ function renderAiAssistant() {
     </div>
     <section class="panel">
       <div class="panelHeader">
+        <div>
+          <h3>Методика анализа DirectPilot</h3>
+          <p>AI анализирует данные по методике DirectPilot: качество данных → цели → кампании → проблемы → черновики действий.</p>
+        </div>
+        <span class="aiStatusBadge ready">Методика включена</span>
+      </div>
+      <details>
+        <summary class="secondaryButton">Показать шаги методики</summary>
+        <ol>
+          <li>Качество данных: синхронизация, цели Метрики, источник конверсий, предупреждения.</li>
+          <li>Обзор аккаунта: расход, показы, клики, CTR, CPC, CPA, target CPA.</li>
+          <li>Сегментация кампаний: критично, предупреждение, возможность, мало данных, без проблем.</li>
+          <li>Проблемы: кампания, обоснование, значимость, уверенность, следующий шаг.</li>
+          <li>Черновики действий: ручная проверка, проверка трекинга, минус-фразы, объявления, бюджетный черновик.</li>
+          <li>Safety: ничего не применяем в Яндекс.Директ без approval.</li>
+        </ol>
+      </details>
+    </section>
+    <section class="panel">
+      <div class="panelHeader">
         <h3>Context preview</h3>
         <span class="aiStatusBadge ${canRunAiAnalysis() ? 'ready' : 'pending'}">${canRunAiAnalysis() ? 'Данные готовы' : 'Нужна синхронизация'}</span>
       </div>
@@ -2098,6 +2183,7 @@ function renderAiAssistant() {
       <p>${!client.id ? 'Сначала создайте клиента.' : !clientYandexIntegration?.connected ? 'AI сможет анализировать настройки, но для данных нужна привязка Яндекса.' : !hasPerformanceData() ? 'Сначала запустите синхронизацию, чтобы AI увидел кампании.' : !client.conversionGoalIds && !client.mainGoalId ? 'Укажите ID целей Метрики для анализа целевых конверсий.' : 'AI использует сводку, диагностику кампаний и план оптимизации.'}</p>
       ${aiEmptyState ? `<div class="authStatus integrationStatus"><strong>${escapeHtml(aiEmptyState.text)}</strong><div class="heroActions"><button class="approveButton" data-go-view="${escapeHtml(aiEmptyState.view)}">${escapeHtml(aiEmptyState.button)}</button></div></div>` : ''}
     </section>
+    ${renderSyncDiagnosticsPanel(true)}
     ${renderAiModelSettings()}
     ${renderAiChat()}
     ${renderClientAiRecommendations()}
