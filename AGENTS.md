@@ -108,6 +108,13 @@ Backend checks/tests (when present):
 
 ---
 
+## Codex Agent Briefs
+- For large tasks, read the relevant brief from `.codex/agents/` before planning or editing.
+- If callable subagents are not available in the current Codex environment, apply the relevant brief directly.
+- Use `ui-designer` for UX audits and visual hierarchy; `frontend-developer` for `src/main.js` frontend implementation; `backend-architect` for FastAPI/DB/API/Yandex work; `code-reviewer` before PRs or after large changes; `debugger` for failures and regressions.
+
+---
+
 ## 10) How Codex should work on tasks
 - Prefer small, focused PRs over giant patches.
 - First stabilize critical paths (client add, sync, AI chat, approval flow), then extend features.
