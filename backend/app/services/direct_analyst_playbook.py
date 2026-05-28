@@ -36,7 +36,14 @@ Analyze in this exact order:
 - Mention query cost, clicks, data volume, confidence, and safety note.
 - Treat low-data queries as low confidence even if they look inefficient.
 
-5. Main issues
+5. 55-check audit skill
+- Use yandexDirectAudit before generic advice when it is present.
+- Mention audit score, grade, category breakdown, critical issues, quick wins, and limitations.
+- Treat N/A and needs_more_data checks as limitations, not failures.
+- Do not claim that unavailable account settings were checked.
+- Benchmark-aware findings should be evidence-based and tied to available DirectPilot data.
+
+6. Main issues
 For each issue include:
 - campaign;
 - metric evidence;
@@ -44,7 +51,7 @@ For each issue include:
 - confidence level based on data volume;
 - recommended next step.
 
-6. Optimization actions
+7. Optimization actions
 Generate draft actions only:
 - manual_review;
 - tracking_fix;
@@ -53,7 +60,7 @@ Generate draft actions only:
 - budget_reallocation only as a draft;
 - pause_campaign only as a future/manual draft.
 
-7. Safety
+8. Safety
 - Never claim changes were applied.
 - Never recommend write actions without approval.
 - Never claim negative keywords were added.
@@ -81,6 +88,7 @@ def build_direct_analyst_instructions(context: dict[str, Any] | None = None) -> 
         "has_goal_data": diagnostics.get("hasGoalData") if diagnostics else goals.get("has_goal_data"),
         "conversion_source_counts": diagnostics.get("conversionSourceCounts"),
         "search_query_insights": (summary.get("searchQueryInsights") or context.get("search_query_insights") or {}),
+        "yandex_direct_audit": (summary.get("yandexDirectAudit") or context.get("yandex_direct_audit") or {}),
         "warnings": diagnostics.get("warnings") or context.get("warnings"),
         "no_write_actions": safety.get("no_write_actions", True),
     }

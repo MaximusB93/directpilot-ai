@@ -4,6 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import ClientAccount, DirectCampaignPeriodStat, DirectSearchQueryPeriodStat
+from app.services.yandex_direct_audit_skill import build_yandex_direct_audit
 from app.services.yandex_metrika import parse_goal_ids
 
 
@@ -205,6 +206,11 @@ def build_search_query_insights(rows: list[DirectSearchQueryPeriodStat]) -> dict
     }
 
 
+def _with_yandex_direct_audit(summary: dict) -> dict:
+    summary["yandexDirectAudit"] = build_yandex_direct_audit(summary)
+    return summary
+
+
 def build_performance_summary(db: Session, client_id: str) -> dict:
     client = db.get(ClientAccount, client_id)
     if not client:
@@ -230,8 +236,14 @@ def build_performance_summary(db: Session, client_id: str) -> dict:
             has_goal_data=False,
             warnings=[],
         )
-        return {
-            "client": {"id": client.id, "name": client.name},
+        return _with_yandex_direct_audit({
+            "client": {
+                "id": client.id,
+                "name": client.name,
+                "direct_login": client.direct_login,
+                "metrica_counter": client.metrica_counter,
+                "target_cpa": client.target_cpa,
+            },
             "period": None,
             "totals": {"cost": 0.0, "impressions": 0, "clicks": 0, "conversions": 0.0, "avg_cpc": 0.0, "cpa": None},
             "campaigns": [],
@@ -245,7 +257,7 @@ def build_performance_summary(db: Session, client_id: str) -> dict:
             "syncDiagnostics": diagnostics,
             "searchQueryInsights": search_query_insights,
             "message": "Нет сохранённых данных Яндекс.Директа. Запустите синхронизацию после подключения Яндекса.",
-        }
+        })
 
     has_goal_data = any(item.goal_conversions is not None for item in rows)
     source_message = _conversion_source_message(goal_ids, has_goal_data)
@@ -320,8 +332,14 @@ def build_performance_summary(db: Session, client_id: str) -> dict:
             }
         )
 
-    return {
-        "client": {"id": client.id, "name": client.name},
+    return _with_yandex_direct_audit({
+        "client": {
+            "id": client.id,
+            "name": client.name,
+            "direct_login": client.direct_login,
+            "metrica_counter": client.metrica_counter,
+            "target_cpa": client.target_cpa,
+        },
         "period": {"from": period_from.isoformat(), "to": period_to.isoformat()},
         "totals": {
             "cost": totals.cost,
@@ -342,7 +360,7 @@ def build_performance_summary(db: Session, client_id: str) -> dict:
         "syncDiagnostics": sync_diagnostics,
         "searchQueryInsights": search_query_insights,
         "message": "ok",
-    }
+    })
 
 
 def build_optimization_plan(db: Session, client_id: str) -> dict:
