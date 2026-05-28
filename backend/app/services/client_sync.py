@@ -4,7 +4,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.connectors.yandex_direct import YandexDirectConnector
-from app.models import ClientAccount, DirectCampaignPeriodStat, SyncJob
+from app.models import ClientAccount, DirectCampaignPeriodStat, DirectSearchQueryPeriodStat, SyncJob
 from app.services.connected_accounts import get_yandex_access_token_for_account
 from app.services.yandex_metrika import parse_goal_ids
 
@@ -12,6 +12,7 @@ NO_BOUND_ACCOUNT_MESSAGE = "Yandex account is not bound to this client. Bind a Y
 NO_TOKEN_MESSAGE = "Yandex OAuth token is not connected for the bound account. Reconnect Yandex Direct before syncing real data."
 NO_DATA_MESSAGE = "No Yandex Direct data for selected period"
 DIRECT_GOAL_FALLBACK_MESSAGE = "Direct goal conversions unavailable for selected goals. Falling back to total Direct conversions."
+SEARCH_QUERY_SYNC_WARNING = "Search query report could not be loaded. Campaign sync completed; negative keyword insights are unavailable."
 
 
 def _int(v: str | None) -> int:
@@ -41,6 +42,36 @@ def _direct_goal_conversion_value(row: dict[str, str], goal_ids: list[str]) -> f
     return None
 
 
+def _search_query_issue_data(
+    *,
+    query: str,
+    cost: float,
+    clicks: int,
+    impressions: int,
+    ctr: float,
+    goal_conversions: float | None,
+    total_conversions: float,
+) -> tuple[list[str], str | None, str | None]:
+    conversions_for_decision = goal_conversions if goal_conversions is not None else total_conversions
+    flags: list[str] = []
+    recommended_negative_keyword = None
+    reason = None
+
+    if impressions < 50 or clicks < 3:
+        flags.append("low_data")
+    if impressions >= 500 and ctr < 1.0:
+        flags.append("low_relevance")
+    if conversions_for_decision == 0:
+        if cost >= 500:
+            flags.append("costly_no_goal_conversion")
+        if cost > 0 and clicks >= 10:
+            flags.append("candidate_negative_keyword")
+            recommended_negative_keyword = query.strip()
+            reason = "Запрос получил клики/расход без конверсий по выбранной цели. Черновик минус-слова, не применяется автоматически."
+
+    return flags, recommended_negative_keyword, reason
+
+
 def run_client_sync(db: Session, client_id: str, days: int = 30) -> SyncJob:
     client = db.get(ClientAccount, client_id)
     if not client:
@@ -60,6 +91,7 @@ def run_client_sync(db: Session, client_id: str, days: int = 30) -> SyncJob:
     try:
         if not client.yandex_account_id:
             db.execute(delete(DirectCampaignPeriodStat).where(DirectCampaignPeriodStat.client_id == client_id))
+            db.execute(delete(DirectSearchQueryPeriodStat).where(DirectSearchQueryPeriodStat.client_id == client_id))
             client.sync_status = "no_connection"
             client.sync_error = NO_BOUND_ACCOUNT_MESSAGE
             client.last_synced_at = now
@@ -79,6 +111,7 @@ def run_client_sync(db: Session, client_id: str, days: int = 30) -> SyncJob:
         token = get_yandex_access_token_for_account(db, client.yandex_account_id)
         if not token:
             db.execute(delete(DirectCampaignPeriodStat).where(DirectCampaignPeriodStat.client_id == client_id))
+            db.execute(delete(DirectSearchQueryPeriodStat).where(DirectSearchQueryPeriodStat.client_id == client_id))
             client.sync_status = "no_connection"
             client.sync_error = NO_TOKEN_MESSAGE
             client.last_synced_at = now
@@ -101,6 +134,7 @@ def run_client_sync(db: Session, client_id: str, days: int = 30) -> SyncJob:
         goal_ids_text = ", ".join(goal_ids) or None
 
         db.execute(delete(DirectCampaignPeriodStat).where(DirectCampaignPeriodStat.client_id == client_id))
+        db.execute(delete(DirectSearchQueryPeriodStat).where(DirectSearchQueryPeriodStat.client_id == client_id))
 
         matched_goal_campaigns = 0
         for row in rows:
@@ -145,12 +179,73 @@ def run_client_sync(db: Session, client_id: str, days: int = 30) -> SyncJob:
                 )
             )
 
+        search_query_warning = None
+        try:
+            search_rows = connector.get_search_query_report(days=days, date_range_type="CUSTOM_DATE", goal_ids=goal_ids or None)
+            for row in search_rows:
+                query = str(row.get("Query") or row.get("SearchQuery") or "").strip()
+                if not query:
+                    continue
+                total_conversions = _float(row.get("_TotalConversions") or row.get("Conversions"))
+                goal_conversions = None
+                conversion_source = "yandex_direct_total"
+                if goal_ids:
+                    direct_goal_conversions = _direct_goal_conversion_value(row, goal_ids)
+                    if direct_goal_conversions is not None:
+                        goal_conversions = direct_goal_conversions
+                        conversion_source = "yandex_direct_goals"
+                    else:
+                        conversion_source = "fallback_total_when_goal_unavailable"
+                cost = _float(row.get("Cost"))
+                clicks = _int(row.get("Clicks"))
+                impressions = _int(row.get("Impressions"))
+                ctr = _float(row.get("Ctr"))
+                flags, negative_keyword, reason = _search_query_issue_data(
+                    query=query,
+                    cost=cost,
+                    clicks=clicks,
+                    impressions=impressions,
+                    ctr=ctr,
+                    goal_conversions=goal_conversions,
+                    total_conversions=total_conversions,
+                )
+                goal_cpa = (cost / goal_conversions) if goal_conversions else None
+                db.add(
+                    DirectSearchQueryPeriodStat(
+                        client_id=client_id,
+                        campaign_id=str(row.get("CampaignId") or "") or None,
+                        campaign_name=str(row.get("CampaignName") or "") or None,
+                        ad_group_id=str(row.get("AdGroupId") or "") or None,
+                        ad_group_name=str(row.get("AdGroupName") or "") or None,
+                        query=query,
+                        period_from=date_from,
+                        period_to=now,
+                        impressions=impressions,
+                        clicks=clicks,
+                        cost=cost,
+                        ctr=ctr,
+                        avg_cpc=_float(row.get("AvgCpc")),
+                        conversions=total_conversions,
+                        goal_ids=goal_ids_text,
+                        goal_conversions=goal_conversions,
+                        goal_cpa=goal_cpa,
+                        conversion_source=conversion_source,
+                        issue_flags=",".join(flags) if flags else None,
+                        recommended_negative_keyword=negative_keyword,
+                        recommendation_reason=reason,
+                    )
+                )
+        except Exception as exc:
+            search_query_warning = f"{SEARCH_QUERY_SYNC_WARNING} {str(exc)[:300]}"
+
         if rows:
             client.sync_status = "ok"
             if goal_ids and matched_goal_campaigns == 0:
                 client.sync_error = DIRECT_GOAL_FALLBACK_MESSAGE
             else:
                 client.sync_error = None
+            if search_query_warning:
+                client.sync_error = f"{client.sync_error}; {search_query_warning}" if client.sync_error else search_query_warning
         else:
             client.sync_status = "no_data"
             client.sync_error = NO_DATA_MESSAGE

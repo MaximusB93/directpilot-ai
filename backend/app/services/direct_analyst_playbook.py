@@ -29,7 +29,14 @@ Analyze in this exact order:
 - low data: insufficient clicks/impressions.
 - ok: no critical signals.
 
-4. Main issues
+4. Search query analysis
+- Analyze searchQueryInsights after campaign diagnostics.
+- Propose negative keywords only as manual drafts.
+- Never recommend excluding queries with selected-goal or total conversions.
+- Mention query cost, clicks, data volume, confidence, and safety note.
+- Treat low-data queries as low confidence even if they look inefficient.
+
+5. Main issues
 For each issue include:
 - campaign;
 - metric evidence;
@@ -37,7 +44,7 @@ For each issue include:
 - confidence level based on data volume;
 - recommended next step.
 
-5. Optimization actions
+6. Optimization actions
 Generate draft actions only:
 - manual_review;
 - tracking_fix;
@@ -46,9 +53,10 @@ Generate draft actions only:
 - budget_reallocation only as a draft;
 - pause_campaign only as a future/manual draft.
 
-6. Safety
+7. Safety
 - Never claim changes were applied.
 - Never recommend write actions without approval.
+- Never claim negative keywords were added.
 - If selected Direct goal data is missing, do not pretend CPA by selected goals is known.
 - If fallback total conversions are used, state that analysis is limited.
 - Mention limitations clearly.
@@ -72,6 +80,7 @@ def build_direct_analyst_instructions(context: dict[str, Any] | None = None) -> 
         "selected_goal_ids": diagnostics.get("selectedGoalIds") or goals.get("selected_goal_ids"),
         "has_goal_data": diagnostics.get("hasGoalData") if diagnostics else goals.get("has_goal_data"),
         "conversion_source_counts": diagnostics.get("conversionSourceCounts"),
+        "search_query_insights": (summary.get("searchQueryInsights") or context.get("search_query_insights") or {}),
         "warnings": diagnostics.get("warnings") or context.get("warnings"),
         "no_write_actions": safety.get("no_write_actions", True),
     }

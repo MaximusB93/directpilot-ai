@@ -173,6 +173,34 @@ class DirectCampaignPeriodStat(Base):
     loaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
+class DirectSearchQueryPeriodStat(Base):
+    __tablename__ = "direct_search_query_period_stats"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    client_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    campaign_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    campaign_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    ad_group_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    ad_group_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    query: Mapped[str] = mapped_column(Text, nullable=False)
+    period_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    period_to: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    impressions: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    clicks: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cost: Mapped[float] = mapped_column(nullable=False, default=0.0)
+    ctr: Mapped[float] = mapped_column(nullable=False, default=0.0)
+    avg_cpc: Mapped[float] = mapped_column(nullable=False, default=0.0)
+    conversions: Mapped[float] = mapped_column(nullable=False, default=0.0)
+    goal_ids: Mapped[str | None] = mapped_column(Text, nullable=True)
+    goal_conversions: Mapped[float | None] = mapped_column(nullable=True)
+    goal_cpa: Mapped[float | None] = mapped_column(nullable=True)
+    conversion_source: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    issue_flags: Mapped[str | None] = mapped_column(Text, nullable=True)
+    recommended_negative_keyword: Mapped[str | None] = mapped_column(Text, nullable=True)
+    recommendation_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    loaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
 class OptimizationActionDraft(Base):
     __tablename__ = "optimization_action_drafts"
 

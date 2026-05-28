@@ -56,6 +56,36 @@ def ensure_mvp_schema() -> None:
         "ALTER TABLE direct_campaign_period_stats ADD COLUMN IF NOT EXISTS goal_ids TEXT",
         "ALTER TABLE direct_campaign_period_stats ADD COLUMN IF NOT EXISTS conversion_warning TEXT",
         """
+        CREATE TABLE IF NOT EXISTS direct_search_query_period_stats (
+            id VARCHAR(36) PRIMARY KEY,
+            client_id VARCHAR(64) NOT NULL,
+            campaign_id VARCHAR(64),
+            campaign_name VARCHAR(255),
+            ad_group_id VARCHAR(64),
+            ad_group_name VARCHAR(255),
+            query TEXT NOT NULL,
+            period_from TIMESTAMPTZ NOT NULL,
+            period_to TIMESTAMPTZ NOT NULL,
+            impressions INTEGER NOT NULL DEFAULT 0,
+            clicks INTEGER NOT NULL DEFAULT 0,
+            cost FLOAT NOT NULL DEFAULT 0,
+            ctr FLOAT NOT NULL DEFAULT 0,
+            avg_cpc FLOAT NOT NULL DEFAULT 0,
+            conversions FLOAT NOT NULL DEFAULT 0,
+            goal_ids TEXT,
+            goal_conversions FLOAT,
+            goal_cpa FLOAT,
+            conversion_source VARCHAR(64),
+            issue_flags TEXT,
+            recommended_negative_keyword TEXT,
+            recommendation_reason TEXT,
+            loaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_direct_search_query_period_stats_client_id ON direct_search_query_period_stats (client_id)",
+        "CREATE INDEX IF NOT EXISTS ix_direct_search_query_period_stats_campaign_id ON direct_search_query_period_stats (campaign_id)",
+        "CREATE INDEX IF NOT EXISTS ix_direct_search_query_period_stats_ad_group_id ON direct_search_query_period_stats (ad_group_id)",
+        """
         CREATE TABLE IF NOT EXISTS optimization_action_drafts (
             id VARCHAR(36) PRIMARY KEY,
             organization_id VARCHAR(36),
