@@ -1629,6 +1629,79 @@ function renderSearchQueryInsightsPanel() {
   `;
 }
 
+function renderYandexDirectAuditPanel(compact = false) {
+  const audit = perfSummary?.yandexDirectAudit || {};
+  const categories = audit.categories || [];
+  const criticalIssues = audit.criticalIssues || [];
+  const quickWins = audit.quickWins || [];
+  const limitations = audit.limitations || [];
+  if (!perfSummary || !audit.grade) {
+    return `
+      <section class="panel emptyStatePanel compact">
+        <h3>AI-аудит Яндекс.Директа</h3>
+        <p>Аудит появится после загрузки сводки эффективности. DirectPilot использует только доступные read-only данные и помечает недоступные проверки как N/A.</p>
+        <div class="heroActions">
+          <button class="secondaryButton" data-load-summary ${perfLoading ? 'disabled' : ''}>Обновить сводку</button>
+          <button class="approveButton" data-sync-client ${canRunSync() && !syncLoading ? '' : 'disabled'}>${syncLoading ? 'Синхронизация...' : 'Запустить синхронизацию'}</button>
+        </div>
+      </section>
+    `;
+  }
+  const shownCategories = compact ? categories.slice(0, 3) : categories;
+  return `
+    <section class="panel ${compact ? 'compact' : ''}">
+      <div class="panelHeader">
+        <div>
+          <h3>AI-аудит Яндекс.Директа</h3>
+          <p>${escapeHtml(audit.summary || 'Профессиональный read-only аудит по чеклисту DirectPilot.')} Методология: ${formatNumberSafe(audit.frameworkChecksTotal || 55)} проверок, сейчас применяется ${formatNumberSafe(audit.implementedChecks || 0)} по доступным данным.</p>
+        </div>
+        <span class="aiStatusBadge ${Number(audit.score || 0) >= 75 ? 'ready' : 'pending'}">${formatNumberSafe(audit.score || 0)} / 100 · ${escapeHtml(audit.grade || '—')}</span>
+      </div>
+      <div class="kpiGrid">
+        <article class="kpi green"><span>Грейд</span><strong>${escapeHtml(audit.grade || '—')}</strong></article>
+        <article class="kpi blue"><span>Категории</span><strong>${formatNumberSafe(categories.length)}</strong></article>
+        <article class="kpi orange"><span>Критичные вопросы</span><strong>${formatNumberSafe(criticalIssues.length)}</strong></article>
+        <article class="kpi green"><span>Quick wins</span><strong>${formatNumberSafe(quickWins.length)}</strong></article>
+      </div>
+      ${shownCategories.length ? `
+        <div class="featureGrid">
+          ${shownCategories.map((category) => `
+            <article class="featureCard">
+              <span class="featureIcon">${category.grade === 'A' || category.grade === 'B' ? '✅' : category.grade === 'N/A' ? '⏳' : '⚠️'}</span>
+              <h3>${escapeHtml(category.title)}</h3>
+              <p>Вес: ${formatNumberSafe(category.weight)} · Балл: ${formatNumberSafe(category.score)} · Грейд: ${escapeHtml(category.grade || '—')}</p>
+              <small>${formatNumberSafe((category.checks || []).filter((item) => item.status === 'fail').length)} fail · ${formatNumberSafe((category.checks || []).filter((item) => item.status === 'warning').length)} warning · ${formatNumberSafe((category.checks || []).filter((item) => item.status === 'na').length)} N/A</small>
+            </article>
+          `).join('')}
+        </div>
+      ` : ''}
+      ${criticalIssues.length ? `
+        <div class="authStatus aiError">
+          <strong>Критичные находки</strong>
+          ${criticalIssues.slice(0, compact ? 3 : 6).map((item) => `<p>${escapeHtml(item.id)} · ${escapeHtml(item.title)}: ${escapeHtml(item.evidence)}</p>`).join('')}
+        </div>
+      ` : ''}
+      ${quickWins.length ? `
+        <div class="authStatus integrationStatus">
+          <strong>Quick wins</strong>
+          ${quickWins.slice(0, compact ? 3 : 6).map((item) => `<p>${escapeHtml(item.id)} · ${escapeHtml(item.recommendation)}</p>`).join('')}
+        </div>
+      ` : ''}
+      ${!compact && limitations.length ? `
+        <details>
+          <summary class="secondaryButton">Ограничения аудита и N/A проверки</summary>
+          ${limitations.map((item) => `<p>${escapeHtml(item.id)} · ${escapeHtml(item.title)}: ${escapeHtml(item.evidence)}</p>`).join('')}
+        </details>
+      ` : ''}
+      <div class="heroActions">
+        <button class="secondaryButton" type="button" data-ai-quick-action="Разобрать аудит Яндекс.Директа">Разобрать аудит Яндекс.Директа</button>
+        <button class="secondaryButton" type="button" data-ai-quick-action="Покажи quick wins по аудиту Яндекс.Директа">Показать quick wins</button>
+      </div>
+      <p><strong>Safety:</strong> аудит read-only. Рекомендации являются черновиками; изменения в Яндекс.Директ не применяются.</p>
+    </section>
+  `;
+}
+
 function renderDashboard() {
   const client = currentClient();
   const hasClient = Boolean(client.id);
@@ -1675,6 +1748,7 @@ function renderDashboard() {
     ` : `
       ${renderSyncCenter()}
       ${renderSyncDiagnosticsPanel(true)}
+      ${renderYandexDirectAuditPanel(true)}
       ${renderPerformanceSummaryPanel()}
     `}
   `);
@@ -1905,6 +1979,7 @@ function renderOptimization() {
       ${optimizationPlanStatus ? `<div class="authStatus integrationStatus">${escapeHtml(optimizationPlanStatus)}</div>` : ''}
     </div>
     ${renderSyncDiagnosticsPanel(true)}
+    ${renderYandexDirectAuditPanel()}
     <section class="panel">
       <div class="panelHeader">
         <div>
@@ -2156,6 +2231,9 @@ function renderAiModelSettings() {
 function renderAiChat() {
   const campaigns = perfSummary?.campaigns || [];
   const quickActions = [
+    'Проведи аудит Яндекс.Директа по чеклисту',
+    'Покажи quick wins',
+    'Объясни, почему такой грейд',
     'Проверь качество данных',
     'Проанализируй по методике DirectPilot',
     'Проверь конверсии выбранных целей',
@@ -2264,6 +2342,7 @@ function renderAiAssistant() {
       <p>${!client.id ? 'Сначала создайте клиента.' : !clientYandexIntegration?.connected ? 'AI сможет анализировать настройки, но для данных нужна привязка Яндекса.' : !hasPerformanceData() ? 'Сначала запустите синхронизацию, чтобы AI увидел кампании.' : !client.conversionGoalIds && !client.mainGoalId ? 'Укажите ID целей Метрики для анализа целевых конверсий.' : 'AI использует сводку, диагностику кампаний и план оптимизации.'}</p>
       ${aiEmptyState ? `<div class="authStatus integrationStatus"><strong>${escapeHtml(aiEmptyState.text)}</strong><div class="heroActions"><button class="approveButton" data-go-view="${escapeHtml(aiEmptyState.view)}">${escapeHtml(aiEmptyState.button)}</button></div></div>` : ''}
     </section>
+    ${renderYandexDirectAuditPanel(true)}
     ${renderSyncDiagnosticsPanel(true)}
     ${renderAiModelSettings()}
     ${renderAiChat()}

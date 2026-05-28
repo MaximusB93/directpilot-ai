@@ -469,6 +469,7 @@ class ClientPerformanceSummaryResponse(BaseModel):
     goalDataWarnings: list[str] = Field(default_factory=list)
     syncDiagnostics: dict = Field(default_factory=dict)
     searchQueryInsights: dict = Field(default_factory=dict)
+    yandexDirectAudit: dict = Field(default_factory=dict)
 
 
 class OptimizationActionDraft(BaseModel):

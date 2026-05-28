@@ -82,6 +82,7 @@ def build_client_ai_context(client_id: str, client_context: dict[str, Any] | Non
             "conversions_source_message": summary.get("conversionsSourceMessage") if summary else "Нет сохранённой статистики.",
             "sync_diagnostics": summary.get("syncDiagnostics") if summary else {},
         },
+        "yandex_direct_audit": summary.get("yandexDirectAudit") if summary else {},
         "direct_analyst_playbook": build_direct_analyst_instructions(summary or {}),
         "guardrails": {
             "allowed_actions": ["audit", "explain", "create_draft", "create_dry_run_preview"],
@@ -179,6 +180,7 @@ def build_client_ai_context_from_db(db, client_id: str, selected_campaign_name: 
         "summary": summary,
         "sync_diagnostics": summary.get("syncDiagnostics", {}),
         "search_query_insights": summary.get("searchQueryInsights", {}),
+        "yandex_direct_audit": summary.get("yandexDirectAudit", {}),
         "direct_analyst_playbook": build_direct_analyst_instructions({"summary": summary, "goals": {"selected_goal_ids": summary.get("selectedGoalIds", [])}}),
         "campaigns": campaigns,
         "diagnostics": [
@@ -242,6 +244,11 @@ def _build_prompt(context: dict[str, Any]) -> str:
 
 Методика DirectPilot:
 {playbook}
+
+Yandex Direct audit skill:
+- If yandex_direct_audit is present, use audit score, grade, category scores, failed checks, quick wins, and limitations before generic advice.
+- Treat N/A and needs_more_data checks as limitations, not confirmed failures.
+- Never claim unavailable account settings were checked.
 
 Правила:
 - Не выдумывай goal conversions.
