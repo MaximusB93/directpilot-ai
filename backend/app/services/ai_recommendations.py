@@ -244,7 +244,8 @@ def _build_prompt(context: dict[str, Any]) -> str:
 
 Правила:
 - Не выдумывай goal conversions.
-- Если goal data недоступна, явно скажи это.
+- Используй selected Direct goal conversions как основной источник, если они доступны.
+- Если goal data недоступна и используется fallback по total Direct conversions, явно скажи, что анализ CPA ограничен.
 - Изменения в Яндекс.Директ не применялись.
 - Рекомендации являются черновиками действий и требуют review/approval.
 - Приоритизируй кампании по выбранной цели, если goal data доступна.

@@ -6,11 +6,12 @@ from sqlalchemy.orm import Session
 from app.connectors.yandex_direct import YandexDirectConnector
 from app.models import ClientAccount, DirectCampaignPeriodStat, SyncJob
 from app.services.connected_accounts import get_yandex_access_token_for_account
-from app.services.yandex_metrika import load_metrika_goal_conversions, parse_goal_ids
+from app.services.yandex_metrika import parse_goal_ids
 
 NO_BOUND_ACCOUNT_MESSAGE = "Yandex account is not bound to this client. Bind a Yandex account before syncing."
 NO_TOKEN_MESSAGE = "Yandex OAuth token is not connected for the bound account. Reconnect Yandex Direct before syncing real data."
 NO_DATA_MESSAGE = "No Yandex Direct data for selected period"
+DIRECT_GOAL_FALLBACK_MESSAGE = "Direct goal conversions unavailable for selected goals. Falling back to total Direct conversions."
 
 
 def _int(v: str | None) -> int:
@@ -19,6 +20,25 @@ def _int(v: str | None) -> int:
 
 def _float(v: str | None) -> float:
     return float(v or 0) if v not in {None, "", "--"} else 0.0
+
+
+def _direct_goal_conversion_value(row: dict[str, str], goal_ids: list[str]) -> float | None:
+    total = 0.0
+    found = False
+    normalized_goal_ids = {str(item).strip() for item in goal_ids if str(item).strip()}
+    for key, value in row.items():
+        parts = key.split("_")
+        if len(parts) < 2 or parts[0] != "Conversions":
+            continue
+        if parts[1] not in normalized_goal_ids:
+            continue
+        found = True
+        total += _float(value)
+    if found:
+        return total
+    if row.get("_TotalConversions") is not None and row.get("Conversions") not in {None, "", "--"}:
+        return _float(row.get("Conversions"))
+    return None
 
 
 def run_client_sync(db: Session, client_id: str, days: int = 30) -> SyncJob:
@@ -76,41 +96,29 @@ def run_client_sync(db: Session, client_id: str, days: int = 30) -> SyncJob:
             return job
 
         connector = YandexDirectConnector(access_token=token, client_login=client.direct_login)
-        rows = connector.get_campaign_report(days=days, date_range_type="CUSTOM_DATE")
         goal_ids = parse_goal_ids(client.conversion_goal_ids, fallback=client.main_goal_id)
+        rows = connector.get_campaign_report(days=days, date_range_type="CUSTOM_DATE", goal_ids=goal_ids or None)
         goal_ids_text = ", ".join(goal_ids) or None
-        metrika = load_metrika_goal_conversions(
-            access_token=token,
-            counter_id=client.metrica_counter,
-            goal_ids=goal_ids,
-            date_from=date_from.date(),
-            date_to=now.date(),
-        ) if goal_ids else None
-        metrika_by_campaign: dict[str, float] = {}
-        if metrika:
-            for item in metrika.rows:
-                metrika_by_campaign[item.campaign_key.lower()] = metrika_by_campaign.get(item.campaign_key.lower(), 0.0) + item.goal_conversions
-        metrika_warning = "; ".join(metrika.warnings) if metrika and metrika.warnings else None
 
         db.execute(delete(DirectCampaignPeriodStat).where(DirectCampaignPeriodStat.client_id == client_id))
 
         matched_goal_campaigns = 0
         for row in rows:
-            total_conversions = _float(row.get("Conversions"))
+            total_conversions = _float(row.get("_TotalConversions") or row.get("Conversions"))
             goal_conversions = None
             conversion_source = "yandex_direct_total"
             conversion_warning = None
             campaign_name = str(row.get("CampaignName") or "")
             campaign_id = str(row.get("CampaignId") or "")
             if goal_ids:
-                matched = metrika_by_campaign.get(campaign_name.lower()) or metrika_by_campaign.get(campaign_id.lower())
-                if matched is not None:
+                direct_goal_conversions = _direct_goal_conversion_value(row, goal_ids)
+                if direct_goal_conversions is not None:
                     matched_goal_campaigns += 1
-                    goal_conversions = matched
-                    conversion_source = "metrika_goals" if len(goal_ids) > 1 else "metrika_goal"
+                    goal_conversions = direct_goal_conversions
+                    conversion_source = "yandex_direct_goals"
                 else:
-                    conversion_source = "metrika_goal_unavailable"
-                    conversion_warning = metrika_warning or "Metrika goal data could not be matched to this Direct campaign."
+                    conversion_source = "fallback_total_when_goal_unavailable"
+                    conversion_warning = DIRECT_GOAL_FALLBACK_MESSAGE
             goal_cpa = (_float(row.get("Cost")) / goal_conversions) if goal_conversions else None
             db.add(
                 DirectCampaignPeriodStat(
@@ -140,9 +148,9 @@ def run_client_sync(db: Session, client_id: str, days: int = 30) -> SyncJob:
         if rows:
             client.sync_status = "ok"
             if goal_ids and matched_goal_campaigns == 0:
-                client.sync_error = metrika_warning or "Metrika goal conversions were not matched to Direct campaigns. Check UTM campaign mapping, counter id, and goal ids."
+                client.sync_error = DIRECT_GOAL_FALLBACK_MESSAGE
             else:
-                client.sync_error = metrika_warning if goal_ids and metrika_warning else None
+                client.sync_error = None
         else:
             client.sync_status = "no_data"
             client.sync_error = NO_DATA_MESSAGE

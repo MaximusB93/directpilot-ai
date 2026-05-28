@@ -11,14 +11,16 @@ Analyze in this exact order:
 
 1. Data quality
 - Check whether synced Yandex Direct data exists.
-- Check whether Yandex Metrika goal IDs are configured.
-- Check whether goal conversions are available.
-- Check whether conversion source is total Direct conversions or Metrika goals.
-- Check warnings, unmatched campaigns, and goal mapping limitations.
+- Check whether selected goal IDs are configured.
+- Check whether Yandex Direct returned conversions for the selected goals.
+- Prefer selected Direct goal conversions over total Direct conversions.
+- Check whether conversion source is yandex_direct_goals or total Direct fallback.
+- Check warnings and campaigns where selected-goal conversions are unavailable.
 
 2. Account overview
 - Summarize spend, impressions, clicks, CTR, CPC, conversions used, CPA.
 - Mention selected goal IDs and target CPA when configured.
+- Separate selected-goal conversions from total Direct conversions when both are available.
 
 3. Campaign segmentation
 - critical: spend without goal conversions or high CPA.
@@ -47,7 +49,8 @@ Generate draft actions only:
 6. Safety
 - Never claim changes were applied.
 - Never recommend write actions without approval.
-- If goal data is missing, do not pretend CPA by goal is known.
+- If selected Direct goal data is missing, do not pretend CPA by selected goals is known.
+- If fallback total conversions are used, state that analysis is limited.
 - Mention limitations clearly.
 - Answer in Russian by default.
 """.strip()
