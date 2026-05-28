@@ -359,6 +359,7 @@ def build_yandex_direct_audit(summary: dict) -> dict:
             "title": item["title"],
             "evidence": item["evidence"],
             "recommendation": item["recommendation"],
+            "source": item.get("source", "directpilot"),
         }
         for item in checks
         if item.get("status") == "na" or item.get("source") == "needs_more_data"
