@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import ClientAccount, DirectCampaignPeriodStat
+from app.models import ClientAccount, DirectCampaignPeriodStat, DirectSearchQueryPeriodStat
 from app.services.yandex_metrika import parse_goal_ids
 
 
@@ -152,6 +152,59 @@ def _diagnostic_text(flags: list[str], source_message: str) -> tuple[str, str, s
     return ("Без критичных сигналов", "Явных проблем по сохранённой статистике не найдено.", "Продолжать мониторинг и накопить больше данных.")
 
 
+def _flag_list(value: str | None) -> list[str]:
+    return [item.strip() for item in (value or "").split(",") if item.strip()]
+
+
+def _negative_keyword_confidence(*, flags: list[str], clicks: int, cost: float) -> str:
+    if "low_data" in flags:
+        return "low"
+    if clicks >= 20 or cost >= 1000:
+        return "high"
+    return "medium"
+
+
+def build_search_query_insights(rows: list[DirectSearchQueryPeriodStat]) -> dict:
+    insights = []
+    total_waste_cost = 0.0
+    candidate_count = 0
+    for item in rows:
+        flags = _flag_list(item.issue_flags)
+        is_candidate = "candidate_negative_keyword" in flags and (item.goal_conversions or 0) == 0
+        if is_candidate:
+            candidate_count += 1
+            total_waste_cost += item.cost
+        insights.append(
+            {
+                "query": item.query,
+                "campaign": item.campaign_name,
+                "campaignId": item.campaign_id,
+                "adGroup": item.ad_group_name,
+                "adGroupId": item.ad_group_id,
+                "cost": item.cost,
+                "clicks": item.clicks,
+                "impressions": item.impressions,
+                "ctr": item.ctr,
+                "avgCpc": item.avg_cpc,
+                "goalConversions": item.goal_conversions,
+                "totalConversions": item.conversions,
+                "conversionSource": item.conversion_source,
+                "issueFlags": flags,
+                "recommendedNegativeKeyword": item.recommended_negative_keyword,
+                "reason": item.recommendation_reason,
+                "confidence": _negative_keyword_confidence(flags=flags, clicks=item.clicks, cost=item.cost),
+                "safetyNote": "Черновик минус-слова. Изменения в Яндекс.Директ не применялись.",
+            }
+        )
+    insights.sort(key=lambda item: (0 if item.get("recommendedNegativeKeyword") else 1, -float(item.get("cost") or 0)))
+    return {
+        "totalQueries": len(rows),
+        "candidateNegativeKeywords": candidate_count,
+        "totalWasteCost": total_waste_cost,
+        "insights": insights[:50],
+    }
+
+
 def build_performance_summary(db: Session, client_id: str) -> dict:
     client = db.get(ClientAccount, client_id)
     if not client:
@@ -163,6 +216,12 @@ def build_performance_summary(db: Session, client_id: str) -> dict:
         .order_by(DirectCampaignPeriodStat.loaded_at.desc())
     ).all()
     goal_ids = parse_goal_ids(client.conversion_goal_ids, fallback=client.main_goal_id)
+    search_rows = db.scalars(
+        select(DirectSearchQueryPeriodStat)
+        .where(DirectSearchQueryPeriodStat.client_id == client_id)
+        .order_by(DirectSearchQueryPeriodStat.cost.desc())
+    ).all()
+    search_query_insights = build_search_query_insights(search_rows)
     if not rows:
         diagnostics = _build_sync_diagnostics(
             client=client,
@@ -184,6 +243,7 @@ def build_performance_summary(db: Session, client_id: str) -> dict:
             "conversionsSourceMessage": _conversion_source_message(goal_ids, False),
             "goalDataWarnings": [],
             "syncDiagnostics": diagnostics,
+            "searchQueryInsights": search_query_insights,
             "message": "Нет сохранённых данных Яндекс.Директа. Запустите синхронизацию после подключения Яндекса.",
         }
 
@@ -280,6 +340,7 @@ def build_performance_summary(db: Session, client_id: str) -> dict:
         "conversionsSourceMessage": source_message,
         "goalDataWarnings": warnings,
         "syncDiagnostics": sync_diagnostics,
+        "searchQueryInsights": search_query_insights,
         "message": "ok",
     }
 
@@ -309,6 +370,29 @@ def build_optimization_plan(db: Session, client_id: str) -> dict:
                 "requires_approval": True,
                 "can_apply_automatically": False,
                 "safety_note": "Черновик действия. Изменения в Яндекс.Директ не применялись.",
+            }
+        )
+    for index, insight in enumerate((summary.get("searchQueryInsights") or {}).get("insights", []), start=1):
+        keyword = insight.get("recommendedNegativeKeyword")
+        if not keyword:
+            continue
+        actions.append(
+            {
+                "id": f"negative-{index}",
+                "severity": "critical" if insight.get("confidence") == "high" else "warning",
+                "category": "search_query_negative_keywords",
+                "campaign_name": insight.get("campaign"),
+                "issue": f"Поисковый запрос без конверсий: {insight.get('query')}",
+                "evidence": (
+                    f"Запрос: {insight.get('query')}. Расход {insight.get('cost')} ₽, клики {insight.get('clicks')}, "
+                    f"конверсии по цели {insight.get('goalConversions')}, общие конверсии {insight.get('totalConversions')}. "
+                    f"Уверенность: {insight.get('confidence')}."
+                ),
+                "draft_action": f"Проверить и при подтверждении добавить минус-слово: {keyword}",
+                "action_type": "add_negative_keywords",
+                "requires_approval": True,
+                "can_apply_automatically": False,
+                "safety_note": "Черновик минус-слова. Изменения в Яндекс.Директ не применялись.",
             }
         )
     return {

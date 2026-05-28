@@ -1569,6 +1569,66 @@ function renderPerformanceSummaryPanel() {
   `;
 }
 
+function negativeKeywordDraftsText(insights) {
+  const candidates = (insights?.insights || []).filter((item) => item.recommendedNegativeKeyword);
+  return candidates.map((item) => [
+    `Минус-слово: ${item.recommendedNegativeKeyword}`,
+    `Запрос: ${item.query}`,
+    `Кампания: ${item.campaign || '—'}`,
+    `Группа: ${item.adGroup || '—'}`,
+    `Причина: ${item.reason || 'расход без конверсий'}`,
+    'Статус: черновик, изменения в Яндекс.Директ не применялись.',
+  ].join('\n')).join('\n\n');
+}
+
+function renderSearchQueryInsightsPanel() {
+  const insights = perfSummary?.searchQueryInsights || {};
+  const items = insights.insights || [];
+  const candidates = items.filter((item) => item.recommendedNegativeKeyword);
+  return `
+    <section class="panel">
+      <div class="panelHeader">
+        <div>
+          <span class="eyebrow">Этап 1.5</span>
+          <h3>Поисковые запросы и минус-слова</h3>
+          <p>Read-only анализ запросов. Минус-слова показаны только как черновики для ручной проверки и approval.</p>
+        </div>
+        <span class="aiStatusBadge ${candidates.length ? 'pending' : 'ready'}">${formatNumberSafe(candidates.length)} кандидатов</span>
+      </div>
+      <div class="kpiGrid">
+        <article class="kpi blue"><span>Запросов проанализировано</span><strong>${formatNumberSafe(insights.totalQueries || 0)}</strong></article>
+        <article class="kpi orange"><span>Кандидаты в минус-слова</span><strong>${formatNumberSafe(insights.candidateNegativeKeywords || 0)}</strong></article>
+        <article class="kpi green"><span>Расход без конверсий</span><strong>${formatMoneySafe(insights.totalWasteCost || 0)}</strong></article>
+      </div>
+      <div class="heroActions">
+        <button class="secondaryButton" type="button" data-copy-text="${escapeHtml(negativeKeywordDraftsText(insights))}" ${candidates.length ? '' : 'disabled'}>Скопировать все черновики минус-слов</button>
+      </div>
+      ${items.length ? `
+        <div class="tableWrap">
+          <table>
+            <thead><tr><th>Запрос</th><th>Кампания</th><th>Группа</th><th>Расход</th><th>Клики</th><th>Конв. цели</th><th>Всего конв.</th><th>Минус-слово</th><th>Уверенность</th><th>Действие</th></tr></thead>
+            <tbody>${items.slice(0, 12).map((item) => `
+              <tr>
+                <td>${escapeHtml(item.query || '—')}</td>
+                <td>${escapeHtml(item.campaign || '—')}</td>
+                <td>${escapeHtml(item.adGroup || '—')}</td>
+                <td>${formatMoneySafe(item.cost)}</td>
+                <td>${formatNumberSafe(item.clicks)}</td>
+                <td>${item.goalConversions == null ? '—' : formatNumberSafe(item.goalConversions)}</td>
+                <td>${formatNumberSafe(item.totalConversions)}</td>
+                <td>${escapeHtml(item.recommendedNegativeKeyword || '—')}</td>
+                <td>${escapeHtml(item.confidence || 'low')}</td>
+                <td><button class="secondaryButton" type="button" data-copy-text="${escapeHtml(`Минус-слово: ${item.recommendedNegativeKeyword || ''}\nЗапрос: ${item.query || ''}\nКампания: ${item.campaign || ''}\nПричина: ${item.reason || ''}\nЧерновик, не применялось в Яндекс.Директ.`)}" ${item.recommendedNegativeKeyword ? '' : 'disabled'}>Скопировать</button></td>
+              </tr>
+            `).join('')}</tbody>
+          </table>
+        </div>
+      ` : `<div class="emptyStatePanel compact"><h3>Нет данных по поисковым запросам</h3><p>Запустите синхронизацию. Если отчёт поисковых запросов недоступен, синхронизация кампаний всё равно останется рабочей.</p><button class="approveButton" data-sync-client ${canRunSync() && !syncLoading ? '' : 'disabled'}>${syncLoading ? 'Синхронизация...' : 'Запустить синхронизацию'}</button></div>`}
+      <p><strong>Важно:</strong> запросы с конверсиями не предлагаются к минусовке. Черновики не применяются автоматически.</p>
+    </section>
+  `;
+}
+
 function renderDashboard() {
   const client = currentClient();
   const hasClient = Boolean(client.id);
@@ -1595,6 +1655,7 @@ function renderDashboard() {
         <article class="kpi green"><span>Готовность</span><strong>${formatNumberSafe(readyCount)} / ${formatNumberSafe(readiness.length)}</strong></article>
         <article class="kpi blue"><span>Клиент</span><strong>${hasClient ? 'Готово' : 'Нужно действие'}</strong></article>
         <article class="kpi orange"><span>Данные</span><strong>${hasPerformanceData() ? 'Готово' : 'Нет данных'}</strong></article>
+        <article class="kpi orange"><span>Кандидаты в минус-слова</span><strong>${formatNumberSafe(perfSummary?.searchQueryInsights?.candidateNegativeKeywords || 0)}</strong></article>
       </div>
       <div class="heroActions">
         <button class="secondaryButton" data-go-view="clients">Клиенты</button>
@@ -1869,6 +1930,7 @@ function renderOptimization() {
         `).join('')}
       </div>` : `<div class="emptyStatePanel compact"><h3>Нет кампаний для фильтра</h3><p>Обновите сводку или смените фильтр.</p></div>`}
     </section>
+    ${renderSearchQueryInsightsPanel()}
     <section class="panel">
       <div class="panelHeader">
         <div>
@@ -2097,6 +2159,7 @@ function renderAiChat() {
     'Проверь качество данных',
     'Проанализируй по методике DirectPilot',
     'Проверь конверсии выбранных целей',
+    'Проанализируй поисковые запросы и предложи минус-слова',
     'Составь план по критичным кампаниям',
     'Проанализируй аккаунт',
     'Найди кампании с проблемами',

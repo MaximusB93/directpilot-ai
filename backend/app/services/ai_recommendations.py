@@ -178,6 +178,7 @@ def build_client_ai_context_from_db(db, client_id: str, selected_campaign_name: 
         },
         "summary": summary,
         "sync_diagnostics": summary.get("syncDiagnostics", {}),
+        "search_query_insights": summary.get("searchQueryInsights", {}),
         "direct_analyst_playbook": build_direct_analyst_instructions({"summary": summary, "goals": {"selected_goal_ids": summary.get("selectedGoalIds", [])}}),
         "campaigns": campaigns,
         "diagnostics": [

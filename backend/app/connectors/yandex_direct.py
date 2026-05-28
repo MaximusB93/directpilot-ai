@@ -124,6 +124,60 @@ class YandexDirectConnector:
             rows = _merge_total_conversion_fallback(rows, total_rows)
         return rows
 
+    def get_search_query_report(
+        self,
+        *,
+        date_from: date | None = None,
+        date_to: date | None = None,
+        days: int = 30,
+        limit: int = 1000,
+        date_range_type: str = "CUSTOM_DATE",
+        goal_ids: list[str] | None = None,
+        processing_mode: str = "offline",
+        max_wait_seconds: int = 20,
+    ) -> list[dict[str, str]]:
+        if not self.is_configured:
+            return []
+
+        date_range_type = date_range_type.upper()
+        selection_criteria: dict[str, str] = {}
+        report_period = date_range_type
+        if date_range_type == "CUSTOM_DATE":
+            if date_to is None:
+                date_to = datetime.now(UTC).date()
+            if date_from is None:
+                date_from = date_to - timedelta(days=days - 1)
+            selection_criteria = {"DateFrom": date_from.isoformat(), "DateTo": date_to.isoformat()}
+            report_period = f"{date_from.isoformat()} {date_to.isoformat()}"
+
+        payload = _build_search_query_report_payload(
+            selection_criteria=selection_criteria,
+            report_period=report_period,
+            date_range_type=date_range_type,
+            limit=limit,
+            goal_ids=goal_ids,
+        )
+        rows = self._request_report_with_retries(
+            payload=payload,
+            processing_mode=processing_mode.lower(),
+            max_wait_seconds=max_wait_seconds,
+        )
+        if goal_ids:
+            total_payload = _build_search_query_report_payload(
+                selection_criteria=selection_criteria,
+                report_period=f"{report_period} totals",
+                date_range_type=date_range_type,
+                limit=limit,
+                goal_ids=None,
+            )
+            total_rows = self._request_report_with_retries(
+                payload=total_payload,
+                processing_mode=processing_mode.lower(),
+                max_wait_seconds=max_wait_seconds,
+            )
+            rows = _merge_total_conversion_fallback_by_keys(rows, total_rows, ["CampaignId", "AdGroupId", "Query"])
+        return rows
+
     def _request_report_with_retries(
         self,
         *,
@@ -203,12 +257,62 @@ def _build_campaign_report_payload(
     return {"params": params}
 
 
+def _build_search_query_report_payload(
+    *,
+    selection_criteria: dict[str, str],
+    report_period: str,
+    date_range_type: str,
+    limit: int,
+    goal_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    params: dict[str, Any] = {
+        "SelectionCriteria": selection_criteria,
+        "FieldNames": [
+            "CampaignId",
+            "CampaignName",
+            "AdGroupId",
+            "AdGroupName",
+            "Query",
+            "Impressions",
+            "Clicks",
+            "Cost",
+            "Ctr",
+            "AvgCpc",
+            "Conversions",
+            "CostPerConversion",
+            "ConversionRate",
+        ],
+        "OrderBy": [{"Field": "Cost", "SortOrder": "DESCENDING"}],
+        "ReportName": f"DirectPilot Search Query Report {report_period}",
+        "ReportType": "SEARCH_QUERY_PERFORMANCE_REPORT",
+        "DateRangeType": date_range_type,
+        "Format": "TSV",
+        "IncludeVAT": "YES",
+        "IncludeDiscount": "YES",
+        "Page": {"Limit": limit},
+    }
+    normalized_goals = _normalize_goal_ids(goal_ids)
+    if normalized_goals:
+        params["Goals"] = normalized_goals
+    return {"params": params}
+
+
 def _merge_total_conversion_fallback(goal_rows: list[dict[str, str]], total_rows: list[dict[str, str]]) -> list[dict[str, str]]:
-    totals_by_campaign = {str(item.get("CampaignId") or ""): item for item in total_rows}
+    return _merge_total_conversion_fallback_by_keys(goal_rows, total_rows, ["CampaignId"])
+
+
+def _merge_total_conversion_fallback_by_keys(
+    goal_rows: list[dict[str, str]],
+    total_rows: list[dict[str, str]],
+    keys: list[str],
+) -> list[dict[str, str]]:
+    def row_key(item: dict[str, str]) -> tuple[str, ...]:
+        return tuple(str(item.get(key) or "") for key in keys)
+
+    totals_by_key = {row_key(item): item for item in total_rows}
     merged: list[dict[str, str]] = []
     for row in goal_rows:
-        campaign_id = str(row.get("CampaignId") or "")
-        total = totals_by_campaign.get(campaign_id, {})
+        total = totals_by_key.get(row_key(row), {})
         merged.append(
             {
                 **row,
