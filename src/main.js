@@ -465,6 +465,19 @@ function formatDateSafe(value) {
   return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('ru-RU');
 }
 
+function conversionSourceLabel(source) {
+  return {
+    yandex_direct_goals: 'Цели Директа',
+    yandex_direct_total: 'Общие конверсии Директа',
+    fallback_total_when_goal_unavailable: 'Fallback: общие конверсии Директа',
+    metrika_goal: 'Цель Метрики',
+    metrika_goals: 'Цели Метрики',
+    metrika_goal_unavailable: 'Данные Метрики недоступны',
+    unavailable: 'Данные по целям недоступны',
+    unknown: 'Нет данных',
+  }[source] || source || 'Нет данных';
+}
+
 function hasClientValue(value) {
   return Boolean(value && value !== 'Не подключен' && value !== '—');
 }
@@ -549,7 +562,7 @@ function getReadinessState() {
     { status: !hasClient ? 'blocked' : yandexBound ? 'ready' : 'action_needed', label: 'Яндекс-аккаунт привязан', description: yandexBound ? 'Аккаунт привязан к выбранному клиенту.' : 'Яндекс-аккаунт не привязан к этому клиенту.', nextAction: 'Привяжите Яндекс-аккаунт', targetView: 'integrations' },
     { status: !canRunSync() && !firstSyncDone ? 'blocked' : firstSyncDone ? 'ready' : 'action_needed', label: 'Первая синхронизация выполнена', description: formatSyncStatus(client.syncStatus), nextAction: 'Запустите синхронизацию', targetView: 'dashboard' },
     { status: statsReady ? 'ready' : firstSyncDone ? 'action_needed' : 'pending', label: 'Статистика кампаний доступна', description: statsReady ? `${perfSummary.campaigns.length} кампаний в сводке` : 'Нет сохранённых данных', nextAction: 'Обновите сводку или синхронизацию', targetView: 'dashboard' },
-    { status: !hasClient ? 'blocked' : client.mainGoalId ? 'ready' : 'action_needed', label: 'ID основной цели указан', description: client.mainGoalId || 'Цель не выбрана. CPA будет считаться по total conversions.', nextAction: 'Укажите ID основной цели в настройках клиента', targetView: 'clients' },
+    { status: !hasClient ? 'blocked' : client.mainGoalId ? 'ready' : 'action_needed', label: 'ID основной цели указан', description: client.mainGoalId || 'Цель не выбрана. CPA будет считаться по общим конверсиям Директа.', nextAction: 'Укажите ID основной цели в настройках клиента', targetView: 'clients' },
     { status: !client.mainGoalId ? 'pending' : perfSummary?.hasGoalData ? 'ready' : 'action_needed', label: 'Конверсии по цели загружены', description: perfSummary?.conversionsSourceMessage || 'Цель указана, но конверсии по ней ещё не загружены', nextAction: 'Запустите синхронизацию и проверьте источник конверсий', targetView: 'dashboard' },
     { status: aiReady ? 'ready' : statsReady ? 'action_needed' : 'pending', label: 'AI-анализ сгенерирован', description: aiReady ? 'AI-план готов для ревью.' : 'AI-анализ станет доступнее после загрузки статистики.', nextAction: 'Откройте AI-аналитик', targetView: 'ai' },
   ];
@@ -1463,7 +1476,7 @@ function renderSyncDiagnosticsPanel(compact = false) {
         : !goalIds.length
           ? { text: 'Укажите цели Метрики', view: 'clients' }
           : diagnostics.hasGoalIds && !diagnostics.hasGoalData
-            ? { text: 'Проверьте UTM и названия кампаний', view: 'clients' }
+            ? { text: 'Проверьте цели в отчёте Директа', view: 'clients' }
             : { text: 'Открыть AI-анализ', view: 'ai' };
   return `
     <section class="panel ${compact ? 'compact' : ''}">
@@ -1476,11 +1489,11 @@ function renderSyncDiagnosticsPanel(compact = false) {
       </div>
       <div class="kpiGrid">
         <article class="kpi blue"><span>Строки Direct</span><strong>${formatNumberSafe(diagnostics.directRowsLoaded || 0)}</strong></article>
-        <article class="kpi green"><span>Цели Метрики</span><strong>${escapeHtml(goalIds.join(', ') || 'не указаны')}</strong></article>
-        <article class="kpi orange"><span>Сопоставлено</span><strong>${formatNumberSafe(diagnostics.goalMatchedCampaigns || 0)}</strong></article>
-        <article class="kpi orange"><span>Не сопоставлено</span><strong>${formatNumberSafe(diagnostics.goalUnmatchedCampaigns || 0)}</strong></article>
+        <article class="kpi green"><span>Цели Директа</span><strong>${escapeHtml(goalIds.join(', ') || 'не указаны')}</strong></article>
+        <article class="kpi orange"><span>Конверсии целей</span><strong>${formatNumberSafe(diagnostics.goalConversionsTotal || perfSummary?.goalConversionsTotal || 0)}</strong></article>
+        <article class="kpi orange"><span>Общие конверсии</span><strong>${formatNumberSafe(diagnostics.totalConversionsFallback || perfSummary?.totalConversionsFallback || 0)}</strong></article>
       </div>
-      <p>Источник конверсий: ${escapeHtml(Object.entries(sourceCounts).map(([key, value]) => `${key}: ${value}`).join(', ') || perfSummary?.conversionsSourceMessage || 'нет данных')}</p>
+      <p>Источник конверсий: ${escapeHtml(Object.entries(sourceCounts).map(([key, value]) => `${conversionSourceLabel(key)}: ${value}`).join(', ') || perfSummary?.conversionsSourceMessage || 'нет данных')}</p>
       ${warnings.length ? `<div class="authStatus aiError">${warnings.map((item) => `<p>${escapeHtml(item)}</p>`).join('')}</div>` : ''}
       <div class="heroActions">
         ${nextAction.action === 'sync'
@@ -1510,6 +1523,7 @@ function renderPerformanceSummaryPanel() {
   const totals = perfSummary.totals || {};
   const campaigns = perfSummary.campaigns || [];
   const issueCount = campaigns.reduce((sum, item) => sum + (item.issue_flags?.length || 0), 0);
+  const selectedGoalIds = perfSummary.selectedGoalIds?.length ? perfSummary.selectedGoalIds : [perfSummary.selectedGoalId].filter(Boolean);
   return `
     <section class="panel">
       <div class="panelHeader">
@@ -1524,16 +1538,19 @@ function renderPerformanceSummaryPanel() {
         <article class="kpi blue"><span>Показы</span><strong>${formatNumberSafe(totals.impressions)}</strong></article>
         <article class="kpi orange"><span>Клики</span><strong>${formatNumberSafe(totals.clicks)}</strong></article>
         <article class="kpi green"><span>Конверсии для анализа</span><strong>${formatNumberSafe(totals.conversions)}</strong></article>
+        <article class="kpi green"><span>Конверсии по выбранным целям</span><strong>${perfSummary.goalConversionsTotal == null ? '—' : formatNumberSafe(perfSummary.goalConversionsTotal)}</strong></article>
+        <article class="kpi blue"><span>Общие конверсии Директа</span><strong>${formatNumberSafe(perfSummary.totalConversionsFallback ?? totals.total_conversions ?? totals.conversions)}</strong></article>
       </div>
-      <p>Цель: ${escapeHtml(perfSummary.selectedGoalId || 'не указана')} · Данные по целям: ${perfSummary.hasGoalData ? 'доступны' : 'недоступны'} · Конверсии по целям: ${formatNumberSafe(perfSummary.goalConversionsTotal)}</p>
+      <p>Цели: ${escapeHtml(selectedGoalIds.join(', ') || 'не указаны')} · Источник: ${escapeHtml(conversionSourceLabel(perfSummary.hasGoalData ? 'yandex_direct_goals' : perfSummary.syncDiagnostics?.hasGoalIds ? 'fallback_total_when_goal_unavailable' : 'yandex_direct_total'))} · Конверсии по выбранным целям: ${perfSummary.goalConversionsTotal == null ? '—' : formatNumberSafe(perfSummary.goalConversionsTotal)}</p>
       <p>Средний CPC: ${formatMoneySafe(totals.avg_cpc)} · CPA: ${totals.cpa == null ? '—' : formatMoneySafe(totals.cpa)} · CTR: ${formatPercentSafe(totals.clicks && totals.impressions ? (totals.clicks / totals.impressions) * 100 : 0)}</p>
       ${campaigns.length ? `
         <div class="tableWrap">
           <table>
-            <thead><tr><th>Кампания</th><th>Расход</th><th>Показы</th><th>Клики</th><th>Всего конв.</th><th>Конв. по цели</th><th>Для анализа</th><th>CPA для анализа</th><th>Флаги</th></tr></thead>
+            <thead><tr><th>Кампания</th><th>Цели</th><th>Расход</th><th>Показы</th><th>Клики</th><th>Всего конв.</th><th>Конв. по цели</th><th>Для анализа</th><th>CPA для анализа</th><th>Источник</th><th>Флаги</th></tr></thead>
             <tbody>${campaigns.map((campaign) => `
               <tr>
                 <td>${escapeHtml(campaign.campaign_name)}</td>
+                <td>${escapeHtml(campaign.goal_ids || selectedGoalIds.join(', ') || '—')}</td>
                 <td>${formatMoneySafe(campaign.cost)}</td>
                 <td>${formatNumberSafe(campaign.impressions)}</td>
                 <td>${formatNumberSafe(campaign.clicks)}</td>
@@ -1541,6 +1558,7 @@ function renderPerformanceSummaryPanel() {
                 <td>${campaign.goal_conversions == null ? '—' : formatNumberSafe(campaign.goal_conversions)}</td>
                 <td>${formatNumberSafe(campaign.conversions_used ?? campaign.conversions)}</td>
                 <td>${campaign.cpa_used == null ? '—' : formatMoneySafe(campaign.cpa_used)}</td>
+                <td>${escapeHtml(conversionSourceLabel(campaign.conversion_source))}</td>
                 <td>${escapeHtml((campaign.issue_flags || []).join(', ') || '—')}</td>
               </tr>
             `).join('')}</tbody>
@@ -1729,7 +1747,7 @@ function renderRecommendations() {
     <section class="panel aiRecommendationCta">
       <div>
         <h3>Сформировать AI-рекомендации по клиентскому контексту</h3>
-        <p>${canRunAiAnalysis() ? `AI будет использовать ${perfSummary?.hasGoalData ? 'goal conversions выбранной цели' : 'total conversions как fallback'}. ${escapeHtml(perfSummary?.conversionsSourceMessage || '')}` : 'AI пока не видит статистику кампаний. Сначала запустите синхронизацию.'}</p>
+        <p>${canRunAiAnalysis() ? `AI будет использовать ${perfSummary?.hasGoalData ? 'конверсии выбранных целей Директа' : 'общие конверсии Директа как fallback'}. ${escapeHtml(perfSummary?.conversionsSourceMessage || '')}` : 'AI пока не видит статистику кампаний. Сначала запустите синхронизацию.'}</p>
       </div>
       <button class="approveButton" data-client-ai-recommendations ${clientAiLoading ? 'disabled' : ''}>${clientAiLoading ? 'Генерируем...' : 'Сгенерировать AI-черновик'}</button>
     </section>
@@ -1772,7 +1790,7 @@ function campaignMatchesOptimizationFilter(campaign) {
   if (optimizationFilter === 'no_conversions') return flags.includes('spend_without_conversions');
   if (optimizationFilter === 'high_cpa') return flags.includes('high_cpa');
   if (optimizationFilter === 'low_ctr') return flags.includes('low_ctr');
-  if (optimizationFilter === 'goal_unavailable') return campaign.conversion_source === 'unavailable';
+  if (optimizationFilter === 'goal_unavailable') return ['unavailable', 'fallback_total_when_goal_unavailable', 'metrika_goal_unavailable'].includes(campaign.conversion_source);
   return true;
 }
 
@@ -1844,7 +1862,7 @@ function renderOptimization() {
             <span class="featureIcon">${campaign.severity === 'critical' ? '⛔' : campaign.severity === 'warning' ? '⚠️' : campaign.severity === 'info' ? '📈' : '✅'}</span>
             <h3>${escapeHtml(campaign.campaign_name)}</h3>
             <p>${escapeHtml(campaign.diagnostic_explanation || '')}</p>
-            <small>Расход ${formatMoneySafe(campaign.cost)} · клики ${formatNumberSafe(campaign.clicks)} · показы ${formatNumberSafe(campaign.impressions)} · всего конв. ${formatNumberSafe(campaign.total_conversions)} · конв. по цели ${campaign.goal_conversions == null ? '—' : formatNumberSafe(campaign.goal_conversions)} · для анализа ${formatNumberSafe(campaign.conversions_used)} · CPA ${campaign.cpa_used == null ? '—' : formatMoneySafe(campaign.cpa_used)} · CTR ${formatPercentSafe(campaign.ctr)} · ${escapeHtml(campaign.conversion_source || 'unknown')}</small>
+            <small>Цели ${escapeHtml(campaign.goal_ids || perfSummary?.selectedGoalIds?.join(', ') || '—')} · Расход ${formatMoneySafe(campaign.cost)} · клики ${formatNumberSafe(campaign.clicks)} · показы ${formatNumberSafe(campaign.impressions)} · всего конв. ${formatNumberSafe(campaign.total_conversions)} · конв. по цели ${campaign.goal_conversions == null ? '—' : formatNumberSafe(campaign.goal_conversions)} · для анализа ${formatNumberSafe(campaign.conversions_used)} · CPA ${campaign.cpa_used == null ? '—' : formatMoneySafe(campaign.cpa_used)} · CTR ${formatPercentSafe(campaign.ctr)} · ${escapeHtml(conversionSourceLabel(campaign.conversion_source))}</small>
             <p><strong>Фокус:</strong> ${escapeHtml(campaign.recommended_focus || '')}</p>
             <p><strong>Флаги:</strong> ${escapeHtml((campaign.issue_flags || []).join(', ') || '—')}</p>
           </article>
@@ -2078,7 +2096,7 @@ function renderAiChat() {
   const quickActions = [
     'Проверь качество данных',
     'Проанализируй по методике DirectPilot',
-    'Найди проблемы маппинга целей',
+    'Проверь конверсии выбранных целей',
     'Составь план по критичным кампаниям',
     'Проанализируй аккаунт',
     'Найди кампании с проблемами',
@@ -2092,13 +2110,13 @@ function renderAiChat() {
       <div class="panelHeader">
         <div>
           <h3>Единый AI-чат по клиенту</h3>
-          <p>AI получает серверный контекст клиента, кампаний, целей Метрики, сводки эффективности и плана оптимизации. Все действия — только черновики.</p>
+          <p>AI получает серверный контекст клиента, кампаний, выбранных целей Директа, сводки эффективности и плана оптимизации. Все действия — только черновики.</p>
         </div>
         <span class="aiStatusBadge ${campaigns.length ? 'ready' : 'pending'}">${campaigns.length ? 'Кампании в контексте' : 'Нет данных sync'}</span>
       </div>
       <div class="kpiGrid">
         <article class="kpi blue"><span>Цели</span><strong>${escapeHtml(perfSummary?.selectedGoalIds?.join(', ') || currentClient().conversionGoalIds || currentClient().mainGoalId || '—')}</strong></article>
-        <article class="kpi green"><span>Источник</span><strong>${escapeHtml(perfSummary?.hasGoalData ? 'Цели Метрики' : perfSummary?.conversionsSourceMessage ? 'Резервные данные' : 'Нет данных')}</strong></article>
+        <article class="kpi green"><span>Источник</span><strong>${escapeHtml(perfSummary?.hasGoalData ? 'Цели Директа' : perfSummary?.conversionsSourceMessage ? 'Общие конверсии Директа' : 'Нет данных')}</strong></article>
         <article class="kpi orange"><span>Кампании</span><strong>${formatNumberSafe(campaigns.length)}</strong></article>
       </div>
       <div class="heroActions">${quickActions.map((text) => `<button class="secondaryButton" type="button" data-ai-quick-action="${escapeHtml(text)}">${escapeHtml(text)}</button>`).join('')}</div>
@@ -2164,7 +2182,7 @@ function renderAiAssistant() {
       <details>
         <summary class="secondaryButton">Показать шаги методики</summary>
         <ol>
-          <li>Качество данных: синхронизация, цели Метрики, источник конверсий, предупреждения.</li>
+          <li>Качество данных: синхронизация, выбранные цели Директа, источник конверсий, предупреждения.</li>
           <li>Обзор аккаунта: расход, показы, клики, CTR, CPC, CPA, target CPA.</li>
           <li>Сегментация кампаний: критично, предупреждение, возможность, мало данных, без проблем.</li>
           <li>Проблемы: кампания, обоснование, значимость, уверенность, следующий шаг.</li>

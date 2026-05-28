@@ -25,10 +25,10 @@ class PerfTotals:
 
 def _conversion_source_message(goal_ids: list[str], has_goal_data: bool) -> str:
     if goal_ids and has_goal_data:
-        return f"Используются конверсии целей Метрики: {', '.join(goal_ids)}."
+        return f"Используются конверсии выбранных целей Директа: {', '.join(goal_ids)}."
     if goal_ids:
-        return "Используются общие конверсии из Директа, данные по целям Метрики не получены."
-    return "ID целей Метрики не указаны. Используются общие конверсии из Директа."
+        return "ID целей указаны, но Директ не вернул конверсии по выбранным целям. Используются общие конверсии."
+    return "ID целей не указаны. Используются общие конверсии из Директа."
 
 
 def _build_sync_diagnostics(
@@ -49,26 +49,30 @@ def _build_sync_diagnostics(
     goal_unmatched = sum(
         1
         for item in rows
-        if goal_ids and (item.conversion_source or "") == "metrika_goal_unavailable"
+        if goal_ids
+        and (item.conversion_source or "")
+        in {"fallback_total_when_goal_unavailable", "metrika_goal_unavailable", "unavailable"}
     )
+    goal_conversions_total = sum(item.goal_conversions or 0 for item in rows)
+    total_conversions_fallback = sum(item.conversions for item in rows)
     diagnostic_warnings = list(warnings)
     if not direct_rows_loaded:
         level = "critical"
         message = "Нет сохранённых строк Яндекс.Директа. Запустите синхронизацию после привязки Яндекс-аккаунта."
     elif not goal_ids:
         level = "warning"
-        message = "ID целей Метрики не указаны. CPA считается по общим конверсиям Директа."
-        diagnostic_warnings.append("Укажите ID целей Метрики в настройках клиента.")
+        message = "ID целей не указаны. CPA считается по общим конверсиям Директа."
+        diagnostic_warnings.append("Укажите ID целей в настройках клиента.")
     elif not has_goal_data:
-        level = "critical" if goal_unmatched else "warning"
-        message = "Цели указаны, но конверсии по целям Метрики не сопоставлены с кампаниями."
-        diagnostic_warnings.append("Проверьте Metrika counter, goal IDs и UTM/campaign mapping.")
+        level = "warning"
+        message = "ID целей указаны, но Директ не вернул конверсии по выбранным целям. Используется fallback по общим конверсиям."
+        diagnostic_warnings.append("Direct goal conversions unavailable for selected goals. Falling back to total Direct conversions.")
     elif goal_unmatched:
         level = "warning"
-        message = "Часть кампаний не получила конверсии по целям Метрики. Проверьте UTM/campaign mapping."
+        message = "Часть кампаний не получила конверсии по выбранным целям Директа. Для них используется fallback по общим конверсиям."
     else:
         level = "ok"
-        message = "Данные Директа загружены, конверсии по целям сопоставлены с кампаниями."
+        message = "Данные Директа загружены, конверсии по выбранным целям доступны."
 
     return {
         "clientId": client.id,
@@ -76,6 +80,9 @@ def _build_sync_diagnostics(
         "selectedGoalIds": goal_ids,
         "hasGoalIds": bool(goal_ids),
         "hasGoalData": has_goal_data,
+        "directGoalDataAvailable": has_goal_data,
+        "goalConversionsTotal": goal_conversions_total,
+        "totalConversionsFallback": total_conversions_fallback,
         "goalMatchedCampaigns": goal_matched,
         "goalUnmatchedCampaigns": goal_unmatched,
         "conversionSourceCounts": source_counts,
@@ -239,9 +246,9 @@ def build_performance_summary(db: Session, client_id: str) -> dict:
                 "goal_revenue": item.goal_revenue,
                 "goal_cpa": item.goal_cpa,
                 "conversions_used": conversions_used,
-                "conversions_used_label": "Goal conversions" if goal_conversions is not None else "Total conversions",
+                "conversions_used_label": "Selected Direct goal conversions" if goal_conversions is not None else "Total Direct conversions",
                 "cpa_used": cpa_used,
-                "conversion_source": item.conversion_source or ("yandex_direct_goal" if goal_conversions is not None else "yandex_direct_total"),
+                "conversion_source": item.conversion_source or ("yandex_direct_goals" if goal_conversions is not None else "yandex_direct_total"),
                 "conversion_warning": item.conversion_warning,
                 "spend_share": spend_share,
                 "conversion_share": conversion_share,

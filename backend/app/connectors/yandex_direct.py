@@ -78,6 +78,7 @@ class YandexDirectConnector:
         days: int = 30,
         limit: int = 1000,
         date_range_type: str = "CUSTOM_DATE",
+        goal_ids: list[str] | None = None,
         processing_mode: str = "auto",
         max_wait_seconds: int = 20,
     ) -> list[dict[str, str]]:
@@ -95,36 +96,33 @@ class YandexDirectConnector:
             selection_criteria = {"DateFrom": date_from.isoformat(), "DateTo": date_to.isoformat()}
             report_period = f"{date_from.isoformat()} {date_to.isoformat()}"
 
-        payload = {
-            "params": {
-                "SelectionCriteria": selection_criteria,
-                "FieldNames": [
-                    "CampaignId",
-                    "CampaignName",
-                    "Impressions",
-                    "Clicks",
-                    "Cost",
-                    "Ctr",
-                    "AvgCpc",
-                    "Conversions",
-                    "CostPerConversion",
-                    "ConversionRate",
-                ],
-                "OrderBy": [{"Field": "CampaignId"}],
-                "ReportName": f"DirectPilot Campaign Report {report_period}",
-                "ReportType": "CAMPAIGN_PERFORMANCE_REPORT",
-                "DateRangeType": date_range_type,
-                "Format": "TSV",
-                "IncludeVAT": "YES",
-                "IncludeDiscount": "YES",
-                "Page": {"Limit": limit},
-            }
-        }
-        return self._request_report_with_retries(
+        payload = _build_campaign_report_payload(
+            selection_criteria=selection_criteria,
+            report_period=report_period,
+            date_range_type=date_range_type,
+            limit=limit,
+            goal_ids=goal_ids,
+        )
+        rows = self._request_report_with_retries(
             payload=payload,
             processing_mode=processing_mode.lower(),
             max_wait_seconds=max_wait_seconds,
         )
+        if goal_ids:
+            total_payload = _build_campaign_report_payload(
+                selection_criteria=selection_criteria,
+                report_period=f"{report_period} totals",
+                date_range_type=date_range_type,
+                limit=limit,
+                goal_ids=None,
+            )
+            total_rows = self._request_report_with_retries(
+                payload=total_payload,
+                processing_mode=processing_mode.lower(),
+                max_wait_seconds=max_wait_seconds,
+            )
+            rows = _merge_total_conversion_fallback(rows, total_rows)
+        return rows
 
     def _request_report_with_retries(
         self,
@@ -156,6 +154,70 @@ class YandexDirectConnector:
             if response.status_code >= 400:
                 raise RuntimeError(_format_direct_error(response))
             response.raise_for_status()
+
+
+def _normalize_goal_ids(goal_ids: list[str] | None) -> list[int | str]:
+    normalized: list[int | str] = []
+    for item in goal_ids or []:
+        value = str(item).strip()
+        if not value:
+            continue
+        normalized.append(int(value) if value.isdigit() else value)
+    return normalized
+
+
+def _build_campaign_report_payload(
+    *,
+    selection_criteria: dict[str, str],
+    report_period: str,
+    date_range_type: str,
+    limit: int,
+    goal_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    params: dict[str, Any] = {
+        "SelectionCriteria": selection_criteria,
+        "FieldNames": [
+            "CampaignId",
+            "CampaignName",
+            "Impressions",
+            "Clicks",
+            "Cost",
+            "Ctr",
+            "AvgCpc",
+            "Conversions",
+            "CostPerConversion",
+            "ConversionRate",
+        ],
+        "OrderBy": [{"Field": "CampaignId"}],
+        "ReportName": f"DirectPilot Campaign Report {report_period}",
+        "ReportType": "CAMPAIGN_PERFORMANCE_REPORT",
+        "DateRangeType": date_range_type,
+        "Format": "TSV",
+        "IncludeVAT": "YES",
+        "IncludeDiscount": "YES",
+        "Page": {"Limit": limit},
+    }
+    normalized_goals = _normalize_goal_ids(goal_ids)
+    if normalized_goals:
+        params["Goals"] = normalized_goals
+    return {"params": params}
+
+
+def _merge_total_conversion_fallback(goal_rows: list[dict[str, str]], total_rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    totals_by_campaign = {str(item.get("CampaignId") or ""): item for item in total_rows}
+    merged: list[dict[str, str]] = []
+    for row in goal_rows:
+        campaign_id = str(row.get("CampaignId") or "")
+        total = totals_by_campaign.get(campaign_id, {})
+        merged.append(
+            {
+                **row,
+                "_TotalConversions": total.get("Conversions", row.get("_TotalConversions", "")),
+                "_TotalCostPerConversion": total.get("CostPerConversion", row.get("_TotalCostPerConversion", "")),
+                "_TotalConversionRate": total.get("ConversionRate", row.get("_TotalConversionRate", "")),
+            }
+        )
+    return merged
 
 
 def _parse_tsv_report(report_text: str) -> list[dict[str, str]]:
