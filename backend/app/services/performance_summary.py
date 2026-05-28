@@ -49,7 +49,9 @@ def _build_sync_diagnostics(
     goal_unmatched = sum(
         1
         for item in rows
-        if goal_ids and (item.conversion_source or "") == "fallback_total_when_goal_unavailable"
+        if goal_ids
+        and (item.conversion_source or "")
+        in {"fallback_total_when_goal_unavailable", "metrika_goal_unavailable", "unavailable"}
     )
     goal_conversions_total = sum(item.goal_conversions or 0 for item in rows)
     total_conversions_fallback = sum(item.conversions for item in rows)
