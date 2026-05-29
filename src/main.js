@@ -506,13 +506,78 @@ function conversionSourceLabel(source) {
   return {
     yandex_direct_goals: 'Цели Директа',
     yandex_direct_total: 'Общие конверсии Директа',
-    fallback_total_when_goal_unavailable: 'Fallback: общие конверсии Директа',
+    fallback_total_when_goal_unavailable: 'Данные по выбранным целям недоступны',
     metrika_goal: 'Цель Метрики',
     metrika_goals: 'Цели Метрики',
     metrika_goal_unavailable: 'Данные Метрики недоступны',
     unavailable: 'Данные по целям недоступны',
     unknown: 'Нет данных',
   }[source] || source || 'Нет данных';
+}
+
+function issueFlagLabel(flag) {
+  return {
+    spend_without_conversions: 'Расход без конверсий',
+    high_cpa: 'CPA выше цели',
+    low_ctr: 'Низкий CTR',
+    low_data: 'Мало данных',
+    inefficient_spend_share: 'Неэффективная доля расхода',
+    promising_campaign: 'Перспективная кампания',
+    candidate_negative_keyword: 'Кандидат в минус-слова',
+    costly_no_goal_conversion: 'Расход без целевых конверсий',
+    low_relevance: 'Низкая релевантность',
+  }[flag] || flag || '—';
+}
+
+function renderIssueFlags(flags) {
+  const normalized = Array.isArray(flags) ? flags : [];
+  return normalized.length ? normalized.map(issueFlagLabel).join(', ') : '—';
+}
+
+function humanizeDataWarning(message) {
+  const value = String(message || '');
+  if (value.includes('Direct goal conversions unavailable') || value.includes('fallback_total_when_goal_unavailable')) {
+    return 'Директ не вернул данные по выбранным целям. Проверьте ID целей и запустите синхронизацию повторно.';
+  }
+  return value;
+}
+
+function auditStatusLabel(status) {
+  return {
+    pass: 'Ок',
+    warning: 'Требует внимания',
+    fail: 'Проблема',
+    na: 'Нужны дополнительные данные',
+  }[status] || status || '—';
+}
+
+function auditSourceLabel(source) {
+  return source === 'needs_more_data' ? 'нужны дополнительные данные' : 'данные DirectPilot';
+}
+
+function auditGradeLabel(grade) {
+  return grade === 'N/A' ? 'Нужны данные' : (grade || '—');
+}
+
+function actionSourceLabel(source) {
+  return {
+    rule_based: 'Правила DirectPilot',
+    ai: 'AI',
+    manual: 'Вручную',
+    deterministic_fallback: 'Правила DirectPilot',
+  }[source] || 'Черновик';
+}
+
+function severityLabel(severity) {
+  return {
+    critical: 'Критично',
+    warning: 'Требует внимания',
+    info: 'Информация',
+    ok: 'Ок',
+    low: 'Низкий',
+    medium: 'Средний',
+    high: 'Высокий',
+  }[severity] || severity || 'Информация';
 }
 
 function renderActionButton(label, attributes = '', variant = 'secondary') {
@@ -1138,7 +1203,7 @@ async function runClientSync() {
     if (payload.rows_loaded === 0 && (payload.status === 'failed' || payload.status === 'no_data' || payload.status === 'success')) {
       syncStatusMessage = payload.error || 'Данные не загружены: подключите Яндекс.Директ или проверьте выбранный период.';
     } else {
-      syncStatusMessage = `Синхронизация: ${payload.status}, строк: ${payload.rows_loaded}, источник: ${payload.source_type}`;
+      syncStatusMessage = `Синхронизация: ${payload.status}, загружено кампаний: ${payload.rows_loaded}, тип отчёта: ${payload.source_type}`;
     }
     clientsLoaded = false;
     await loadClientsFromApi();
@@ -1465,12 +1530,12 @@ function renderSyncCenter() {
         <button class="secondaryButton" data-load-summary ${perfLoading ? 'disabled' : ''}>${perfLoading ? 'Загружаем...' : 'Обновить сводку'}</button>
         <button class="secondaryButton" data-load-sync-jobs ${syncJobsLoading ? 'disabled' : ''}>История синхронизаций</button>
       </div>
-      <div class="authStatus integrationStatus">${escapeHtml(syncJobsStatus || (lastJob ? `Последнее задание: ${lastJob.status}, строк: ${lastJob.rows_loaded}` : 'Синхронизация ещё не запускалась'))}</div>
-      ${lastJob ? `<p>Последний результат: ${escapeHtml(lastJob.status)} · ${formatNumberSafe(lastJob.rows_loaded)} строк · ${escapeHtml(lastJob.source_type)}${lastJob.error ? ` · ${escapeHtml(lastJob.error)}` : ''}</p>` : ''}
+      <div class="authStatus integrationStatus">${escapeHtml(syncJobsStatus || (lastJob ? `Последнее задание: ${lastJob.status}, загружено кампаний: ${lastJob.rows_loaded}` : 'Синхронизация ещё не запускалась'))}</div>
+      ${lastJob ? `<p>Последний результат: ${escapeHtml(lastJob.status)} · загружено кампаний: ${formatNumberSafe(lastJob.rows_loaded)} · ${escapeHtml(lastJob.source_type)}${lastJob.error ? ` · ${escapeHtml(lastJob.error)}` : ''}</p>` : ''}
       ${syncJobs.length ? `
         <div class="tableWrap">
           <table>
-            <thead><tr><th>Статус</th><th>Строки</th><th>Источник</th><th>Период</th><th>Завершено</th><th>Ошибка</th></tr></thead>
+            <thead><tr><th>Статус</th><th>Загружено кампаний</th><th>Тип отчёта</th><th>Период</th><th>Завершено</th><th>Ошибка</th></tr></thead>
             <tbody>${syncJobs.slice(0, 5).map((job) => `
               <tr>
                 <td><span class="tableStatus">${escapeHtml(job.status)}</span></td>
@@ -1491,7 +1556,6 @@ function renderSyncCenter() {
 function renderSyncDiagnosticsPanel(compact = false) {
   const client = getSelectedClient();
   const diagnostics = perfSummary?.syncDiagnostics || {};
-  const sourceCounts = diagnostics.conversionSourceCounts || {};
   const warnings = diagnostics.warnings || perfSummary?.goalDataWarnings || [];
   const goalIds = diagnostics.selectedGoalIds?.length
     ? diagnostics.selectedGoalIds
@@ -1504,11 +1568,14 @@ function renderSyncDiagnosticsPanel(compact = false) {
     critical: 'Блокер',
     pending: 'Нет данных',
   }[level] || 'Нет данных';
-  const message = diagnostics.message || (
-    hasDiagnostics
-      ? (perfSummary?.hasGoalData ? 'Данные по выбранным целям Директа загружены.' : 'Проверьте цели, конверсии и синхронизацию.')
-      : 'Сводка ещё не загружена. Запустите синхронизацию или обновите сводку, чтобы увидеть качество данных.'
-  );
+  const goalDataMissingMessage = 'Директ не вернул данные по выбранным целям. Проверьте ID целей и запустите синхронизацию повторно.';
+  const message = diagnostics.hasGoalIds && !diagnostics.hasGoalData
+    ? goalDataMissingMessage
+    : (diagnostics.message || (
+      hasDiagnostics
+        ? (perfSummary?.hasGoalData ? 'Данные по выбранным целям Директа загружены.' : 'Проверьте цели, конверсии и синхронизацию.')
+        : 'Сводка ещё не загружена. Запустите синхронизацию или обновите сводку, чтобы увидеть качество данных.'
+    ));
   const nextAction = !client.id
     ? { text: 'Создайте клиента', view: 'clients' }
     : !clientYandexIntegration?.connected
@@ -1530,16 +1597,11 @@ function renderSyncDiagnosticsPanel(compact = false) {
         <span class="aiStatusBadge ${level === 'ok' ? 'ready' : 'pending'}">${escapeHtml(levelLabel)}</span>
       </div>
       <div class="kpiGrid">
-        <article class="kpi blue"><span>Строки Direct</span><strong>${formatNumberSafe(diagnostics.directRowsLoaded || 0)}</strong></article>
-        <article class="kpi green"><span>Цели Директа</span><strong>${escapeHtml(goalIds.join(', ') || 'не указаны')}</strong></article>
+        <article class="kpi blue"><span>Загружено кампаний</span><strong>${formatNumberSafe(diagnostics.directRowsLoaded || 0)}</strong></article>
+        <article class="kpi green"><span>Цели</span><strong>${escapeHtml(goalIds.join(', ') || 'не указаны')}</strong></article>
         <article class="kpi orange"><span>Конверсии по целям</span><strong>${formatNumberSafe(diagnostics.goalConversionsTotal || perfSummary?.goalConversionsTotal || 0)}</strong></article>
       </div>
-      <details>
-        <summary class="secondaryButton">Технические детали конверсий</summary>
-        <p>${escapeHtml(Object.entries(sourceCounts).map(([key, value]) => `${conversionSourceLabel(key)}: ${value}`).join(', ') || perfSummary?.conversionsSourceMessage || 'нет данных')}</p>
-        <p>Fallback/общие конверсии Директа: ${formatNumberSafe(diagnostics.totalConversionsFallback || perfSummary?.totalConversionsFallback || 0)}</p>
-      </details>
-      ${warnings.length ? `<div class="authStatus aiError">${warnings.map((item) => `<p>${escapeHtml(item)}</p>`).join('')}</div>` : ''}
+      ${warnings.length ? `<div class="authStatus aiError">${warnings.map((item) => `<p>${escapeHtml(humanizeDataWarning(item))}</p>`).join('')}</div>` : ''}
       <div class="heroActions">
         ${nextAction.action === 'sync'
           ? `<button class="approveButton" data-sync-client ${canRunSync() && !syncLoading ? '' : 'disabled'}>${escapeHtml(nextAction.text)}</button>`
@@ -1600,7 +1662,7 @@ function renderPerformanceSummaryPanel() {
                 <td>${formatNumberSafe(campaign.clicks)}</td>
                 <td>${campaign.goal_conversions == null ? '—' : formatNumberSafe(campaign.goal_conversions)}</td>
                 <td>${campaign.cpa_used == null ? '—' : formatMoneySafe(campaign.cpa_used)}</td>
-                <td>${escapeHtml((campaign.issue_flags || []).join(', ') || '—')}</td>
+                <td>${escapeHtml(renderIssueFlags(campaign.issue_flags))}</td>
               </tr>
             `).join('')}</tbody>
           </table>
@@ -1637,7 +1699,7 @@ function renderSearchQueryInsightsPanel() {
         <span class="aiStatusBadge ${candidates.length ? 'pending' : 'ready'}">${formatNumberSafe(candidates.length)} кандидатов</span>
       </div>
       <div class="kpiGrid">
-        <article class="kpi blue"><span>Запросов проанализировано</span><strong>${formatNumberSafe(insights.totalQueries || 0)}</strong></article>
+        <article class="kpi blue"><span>Загружено поисковых запросов</span><strong>${formatNumberSafe(insights.totalQueries || 0)}</strong></article>
         <article class="kpi orange"><span>Кандидаты в минус-слова</span><strong>${formatNumberSafe(insights.candidateNegativeKeywords || 0)}</strong></article>
         <article class="kpi green"><span>Расход без конверсий</span><strong>${formatMoneySafe(insights.totalWasteCost || 0)}</strong></article>
       </div>
@@ -1679,7 +1741,7 @@ function renderYandexDirectAuditPanel(compact = false) {
     return `
       <section class="panel emptyStatePanel compact">
         <h3>AI-аудит Яндекс.Директа</h3>
-        <p>Аудит появится после загрузки сводки эффективности. DirectPilot использует только доступные read-only данные и помечает недоступные проверки как N/A.</p>
+        <p>Аудит появится после загрузки сводки эффективности. DirectPilot использует только доступные read-only данные и помечает недоступные проверки как «нужны дополнительные данные».</p>
         <div class="heroActions">
           <button class="secondaryButton" data-load-summary ${perfLoading ? 'disabled' : ''}>Обновить сводку</button>
           <button class="approveButton" data-sync-client ${canRunSync() && !syncLoading ? '' : 'disabled'}>${syncLoading ? 'Синхронизация...' : 'Запустить синхронизацию'}</button>
@@ -1693,15 +1755,16 @@ function renderYandexDirectAuditPanel(compact = false) {
       <div class="panelHeader">
         <div>
           <h3>AI-аудит Яндекс.Директа</h3>
-          <p>${escapeHtml(audit.summary || 'Профессиональный read-only аудит по чеклисту DirectPilot.')} Методология: ${formatNumberSafe(audit.frameworkChecksTotal || 55)} проверок, сейчас применяется ${formatNumberSafe(audit.implementedChecks || 0)} по доступным данным.</p>
+          <p>${escapeHtml(audit.summary || 'Профессиональный read-only аудит по чеклисту DirectPilot.')}</p>
+          <p>Методология содержит ${formatNumberSafe(audit.frameworkChecksTotal || 55)} проверок. Сейчас DirectPilot автоматически применяет ${formatNumberSafe(audit.implementedChecks || 0)} проверок, по которым есть данные в кабинете. Остальные пункты помечаются как требующие дополнительных данных.</p>
         </div>
         <span class="aiStatusBadge ${Number(audit.score || 0) >= 75 ? 'ready' : 'pending'}">${formatNumberSafe(audit.score || 0)} / 100 · ${escapeHtml(audit.grade || '—')}</span>
       </div>
       <div class="kpiGrid">
         <article class="kpi green"><span>Грейд</span><strong>${escapeHtml(audit.grade || '—')}</strong></article>
-        <article class="kpi blue"><span>Категории</span><strong>${formatNumberSafe(categories.length)}</strong></article>
-        <article class="kpi orange"><span>Критичные вопросы</span><strong>${formatNumberSafe(criticalIssues.length)}</strong></article>
-        <article class="kpi green"><span>Quick wins</span><strong>${formatNumberSafe(quickWins.length)}</strong></article>
+        <article class="kpi blue"><span>Оценка</span><strong>${formatNumberSafe(audit.score || 0)} / 100</strong></article>
+        <article class="kpi orange"><span>Критические проблемы</span><strong>${formatNumberSafe(criticalIssues.length)}</strong></article>
+        <article class="kpi green"><span>Быстрые улучшения</span><strong>${formatNumberSafe(quickWins.length)}</strong></article>
       </div>
       ${shownCategories.length ? `
         <div class="featureGrid">
@@ -1709,37 +1772,40 @@ function renderYandexDirectAuditPanel(compact = false) {
             <article class="featureCard">
               <span class="featureIcon">${category.grade === 'A' || category.grade === 'B' ? '✅' : category.grade === 'N/A' ? '⏳' : '⚠️'}</span>
               <h3>${escapeHtml(category.title)}</h3>
-              <p>Вес: ${formatNumberSafe(category.weight)} · Балл: ${formatNumberSafe(category.score)} · Грейд: ${escapeHtml(category.grade || '—')}</p>
-              <small>${formatNumberSafe((category.checks || []).filter((item) => item.status === 'fail').length)} fail · ${formatNumberSafe((category.checks || []).filter((item) => item.status === 'warning').length)} warning · ${formatNumberSafe((category.checks || []).filter((item) => item.status === 'na').length)} N/A</small>
+              <p>Вес: ${formatNumberSafe(category.weight)} · Балл: ${formatNumberSafe(category.score)} · Грейд: ${escapeHtml(auditGradeLabel(category.grade))}</p>
+              <small>${formatNumberSafe((category.checks || []).filter((item) => item.status === 'fail').length)} ${auditStatusLabel('fail')} · ${formatNumberSafe((category.checks || []).filter((item) => item.status === 'warning').length)} ${auditStatusLabel('warning')} · ${formatNumberSafe((category.checks || []).filter((item) => item.status === 'na').length)} ${auditStatusLabel('na')}</small>
             </article>
           `).join('')}
         </div>
       ` : ''}
       ${criticalIssues.length ? `
         <div class="authStatus aiError">
-          <strong>Критичные находки</strong>
+          <strong>Критические проблемы</strong>
+          <p>Критические проблемы — то, что может искажать аналитику или сливать бюджет.</p>
           ${criticalIssues.slice(0, compact ? 3 : 6).map((item) => `<p>${escapeHtml(item.id)} · ${escapeHtml(item.title)}: ${escapeHtml(item.evidence)}</p>`).join('')}
         </div>
       ` : ''}
       ${quickWins.length ? `
         <div class="authStatus integrationStatus">
-          <strong>Quick wins</strong>
+          <strong>Быстрые улучшения</strong>
+          <p>Быстрые улучшения — задачи, которые можно проверить и исправить без глубокой перестройки кампаний.</p>
           ${quickWins.slice(0, compact ? 3 : 6).map((item) => `<p>${escapeHtml(item.id)} · ${escapeHtml(item.recommendation)}</p>`).join('')}
         </div>
       ` : ''}
       ${!compact && limitations.length ? `
         <details>
-          <summary class="secondaryButton">Ограничения аудита и N/A проверки</summary>
-          ${limitations.map((item) => `<p>${escapeHtml(item.id)} · ${escapeHtml(item.title)}: ${escapeHtml(item.evidence)}</p>`).join('')}
+          <summary class="secondaryButton">Что пока нельзя проверить автоматически</summary>
+          <p>Эти пункты не считаются проваленными: для них нужны дополнительные данные, например посадочные страницы, объявления, расширения, настройки аккаунта или динамика по неделям.</p>
+          ${limitations.map((item) => `<p>${escapeHtml(item.id)} · ${escapeHtml(item.title)}: ${escapeHtml(item.evidence)} (${escapeHtml(item.sourceLabel || auditSourceLabel(item.source))})</p>`).join('')}
         </details>
       ` : ''}
       ${!compact ? `
         <div class="heroActions">
           <button class="secondaryButton" type="button" data-ai-quick-action="Разобрать аудит Яндекс.Директа">Разобрать аудит Яндекс.Директа</button>
-          <button class="secondaryButton" type="button" data-ai-quick-action="Покажи quick wins по аудиту Яндекс.Директа">Показать quick wins</button>
+          <button class="secondaryButton" type="button" data-ai-quick-action="Покажи быстрые улучшения по аудиту Яндекс.Директа">Показать быстрые улучшения</button>
         </div>
       ` : ''}
-      <p><strong>Safety:</strong> аудит read-only. Рекомендации являются черновиками; изменения в Яндекс.Директ не применяются.</p>
+      <p><strong>Безопасность:</strong> аудит read-only. Рекомендации являются черновиками; изменения в Яндекс.Директ не применяются.</p>
     </section>
   `;
 }
@@ -1855,8 +1921,8 @@ function renderClients() {
     ${perfSummary ? `
       <section class="panel">
         <h3>Сводка эффективности (${escapeHtml(perfSummary.message)})</h3>
-        <p>Расход: ${perfSummary.totals.cost} ₽ · Показы: ${perfSummary.totals.impressions} · Клики: ${perfSummary.totals.clicks} · Конверсии по целям: ${perfSummary.goalConversionsTotal ?? perfSummary.totals.conversions}</p>
-        <p>Avg CPC: ${perfSummary.totals.avg_cpc} · CPA по целям: ${perfSummary.totals.cpa ?? '—'}</p>
+        <p>Расход: ${perfSummary.totals.cost} ₽ · Показы: ${perfSummary.totals.impressions} · Клики: ${perfSummary.totals.clicks} · Конверсии по целям: ${perfSummary.goalConversionsTotal ?? '—'}</p>
+        <p>Средний CPC: ${perfSummary.totals.avg_cpc} · CPA по целям: ${perfSummary.totals.cpa ?? '—'}</p>
       </section>
     ` : ''}
   `);
@@ -1898,12 +1964,12 @@ function renderClientAiRecommendations() {
           <h3>AI-черновик по контексту клиента</h3>
           <p>${escapeHtml(clientAiRecommendations.summary)}</p>
         </div>
-        <span class="aiStatusBadge ready">${escapeHtml(clientAiRecommendations.source)}</span>
+        <span class="aiStatusBadge ready">AI-план</span>
       </div>
       <div class="aiDraftGrid">
         ${clientAiRecommendations.recommendations.map((item) => `
           <article>
-            <div class="actionTop"><span>${escapeHtml(item.risk)} риск</span><strong>${item.requires_approval ? 'Approval' : 'Read-only'}</strong></div>
+            <div class="actionTop"><span>${escapeHtml(item.risk)} риск</span><strong>${item.requires_approval ? 'Нужно согласование' : 'Только чтение'}</strong></div>
             <h4>${escapeHtml(item.title)}</h4>
             <ul>${item.evidence.map((fact) => `<li>${escapeHtml(fact)}</li>`).join('')}</ul>
             <p><strong>Эффект:</strong> ${escapeHtml(item.expected_impact)}</p>
@@ -1935,7 +2001,7 @@ function renderRecommendations() {
       </div>
       <div class="kpiGrid">
         <article class="kpi green"><span>Расход</span><strong>${formatMoneySafe(totals.cost)}</strong></article>
-        <article class="kpi blue"><span>Конверсии</span><strong>${formatNumberSafe(totals.conversions)}</strong></article>
+        <article class="kpi blue"><span>Конверсии по целям</span><strong>${perfSummary?.goalConversionsTotal == null ? '—' : formatNumberSafe(perfSummary.goalConversionsTotal)}</strong></article>
         <article class="kpi orange"><span>Кампании</span><strong>${formatNumberSafe(campaignsCount)}</strong></article>
         <article class="kpi green"><span>Флаги</span><strong>${formatNumberSafe(issueCount)}</strong></article>
       </div>
@@ -2042,7 +2108,7 @@ function renderOptimization() {
             <p>${escapeHtml(campaign.diagnostic_explanation || '')}</p>
             <small>Цели ${escapeHtml(campaign.goal_ids || perfSummary?.selectedGoalIds?.join(', ') || '—')} · Расход ${formatMoneySafe(campaign.cost)} · клики ${formatNumberSafe(campaign.clicks)} · показы ${formatNumberSafe(campaign.impressions)} · конверсии по целям ${campaign.goal_conversions == null ? '—' : formatNumberSafe(campaign.goal_conversions)} · CPA по целям ${campaign.cpa_used == null ? '—' : formatMoneySafe(campaign.cpa_used)} · CTR ${formatPercentSafe(campaign.ctr)}</small>
             <p><strong>Фокус:</strong> ${escapeHtml(campaign.recommended_focus || '')}</p>
-            <p><strong>Флаги:</strong> ${escapeHtml((campaign.issue_flags || []).join(', ') || '—')}</p>
+            <p><strong>Флаги:</strong> ${escapeHtml(renderIssueFlags(campaign.issue_flags))}</p>
           </article>
         `).join('')}
       </div>` : `<div class="emptyStatePanel compact"><h3>Нет кампаний для фильтра</h3><p>Обновите сводку или смените фильтр.</p></div>`}
@@ -2077,7 +2143,7 @@ function renderOptimization() {
           <article class="featureCard">
             <span class="featureIcon">${action.status === 'approved' ? '✅' : action.status === 'rejected' ? '⛔' : action.status === 'needs_changes' ? '⚠️' : '📝'}</span>
             <h3>${escapeHtml(action.issue)}</h3>
-            <small>${escapeHtml(action.source)} · ${escapeHtml(action.severity || 'info')} · ${escapeHtml(action.campaignName || 'аккаунт')} · ${escapeHtml(optimizationStatusLabel(action.status))}</small>
+            <small>${escapeHtml(actionSourceLabel(action.source))} · ${escapeHtml(severityLabel(action.severity || 'info'))} · ${escapeHtml(action.campaignName || 'аккаунт')} · ${escapeHtml(optimizationStatusLabel(action.status))}</small>
             <p><strong>Обоснование:</strong> ${escapeHtml(action.evidence || '—')}</p>
             <p><strong>Черновик действия:</strong> ${escapeHtml(action.draftAction)}</p>
             <p>${escapeHtml(action.safetyNote || 'Черновик действия. Изменения в Яндекс.Директ не применялись.')}</p>
@@ -2350,26 +2416,29 @@ function renderAiAssistant() {
     <section class="panel">
       <div class="panelHeader">
         <div>
-          <h3>Как AI анализирует РК</h3>
-          <p>Методика DirectPilot: короткий read-only разбор данных, целей, кампаний, поисковых запросов и черновиков действий без применения изменений в Директ.</p>
+          <h3>Как DirectPilot проверяет рекламу</h3>
+          <p>Методика идёт от бизнес-контекста к данным, кампаниям, запросам и черновикам действий. Если данных нет, AI должен пометить пункт как «нужны дополнительные данные», а не как ошибку.</p>
         </div>
         <span class="aiStatusBadge ready">Методика включена</span>
       </div>
       <details>
         <summary class="secondaryButton">Методика DirectPilot</summary>
         <ol>
-          <li>Проверка качества данных.</li>
-          <li>Цели и конверсии по выбранным целям.</li>
-          <li>Аудит по чеклисту Яндекс.Директа.</li>
-          <li>Кампании: расход, CTR, CPA, конверсии.</li>
-          <li>Поисковые запросы: интент, минус-слова, риски.</li>
-          <li>Черновики действий, без применения в Директ.</li>
+          <li>Контекст бизнеса — ниша, бренд, продукт, гео, целевое действие.</li>
+          <li>Посадочные страницы — лендинги, релевантность, путь к конверсии.</li>
+          <li>Аналитика — цели, Метрика, выбранные цели Директа.</li>
+          <li>Аккаунт Директа — структура, кампании, настройки.</li>
+          <li>Кампании — показы, клики, CTR, расход, конверсии по целям, CPA, CR.</li>
+          <li>Динамика — сравнение по дням/неделям, поиск ухудшений.</li>
+          <li>Поисковые запросы — интент, нерелевантные запросы, минус-слова.</li>
+          <li>План действий — критические проблемы, быстрые улучшения, черновики.</li>
         </ol>
+        <p>Бизнес-контекст, лендинги, объявления, расширения, настройки аккаунта и недельная динамика пока требуют дополнительных данных.</p>
       </details>
     </section>
     <section class="panel">
       <div class="panelHeader">
-        <h3>Context preview</h3>
+        <h3>Контекст анализа</h3>
         <span class="aiStatusBadge ${canRunAiAnalysis() ? 'ready' : 'pending'}">${canRunAiAnalysis() ? 'Данные готовы' : 'Нужна синхронизация'}</span>
       </div>
       <p>Direct: ${escapeHtml(client.directLogin)} · Метрика: ${escapeHtml(client.metricaCounter)} · Цели: ${escapeHtml(perfSummary?.selectedGoalIds?.join(', ') || client.conversionGoalIds || client.mainGoalId || 'не указаны')}</p>

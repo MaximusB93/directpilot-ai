@@ -51,9 +51,8 @@ def build_client_ai_context(client_id: str, client_context: dict[str, Any] | Non
                 "title": f"Проверка кампании {item.get('campaign_name')}",
                 "object": item.get("campaign_name"),
                 "evidence": (
-                    f"Расход {item.get('cost')} ₽, total conversions {item.get('total_conversions')}, "
-                    f"goal conversions {item.get('goal_conversions')}, используется {item.get('conversions_used')} "
-                    f"({item.get('conversion_source')}), CPA {item.get('cpa_used')}, flags {item.get('issue_flags')}"
+                    f"Расход {item.get('cost')} ₽, конверсии по целям {item.get('goal_conversions')}, "
+                    f"CPA по целям {item.get('cpa_used')}, CTR {item.get('ctr')}"
                 ),
                 "action": item.get("recommended_focus") or "Проверить ставки и отправить изменение на preview/approval.",
             }
@@ -253,7 +252,7 @@ Yandex Direct audit skill:
 Правила:
 - Не выдумывай goal conversions.
 - Используй selected Direct goal conversions как основной источник, если они доступны.
-- Если goal data недоступна и используется fallback по total Direct conversions, явно скажи, что анализ CPA ограничен.
+- Если данные по выбранным целям недоступны, явно скажи, что анализ CPA ограничен и нужна проверка ID целей.
 - Изменения в Яндекс.Директ не применялись.
 - Рекомендации являются черновиками действий и требуют review/approval.
 - Приоритизируй кампании по выбранной цели, если goal data доступна.
@@ -312,8 +311,8 @@ def _fallback_recommendations(context: dict[str, Any]) -> AiRecommendationRespon
             title=f"Проверить кампанию «{top.get('campaign_name', top.get('name', 'Без названия'))}»",
             evidence=[
                 f"Расход: {top.get('cost')} ₽",
-                f"Конверсии используются: {top.get('conversions_used', top.get('conversions'))}",
-                f"Источник конверсий: {top.get('conversion_source', 'unknown')}",
+                f"Конверсии по целям: {top.get('goal_conversions', top.get('conversions_used'))}",
+                f"CPA по целям: {top.get('cpa_used', '—')}",
                 f"CTR: {top.get('ctr')}%",
             ],
             risk="medium",

@@ -28,7 +28,7 @@ def _conversion_source_message(goal_ids: list[str], has_goal_data: bool) -> str:
     if goal_ids and has_goal_data:
         return f"Основная метрика: конверсии выбранных целей Директа: {', '.join(goal_ids)}."
     if goal_ids:
-        return "ID целей указаны, но Директ не вернул конверсии по выбранным целям. CPA по целям недоступен; общие конверсии остаются только техническим fallback."
+        return "Директ не вернул данные по выбранным целям. Проверьте ID целей и запустите синхронизацию повторно."
     return "ID целей не указаны. Укажите цели, чтобы считать конверсии и CPA по выбранным целям."
 
 
@@ -66,11 +66,11 @@ def _build_sync_diagnostics(
         diagnostic_warnings.append("Укажите ID целей в настройках клиента.")
     elif not has_goal_data:
         level = "warning"
-        message = "ID целей указаны, но Директ не вернул конверсии по выбранным целям. Используется fallback по общим конверсиям."
-        diagnostic_warnings.append("Direct goal conversions unavailable for selected goals. Falling back to total Direct conversions.")
+        message = "Директ не вернул данные по выбранным целям. Проверьте ID целей и запустите синхронизацию повторно."
+        diagnostic_warnings.append("Директ не вернул данные по выбранным целям. Проверьте ID целей и запустите синхронизацию повторно.")
     elif goal_unmatched:
         level = "warning"
-        message = "Часть кампаний не получила конверсии по выбранным целям Директа. Для них используется fallback по общим конверсиям."
+        message = "Часть кампаний не получила конверсии по выбранным целям Директа. Проверьте цели и повторите синхронизацию."
     else:
         level = "ok"
         message = "Данные Директа загружены, конверсии по выбранным целям доступны."
@@ -318,7 +318,7 @@ def build_performance_summary(db: Session, client_id: str) -> dict:
                 "goal_revenue": item.goal_revenue,
                 "goal_cpa": item.goal_cpa,
                 "conversions_used": conversions_used,
-                "conversions_used_label": "Selected Direct goal conversions" if goal_conversions is not None else "Total Direct conversions",
+                "conversions_used_label": "Конверсии по выбранным целям" if goal_conversions is not None else "Данные по выбранным целям недоступны",
                 "cpa_used": cpa_used,
                 "conversion_source": item.conversion_source or ("yandex_direct_goals" if goal_conversions is not None else "yandex_direct_total"),
                 "conversion_warning": item.conversion_warning,
@@ -380,8 +380,8 @@ def build_optimization_plan(db: Session, client_id: str) -> dict:
                 "issue": issue,
                 "evidence": (
                     f"Расход {campaign.get('cost')} ₽, клики {campaign.get('clicks')}, "
-                    f"конверсии {campaign.get('conversions_used')} ({campaign.get('conversions_used_label')}), "
-                    f"CPA {campaign.get('cpa_used') or '—'}."
+                    f"конверсии по целям {campaign.get('goal_conversions')}, "
+                    f"CPA по целям {campaign.get('cpa_used') or '—'}."
                 ),
                 "draft_action": campaign.get("recommended_focus"),
                 "action_type": "manual_review",
@@ -403,7 +403,7 @@ def build_optimization_plan(db: Session, client_id: str) -> dict:
                 "issue": f"Поисковый запрос без конверсий: {insight.get('query')}",
                 "evidence": (
                     f"Запрос: {insight.get('query')}. Расход {insight.get('cost')} ₽, клики {insight.get('clicks')}, "
-                    f"конверсии по цели {insight.get('goalConversions')}, общие конверсии {insight.get('totalConversions')}. "
+                    f"конверсии по целям {insight.get('goalConversions')}. "
                     f"Уверенность: {insight.get('confidence')}."
                 ),
                 "draft_action": f"Проверить и при подтверждении добавить минус-слово: {keyword}",

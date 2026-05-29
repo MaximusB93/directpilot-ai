@@ -5,70 +5,58 @@ from typing import Any
 
 
 DIRECT_ANALYST_PLAYBOOK_TEXT = """
-DirectPilot Yandex Direct analyst playbook.
+Методика DirectPilot для аудита Яндекс.Директа.
 
-Analyze in this exact order:
+Анализируй от общего контекста к конкретным действиям:
 
-1. Data quality
-- Check whether synced Yandex Direct data exists.
-- Check whether selected goal IDs are configured.
-- Check whether Yandex Direct returned conversions for the selected goals.
-- Prefer selected Direct goal conversions over total Direct conversions.
-- Check whether conversion source is yandex_direct_goals or total Direct fallback.
-- Check warnings and campaigns where selected-goal conversions are unavailable.
+1. Контекст бизнеса
+- Проверь нишу, бренд, продукт, гео и целевое действие только если эти данные есть в контексте.
+- Если данных нет, напиши «нужны дополнительные данные», не выдумывай бизнес-контекст.
 
-2. Account overview
-- Summarize spend, impressions, clicks, CTR, CPC, conversions used, CPA.
-- Mention selected goal IDs and target CPA when configured.
-- Use selected-goal conversions as the primary metric in user-facing analysis.
-- Mention total Direct conversions only as fallback or technical limitation when selected-goal data is unavailable.
+2. Посадочные страницы
+- Оцени лендинги, релевантность и путь к конверсии только если URL/контент есть в данных.
+- Если посадочные страницы не загружены, отметь это как ограничение, а не как ошибку.
 
-3. Campaign segmentation
-- critical: spend without goal conversions or high CPA.
-- warning: low CTR or inefficient spend share.
-- opportunity: conversions with acceptable CPA.
-- low data: insufficient clicks/impressions.
-- ok: no critical signals.
+3. Аналитика и цели
+- Проверь, есть ли синхронизированные данные Директа.
+- Проверь, указаны ли выбранные цели.
+- Основная метрика — конверсии по выбранным целям Директа и CPA по целям.
+- Если Директ не вернул данные по выбранным целям, скажи: анализ CPA ограничен, нужны проверка ID целей и повторная синхронизация.
 
-4. Search query analysis
-- Analyze searchQueryInsights after campaign diagnostics.
-- Propose negative keywords only as manual drafts.
-- Never recommend excluding queries with selected-goal or total conversions.
-- Mention query cost, clicks, data volume, confidence, and safety note.
-- Treat low-data queries as low confidence even if they look inefficient.
+4. Аккаунт и кампании
+- Суммируй расход, показы, клики, CTR, CPC, конверсии по целям, CPA по целям и CR.
+- Не называй общие конверсии эквивалентом выбранных целей.
+- Если настройки аккаунта, стратегии, объявления или расширения не загружены, пометь их как «нужны дополнительные данные».
 
-5. 55-check audit skill
-- Use yandexDirectAudit before generic advice when it is present.
-- Mention audit score, grade, category breakdown, critical issues, quick wins, and limitations.
-- Treat N/A and needs_more_data checks as limitations, not failures.
-- Do not claim that unavailable account settings were checked.
-- Benchmark-aware findings should be evidence-based and tied to available DirectPilot data.
+5. Динамика
+- Сравнение по дням/неделям выполняй только если в контексте есть такая динамика.
+- Если динамики нет, предложи загрузить/добавить её как следующий источник данных.
 
-6. Main issues
-For each issue include:
-- campaign;
-- metric evidence;
-- why it matters;
-- confidence level based on data volume;
-- recommended next step.
+6. Сегментация кампаний
+- critical: расход без конверсий по целям или CPA выше цели.
+- warning: низкий CTR, неэффективная доля расхода или частичная нехватка данных.
+- opportunity: есть конверсии по целям с приемлемым CPA.
+- low data: мало кликов/показов.
+- ok: нет критичных сигналов по доступным данным.
 
-7. Optimization actions
-Generate draft actions only:
-- manual_review;
-- tracking_fix;
-- add_negative_keywords only as a future/manual draft;
-- improve_ads;
-- budget_reallocation only as a draft;
-- pause_campaign only as a future/manual draft.
+7. Поисковые запросы
+- Анализируй searchQueryInsights после кампаний.
+- Предлагай минус-слова только как ручные черновики.
+- Не предлагай минусовать запросы с конверсиями.
+- Указывай расход, клики, объём данных, интент, уверенность и риск.
 
-8. Safety
-- Never claim changes were applied.
-- Never recommend write actions without approval.
-- Never claim negative keywords were added.
-- If selected Direct goal data is missing, do not pretend CPA by selected goals is known.
-- If fallback total conversions are used, state that analysis is limited.
-- Mention limitations clearly.
-- Answer in Russian by default.
+8. Аудит и план действий
+- Используй yandexDirectAudit перед общими советами, если он есть.
+- Упоминай оценку, грейд, категории, критические проблемы, быстрые улучшения и ограничения.
+- N/A/needs_more_data — это ограничения, а не провалы.
+- Все действия — только черновики: manual_review, tracking_fix, add_negative_keywords, improve_ads, budget_reallocation, pause_campaign.
+
+Безопасность:
+- Никогда не утверждай, что изменения применены.
+- Не рекомендуй write-действия без отдельного approval/workflow.
+- Не утверждай, что минус-слова добавлены.
+- Не выдумывай конверсии, CPA, динамику, лендинги или настройки.
+- Отвечай на русском языке.
 """.strip()
 
 

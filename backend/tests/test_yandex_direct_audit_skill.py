@@ -38,7 +38,15 @@ def test_audit_excludes_na_checks_from_scoring() -> None:
     audit = build_yandex_direct_audit(summary)
 
     assert audit["score"] > 70
+    assert audit["categories"][0]["title"] == "Аналитика и цели"
+    assert "Оценка аудита Яндекс.Директа" in audit["summary"]
     assert any(item["source"] == "needs_more_data" for item in audit["limitations"])
+    assert any(item.get("statusLabel") == "Нужны дополнительные данные" for item in audit["limitations"])
+    assert any(
+        check.get("statusLabel") in {"Ок", "Требует внимания", "Проблема", "Нужны дополнительные данные"}
+        for category in audit["categories"]
+        for check in category["checks"]
+    )
     assert all("applied" not in item["recommendation"].lower() for item in audit["recommendations"])
 
 

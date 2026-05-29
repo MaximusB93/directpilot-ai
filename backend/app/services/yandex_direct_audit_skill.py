@@ -8,12 +8,12 @@ from typing import Any
 # No shell scripts, API mutation logic, or Yandex Direct write actions are included.
 
 CATEGORIES = [
-    {"id": "conversions_metrika", "title": "Conversions & Metrika", "weight": 25},
-    {"id": "wasted_spend_negatives", "title": "Wasted Spend / Negatives", "weight": 20},
-    {"id": "account_structure", "title": "Account Structure", "weight": 15},
-    {"id": "keywords_quality", "title": "Keywords & Quality", "weight": 15},
-    {"id": "ads_extensions", "title": "Ads & Extensions", "weight": 15},
-    {"id": "settings_targeting", "title": "Settings & Targeting", "weight": 10},
+    {"id": "conversions_metrika", "title": "Аналитика и цели", "weight": 25},
+    {"id": "wasted_spend_negatives", "title": "Расход и минус-слова", "weight": 20},
+    {"id": "account_structure", "title": "Структура аккаунта", "weight": 15},
+    {"id": "keywords_quality", "title": "Качество ключей и запросов", "weight": 15},
+    {"id": "ads_extensions", "title": "Объявления и расширения", "weight": 15},
+    {"id": "settings_targeting", "title": "Настройки и таргетинг", "weight": 10},
 ]
 
 SEVERITY_MULTIPLIERS = {
@@ -28,6 +28,33 @@ STATUS_SCORES = {
     "warning": 0.5,
     "fail": 0.0,
 }
+
+STATUS_LABELS = {
+    "pass": "Ок",
+    "warning": "Требует внимания",
+    "fail": "Проблема",
+    "na": "Нужны дополнительные данные",
+}
+
+ISSUE_FLAG_LABELS = {
+    "spend_without_conversions": "Расход без конверсий",
+    "high_cpa": "CPA выше цели",
+    "low_ctr": "Низкий CTR",
+    "low_data": "Мало данных",
+    "candidate_negative_keyword": "Кандидат в минус-слова",
+    "costly_no_goal_conversion": "Расход без целевых конверсий",
+    "low_relevance": "Низкая релевантность",
+    "inefficient_spend_share": "Неэффективная доля расхода",
+    "promising_campaign": "Перспективная кампания",
+}
+
+
+def status_label(status: str) -> str:
+    return STATUS_LABELS.get(status, status)
+
+
+def issue_flag_label(flag: str) -> str:
+    return ISSUE_FLAG_LABELS.get(flag, flag)
 
 
 def grade_for_score(score: float) -> str:
@@ -64,15 +91,15 @@ def _goal_ids(summary: dict) -> list[str]:
 
 def _campaign_name_quality(campaigns: list[dict]) -> tuple[str, str]:
     if not campaigns:
-        return "na", "No campaign data is available."
+        return "na", "Данные по кампаниям ещё не загружены."
     named = [item for item in campaigns if str(item.get("campaign_name") or "").strip()]
     if len(named) < len(campaigns):
-        return "warning", "Some campaigns have empty names."
+        return "warning", "У части кампаний нет названия."
     names = [str(item.get("campaign_name") or "").lower() for item in campaigns]
     has_search_or_network = any(("search" in name or "поиск" in name or "rsya" in name or "рся" in name) for name in names)
     if has_search_or_network:
-        return "pass", "Campaign names contain basic search/network markers."
-    return "warning", "Campaign names exist, but channel/product structure is not clear from available data."
+        return "pass", "В названиях кампаний видны базовые маркеры поиска/РСЯ."
+    return "warning", "Названия есть, но канал, продукт или гео не очевидны по доступным данным."
 
 
 def _check(
@@ -91,10 +118,12 @@ def _check(
         "category": category,
         "title": title,
         "status": status,
+        "statusLabel": status_label(status),
         "severity": severity,
         "evidence": evidence,
         "recommendation": recommendation,
         "source": source,
+        "sourceLabel": "нужны дополнительные данные" if source == "needs_more_data" else "данные DirectPilot",
     }
 
 
@@ -133,148 +162,148 @@ def _build_checks(summary: dict) -> list[dict]:
         _check(
             category="conversions_metrika",
             check_id="YD01",
-            title="Metrika counter configured",
+            title="Счётчик Метрики указан",
             status="pass" if (summary.get("client") or {}).get("metrica_counter") else "warning",
             severity="critical",
-            evidence="Client settings include a Metrika counter." if (summary.get("client") or {}).get("metrica_counter") else "Metrika counter is missing or not available in summary.",
-            recommendation="Add the Metrika counter in client settings.",
+            evidence="В настройках клиента указан счётчик Метрики." if (summary.get("client") or {}).get("metrica_counter") else "Счётчик Метрики не указан или не попал в сводку.",
+            recommendation="Укажите счётчик Метрики в настройках клиента.",
         ),
         _check(
             category="conversions_metrika",
             check_id="YD02",
-            title="Conversion goal IDs configured",
+            title="ID целей настроены",
             status="pass" if goal_ids else "fail",
             severity="critical",
-            evidence=f"Selected goal IDs: {', '.join(goal_ids)}." if goal_ids else "No selected goal IDs are configured.",
-            recommendation="Add one or more Yandex Direct/Metrika goal IDs for CPA-based analysis.",
+            evidence=f"Выбранные цели: {', '.join(goal_ids)}." if goal_ids else "ID выбранных целей не указаны.",
+            recommendation="Укажите одну или несколько целей для анализа CPA.",
         ),
         _check(
             category="conversions_metrika",
             check_id="YD03",
-            title="Selected Direct goal conversions available",
+            title="Конверсии по выбранным целям доступны",
             status="pass" if has_goal_data else ("fail" if goal_ids else "na"),
             severity="critical",
-            evidence=summary.get("conversionsSourceMessage") or "No conversion source message is available.",
-            recommendation="Run sync and verify that Yandex Direct returns conversions for the selected goals.",
+            evidence=summary.get("conversionsSourceMessage") or "Нет сообщения о данных по целям.",
+            recommendation="Запустите синхронизацию и проверьте, что Директ возвращает конверсии по выбранным целям.",
             source="directpilot" if goal_ids else "needs_more_data",
         ),
         _check(
             category="conversions_metrika",
             check_id="YD04",
-            title="Fallback to total conversions is not used",
+            title="Анализ не подменён общими конверсиями",
             status="fail" if fallback_used else ("pass" if has_goal_data else "na"),
             severity="high",
-            evidence="Total Direct conversions are used as fallback." if fallback_used else "Selected-goal conversions are the active source." if has_goal_data else "No synced conversion data.",
-            recommendation="Check selected goal IDs and report availability before trusting CPA by goal.",
+            evidence="Директ не вернул данные по выбранным целям." if fallback_used else "Используются конверсии по выбранным целям." if has_goal_data else "Синхронизированных конверсий пока нет.",
+            recommendation="Проверьте ID целей и доступность отчёта перед выводами по CPA.",
             source="directpilot" if goal_ids else "needs_more_data",
         ),
         _check(
             category="wasted_spend_negatives",
             check_id="YD10",
-            title="Search query negative candidates",
+            title="Кандидаты в минус-слова",
             status="fail" if search_candidates >= 5 else "warning" if search_candidates else "pass",
             severity="critical",
-            evidence=f"{search_candidates} negative keyword candidates; waste cost {waste_cost:.2f}.",
-            recommendation="Review candidates and save safe negative keyword drafts. Do not apply automatically.",
+            evidence=f"Кандидатов в минус-слова: {search_candidates}; расход без цели: {waste_cost:.2f}.",
+            recommendation="Проверьте кандидаты и сохраните безопасные черновики минус-слов. Автоматически не применять.",
         ),
         _check(
             category="wasted_spend_negatives",
             check_id="YD12",
-            title="Search query report freshness",
+            title="Отчёт по поисковым запросам загружен",
             status="pass" if search_insights.get("totalQueries") else "na",
             severity="critical",
-            evidence=f"Analyzed queries: {search_insights.get('totalQueries') or 0}.",
-            recommendation="Run sync to load search query statistics if unavailable.",
+            evidence=f"Загружено поисковых запросов: {search_insights.get('totalQueries') or 0}.",
+            recommendation="Запустите синхронизацию, чтобы загрузить статистику поисковых запросов.",
             source="directpilot" if search_insights.get("totalQueries") else "needs_more_data",
         ),
         _check(
             category="wasted_spend_negatives",
             check_id="YD17",
-            title="Spend without selected-goal conversions",
+            title="Расход без конверсий по целям",
             status="fail" if spend_without_conversions else "pass" if campaigns else "na",
             severity="high",
-            evidence=f"{len(spend_without_conversions)} campaigns spend without selected-goal conversions.",
-            recommendation="Review search queries, landing pages, goals, and budget allocation.",
+            evidence=f"Кампаний с расходом без конверсий по выбранным целям: {len(spend_without_conversions)}.",
+            recommendation="Проверьте запросы, посадочные страницы, цели и распределение бюджета.",
             source="directpilot" if campaigns else "needs_more_data",
         ),
         _check(
             category="account_structure",
             check_id="YD19",
-            title="Search/RSYA or channel structure is visible",
+            title="Структура поиска/РСЯ видна по названиям",
             status=name_status,
             severity="medium",
             evidence=name_evidence,
-            recommendation="Use campaign naming that exposes channel, geo, product, and intent.",
+            recommendation="Используйте названия кампаний, где видны канал, гео, продукт и интент.",
             source="directpilot" if campaigns else "needs_more_data",
         ),
         _check(
             category="account_structure",
             check_id="YD20",
-            title="Account structure depth",
+            title="Глубина структуры аккаунта",
             status="warning" if len(campaigns) == 1 else "pass" if len(campaigns) > 1 else "na",
             severity="medium",
-            evidence=f"Campaigns in summary: {len(campaigns)}.",
-            recommendation="Split campaigns by product, geo, and intent where useful.",
+            evidence=f"Кампаний в сводке: {len(campaigns)}.",
+            recommendation="Разделяйте кампании по продукту, гео и интенту, где это помогает управлению.",
             source="directpilot" if campaigns else "needs_more_data",
         ),
         _check(
             category="keywords_quality",
             check_id="YD34",
-            title="Low CTR campaign signals",
+            title="Сигналы низкого CTR",
             status="fail" if len(low_ctr) >= 3 else "warning" if low_ctr else "pass" if campaigns else "na",
             severity="high",
-            evidence=f"{len(low_ctr)} low CTR campaigns. Account CTR: {account_ctr:.2f}%.",
-            recommendation="Review ad relevance, query intent, and extensions for low CTR segments.",
+            evidence=f"Кампаний с низким CTR: {len(low_ctr)}. CTR аккаунта: {account_ctr:.2f}%.",
+            recommendation="Проверьте релевантность объявлений, интент запросов и расширения.",
             source="directpilot" if campaigns else "needs_more_data",
         ),
         _check(
             category="keywords_quality",
             check_id="YD30",
-            title="Enough data for keyword-quality decisions",
+            title="Достаточно данных для выводов по качеству",
             status="warning" if low_data else "pass" if campaigns else "na",
             severity="medium",
-            evidence=f"{len(low_data)} campaigns have low data volume.",
-            recommendation="Accumulate more clicks/impressions before making aggressive optimization decisions.",
+            evidence=f"Кампаний с малым объёмом данных: {len(low_data)}.",
+            recommendation="Накопите больше кликов/показов перед жёсткими решениями по оптимизации.",
             source="directpilot" if campaigns else "needs_more_data",
         ),
         _check(
             category="ads_extensions",
             check_id="YD39",
-            title="Sitelinks and extensions",
+            title="Быстрые ссылки и расширения",
             status="na",
             severity="high",
-            evidence="DirectPilot has not loaded ad extension data yet.",
-            recommendation="Check sitelinks, callouts, images, and vCard manually in Yandex Direct.",
+            evidence="DirectPilot пока не загружает данные по расширениям объявлений.",
+            recommendation="Проверьте быстрые ссылки, уточнения, изображения и визитку вручную в Директе.",
             source="needs_more_data",
         ),
         _check(
             category="ads_extensions",
             check_id="YD43",
-            title="UTM tracking quality",
+            title="Качество UTM-разметки",
             status="na",
             severity="high",
-            evidence="DirectPilot has not loaded landing URL/UTM data yet.",
-            recommendation="Verify UTM tags manually or add read-only URL diagnostics later.",
+            evidence="DirectPilot пока не загружает URL посадочных страниц и UTM-разметку.",
+            recommendation="Проверьте UTM вручную или добавьте read-only диагностику URL позже.",
             source="needs_more_data",
         ),
         _check(
             category="settings_targeting",
             check_id="YD49",
-            title="Target CPA benchmark",
+            title="Целевой CPA как benchmark",
             status="fail" if high_cpa else "pass" if target_cpa and campaigns else "na",
             severity="high",
-            evidence=f"{len(high_cpa)} campaigns are above target CPA." if target_cpa else "Target CPA is not configured.",
-            recommendation="Set target CPA in client settings and review high-CPA campaigns.",
+            evidence=f"Кампаний выше целевого CPA: {len(high_cpa)}." if target_cpa else "Целевой CPA не указан.",
+            recommendation="Укажите целевой CPA и проверьте кампании с высоким CPA.",
             source="directpilot" if target_cpa and campaigns else "needs_more_data",
         ),
         _check(
             category="settings_targeting",
             check_id="YD51",
-            title="Strategy constraints and bid modifiers",
+            title="Стратегии и корректировки ставок",
             status="na",
             severity="medium",
-            evidence="DirectPilot has not loaded bidding strategy, geo, schedule, or bid modifier settings yet.",
-            recommendation="Review strategy limits and targeting settings manually.",
+            evidence="DirectPilot пока не загружает стратегии, гео, расписание и корректировки ставок.",
+            recommendation="Проверьте ограничения стратегий и настройки таргетинга вручную.",
             source="needs_more_data",
         ),
     ]
@@ -283,11 +312,11 @@ def _build_checks(summary: dict) -> list[dict]:
             _check(
                 category="conversions_metrika",
                 check_id="YD06",
-                title="Sync warnings reviewed",
+                title="Предупреждения синхронизации разобраны",
                 status="warning",
                 severity="medium",
                 evidence="; ".join(str(item) for item in warnings[:3]),
-                recommendation="Resolve sync warnings before making final CPA decisions.",
+                recommendation="Разберите предупреждения синхронизации перед окончательными выводами по CPA.",
             )
         )
     return checks
@@ -349,7 +378,7 @@ def build_yandex_direct_audit(summary: dict) -> dict:
             "severity": item["severity"],
             "evidence": item["evidence"],
             "recommendation": item["recommendation"],
-            "safetyNote": "Draft-only recommendation. No Yandex Direct changes were applied.",
+            "safetyNote": "Это черновая рекомендация. Изменения в Яндекс.Директ не применялись.",
         }
         for item in failed_or_warning[:10]
     ]
@@ -360,18 +389,22 @@ def build_yandex_direct_audit(summary: dict) -> dict:
             "evidence": item["evidence"],
             "recommendation": item["recommendation"],
             "source": item.get("source", "directpilot"),
+            "sourceLabel": item.get("sourceLabel"),
+            "statusLabel": item.get("statusLabel"),
         }
         for item in checks
         if item.get("status") == "na" or item.get("source") == "needs_more_data"
     ][:10]
     status_counts = Counter(item.get("status") for item in checks)
     summary_text = (
-        f"Yandex Direct audit score {score}/100, grade {grade}. "
-        f"Checks: pass {status_counts.get('pass', 0)}, warning {status_counts.get('warning', 0)}, "
-        f"fail {status_counts.get('fail', 0)}, N/A {status_counts.get('na', 0)}."
+        f"Оценка аудита Яндекс.Директа: {score}/100, грейд {grade}. "
+        f"Проверки: Ок {status_counts.get('pass', 0)}, "
+        f"требуют внимания {status_counts.get('warning', 0)}, "
+        f"проблемы {status_counts.get('fail', 0)}, "
+        f"нужны дополнительные данные {status_counts.get('na', 0)}."
     )
     return {
-        "methodology": "55-check Yandex Direct audit framework adapted for DirectPilot read-only MVP data.",
+        "methodology": "Методология из 55 проверок Яндекс.Директа, адаптированная под read-only MVP данные DirectPilot.",
         "frameworkChecksTotal": 55,
         "implementedChecks": len(checks),
         "score": score,
