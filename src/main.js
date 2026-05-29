@@ -64,6 +64,7 @@ async function apiFetch(path, options = {}) {
 const navItems = [
   { id: 'dashboard', label: 'Обзор', icon: '📊' },
   { id: 'clients', label: 'Клиенты', icon: '👥' },
+  { id: 'business-context', label: 'Контекст бизнеса', icon: '🧭' },
   { id: 'integrations', label: 'Интеграции', icon: '🔌' },
   { id: 'ai', label: 'AI-аналитик', icon: '🧠' },
   { id: 'optimization', label: 'Оптимизация', icon: '🎯' },
@@ -74,6 +75,8 @@ const legacyViewRedirects = {
   recommendations: 'ai',
   reports: 'dashboard',
   autopilot: 'optimization',
+  context: 'business-context',
+  memory: 'business-context',
   'ai-models': 'ai',
   models: 'ai',
 };
@@ -150,6 +153,10 @@ const optimizationActionsByClientId = {};
 const optimizationActionFilterByClientId = {};
 const optimizationExecutionPreviewsByActionId = {};
 let optimizationExecutionPreviewStatus = '';
+let businessContext = null;
+let businessContextLoading = false;
+let businessContextStatus = '';
+let businessContextLoadedFor = '';
 let clientsLoaded = false;
 let backendClientsAvailable = false;
 let backendClientsStatus = 'Проверяем подключение backend...';
@@ -1255,6 +1262,100 @@ function resetSelectedClientOperationalState() {
   optimizationActionsStatus = '';
   optimizationExecutionPreviewStatus = '';
   optimizationActionsLoadedFor = optimizationActionsByClientId[selectedClientId] ? selectedClientId : '';
+  businessContext = null;
+  businessContextStatus = '';
+  businessContextLoadedFor = '';
+}
+
+async function loadBusinessContext(force = false) {
+  if (!selectedClientId || businessContextLoading) return;
+  if (!force && businessContextLoadedFor === selectedClientId && businessContext) return;
+  businessContextLoading = true;
+  businessContextStatus = 'Загружаем контекст бизнеса...';
+  if (['business-context', 'ai', 'dashboard'].includes(activeView)) render();
+  try {
+    const response = await apiFetch(`/clients/${selectedClientId}/business-context`);
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.detail || 'Не удалось загрузить контекст бизнеса');
+    businessContext = payload;
+    businessContextLoadedFor = selectedClientId;
+    businessContextStatus = '';
+  } catch (error) {
+    businessContextStatus = `Ошибка контекста бизнеса: ${error.message}`;
+    businessContextLoadedFor = selectedClientId;
+  } finally {
+    businessContextLoading = false;
+    if (['business-context', 'ai', 'dashboard'].includes(activeView)) render();
+  }
+}
+
+async function saveBusinessContextFromForm(form) {
+  if (!selectedClientId || !form) return;
+  const formData = new FormData(form);
+  const fieldNames = [
+    'brandName',
+    'businessNiche',
+    'productSummary',
+    'targetAudience',
+    'geography',
+    'seasonality',
+    'mainOffers',
+    'conversionActions',
+    'averageOrderValue',
+    'leadValueNotes',
+    'businessConstraints',
+    'negativeTopics',
+    'landingPageNotes',
+    'competitorNotes',
+    'manualNotes',
+    'memoryNotes',
+    'sourceNotes',
+  ];
+  const payload = {};
+  fieldNames.forEach((name) => {
+    payload[name] = String(formData.get(name) || '').trim() || null;
+  });
+  businessContextLoading = true;
+  businessContextStatus = 'Сохраняем контекст бизнеса...';
+  render();
+  try {
+    const response = await apiFetch(`/clients/${selectedClientId}/business-context`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    });
+    const saved = await response.json();
+    if (!response.ok) throw new Error(saved.detail || 'Не удалось сохранить контекст бизнеса');
+    businessContext = saved;
+    businessContextLoadedFor = selectedClientId;
+    businessContextStatus = 'Контекст бизнеса сохранён.';
+    await loadPerformanceSummary();
+  } catch (error) {
+    businessContextStatus = `Ошибка сохранения контекста: ${error.message}`;
+  } finally {
+    businessContextLoading = false;
+    render();
+  }
+}
+
+async function saveAiMessageToProjectMemory(message) {
+  if (!selectedClientId || !message) return;
+  businessContextStatus = 'Сохраняем в память проекта...';
+  render();
+  try {
+    const response = await apiFetch(`/clients/${selectedClientId}/business-context/memory-note`, {
+      method: 'POST',
+      body: JSON.stringify({ note: message }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.detail || 'Не удалось сохранить в память проекта');
+    businessContext = payload;
+    businessContextLoadedFor = selectedClientId;
+    businessContextStatus = 'Ответ сохранён в память проекта.';
+  } catch (error) {
+    businessContextStatus = `Ошибка памяти проекта: ${error.message}`;
+  } finally {
+    render();
+  }
 }
 
 async function loadSyncJobs() {
@@ -1810,6 +1911,131 @@ function renderYandexDirectAuditPanel(compact = false) {
   `;
 }
 
+function businessContextFilledCount(context = businessContext) {
+  const fields = [
+    'brandName',
+    'businessNiche',
+    'productSummary',
+    'targetAudience',
+    'geography',
+    'seasonality',
+    'mainOffers',
+    'conversionActions',
+    'businessConstraints',
+    'negativeTopics',
+    'landingPageNotes',
+    'manualNotes',
+    'memoryNotes',
+  ];
+  return fields.filter((field) => String(context?.[field] || '').trim()).length;
+}
+
+function businessContextCopyText(context = businessContext) {
+  const labels = [
+    ['brandName', 'Бренд'],
+    ['businessNiche', 'Ниша'],
+    ['productSummary', 'Что продаём'],
+    ['targetAudience', 'Целевая аудитория'],
+    ['geography', 'География'],
+    ['seasonality', 'Сезонность'],
+    ['mainOffers', 'Основные офферы'],
+    ['conversionActions', 'Целевые действия'],
+    ['averageOrderValue', 'Средний чек / ценность лида'],
+    ['businessConstraints', 'Ограничения бизнеса'],
+    ['negativeTopics', 'Нерелевантные темы'],
+    ['landingPageNotes', 'Посадочные страницы'],
+    ['competitorNotes', 'Конкуренты'],
+    ['manualNotes', 'Ручные заметки'],
+    ['memoryNotes', 'Память проекта'],
+  ];
+  return labels
+    .map(([key, label]) => `${label}: ${context?.[key] || '—'}`)
+    .join('\n');
+}
+
+function renderBusinessContextPanel(compact = false) {
+  const client = currentClient();
+  const filledCount = businessContextFilledCount();
+  const statusText = filledCount >= 6 ? 'Хорошо заполнен' : filledCount ? 'Заполнен частично' : 'Не заполнен';
+  if (!client.id) {
+    return `<section class="panel emptyStatePanel compact"><h3>Контекст бизнеса</h3><p>Создайте клиента, чтобы сохранить бизнес-контекст и память проекта.</p><button class="approveButton" data-go-view="clients">Создать клиента</button></section>`;
+  }
+  if (compact) {
+    return `
+      <section class="panel compact">
+        <div class="panelHeader">
+          <div>
+            <h3>Контекст бизнеса</h3>
+            <p>${filledCount ? `${escapeHtml(businessContext?.brandName || client.name)} · ${escapeHtml(businessContext?.businessNiche || 'ниша не указана')}` : 'Заполните бренд, нишу, офферы и ограничения, чтобы AI анализировал кампании не только по метрикам.'}</p>
+          </div>
+          <span class="aiStatusBadge ${filledCount ? 'ready' : 'pending'}">${escapeHtml(statusText)}</span>
+        </div>
+        <div class="heroActions">
+          <button class="secondaryButton" data-go-view="business-context">Открыть контекст бизнеса</button>
+        </div>
+      </section>
+    `;
+  }
+  const context = businessContext || {};
+  const field = (name, label, placeholder = '') => `
+    <label class="authField">
+      <span>${label}</span>
+      <textarea name="${name}" rows="3" placeholder="${escapeHtml(placeholder)}">${escapeHtml(context[name] || '')}</textarea>
+    </label>
+  `;
+  return `
+    <section class="panel">
+      <div class="panelHeader">
+        <div>
+          <span class="eyebrow">Память проекта</span>
+          <h3>Контекст бизнеса</h3>
+          <p>Эти данные попадут в доверенный AI-контекст: бренд, ниша, офферы, ограничения, нерелевантные темы и заметки специалиста.</p>
+        </div>
+        <span class="aiStatusBadge ${filledCount ? 'ready' : 'pending'}">${formatNumberSafe(filledCount)} полей · ${escapeHtml(statusText)}</span>
+      </div>
+      ${businessContextStatus ? `<div class="authStatus integrationStatus">${escapeHtml(businessContextStatus)}</div>` : ''}
+      <form class="authForm" data-business-context-form>
+        <div class="clientSettingsGrid">
+          <label class="authField"><span>Бренд</span><input name="brandName" value="${escapeHtml(context.brandName || '')}" placeholder="Название бренда или проекта" /></label>
+          <label class="authField"><span>Ниша / категория бизнеса</span><input name="businessNiche" value="${escapeHtml(context.businessNiche || '')}" placeholder="Например: мебель, стоматология, отель" /></label>
+          ${field('productSummary', 'Что продаём', 'Ключевые продукты, услуги, пакеты')}
+          ${field('targetAudience', 'Целевая аудитория', 'Кто покупает, сегменты, боли')}
+          ${field('geography', 'География', 'Города, регионы, ограничения доставки/оказания услуги')}
+          ${field('seasonality', 'Сезонность', 'Пики спроса, низкий сезон, события')}
+          ${field('mainOffers', 'Основные офферы', 'Акции, преимущества, УТП')}
+          ${field('conversionActions', 'Целевые действия', 'Заявка, звонок, бронь, покупка, квиз')}
+          ${field('averageOrderValue', 'Средний чек / ценность лида', 'Средний чек, маржа, LTV или ценность заявки')}
+          ${field('leadValueNotes', 'Заметки по ценности лида', 'Какие лиды качественные/некачественные')}
+          ${field('businessConstraints', 'Ограничения бизнеса', 'Бюджет, склад, сроки, юридические ограничения')}
+          ${field('negativeTopics', 'Нерелевантные темы / минус-направления', 'Запросы и темы, которые не подходят бизнесу')}
+          ${field('landingPageNotes', 'Посадочные страницы и заметки', 'URL, структура, важные блоки. Автопроверки страниц пока нет.')}
+          ${field('competitorNotes', 'Конкуренты', 'Конкуренты, отличие, ценовое позиционирование')}
+          ${field('manualNotes', 'Ручные заметки специалиста', 'Что важно помнить при аудите и оптимизации')}
+          ${field('memoryNotes', 'Память проекта', 'Сохранённые выводы AI и важные решения по проекту')}
+          ${field('sourceNotes', 'Источники контекста', 'Откуда взята информация: клиент, бриф, звонок, CRM')}
+        </div>
+        <div class="authStatus integrationStatus">Автоматический анализ посадочных страниц будет добавлен отдельной итерацией. Сейчас контекст заполняется вручную.</div>
+        <div class="heroActions">
+          <button class="approveButton" type="submit" ${businessContextLoading ? 'disabled' : ''}>${businessContextLoading ? 'Сохраняем...' : 'Сохранить контекст'}</button>
+          <button class="secondaryButton" type="button" data-reset-business-context>Очистить несохранённые изменения</button>
+          <button class="secondaryButton" type="button" data-copy-text="${escapeHtml(businessContextCopyText(context))}">Скопировать контекст</button>
+        </div>
+      </form>
+    </section>
+  `;
+}
+
+function renderBusinessContext() {
+  return renderShell(`
+    <div class="pageIntro">
+      <span class="eyebrow">🧭 Контекст бизнеса</span>
+      <h2>Память проекта для AI-аналитика</h2>
+      <p>Заполните бизнес-контекст один раз, чтобы AI учитывал бренд, нишу, офферы, ограничения и нерелевантные темы при анализе кампаний и поисковых запросов.</p>
+    </div>
+    ${renderBusinessContextPanel()}
+  `);
+}
+
 function renderDashboard() {
   const client = currentClient();
   const hasClient = Boolean(client.id);
@@ -1840,6 +2066,7 @@ function renderDashboard() {
       </div>
       <div class="heroActions">
         ${renderActionButton('Клиенты', 'data-go-view="clients"')}
+        ${renderActionButton('Контекст бизнеса', 'data-go-view="business-context"')}
         ${renderActionButton('Интеграции', 'data-go-view="integrations"')}
         ${renderActionButton(syncLoading ? 'Синхронизация...' : 'Запустить синхронизацию', `data-sync-client ${canRunSync() && !syncLoading ? '' : 'disabled'}`, 'primary')}
         ${renderActionButton('Перейти к шагу', `data-go-view="${escapeHtml(nextTarget)}"`, 'primary')}
@@ -1855,6 +2082,7 @@ function renderDashboard() {
       </section>
     ` : `
       ${renderSyncCenter()}
+      ${renderBusinessContextPanel(true)}
       ${renderSyncDiagnosticsPanel(true)}
       ${renderYandexDirectAuditPanel(true)}
       ${renderPerformanceSummaryPanel()}
@@ -2370,11 +2598,12 @@ function renderAiChat() {
         </select>
       </label>
       <div class="aiChatMessages">
-        ${aiChatMessages.map((item) => `
+        ${aiChatMessages.map((item, index) => `
           <article class="aiChatMessage ${item.role}">
             <strong>${item.role === 'user' ? 'Вы' : 'DirectPilot AI'}</strong>
             <pre>${escapeHtml(item.content)}</pre>
             ${item.source ? `<small>${escapeHtml(item.source)}</small>` : ''}
+            ${item.role === 'assistant' ? `<button class="secondaryButton" type="button" data-save-ai-memory="${index}">Сохранить в память проекта</button>` : ''}
           </article>
         `).join('')}
         ${aiChatLoading ? '<article class="aiChatMessage assistant"><strong>DirectPilot AI</strong><pre>Собираю контекст через MCP tools...</pre></article>' : ''}
@@ -2442,6 +2671,7 @@ function renderAiAssistant() {
         <span class="aiStatusBadge ${canRunAiAnalysis() ? 'ready' : 'pending'}">${canRunAiAnalysis() ? 'Данные готовы' : 'Нужна синхронизация'}</span>
       </div>
       <p>Direct: ${escapeHtml(client.directLogin)} · Метрика: ${escapeHtml(client.metricaCounter)} · Цели: ${escapeHtml(perfSummary?.selectedGoalIds?.join(', ') || client.conversionGoalIds || client.mainGoalId || 'не указаны')}</p>
+      <p>Бизнес-контекст: ${businessContextFilledCount() ? `${escapeHtml(businessContext?.brandName || client.name)} · ${escapeHtml(businessContext?.businessNiche || 'ниша не указана')} · заполнено ${formatNumberSafe(businessContextFilledCount())} полей` : 'не заполнен — AI не будет выдумывать нишу, сезонность и посадочные.'}</p>
       <p>Согласование: ${formatNumberSafe(actionCounts.total)} черновиков · одобрено ${formatNumberSafe(actionCounts.approved)} · отклонено ${formatNumberSafe(actionCounts.rejected)} · нужны правки ${formatNumberSafe(actionCounts.needs_changes)}.</p>
       <p>${!client.id ? 'Сначала создайте клиента.' : !clientYandexIntegration?.connected ? 'AI сможет анализировать настройки, но для данных нужна привязка Яндекса.' : !hasPerformanceData() ? 'Сначала запустите синхронизацию, чтобы AI увидел кампании.' : !client.conversionGoalIds && !client.mainGoalId ? 'Укажите ID целей Метрики для анализа целевых конверсий.' : 'AI использует сводку, диагностику кампаний и план оптимизации.'}</p>
       ${aiEmptyState ? `<div class="authStatus integrationStatus"><strong>${escapeHtml(aiEmptyState.text)}</strong><div class="heroActions"><button class="approveButton" data-go-view="${escapeHtml(aiEmptyState.view)}">${escapeHtml(aiEmptyState.button)}</button></div></div>` : ''}
@@ -2479,6 +2709,7 @@ function render() {
     login: renderLogin,
     dashboard: renderDashboard,
     clients: renderClients,
+    'business-context': renderBusinessContext,
     audit: renderAudit,
     recommendations: renderRecommendations,
     ai: renderAiAssistant,
@@ -2504,6 +2735,10 @@ function render() {
     if (!syncJobs.length && !syncJobsLoading) loadSyncJobs();
     if (!perfSummary && !perfLoading) loadPerformanceSummary();
     if (!clientYandexIntegration && !clientYandexLoading) loadClientYandexIntegration();
+    if (!businessContext && !businessContextLoading) loadBusinessContext();
+  }
+  if (activeView === 'business-context' && selectedClientId && !businessContextLoading) {
+    loadBusinessContext();
   }
   if (activeView === 'recommendations' && selectedClientId && !perfSummary && !perfLoading) {
     loadPerformanceSummary();
@@ -2515,6 +2750,9 @@ function render() {
   }
   if (activeView === 'ai' && aiStatus.message === 'Статус OpenRouter ещё не загружен.') {
     loadAiStatus();
+  }
+  if (activeView === 'ai' && selectedClientId && !businessContextLoading) {
+    loadBusinessContext();
   }
   if (activeView !== 'landing' && activeView !== 'login') {
     loadClientsFromApi();
@@ -2594,6 +2832,8 @@ app.addEventListener('click', async (event) => {
   const aiFallbackButton = event.target.closest('[data-ai-economy-fallback]');
   const testAiModelButton = event.target.closest('[data-test-ai-model]');
   const clearAiChatButton = event.target.closest('[data-clear-ai-chat]');
+  const resetBusinessContextButton = event.target.closest('[data-reset-business-context]');
+  const saveAiMemoryButton = event.target.closest('[data-save-ai-memory]');
 
   if (logoutButton) {
     localStorage.removeItem('directpilot_session');
@@ -2721,6 +2961,17 @@ app.addEventListener('click', async (event) => {
     return;
   }
 
+  if (resetBusinessContextButton) {
+    render();
+    return;
+  }
+
+  if (saveAiMemoryButton) {
+    const index = Number(saveAiMemoryButton.dataset.saveAiMemory);
+    await saveAiMessageToProjectMemory(aiChatMessages[index]?.content || '');
+    return;
+  }
+
   if (deleteClientButton) {
     const clientId = deleteClientButton.dataset.deleteClient;
     if (!clientId || !confirm('Удалить клиента? История синхронизаций по нему будет удалена.')) return;
@@ -2804,6 +3055,13 @@ app.addEventListener('click', async (event) => {
 });
 
 app.addEventListener('submit', async (event) => {
+  const businessContextForm = event.target.closest('[data-business-context-form]');
+  if (businessContextForm) {
+    event.preventDefault();
+    await saveBusinessContextFromForm(businessContextForm);
+    return;
+  }
+
   const settingsForm = event.target.closest('[data-client-settings-form]');
   if (settingsForm) {
     event.preventDefault();

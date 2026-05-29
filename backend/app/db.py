@@ -128,6 +128,34 @@ def ensure_mvp_schema() -> None:
         "CREATE INDEX IF NOT EXISTS ix_optimization_action_events_action_id ON optimization_action_events (action_id)",
         "CREATE INDEX IF NOT EXISTS ix_optimization_action_events_organization_id ON optimization_action_events (organization_id)",
         "CREATE INDEX IF NOT EXISTS ix_optimization_action_events_client_id ON optimization_action_events (client_id)",
+        """
+        CREATE TABLE IF NOT EXISTS client_business_contexts (
+            id VARCHAR(36) PRIMARY KEY,
+            client_id VARCHAR(64) NOT NULL UNIQUE,
+            brand_name TEXT,
+            business_niche TEXT,
+            product_summary TEXT,
+            target_audience TEXT,
+            geography TEXT,
+            seasonality TEXT,
+            main_offers TEXT,
+            conversion_actions TEXT,
+            average_order_value TEXT,
+            lead_value_notes TEXT,
+            business_constraints TEXT,
+            negative_topics TEXT,
+            landing_page_notes TEXT,
+            competitor_notes TEXT,
+            ai_summary TEXT,
+            manual_notes TEXT,
+            memory_notes TEXT,
+            source_notes TEXT,
+            last_ai_update_at TIMESTAMPTZ,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_client_business_contexts_client_id ON client_business_contexts (client_id)",
     ]
     with engine.begin() as connection:
         for statement in statements:

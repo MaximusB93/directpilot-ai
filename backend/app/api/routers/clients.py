@@ -9,6 +9,7 @@ from app.api.deps import CurrentUser, get_current_session_user
 from app.db import get_optional_db
 from app.models import (
     ClientAccount,
+    ClientBusinessContext,
     ConnectedAccount,
     DirectCampaignPeriodStat,
     OptimizationActionDraft as OptimizationActionDraftModel,
@@ -21,7 +22,10 @@ from app.schemas import (
     AiRecommendationResponse,
     Campaign,
     ClientAccountResponse,
+    ClientBusinessContextResponse,
+    ClientBusinessContextUpdate,
     ClientCreateRequest,
+    ClientMemoryNoteCreate,
     ClientYandexBindingRequest,
     ClientYandexBindingStatus,
     ClientYandexIntegrationStatus,
@@ -247,6 +251,66 @@ def _client_response(client: ClientAccount) -> ClientAccountResponse:
     )
 
 
+BUSINESS_CONTEXT_FIELD_MAP = {
+    "brandName": "brand_name",
+    "businessNiche": "business_niche",
+    "productSummary": "product_summary",
+    "targetAudience": "target_audience",
+    "geography": "geography",
+    "seasonality": "seasonality",
+    "mainOffers": "main_offers",
+    "conversionActions": "conversion_actions",
+    "averageOrderValue": "average_order_value",
+    "leadValueNotes": "lead_value_notes",
+    "businessConstraints": "business_constraints",
+    "negativeTopics": "negative_topics",
+    "landingPageNotes": "landing_page_notes",
+    "competitorNotes": "competitor_notes",
+    "aiSummary": "ai_summary",
+    "manualNotes": "manual_notes",
+    "memoryNotes": "memory_notes",
+    "sourceNotes": "source_notes",
+}
+
+
+def _business_context_response(context: ClientBusinessContext) -> ClientBusinessContextResponse:
+    return ClientBusinessContextResponse(
+        id=context.id,
+        clientId=context.client_id,
+        brandName=context.brand_name,
+        businessNiche=context.business_niche,
+        productSummary=context.product_summary,
+        targetAudience=context.target_audience,
+        geography=context.geography,
+        seasonality=context.seasonality,
+        mainOffers=context.main_offers,
+        conversionActions=context.conversion_actions,
+        averageOrderValue=context.average_order_value,
+        leadValueNotes=context.lead_value_notes,
+        businessConstraints=context.business_constraints,
+        negativeTopics=context.negative_topics,
+        landingPageNotes=context.landing_page_notes,
+        competitorNotes=context.competitor_notes,
+        aiSummary=context.ai_summary,
+        manualNotes=context.manual_notes,
+        memoryNotes=context.memory_notes,
+        sourceNotes=context.source_notes,
+        lastAiUpdateAt=context.last_ai_update_at.isoformat() if context.last_ai_update_at else None,
+        createdAt=context.created_at.isoformat() if context.created_at else None,
+        updatedAt=context.updated_at.isoformat() if context.updated_at else None,
+    )
+
+
+def _get_or_create_business_context(db: Session, client: ClientAccount) -> ClientBusinessContext:
+    context = db.scalar(select(ClientBusinessContext).where(ClientBusinessContext.client_id == client.id))
+    if context:
+        return context
+    context = ClientBusinessContext(client_id=client.id)
+    db.add(context)
+    db.flush()
+    return context
+
+
 def _require_db(db: Session | None) -> Session:
     if db is None:
         raise HTTPException(
@@ -361,11 +425,68 @@ def delete_client(
     client = _get_owned_client(db, client_id, current)
     db.execute(delete(SyncJob).where(SyncJob.client_id == client_id))
     db.execute(delete(DirectCampaignPeriodStat).where(DirectCampaignPeriodStat.client_id == client_id))
+    db.execute(delete(ClientBusinessContext).where(ClientBusinessContext.client_id == client_id))
     db.execute(delete(OptimizationActionEvent).where(OptimizationActionEvent.client_id == client_id))
     db.execute(delete(OptimizationActionDraftModel).where(OptimizationActionDraftModel.client_id == client_id))
     db.delete(client)
     db.commit()
     return {"status": "deleted", "client_id": client_id}
+
+
+@router.get("/{client_id}/business-context", response_model=ClientBusinessContextResponse)
+def get_client_business_context(
+    client_id: str,
+    db: Session | None = Depends(get_optional_db),
+    current: CurrentUser = Depends(get_current_session_user),
+) -> ClientBusinessContextResponse:
+    db = _require_db(db)
+    client = _get_owned_client(db, client_id, current)
+    context = _get_or_create_business_context(db, client)
+    db.commit()
+    db.refresh(context)
+    return _business_context_response(context)
+
+
+@router.put("/{client_id}/business-context", response_model=ClientBusinessContextResponse)
+def update_client_business_context(
+    client_id: str,
+    payload: ClientBusinessContextUpdate,
+    db: Session | None = Depends(get_optional_db),
+    current: CurrentUser = Depends(get_current_session_user),
+) -> ClientBusinessContextResponse:
+    db = _require_db(db)
+    client = _get_owned_client(db, client_id, current)
+    context = _get_or_create_business_context(db, client)
+    fields_set = getattr(payload, "model_fields_set", getattr(payload, "__fields_set__", set()))
+    for public_name, model_name in BUSINESS_CONTEXT_FIELD_MAP.items():
+        if public_name not in fields_set:
+            continue
+        value = getattr(payload, public_name)
+        setattr(context, model_name, value.strip() if isinstance(value, str) and value.strip() else None)
+    db.commit()
+    db.refresh(context)
+    return _business_context_response(context)
+
+
+@router.post("/{client_id}/business-context/memory-note", response_model=ClientBusinessContextResponse)
+def append_client_memory_note(
+    client_id: str,
+    payload: ClientMemoryNoteCreate,
+    db: Session | None = Depends(get_optional_db),
+    current: CurrentUser = Depends(get_current_session_user),
+) -> ClientBusinessContextResponse:
+    db = _require_db(db)
+    client = _get_owned_client(db, client_id, current)
+    context = _get_or_create_business_context(db, client)
+    note = payload.note.strip()
+    if not note:
+        raise HTTPException(status_code=400, detail="Memory note is empty")
+    timestamp = _now().strftime("%Y-%m-%d %H:%M")
+    entry = f"[{timestamp}] {note}"
+    context.memory_notes = f"{context.memory_notes.rstrip()}\n\n{entry}" if context.memory_notes else entry
+    db.commit()
+    db.refresh(context)
+    return _business_context_response(context)
 
 
 def _client_yandex_status(db: Session, client: ClientAccount, current: CurrentUser) -> ClientYandexIntegrationStatus:
