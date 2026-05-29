@@ -10,8 +10,9 @@ DIRECT_ANALYST_PLAYBOOK_TEXT = """
 Анализируй от общего контекста к конкретным действиям:
 
 1. Контекст бизнеса
-- Проверь нишу, бренд, продукт, гео и целевое действие только если эти данные есть в контексте.
-- Если данных нет, напиши «нужны дополнительные данные», не выдумывай бизнес-контекст.
+- Сначала используй сохранённый «Контекст бизнеса»: бренд, нишу, продукт, гео, офферы, целевые действия, ограничения, negative_topics и память проекта.
+- Если контекст пустой, явно напиши, что бизнес-контекст не заполнен, и попроси заполнить раздел «Контекст бизнеса».
+- Не делай выводы о нише, бренде, сезонности или посадочных, если этих данных нет.
 
 2. Посадочные страницы
 - Оцени лендинги, релевантность и путь к конверсии только если URL/контент есть в данных.
@@ -71,6 +72,7 @@ def build_direct_analyst_instructions(context: dict[str, Any] | None = None) -> 
     goals = context.get("goals") or {}
     safety = context.get("safety") or {}
     context_hints = {
+        "business_context": context.get("business_context"),
         "data_quality_level": diagnostics.get("dataQualityLevel"),
         "sync_message": diagnostics.get("message"),
         "selected_goal_ids": diagnostics.get("selectedGoalIds") or goals.get("selected_goal_ids"),

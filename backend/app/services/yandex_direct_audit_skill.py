@@ -132,6 +132,7 @@ def _build_checks(summary: dict) -> list[dict]:
     totals = summary.get("totals") or {}
     diagnostics = summary.get("syncDiagnostics") or {}
     search_insights = summary.get("searchQueryInsights") or {}
+    business_status = summary.get("businessContextStatus") or (summary.get("client") or {}).get("business_context_status") or {}
     goal_ids = _goal_ids(summary)
     has_goal_data = bool(summary.get("hasGoalData"))
     warnings = list(summary.get("goalDataWarnings") or []) + list(diagnostics.get("warnings") or [])
@@ -157,8 +158,19 @@ def _build_checks(summary: dict) -> list[dict]:
     fallback_used = bool(goal_ids and not has_goal_data) or bool(source_counts.get("fallback_total_when_goal_unavailable"))
 
     name_status, name_evidence = _campaign_name_quality(campaigns)
+    business_context_filled = (business_status.get("filledFieldsCount") or 0) > 0
 
     checks = [
+        _check(
+            category="account_structure",
+            check_id="YD00",
+            title="Контекст бизнеса заполнен",
+            status="pass" if business_context_filled else "na",
+            severity="medium",
+            evidence=business_status.get("message") or "Контекст бизнеса не заполнен: выводы по нише, сезонности и посадочным ограничены.",
+            recommendation="Заполните бренд, нишу, офферы, географию, ограничения и память проекта.",
+            source="directpilot" if business_context_filled else "needs_more_data",
+        ),
         _check(
             category="conversions_metrika",
             check_id="YD01",

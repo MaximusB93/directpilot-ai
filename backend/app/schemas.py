@@ -51,6 +51,57 @@ class ClientAccountResponse(BaseModel):
     syncVersion: int = 0
 
 
+class ClientBusinessContextResponse(BaseModel):
+    id: str
+    clientId: str
+    brandName: str | None = None
+    businessNiche: str | None = None
+    productSummary: str | None = None
+    targetAudience: str | None = None
+    geography: str | None = None
+    seasonality: str | None = None
+    mainOffers: str | None = None
+    conversionActions: str | None = None
+    averageOrderValue: str | None = None
+    leadValueNotes: str | None = None
+    businessConstraints: str | None = None
+    negativeTopics: str | None = None
+    landingPageNotes: str | None = None
+    competitorNotes: str | None = None
+    aiSummary: str | None = None
+    manualNotes: str | None = None
+    memoryNotes: str | None = None
+    sourceNotes: str | None = None
+    lastAiUpdateAt: str | None = None
+    createdAt: str | None = None
+    updatedAt: str | None = None
+
+
+class ClientBusinessContextUpdate(BaseModel):
+    brandName: str | None = None
+    businessNiche: str | None = None
+    productSummary: str | None = None
+    targetAudience: str | None = None
+    geography: str | None = None
+    seasonality: str | None = None
+    mainOffers: str | None = None
+    conversionActions: str | None = None
+    averageOrderValue: str | None = None
+    leadValueNotes: str | None = None
+    businessConstraints: str | None = None
+    negativeTopics: str | None = None
+    landingPageNotes: str | None = None
+    competitorNotes: str | None = None
+    aiSummary: str | None = None
+    manualNotes: str | None = None
+    memoryNotes: str | None = None
+    sourceNotes: str | None = None
+
+
+class ClientMemoryNoteCreate(BaseModel):
+    note: str = Field(min_length=1, max_length=10000)
+
+
 class AgencyMetric(BaseModel):
     label: str
     value: str
@@ -469,6 +520,7 @@ class ClientPerformanceSummaryResponse(BaseModel):
     goalDataWarnings: list[str] = Field(default_factory=list)
     syncDiagnostics: dict = Field(default_factory=dict)
     searchQueryInsights: dict = Field(default_factory=dict)
+    businessContextStatus: dict = Field(default_factory=dict)
     yandexDirectAudit: dict = Field(default_factory=dict)
 
 

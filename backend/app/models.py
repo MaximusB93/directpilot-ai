@@ -67,6 +67,36 @@ class ClientAccount(Base):
     organization: Mapped[Organization | None] = relationship(back_populates="clients")
 
 
+class ClientBusinessContext(Base):
+    __tablename__ = "client_business_contexts"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    client_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    brand_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    business_niche: Mapped[str | None] = mapped_column(Text, nullable=True)
+    product_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    target_audience: Mapped[str | None] = mapped_column(Text, nullable=True)
+    geography: Mapped[str | None] = mapped_column(Text, nullable=True)
+    seasonality: Mapped[str | None] = mapped_column(Text, nullable=True)
+    main_offers: Mapped[str | None] = mapped_column(Text, nullable=True)
+    conversion_actions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    average_order_value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    lead_value_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    business_constraints: Mapped[str | None] = mapped_column(Text, nullable=True)
+    negative_topics: Mapped[str | None] = mapped_column(Text, nullable=True)
+    landing_page_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    competitor_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ai_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    manual_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    memory_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_ai_update_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
 class ConnectedAccount(Base):
     __tablename__ = "connected_accounts"
     __table_args__ = (UniqueConstraint("provider", "external_user_id", name="uq_connected_accounts_provider_user"),)

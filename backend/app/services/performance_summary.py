@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import ClientAccount, DirectCampaignPeriodStat, DirectSearchQueryPeriodStat
+from app.models import ClientAccount, ClientBusinessContext, DirectCampaignPeriodStat, DirectSearchQueryPeriodStat
 from app.services.yandex_direct_audit_skill import build_yandex_direct_audit
 from app.services.yandex_metrika import parse_goal_ids
 
@@ -30,6 +30,41 @@ def _conversion_source_message(goal_ids: list[str], has_goal_data: bool) -> str:
     if goal_ids:
         return "Директ не вернул данные по выбранным целям. Проверьте ID целей и запустите синхронизацию повторно."
     return "ID целей не указаны. Укажите цели, чтобы считать конверсии и CPA по выбранным целям."
+
+
+def _business_context_status(context: ClientBusinessContext | None) -> dict:
+    fields = [
+        "brand_name",
+        "business_niche",
+        "product_summary",
+        "target_audience",
+        "geography",
+        "seasonality",
+        "main_offers",
+        "conversion_actions",
+        "business_constraints",
+        "negative_topics",
+        "landing_page_notes",
+        "manual_notes",
+        "memory_notes",
+    ]
+    filled = [field for field in fields if context and str(getattr(context, field, "") or "").strip()]
+    status = "good" if len(filled) >= 6 else "partial" if filled else "empty"
+    return {
+        "filledFieldsCount": len(filled),
+        "hasBrand": bool(context and context.brand_name),
+        "hasNiche": bool(context and context.business_niche),
+        "hasSeasonality": bool(context and context.seasonality),
+        "hasManualNotes": bool(context and (context.manual_notes or context.memory_notes)),
+        "status": status,
+        "message": (
+            "Контекст бизнеса заполнен."
+            if status == "good"
+            else "Контекст бизнеса заполнен частично."
+            if status == "partial"
+            else "Контекст бизнеса не заполнен: выводы по нише, сезонности и посадочным ограничены."
+        ),
+    }
 
 
 def _build_sync_diagnostics(
@@ -222,6 +257,8 @@ def build_performance_summary(db: Session, client_id: str) -> dict:
         .order_by(DirectCampaignPeriodStat.loaded_at.desc())
     ).all()
     goal_ids = parse_goal_ids(client.conversion_goal_ids, fallback=client.main_goal_id)
+    business_context = db.scalar(select(ClientBusinessContext).where(ClientBusinessContext.client_id == client_id))
+    business_context_status = _business_context_status(business_context)
     search_rows = db.scalars(
         select(DirectSearchQueryPeriodStat)
         .where(DirectSearchQueryPeriodStat.client_id == client_id)
@@ -243,6 +280,7 @@ def build_performance_summary(db: Session, client_id: str) -> dict:
                 "direct_login": client.direct_login,
                 "metrica_counter": client.metrica_counter,
                 "target_cpa": client.target_cpa,
+                "business_context_status": business_context_status,
             },
             "period": None,
             "totals": {"cost": 0.0, "impressions": 0, "clicks": 0, "conversions": 0.0, "avg_cpc": 0.0, "cpa": None},
@@ -256,6 +294,7 @@ def build_performance_summary(db: Session, client_id: str) -> dict:
             "goalDataWarnings": [],
             "syncDiagnostics": diagnostics,
             "searchQueryInsights": search_query_insights,
+            "businessContextStatus": business_context_status,
             "message": "Нет сохранённых данных Яндекс.Директа. Запустите синхронизацию после подключения Яндекса.",
         })
 
@@ -339,6 +378,7 @@ def build_performance_summary(db: Session, client_id: str) -> dict:
             "direct_login": client.direct_login,
             "metrica_counter": client.metrica_counter,
             "target_cpa": client.target_cpa,
+            "business_context_status": business_context_status,
         },
         "period": {"from": period_from.isoformat(), "to": period_to.isoformat()},
         "totals": {
@@ -359,6 +399,7 @@ def build_performance_summary(db: Session, client_id: str) -> dict:
         "goalDataWarnings": warnings,
         "syncDiagnostics": sync_diagnostics,
         "searchQueryInsights": search_query_insights,
+        "businessContextStatus": business_context_status,
         "message": "ok",
     })
 

@@ -6,7 +6,7 @@ from sqlalchemy import select
 
 from app.core.config import normalize_ai_request_options, settings
 from app.db import SessionLocal
-from app.models import ClientAccount, ConnectedAccount, OptimizationActionDraft, SyncJob
+from app.models import ClientAccount, ClientBusinessContext, ConnectedAccount, OptimizationActionDraft, SyncJob
 from app.schemas import AiGeneratedRecommendation, AiRecommendationResponse
 from app.services.direct_analyst_playbook import build_direct_analyst_instructions
 from app.services.mock_data import AUDIT_ISSUES, CAMPAIGNS, CLIENTS, RECOMMENDATIONS
@@ -38,6 +38,43 @@ def _summary_context(client_id: str) -> dict[str, Any] | None:
         except ValueError:
             return None
     return summary if summary.get("campaigns") else None
+
+
+def _business_context_dict(context: ClientBusinessContext | None) -> dict[str, Any]:
+    if not context:
+        return {
+            "status": "empty",
+            "message": "Контекст бизнеса не заполнен. Попросите пользователя заполнить раздел «Контекст бизнеса».",
+            "fields": {},
+        }
+    fields = {
+        "brand_name": context.brand_name,
+        "business_niche": context.business_niche,
+        "product_summary": context.product_summary,
+        "target_audience": context.target_audience,
+        "geography": context.geography,
+        "seasonality": context.seasonality,
+        "main_offers": context.main_offers,
+        "conversion_actions": context.conversion_actions,
+        "average_order_value": context.average_order_value,
+        "lead_value_notes": context.lead_value_notes,
+        "business_constraints": context.business_constraints,
+        "negative_topics": context.negative_topics,
+        "landing_page_notes": context.landing_page_notes,
+        "competitor_notes": context.competitor_notes,
+        "ai_summary": context.ai_summary,
+        "manual_notes": context.manual_notes,
+        "memory_notes": context.memory_notes,
+        "source_notes": context.source_notes,
+    }
+    filled = {key: value for key, value in fields.items() if str(value or "").strip()}
+    return {
+        "status": "good" if len(filled) >= 6 else "partial" if filled else "empty",
+        "filled_fields_count": len(filled),
+        "message": "Контекст бизнеса доступен." if filled else "Контекст бизнеса не заполнен.",
+        "fields": filled,
+        "updated_at": context.updated_at.isoformat() if context.updated_at else None,
+    }
 
 
 def build_client_ai_context(client_id: str, client_context: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -104,6 +141,8 @@ def build_client_ai_context_from_db(db, client_id: str, selected_campaign_name: 
         .limit(1)
     )
     bound_account = db.get(ConnectedAccount, client.yandex_account_id) if client.yandex_account_id else None
+    business_context = db.scalar(select(ClientBusinessContext).where(ClientBusinessContext.client_id == client_id))
+    business_context_payload = _business_context_dict(business_context)
     saved_actions = db.scalars(
         select(OptimizationActionDraft)
         .where(
@@ -138,6 +177,7 @@ def build_client_ai_context_from_db(db, client_id: str, selected_campaign_name: 
             "last_synced_at": client.last_synced_at.isoformat() if client.last_synced_at else None,
             "sync_version": client.sync_version,
         },
+        "business_context": business_context_payload,
         "yandex_binding": {
             "bound": bound_account is not None,
             "account": (
@@ -180,7 +220,11 @@ def build_client_ai_context_from_db(db, client_id: str, selected_campaign_name: 
         "sync_diagnostics": summary.get("syncDiagnostics", {}),
         "search_query_insights": summary.get("searchQueryInsights", {}),
         "yandex_direct_audit": summary.get("yandexDirectAudit", {}),
-        "direct_analyst_playbook": build_direct_analyst_instructions({"summary": summary, "goals": {"selected_goal_ids": summary.get("selectedGoalIds", [])}}),
+        "direct_analyst_playbook": build_direct_analyst_instructions({
+            "summary": summary,
+            "business_context": business_context_payload,
+            "goals": {"selected_goal_ids": summary.get("selectedGoalIds", [])},
+        }),
         "campaigns": campaigns,
         "diagnostics": [
             {
@@ -250,6 +294,9 @@ Yandex Direct audit skill:
 - Never claim unavailable account settings were checked.
 
 Правила:
+- Сначала используй business_context: бренд, нишу, офферы, сезонность, ограничения, negative_topics и память проекта.
+- Если business_context пустой, явно попроси заполнить раздел «Контекст бизнеса» и не выдумывай нишу, бренд, сезонность или посадочные.
+- При анализе поисковых запросов учитывай negative_topics как запрещённые/нерелевантные направления.
 - Не выдумывай goal conversions.
 - Используй selected Direct goal conversions как основной источник, если они доступны.
 - Если данные по выбранным целям недоступны, явно скажи, что анализ CPA ограничен и нужна проверка ID целей.
