@@ -20,7 +20,8 @@ Analyze in this exact order:
 2. Account overview
 - Summarize spend, impressions, clicks, CTR, CPC, conversions used, CPA.
 - Mention selected goal IDs and target CPA when configured.
-- Separate selected-goal conversions from total Direct conversions when both are available.
+- Use selected-goal conversions as the primary metric in user-facing analysis.
+- Mention total Direct conversions only as fallback or technical limitation when selected-goal data is unavailable.
 
 3. Campaign segmentation
 - critical: spend without goal conversions or high CPA.
