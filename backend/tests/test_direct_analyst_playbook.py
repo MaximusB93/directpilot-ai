@@ -17,10 +17,10 @@ def _session_factory():
 
 
 def test_playbook_contains_no_apply_guardrails() -> None:
-    text = DIRECT_ANALYST_PLAYBOOK_TEXT.lower()
-    assert "never claim changes were applied" in text
-    assert "never recommend write actions without approval" in text
-    assert "goal data is missing" in text
+    text = DIRECT_ANALYST_PLAYBOOK_TEXT
+    assert "Никогда не утверждай, что изменения применены" in text
+    assert "Не рекомендуй write-действия" in text
+    assert "Директ не вернул данные по выбранным целям" in text
 
 
 def test_sync_diagnostics_counts_matched_and_unmatched_goal_campaigns() -> None:
