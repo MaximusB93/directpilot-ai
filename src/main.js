@@ -361,6 +361,30 @@ function saveAiModelSettings() {
   }));
 }
 
+function recommendedAiModelOptions() {
+  return [
+    { id: 'openai/gpt-4.1-mini', label: 'OpenAI GPT-4.1 Mini', cost_tier: 'low', recommended_for: ['Эконом', 'регулярные проверки'] },
+    { id: 'google/gemini-2.0-flash-001', label: 'Google Gemini 2.0 Flash', cost_tier: 'low', recommended_for: ['Эконом', 'быстрый аудит'] },
+    { id: 'deepseek/deepseek-chat', label: 'DeepSeek Chat', cost_tier: 'low', recommended_for: ['Эконом', 'чат'] },
+    { id: 'qwen/qwen-2.5-72b-instruct', label: 'Qwen 2.5 72B Instruct', cost_tier: 'low', recommended_for: ['Эконом', 'структурные ответы'] },
+    { id: 'openai/gpt-4.1', label: 'OpenAI GPT-4.1', cost_tier: 'medium', recommended_for: ['Баланс', 'анализ кампаний'] },
+    { id: 'anthropic/claude-3.5-sonnet', label: 'Claude 3.5 Sonnet', cost_tier: 'medium', recommended_for: ['Баланс', 'разбор гипотез'] },
+    { id: 'google/gemini-2.5-pro', label: 'Google Gemini 2.5 Pro', cost_tier: 'medium', recommended_for: ['Баланс', 'глубокий аудит'] },
+    { id: 'deepseek/deepseek-r1', label: 'DeepSeek R1', cost_tier: 'medium', recommended_for: ['Баланс', 'логический анализ'] },
+    { id: 'anthropic/claude-3.7-sonnet', label: 'Claude 3.7 Sonnet', cost_tier: 'high', recommended_for: ['Максимум', 'сложный аудит'] },
+    { id: 'openai/o3-mini', label: 'OpenAI o3-mini', cost_tier: 'high', recommended_for: ['Максимум', 'спорные выводы'] },
+  ];
+}
+
+function getAiModelOptions() {
+  const seen = new Set();
+  return [...(aiStatus.models || []), ...recommendedAiModelOptions()].filter((model) => {
+    if (!model?.id || seen.has(model.id)) return false;
+    seen.add(model.id);
+    return true;
+  });
+}
+
 function getAiPresetOptions() {
   return aiStatus.presets?.length ? aiStatus.presets : [
     { id: 'economy', label: 'Эконом', purpose: 'Быстрые вопросы и первичный анализ', max_tokens: 1200, cost_tier: 'low' },
@@ -373,9 +397,22 @@ function activeAiPresetInfo() {
   return getAiPresetOptions().find((preset) => preset.id === aiPreset) || getAiPresetOptions()[0];
 }
 
+function aiPresetGuidance(presetId) {
+  return {
+    economy: 'Эконом — быстрые и дешёвые регулярные проверки.',
+    balanced: 'Баланс — основной режим для анализа кампаний и запросов.',
+    advanced: 'Максимум — сложные аудиты, спорные выводы, глубокий разбор.',
+    custom: 'Своя модель — используйте только если понимаете стоимость и лимиты OpenRouter.',
+  }[presetId] || '';
+}
+
+function aiPresetLabel(preset) {
+  return { economy: 'Эконом', balanced: 'Баланс', advanced: 'Максимум', custom: 'Своя модель' }[preset?.id || preset] || preset?.label || preset;
+}
+
 function activeAiModelInfo() {
   const modelId = activeAiModel();
-  return aiStatus.models?.find((model) => model.id === modelId) || {
+  return getAiModelOptions().find((model) => model.id === modelId) || {
     id: modelId,
     label: modelId,
     cost_tier: isCustomAiModel() ? 'unknown' : 'unknown',
@@ -478,6 +515,11 @@ function conversionSourceLabel(source) {
   }[source] || source || 'Нет данных';
 }
 
+function renderActionButton(label, attributes = '', variant = 'secondary') {
+  const className = variant === 'primary' ? 'approveButton' : 'secondaryButton';
+  return `<button class="${className}" type="button" ${attributes}>${escapeHtml(label)}</button>`;
+}
+
 function hasClientValue(value) {
   return Boolean(value && value !== 'Не подключен' && value !== '—');
 }
@@ -563,7 +605,7 @@ function getReadinessState() {
     { status: !canRunSync() && !firstSyncDone ? 'blocked' : firstSyncDone ? 'ready' : 'action_needed', label: 'Первая синхронизация выполнена', description: formatSyncStatus(client.syncStatus), nextAction: 'Запустите синхронизацию', targetView: 'dashboard' },
     { status: statsReady ? 'ready' : firstSyncDone ? 'action_needed' : 'pending', label: 'Статистика кампаний доступна', description: statsReady ? `${perfSummary.campaigns.length} кампаний в сводке` : 'Нет сохранённых данных', nextAction: 'Обновите сводку или синхронизацию', targetView: 'dashboard' },
     { status: !hasClient ? 'blocked' : client.mainGoalId ? 'ready' : 'action_needed', label: 'ID основной цели указан', description: client.mainGoalId || 'Цель не выбрана. CPA будет считаться по общим конверсиям Директа.', nextAction: 'Укажите ID основной цели в настройках клиента', targetView: 'clients' },
-    { status: !client.mainGoalId ? 'pending' : perfSummary?.hasGoalData ? 'ready' : 'action_needed', label: 'Конверсии по цели загружены', description: perfSummary?.conversionsSourceMessage || 'Цель указана, но конверсии по ней ещё не загружены', nextAction: 'Запустите синхронизацию и проверьте источник конверсий', targetView: 'dashboard' },
+    { status: !client.mainGoalId ? 'pending' : perfSummary?.hasGoalData ? 'ready' : 'action_needed', label: 'Конверсии по цели загружены', description: perfSummary?.hasGoalData ? 'Данные по выбранным целям Директа загружены' : 'Цель указана, но конверсии по ней ещё не загружены', nextAction: 'Запустите синхронизацию и проверьте цели', targetView: 'dashboard' },
     { status: aiReady ? 'ready' : statsReady ? 'action_needed' : 'pending', label: 'AI-анализ сгенерирован', description: aiReady ? 'AI-план готов для ревью.' : 'AI-анализ станет доступнее после загрузки статистики.', nextAction: 'Откройте AI-аналитик', targetView: 'ai' },
   ];
 }
@@ -1464,7 +1506,7 @@ function renderSyncDiagnosticsPanel(compact = false) {
   }[level] || 'Нет данных';
   const message = diagnostics.message || (
     hasDiagnostics
-      ? (perfSummary?.conversionsSourceMessage || 'Проверьте источник конверсий и синхронизацию.')
+      ? (perfSummary?.hasGoalData ? 'Данные по выбранным целям Директа загружены.' : 'Проверьте цели, конверсии и синхронизацию.')
       : 'Сводка ещё не загружена. Запустите синхронизацию или обновите сводку, чтобы увидеть качество данных.'
   );
   const nextAction = !client.id
@@ -1490,10 +1532,13 @@ function renderSyncDiagnosticsPanel(compact = false) {
       <div class="kpiGrid">
         <article class="kpi blue"><span>Строки Direct</span><strong>${formatNumberSafe(diagnostics.directRowsLoaded || 0)}</strong></article>
         <article class="kpi green"><span>Цели Директа</span><strong>${escapeHtml(goalIds.join(', ') || 'не указаны')}</strong></article>
-        <article class="kpi orange"><span>Конверсии целей</span><strong>${formatNumberSafe(diagnostics.goalConversionsTotal || perfSummary?.goalConversionsTotal || 0)}</strong></article>
-        <article class="kpi orange"><span>Общие конверсии</span><strong>${formatNumberSafe(diagnostics.totalConversionsFallback || perfSummary?.totalConversionsFallback || 0)}</strong></article>
+        <article class="kpi orange"><span>Конверсии по целям</span><strong>${formatNumberSafe(diagnostics.goalConversionsTotal || perfSummary?.goalConversionsTotal || 0)}</strong></article>
       </div>
-      <p>Источник конверсий: ${escapeHtml(Object.entries(sourceCounts).map(([key, value]) => `${conversionSourceLabel(key)}: ${value}`).join(', ') || perfSummary?.conversionsSourceMessage || 'нет данных')}</p>
+      <details>
+        <summary class="secondaryButton">Технические детали конверсий</summary>
+        <p>${escapeHtml(Object.entries(sourceCounts).map(([key, value]) => `${conversionSourceLabel(key)}: ${value}`).join(', ') || perfSummary?.conversionsSourceMessage || 'нет данных')}</p>
+        <p>Fallback/общие конверсии Директа: ${formatNumberSafe(diagnostics.totalConversionsFallback || perfSummary?.totalConversionsFallback || 0)}</p>
+      </details>
       ${warnings.length ? `<div class="authStatus aiError">${warnings.map((item) => `<p>${escapeHtml(item)}</p>`).join('')}</div>` : ''}
       <div class="heroActions">
         ${nextAction.action === 'sync'
@@ -1529,7 +1574,7 @@ function renderPerformanceSummaryPanel() {
       <div class="panelHeader">
         <div>
           <h3>Сводка эффективности</h3>
-          <p>${campaigns.length ? `Кампаний: ${campaigns.length}, флагов: ${issueCount}. ${escapeHtml(perfSummary.conversionsSourceMessage || '')}` : 'Нет сохранённых данных Яндекс.Директа. Запустите синхронизацию после подключения Яндекса.'}</p>
+          <p>${campaigns.length ? `Кампаний: ${campaigns.length}, флагов: ${issueCount}. ${perfSummary.hasGoalData ? 'Данные по выбранным целям Директа загружены.' : 'Данные по выбранным целям недоступны, проверьте цели и синхронизацию.'}` : 'Нет сохранённых данных Яндекс.Директа. Запустите синхронизацию после подключения Яндекса.'}</p>
         </div>
         <span class="aiStatusBadge ${campaigns.length ? 'ready' : 'pending'}">${escapeHtml(perfSummary.message)}</span>
       </div>
@@ -1537,16 +1582,15 @@ function renderPerformanceSummaryPanel() {
         <article class="kpi green"><span>Расход</span><strong>${formatMoneySafe(totals.cost)}</strong></article>
         <article class="kpi blue"><span>Показы</span><strong>${formatNumberSafe(totals.impressions)}</strong></article>
         <article class="kpi orange"><span>Клики</span><strong>${formatNumberSafe(totals.clicks)}</strong></article>
-        <article class="kpi green"><span>Конверсии для анализа</span><strong>${formatNumberSafe(totals.conversions)}</strong></article>
-        <article class="kpi green"><span>Конверсии по выбранным целям</span><strong>${perfSummary.goalConversionsTotal == null ? '—' : formatNumberSafe(perfSummary.goalConversionsTotal)}</strong></article>
-        <article class="kpi blue"><span>Общие конверсии Директа</span><strong>${formatNumberSafe(perfSummary.totalConversionsFallback ?? totals.total_conversions ?? totals.conversions)}</strong></article>
+        <article class="kpi green"><span>Конверсии по целям</span><strong>${perfSummary.goalConversionsTotal == null ? '—' : formatNumberSafe(perfSummary.goalConversionsTotal)}</strong></article>
+        <article class="kpi blue"><span>CPA по целям</span><strong>${totals.cpa == null ? '—' : formatMoneySafe(totals.cpa)}</strong></article>
       </div>
-      <p>Цели: ${escapeHtml(selectedGoalIds.join(', ') || 'не указаны')} · Источник: ${escapeHtml(conversionSourceLabel(perfSummary.hasGoalData ? 'yandex_direct_goals' : perfSummary.syncDiagnostics?.hasGoalIds ? 'fallback_total_when_goal_unavailable' : 'yandex_direct_total'))} · Конверсии по выбранным целям: ${perfSummary.goalConversionsTotal == null ? '—' : formatNumberSafe(perfSummary.goalConversionsTotal)}</p>
-      <p>Средний CPC: ${formatMoneySafe(totals.avg_cpc)} · CPA: ${totals.cpa == null ? '—' : formatMoneySafe(totals.cpa)} · CTR: ${formatPercentSafe(totals.clicks && totals.impressions ? (totals.clicks / totals.impressions) * 100 : 0)}</p>
+      <p>Цели: ${escapeHtml(selectedGoalIds.join(', ') || 'не указаны')} · Данные по выбранным целям Директа · Конверсии по целям: ${perfSummary.goalConversionsTotal == null ? '—' : formatNumberSafe(perfSummary.goalConversionsTotal)}</p>
+      <p>Средний CPC: ${formatMoneySafe(totals.avg_cpc)} · CPA по целям: ${totals.cpa == null ? '—' : formatMoneySafe(totals.cpa)} · CTR: ${formatPercentSafe(totals.clicks && totals.impressions ? (totals.clicks / totals.impressions) * 100 : 0)}</p>
       ${campaigns.length ? `
         <div class="tableWrap">
           <table>
-            <thead><tr><th>Кампания</th><th>Цели</th><th>Расход</th><th>Показы</th><th>Клики</th><th>Всего конв.</th><th>Конв. по цели</th><th>Для анализа</th><th>CPA для анализа</th><th>Источник</th><th>Флаги</th></tr></thead>
+            <thead><tr><th>Кампания</th><th>Цели</th><th>Расход</th><th>Показы</th><th>Клики</th><th>Конверсии по целям</th><th>CPA по целям</th><th>Флаги</th></tr></thead>
             <tbody>${campaigns.map((campaign) => `
               <tr>
                 <td>${escapeHtml(campaign.campaign_name)}</td>
@@ -1554,11 +1598,8 @@ function renderPerformanceSummaryPanel() {
                 <td>${formatMoneySafe(campaign.cost)}</td>
                 <td>${formatNumberSafe(campaign.impressions)}</td>
                 <td>${formatNumberSafe(campaign.clicks)}</td>
-                <td>${formatNumberSafe(campaign.total_conversions ?? campaign.conversions)}</td>
                 <td>${campaign.goal_conversions == null ? '—' : formatNumberSafe(campaign.goal_conversions)}</td>
-                <td>${formatNumberSafe(campaign.conversions_used ?? campaign.conversions)}</td>
                 <td>${campaign.cpa_used == null ? '—' : formatMoneySafe(campaign.cpa_used)}</td>
-                <td>${escapeHtml(conversionSourceLabel(campaign.conversion_source))}</td>
                 <td>${escapeHtml((campaign.issue_flags || []).join(', ') || '—')}</td>
               </tr>
             `).join('')}</tbody>
@@ -1606,7 +1647,7 @@ function renderSearchQueryInsightsPanel() {
       ${items.length ? `
         <div class="tableWrap">
           <table>
-            <thead><tr><th>Запрос</th><th>Кампания</th><th>Группа</th><th>Расход</th><th>Клики</th><th>Конв. цели</th><th>Всего конв.</th><th>Минус-слово</th><th>Уверенность</th><th>Действие</th></tr></thead>
+            <thead><tr><th>Запрос</th><th>Кампания</th><th>Группа</th><th>Расход</th><th>Клики</th><th>Конверсии по целям</th><th>Минус-слово</th><th>Уверенность</th><th>Действие</th></tr></thead>
             <tbody>${items.slice(0, 12).map((item) => `
               <tr>
                 <td>${escapeHtml(item.query || '—')}</td>
@@ -1615,7 +1656,6 @@ function renderSearchQueryInsightsPanel() {
                 <td>${formatMoneySafe(item.cost)}</td>
                 <td>${formatNumberSafe(item.clicks)}</td>
                 <td>${item.goalConversions == null ? '—' : formatNumberSafe(item.goalConversions)}</td>
-                <td>${formatNumberSafe(item.totalConversions)}</td>
                 <td>${escapeHtml(item.recommendedNegativeKeyword || '—')}</td>
                 <td>${escapeHtml(item.confidence || 'low')}</td>
                 <td><button class="secondaryButton" type="button" data-copy-text="${escapeHtml(`Минус-слово: ${item.recommendedNegativeKeyword || ''}\nЗапрос: ${item.query || ''}\nКампания: ${item.campaign || ''}\nПричина: ${item.reason || ''}\nЧерновик, не применялось в Яндекс.Директ.`)}" ${item.recommendedNegativeKeyword ? '' : 'disabled'}>Скопировать</button></td>
@@ -1693,10 +1733,12 @@ function renderYandexDirectAuditPanel(compact = false) {
           ${limitations.map((item) => `<p>${escapeHtml(item.id)} · ${escapeHtml(item.title)}: ${escapeHtml(item.evidence)}</p>`).join('')}
         </details>
       ` : ''}
-      <div class="heroActions">
-        <button class="secondaryButton" type="button" data-ai-quick-action="Разобрать аудит Яндекс.Директа">Разобрать аудит Яндекс.Директа</button>
-        <button class="secondaryButton" type="button" data-ai-quick-action="Покажи quick wins по аудиту Яндекс.Директа">Показать quick wins</button>
-      </div>
+      ${!compact ? `
+        <div class="heroActions">
+          <button class="secondaryButton" type="button" data-ai-quick-action="Разобрать аудит Яндекс.Директа">Разобрать аудит Яндекс.Директа</button>
+          <button class="secondaryButton" type="button" data-ai-quick-action="Покажи quick wins по аудиту Яндекс.Директа">Показать quick wins</button>
+        </div>
+      ` : ''}
       <p><strong>Safety:</strong> аудит read-only. Рекомендации являются черновиками; изменения в Яндекс.Директ не применяются.</p>
     </section>
   `;
@@ -1731,10 +1773,10 @@ function renderDashboard() {
         <article class="kpi orange"><span>Кандидаты в минус-слова</span><strong>${formatNumberSafe(perfSummary?.searchQueryInsights?.candidateNegativeKeywords || 0)}</strong></article>
       </div>
       <div class="heroActions">
-        <button class="secondaryButton" data-go-view="clients">Клиенты</button>
-        <button class="secondaryButton" data-go-view="integrations">Интеграции</button>
-        <button class="approveButton" data-sync-client ${canRunSync() && !syncLoading ? '' : 'disabled'}>${syncLoading ? 'Синхронизация...' : 'Запустить синхронизацию'}</button>
-        <button class="approveButton" data-go-view="${escapeHtml(nextTarget)}">Перейти к шагу</button>
+        ${renderActionButton('Клиенты', 'data-go-view="clients"')}
+        ${renderActionButton('Интеграции', 'data-go-view="integrations"')}
+        ${renderActionButton(syncLoading ? 'Синхронизация...' : 'Запустить синхронизацию', `data-sync-client ${canRunSync() && !syncLoading ? '' : 'disabled'}`, 'primary')}
+        ${renderActionButton('Перейти к шагу', `data-go-view="${escapeHtml(nextTarget)}"`, 'primary')}
       </div>
       ${syncStatusMessage ? `<div class="authStatus integrationStatus">${escapeHtml(syncStatusMessage)}</div>` : ''}
     </section>
@@ -1813,8 +1855,8 @@ function renderClients() {
     ${perfSummary ? `
       <section class="panel">
         <h3>Сводка эффективности (${escapeHtml(perfSummary.message)})</h3>
-        <p>Расход: ${perfSummary.totals.cost} ₽ · Показы: ${perfSummary.totals.impressions} · Клики: ${perfSummary.totals.clicks} · Конверсии: ${perfSummary.totals.conversions}</p>
-        <p>Avg CPC: ${perfSummary.totals.avg_cpc} · CPA: ${perfSummary.totals.cpa ?? '—'}</p>
+        <p>Расход: ${perfSummary.totals.cost} ₽ · Показы: ${perfSummary.totals.impressions} · Клики: ${perfSummary.totals.clicks} · Конверсии по целям: ${perfSummary.goalConversionsTotal ?? perfSummary.totals.conversions}</p>
+        <p>Avg CPC: ${perfSummary.totals.avg_cpc} · CPA по целям: ${perfSummary.totals.cpa ?? '—'}</p>
       </section>
     ` : ''}
   `);
@@ -1882,7 +1924,7 @@ function renderRecommendations() {
     <section class="panel aiRecommendationCta">
       <div>
         <h3>Сформировать AI-рекомендации по клиентскому контексту</h3>
-        <p>${canRunAiAnalysis() ? `AI будет использовать ${perfSummary?.hasGoalData ? 'конверсии выбранных целей Директа' : 'общие конверсии Директа как fallback'}. ${escapeHtml(perfSummary?.conversionsSourceMessage || '')}` : 'AI пока не видит статистику кампаний. Сначала запустите синхронизацию.'}</p>
+        <p>${canRunAiAnalysis() ? `AI будет использовать конверсии выбранных целей Директа. ${perfSummary?.hasGoalData ? '' : 'Данные по целям пока недоступны, выводы по CPA ограничены.'}` : 'AI пока не видит статистику кампаний. Сначала запустите синхронизацию.'}</p>
       </div>
       <button class="approveButton" data-client-ai-recommendations ${clientAiLoading ? 'disabled' : ''}>${clientAiLoading ? 'Генерируем...' : 'Сгенерировать AI-черновик'}</button>
     </section>
@@ -1897,7 +1939,7 @@ function renderRecommendations() {
         <article class="kpi orange"><span>Кампании</span><strong>${formatNumberSafe(campaignsCount)}</strong></article>
         <article class="kpi green"><span>Флаги</span><strong>${formatNumberSafe(issueCount)}</strong></article>
       </div>
-      <p>Основная цель: ${escapeHtml(perfSummary?.selectedGoalId || currentClient().mainGoalId || 'не указана')} · Источник: ${escapeHtml(perfSummary?.conversionsSourceMessage || 'Нет данных')}</p>
+      <p>Цели: ${escapeHtml(perfSummary?.selectedGoalIds?.join(', ') || perfSummary?.selectedGoalId || currentClient().mainGoalId || 'не указаны')} · Конверсии по целям: ${formatNumberSafe(perfSummary?.goalConversionsTotal || 0)}</p>
     </section>
     ${renderClientAiRecommendations()}
     ${recommendations.length ? `
@@ -1970,7 +2012,7 @@ function renderOptimization() {
     <div class="pageIntro">
       <span class="eyebrow">🎯 Оптимизация</span>
       <h2>Оптимизация: диагностика, план, согласование</h2>
-      <p>${escapeHtml(client.name)} · цель: ${escapeHtml(client.mainGoalId || 'не указана')} · ${escapeHtml(perfSummary?.conversionsSourceMessage || 'Сначала загрузите сводку эффективности.')}</p>
+      <p>${escapeHtml(client.name)} · цели: ${escapeHtml(perfSummary?.selectedGoalIds?.join(', ') || client.conversionGoalIds || client.mainGoalId || 'не указаны')} · ${perfSummary?.hasGoalData ? 'Данные по выбранным целям Директа загружены.' : 'Проверьте загрузку конверсий по целям.'}</p>
       <div class="heroActions">
         <button class="secondaryButton" data-load-summary ${perfLoading ? 'disabled' : ''}>Обновить сводку</button>
         <button class="approveButton" data-load-optimization-plan ${optimizationPlanLoading ? 'disabled' : ''}>${optimizationPlanLoading ? 'Формируем...' : 'AI-план'}</button>
@@ -1985,7 +2027,7 @@ function renderOptimization() {
         <div>
           <span class="eyebrow">Этап 1</span>
           <h3>Диагностика</h3>
-          <p>${perfSummary?.hasGoalData ? 'CPA и диагностика используют конверсии по выбранным целям.' : 'Данные по целям недоступны: диагностика использует резервные общие конверсии и помечает источник.'}</p>
+          <p>${perfSummary?.hasGoalData ? 'CPA и диагностика используют конверсии по выбранным целям.' : 'Данные по целям недоступны: выводы по CPA ограничены, проверьте цели и синхронизацию.'}</p>
         </div>
         <span class="aiStatusBadge ${perfSummary?.campaigns?.length ? 'ready' : 'pending'}">${formatNumberSafe(perfSummary?.campaigns?.length || 0)} кампаний</span>
       </div>
@@ -1998,7 +2040,7 @@ function renderOptimization() {
             <span class="featureIcon">${campaign.severity === 'critical' ? '⛔' : campaign.severity === 'warning' ? '⚠️' : campaign.severity === 'info' ? '📈' : '✅'}</span>
             <h3>${escapeHtml(campaign.campaign_name)}</h3>
             <p>${escapeHtml(campaign.diagnostic_explanation || '')}</p>
-            <small>Цели ${escapeHtml(campaign.goal_ids || perfSummary?.selectedGoalIds?.join(', ') || '—')} · Расход ${formatMoneySafe(campaign.cost)} · клики ${formatNumberSafe(campaign.clicks)} · показы ${formatNumberSafe(campaign.impressions)} · всего конв. ${formatNumberSafe(campaign.total_conversions)} · конв. по цели ${campaign.goal_conversions == null ? '—' : formatNumberSafe(campaign.goal_conversions)} · для анализа ${formatNumberSafe(campaign.conversions_used)} · CPA ${campaign.cpa_used == null ? '—' : formatMoneySafe(campaign.cpa_used)} · CTR ${formatPercentSafe(campaign.ctr)} · ${escapeHtml(conversionSourceLabel(campaign.conversion_source))}</small>
+            <small>Цели ${escapeHtml(campaign.goal_ids || perfSummary?.selectedGoalIds?.join(', ') || '—')} · Расход ${formatMoneySafe(campaign.cost)} · клики ${formatNumberSafe(campaign.clicks)} · показы ${formatNumberSafe(campaign.impressions)} · конверсии по целям ${campaign.goal_conversions == null ? '—' : formatNumberSafe(campaign.goal_conversions)} · CPA по целям ${campaign.cpa_used == null ? '—' : formatMoneySafe(campaign.cpa_used)} · CTR ${formatPercentSafe(campaign.ctr)}</small>
             <p><strong>Фокус:</strong> ${escapeHtml(campaign.recommended_focus || '')}</p>
             <p><strong>Флаги:</strong> ${escapeHtml((campaign.issue_flags || []).join(', ') || '—')}</p>
           </article>
@@ -2154,7 +2196,7 @@ function renderIntegrations() {
 function renderAiModelSettings() {
   const preset = activeAiPresetInfo();
   const model = activeAiModelInfo();
-  const modelOptions = aiStatus.models || [];
+  const modelOptions = getAiModelOptions();
   const presetOptions = getAiPresetOptions();
   const selectedModelValue = isCustomAiModel() ? CUSTOM_MODEL_VALUE : activeAiModel();
   const customModelActive = selectedModelValue === CUSTOM_MODEL_VALUE || aiPreset === 'custom';
@@ -2172,7 +2214,7 @@ function renderAiModelSettings() {
       <div class="panelHeader">
         <div>
           <h3>AI-модель</h3>
-          <p>${escapeHtml(preset?.label || aiPreset)} · ${escapeHtml(resolvedModel)} · лимит ${formatNumberSafe(resolvedMaxTokens)} tokens</p>
+          <p>${escapeHtml(aiPresetLabel(preset))} · ${escapeHtml(resolvedModel)} · лимит ${formatNumberSafe(resolvedMaxTokens)} tokens</p>
         </div>
         <span class="aiStatusBadge ${aiStatus.configured ? 'ready' : 'pending'}">${aiStatus.configured ? 'OpenRouter подключён' : 'OpenRouter не настроен'}</span>
       </div>
@@ -2183,11 +2225,13 @@ function renderAiModelSettings() {
         <summary class="secondaryButton">Настройки модели</summary>
         <p>Режимы Эконом/Баланс/Максимум — это настройки DirectPilot AI. OpenRouter получает конкретную модель и лимит токенов.</p>
         <p>Режим влияет на модель по умолчанию, лимит ответа и подробность ответа. Дорогие модели могут быстрее расходовать баланс OpenRouter.</p>
+        <p>Эконом — быстрые и дешёвые регулярные проверки. Баланс — основной режим для анализа кампаний и запросов. Максимум — сложные аудиты, спорные выводы, глубокий разбор.</p>
+        <p><a href="https://openrouter.ai/models" target="_blank" rel="noopener noreferrer">Каталог моделей OpenRouter</a></p>
         <div class="clientSettingsGrid">
           <label class="authField">
             <span>Режим</span>
             <select data-ai-preset>
-              ${presetOptions.map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === aiPreset ? 'selected' : ''}>${escapeHtml(item.label)} · ${escapeHtml(item.cost_tier || 'unknown')}</option>`).join('')}
+              ${presetOptions.map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === aiPreset ? 'selected' : ''}>${escapeHtml(aiPresetLabel(item))} · ${escapeHtml(item.cost_tier || 'unknown')}</option>`).join('')}
               <option value="custom" ${aiPreset === 'custom' ? 'selected' : ''}>Своя модель</option>
             </select>
           </label>
@@ -2216,8 +2260,8 @@ function renderAiModelSettings() {
           `}
         </div>
         <p><strong>Фактически будет использована модель:</strong> ${escapeHtml(resolvedModel)}</p>
-        <p><strong>Лимит ответа:</strong> ${formatNumberSafe(resolvedMaxTokens)} tokens · <strong>режим:</strong> ${escapeHtml(preset?.label || aiPreset)} · <strong>${escapeHtml(costLabel)}</strong></p>
-        <p>${escapeHtml(preset?.purpose || 'Своя модель OpenRouter. Проверьте стоимость в кабинете OpenRouter.')}${preset?.warning ? ` ${escapeHtml(preset.warning)}` : ''}</p>
+        <p><strong>Лимит ответа:</strong> ${formatNumberSafe(resolvedMaxTokens)} tokens · <strong>режим:</strong> ${escapeHtml(aiPresetLabel(preset))} · <strong>${escapeHtml(costLabel)}</strong></p>
+        <p>${escapeHtml(aiPresetGuidance(aiPreset) || preset?.purpose || 'Своя модель OpenRouter. Проверьте стоимость в кабинете OpenRouter.')}${preset?.warning ? ` ${escapeHtml(preset.warning)}` : ''}</p>
         ${isCustomAiModel() ? '<div class="authStatus">Своя модель разрешена backend-настройками только если OPENROUTER_ALLOW_CUSTOM_MODELS=true. Проверьте стоимость вручную.</div>' : ''}
       </details>
       <div class="heroActions">
@@ -2232,19 +2276,10 @@ function renderAiChat() {
   const campaigns = perfSummary?.campaigns || [];
   const quickActions = [
     'Проведи аудит Яндекс.Директа по чеклисту',
+    'Найди критичные проблемы',
+    'Проанализируй поисковые запросы',
+    'Предложи минус-слова с рисками',
     'Покажи quick wins',
-    'Объясни, почему такой грейд',
-    'Проверь качество данных',
-    'Проанализируй по методике DirectPilot',
-    'Проверь конверсии выбранных целей',
-    'Проанализируй поисковые запросы и предложи минус-слова',
-    'Составь план по критичным кампаниям',
-    'Проанализируй аккаунт',
-    'Найди кампании с проблемами',
-    'Составь план оптимизации',
-    'Проверь цель и CPA',
-    'Что делать дальше?',
-    'Объясни данные простыми словами',
   ];
   return `
     <section class="panel aiChatPanel">
@@ -2257,7 +2292,7 @@ function renderAiChat() {
       </div>
       <div class="kpiGrid">
         <article class="kpi blue"><span>Цели</span><strong>${escapeHtml(perfSummary?.selectedGoalIds?.join(', ') || currentClient().conversionGoalIds || currentClient().mainGoalId || '—')}</strong></article>
-        <article class="kpi green"><span>Источник</span><strong>${escapeHtml(perfSummary?.hasGoalData ? 'Цели Директа' : perfSummary?.conversionsSourceMessage ? 'Общие конверсии Директа' : 'Нет данных')}</strong></article>
+        <article class="kpi green"><span>Конверсии по целям</span><strong>${perfSummary?.goalConversionsTotal == null ? '—' : formatNumberSafe(perfSummary.goalConversionsTotal)}</strong></article>
         <article class="kpi orange"><span>Кампании</span><strong>${formatNumberSafe(campaigns.length)}</strong></article>
       </div>
       <div class="heroActions">${quickActions.map((text) => `<button class="secondaryButton" type="button" data-ai-quick-action="${escapeHtml(text)}">${escapeHtml(text)}</button>`).join('')}</div>
@@ -2310,25 +2345,25 @@ function renderAiAssistant() {
     <div class="pageIntro">
       <span class="eyebrow">🧠 AI-аналитик</span>
       <h2>Единое AI workspace по клиенту</h2>
-      <p>${client.id ? `Клиент: ${escapeHtml(client.name)}. ${escapeHtml(perfSummary?.conversionsSourceMessage || 'Сначала загрузите summary, чтобы AI видел кампании и цели.')}` : 'Сначала создайте клиента.'}</p>
+      <p>${client.id ? `Клиент: ${escapeHtml(client.name)}. ${perfSummary?.hasGoalData ? 'AI видит конверсии по выбранным целям Директа.' : 'Загрузите summary и проверьте цели, чтобы AI видел целевые конверсии.'}` : 'Сначала создайте клиента.'}</p>
     </div>
     <section class="panel">
       <div class="panelHeader">
         <div>
-          <h3>Методика анализа DirectPilot</h3>
-          <p>AI анализирует данные по методике DirectPilot: качество данных → цели → кампании → проблемы → черновики действий.</p>
+          <h3>Как AI анализирует РК</h3>
+          <p>Методика DirectPilot: короткий read-only разбор данных, целей, кампаний, поисковых запросов и черновиков действий без применения изменений в Директ.</p>
         </div>
         <span class="aiStatusBadge ready">Методика включена</span>
       </div>
       <details>
-        <summary class="secondaryButton">Показать шаги методики</summary>
+        <summary class="secondaryButton">Методика DirectPilot</summary>
         <ol>
-          <li>Качество данных: синхронизация, выбранные цели Директа, источник конверсий, предупреждения.</li>
-          <li>Обзор аккаунта: расход, показы, клики, CTR, CPC, CPA, target CPA.</li>
-          <li>Сегментация кампаний: критично, предупреждение, возможность, мало данных, без проблем.</li>
-          <li>Проблемы: кампания, обоснование, значимость, уверенность, следующий шаг.</li>
-          <li>Черновики действий: ручная проверка, проверка трекинга, минус-фразы, объявления, бюджетный черновик.</li>
-          <li>Safety: ничего не применяем в Яндекс.Директ без approval.</li>
+          <li>Проверка качества данных.</li>
+          <li>Цели и конверсии по выбранным целям.</li>
+          <li>Аудит по чеклисту Яндекс.Директа.</li>
+          <li>Кампании: расход, CTR, CPA, конверсии.</li>
+          <li>Поисковые запросы: интент, минус-слова, риски.</li>
+          <li>Черновики действий, без применения в Директ.</li>
         </ol>
       </details>
     </section>
@@ -2921,6 +2956,9 @@ app.addEventListener('change', (event) => {
     aiPreset = event.target.value;
     if (aiPreset === 'custom') {
       aiModel = aiCustomModel;
+    } else {
+      const preset = activeAiPresetInfo();
+      aiModel = preset.default_model || aiStatus.recommended_default_model || aiStatus.default_model || aiModel;
     }
     saveAiModelSettings();
     render();

@@ -26,10 +26,10 @@ class PerfTotals:
 
 def _conversion_source_message(goal_ids: list[str], has_goal_data: bool) -> str:
     if goal_ids and has_goal_data:
-        return f"Используются конверсии выбранных целей Директа: {', '.join(goal_ids)}."
+        return f"Основная метрика: конверсии выбранных целей Директа: {', '.join(goal_ids)}."
     if goal_ids:
-        return "ID целей указаны, но Директ не вернул конверсии по выбранным целям. Используются общие конверсии."
-    return "ID целей не указаны. Используются общие конверсии из Директа."
+        return "ID целей указаны, но Директ не вернул конверсии по выбранным целям. CPA по целям недоступен; общие конверсии остаются только техническим fallback."
+    return "ID целей не указаны. Укажите цели, чтобы считать конверсии и CPA по выбранным целям."
 
 
 def _build_sync_diagnostics(
