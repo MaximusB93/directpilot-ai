@@ -1,7 +1,7 @@
-from datetime import datetime
+from datetime import date, datetime
 from uuid import uuid4
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -228,6 +228,27 @@ class DirectSearchQueryPeriodStat(Base):
     issue_flags: Mapped[str | None] = mapped_column(Text, nullable=True)
     recommended_negative_keyword: Mapped[str | None] = mapped_column(Text, nullable=True)
     recommendation_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    loaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class DirectCampaignDailyStat(Base):
+    __tablename__ = "direct_campaign_daily_stats"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    client_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    stat_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    campaign_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    campaign_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    impressions: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    clicks: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cost: Mapped[float] = mapped_column(nullable=False, default=0.0)
+    ctr: Mapped[float] = mapped_column(nullable=False, default=0.0)
+    avg_cpc: Mapped[float] = mapped_column(nullable=False, default=0.0)
+    goal_ids: Mapped[str | None] = mapped_column(Text, nullable=True)
+    goal_conversions: Mapped[float | None] = mapped_column(nullable=True)
+    goal_cpa: Mapped[float | None] = mapped_column(nullable=True)
+    conversion_rate: Mapped[float | None] = mapped_column(nullable=True)
+    issue_flags: Mapped[str | None] = mapped_column(Text, nullable=True)
     loaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 

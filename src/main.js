@@ -533,6 +533,7 @@ function issueFlagLabel(flag) {
     candidate_negative_keyword: 'Кандидат в минус-слова',
     costly_no_goal_conversion: 'Расход без целевых конверсий',
     low_relevance: 'Низкая релевантность',
+    check_queries_landing_goals: 'Проверить запросы, посадочную и цели',
   }[flag] || flag || '—';
 }
 
@@ -1713,6 +1714,79 @@ function renderSyncDiagnosticsPanel(compact = false) {
   `;
 }
 
+function renderYesterdaySummaryPanel() {
+  const summary = perfSummary?.yesterdayCampaignSummary || {};
+  const totals = summary.totals || {};
+  const campaigns = summary.campaigns || [];
+  const recommendations = summary.recommendations || [];
+  if (!summary.hasData) {
+    return `
+      <section class="panel emptyStatePanel compact">
+        <div class="panelHeader">
+          <div>
+            <h3>Сводка за вчера</h3>
+            <p>${escapeHtml(summary.message || 'Данные за вчера ещё не загружены. Запустите синхронизацию.')}</p>
+          </div>
+          <span class="aiStatusBadge pending">Нет данных</span>
+        </div>
+        <div class="heroActions">
+          <button class="approveButton" data-sync-client ${canRunSync() && !syncLoading ? '' : 'disabled'}>${syncLoading ? 'Синхронизация...' : 'Запустить синхронизацию'}</button>
+          <button class="secondaryButton" data-load-summary ${perfLoading ? 'disabled' : ''}>Обновить сводку</button>
+        </div>
+      </section>
+    `;
+  }
+  return `
+    <section class="panel">
+      <div class="panelHeader">
+        <div>
+          <h3>Сводка за вчера</h3>
+          <p>${escapeHtml(summary.date || '')} · Кампании за один день, без выводов о тренде. Основная метрика — конверсии по выбранным целям.</p>
+        </div>
+        <span class="aiStatusBadge ready">Загружено кампаний: ${formatNumberSafe(campaigns.length)}</span>
+      </div>
+      <div class="kpiGrid">
+        <article class="kpi green"><span>Расход</span><strong>${formatMoneySafe(totals.cost)}</strong></article>
+        <article class="kpi blue"><span>Показы</span><strong>${formatNumberSafe(totals.impressions)}</strong></article>
+        <article class="kpi orange"><span>Клики</span><strong>${formatNumberSafe(totals.clicks)}</strong></article>
+        <article class="kpi green"><span>Конверсии по целям</span><strong>${formatNumberSafe(totals.goalConversions)}</strong></article>
+        <article class="kpi blue"><span>CPA по целям</span><strong>${totals.goalCpa == null ? '—' : formatMoneySafe(totals.goalCpa)}</strong></article>
+        <article class="kpi orange"><span>CR</span><strong>${totals.conversionRate == null ? '—' : formatPercentSafe(totals.conversionRate)}</strong></article>
+      </div>
+      <p>CTR: ${formatPercentSafe(totals.ctr)} · CPC: ${formatMoneySafe(totals.avgCpc)} · Цели: ${escapeHtml(perfSummary?.selectedGoalIds?.join(', ') || currentClient().conversionGoalIds || currentClient().mainGoalId || '—')}</p>
+      ${campaigns.length ? `
+        <div class="tableWrap">
+          <table>
+            <thead><tr><th>Кампания</th><th>Расход</th><th>Клики</th><th>CTR</th><th>Конверсии по целям</th><th>CPA по целям</th><th>Сигналы</th></tr></thead>
+            <tbody>${campaigns.slice(0, 10).map((campaign) => `
+              <tr>
+                <td>${escapeHtml(campaign.campaignName || '—')}</td>
+                <td>${formatMoneySafe(campaign.cost)}</td>
+                <td>${formatNumberSafe(campaign.clicks)}</td>
+                <td>${formatPercentSafe(campaign.ctr)}</td>
+                <td>${campaign.goalConversions == null ? '—' : formatNumberSafe(campaign.goalConversions)}</td>
+                <td>${campaign.goalCpa == null ? '—' : formatMoneySafe(campaign.goalCpa)}</td>
+                <td>${escapeHtml(renderIssueFlags(campaign.issueFlags || []))}</td>
+              </tr>
+            `).join('')}</tbody>
+          </table>
+        </div>
+      ` : ''}
+      ${recommendations.length ? `
+        <div class="featureGrid">
+          ${recommendations.slice(0, 4).map((item) => `
+            <article class="featureCard">
+              <span class="featureIcon">!</span>
+              <h3>Что посмотреть</h3>
+              <p>${escapeHtml(item)}</p>
+            </article>
+          `).join('')}
+        </div>
+      ` : ''}
+    </section>
+  `;
+}
+
 function renderPerformanceSummaryPanel() {
   if (!perfSummary) {
     return `
@@ -2084,6 +2158,7 @@ function renderDashboard() {
       ${renderSyncCenter()}
       ${renderBusinessContextPanel(true)}
       ${renderSyncDiagnosticsPanel(true)}
+      ${renderYesterdaySummaryPanel()}
       ${renderYandexDirectAuditPanel(true)}
       ${renderPerformanceSummaryPanel()}
     `}
@@ -2573,7 +2648,7 @@ function renderAiChat() {
     'Найди критичные проблемы',
     'Проанализируй поисковые запросы',
     'Предложи минус-слова с рисками',
-    'Покажи quick wins',
+    'Разбери вчерашний день',
   ];
   return `
     <section class="panel aiChatPanel">

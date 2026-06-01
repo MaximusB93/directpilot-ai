@@ -52,6 +52,11 @@ DIRECT_ANALYST_PLAYBOOK_TEXT = """
 - N/A/needs_more_data — это ограничения, а не провалы.
 - Все действия — только черновики: manual_review, tracking_fix, add_negative_keywords, improve_ads, budget_reallocation, pause_campaign.
 
+Daily summary:
+- Use yesterdayCampaignSummary / yesterday_campaign_summary for operational daily analysis when present.
+- Focus on selected goal conversions, goal CPA, CTR, cost, clicks, and campaign issue flags.
+- If only yesterday is present, do not claim trend; say dynamics data is not loaded.
+
 Безопасность:
 - Никогда не утверждай, что изменения применены.
 - Не рекомендуй write-действия без отдельного approval/workflow.
@@ -79,6 +84,12 @@ def build_direct_analyst_instructions(context: dict[str, Any] | None = None) -> 
         "has_goal_data": diagnostics.get("hasGoalData") if diagnostics else goals.get("has_goal_data"),
         "conversion_source_counts": diagnostics.get("conversionSourceCounts"),
         "search_query_insights": (summary.get("searchQueryInsights") or context.get("search_query_insights") or {}),
+        "yesterday_campaign_summary": (
+            summary.get("yesterdayCampaignSummary")
+            or context.get("yesterday_campaign_summary")
+            or context.get("yesterdayCampaignSummary")
+            or {}
+        ),
         "yandex_direct_audit": (summary.get("yandexDirectAudit") or context.get("yandex_direct_audit") or {}),
         "warnings": diagnostics.get("warnings") or context.get("warnings"),
         "no_write_actions": safety.get("no_write_actions", True),
