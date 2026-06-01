@@ -119,6 +119,7 @@ def build_client_ai_context(client_id: str, client_context: dict[str, Any] | Non
             "sync_diagnostics": summary.get("syncDiagnostics") if summary else {},
         },
         "yandex_direct_audit": summary.get("yandexDirectAudit") if summary else {},
+        "yesterday_campaign_summary": summary.get("yesterdayCampaignSummary") if summary else {},
         "direct_analyst_playbook": build_direct_analyst_instructions(summary or {}),
         "guardrails": {
             "allowed_actions": ["audit", "explain", "create_draft", "create_dry_run_preview"],
@@ -219,6 +220,7 @@ def build_client_ai_context_from_db(db, client_id: str, selected_campaign_name: 
         "summary": summary,
         "sync_diagnostics": summary.get("syncDiagnostics", {}),
         "search_query_insights": summary.get("searchQueryInsights", {}),
+        "yesterday_campaign_summary": summary.get("yesterdayCampaignSummary", {}),
         "yandex_direct_audit": summary.get("yandexDirectAudit", {}),
         "direct_analyst_playbook": build_direct_analyst_instructions({
             "summary": summary,
@@ -292,6 +294,12 @@ Yandex Direct audit skill:
 - If yandex_direct_audit is present, use audit score, grade, category scores, failed checks, quick wins, and limitations before generic advice.
 - Treat N/A and needs_more_data checks as limitations, not confirmed failures.
 - Never claim unavailable account settings were checked.
+
+Yesterday campaign summary:
+- If yesterday_campaign_summary.hasData is true, use it for operational daily analysis.
+- Focus on selected goal conversions, CPA by goals, CTR, cost, clicks, and campaign issue flags for yesterday.
+- If only yesterday data is available, do not claim trend. Say that trend/dynamics data is not loaded.
+- Use business_context when available: brand, niche, seasonality, conversion actions, and negative topics.
 
 Правила:
 - Сначала используй business_context: бренд, нишу, офферы, сезонность, ограничения, negative_topics и память проекта.

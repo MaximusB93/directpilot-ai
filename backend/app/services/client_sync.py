@@ -4,7 +4,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.connectors.yandex_direct import YandexDirectConnector
-from app.models import ClientAccount, DirectCampaignPeriodStat, DirectSearchQueryPeriodStat, SyncJob
+from app.models import ClientAccount, DirectCampaignDailyStat, DirectCampaignPeriodStat, DirectSearchQueryPeriodStat, SyncJob
 from app.services.connected_accounts import get_yandex_access_token_for_account
 from app.services.yandex_metrika import parse_goal_ids
 
@@ -13,6 +13,7 @@ NO_TOKEN_MESSAGE = "Yandex OAuth token is not connected for the bound account. R
 NO_DATA_MESSAGE = "No Yandex Direct data for selected period"
 DIRECT_GOAL_FALLBACK_MESSAGE = "Direct goal conversions unavailable for selected goals. Falling back to total Direct conversions."
 SEARCH_QUERY_SYNC_WARNING = "Search query report could not be loaded. Campaign sync completed; negative keyword insights are unavailable."
+DAILY_SYNC_WARNING = "Yesterday campaign report could not be loaded. Campaign sync completed; daily summary is unavailable."
 
 
 def _int(v: str | None) -> int:
@@ -72,6 +73,23 @@ def _search_query_issue_data(
     return flags, recommended_negative_keyword, reason
 
 
+def _daily_campaign_issue_flags(*, cost: float, clicks: int, impressions: int, ctr: float, goal_conversions: float | None) -> list[str]:
+    flags: list[str] = []
+    conversions = goal_conversions if goal_conversions is not None else 0
+    if impressions < 100 or clicks < 10:
+        flags.append("low_data")
+        return flags
+    if cost > 0 and conversions == 0:
+        flags.append("spend_without_conversions")
+    if clicks >= 10 and conversions == 0:
+        flags.append("check_queries_landing_goals")
+    if ctr > 0 and ctr < 1.0:
+        flags.append("low_ctr")
+    if ctr >= 5.0 and conversions > 0:
+        flags.append("promising_campaign")
+    return flags
+
+
 def run_client_sync(db: Session, client_id: str, days: int = 30) -> SyncJob:
     client = db.get(ClientAccount, client_id)
     if not client:
@@ -92,6 +110,7 @@ def run_client_sync(db: Session, client_id: str, days: int = 30) -> SyncJob:
         if not client.yandex_account_id:
             db.execute(delete(DirectCampaignPeriodStat).where(DirectCampaignPeriodStat.client_id == client_id))
             db.execute(delete(DirectSearchQueryPeriodStat).where(DirectSearchQueryPeriodStat.client_id == client_id))
+            db.execute(delete(DirectCampaignDailyStat).where(DirectCampaignDailyStat.client_id == client_id))
             client.sync_status = "no_connection"
             client.sync_error = NO_BOUND_ACCOUNT_MESSAGE
             client.last_synced_at = now
@@ -112,6 +131,7 @@ def run_client_sync(db: Session, client_id: str, days: int = 30) -> SyncJob:
         if not token:
             db.execute(delete(DirectCampaignPeriodStat).where(DirectCampaignPeriodStat.client_id == client_id))
             db.execute(delete(DirectSearchQueryPeriodStat).where(DirectSearchQueryPeriodStat.client_id == client_id))
+            db.execute(delete(DirectCampaignDailyStat).where(DirectCampaignDailyStat.client_id == client_id))
             client.sync_status = "no_connection"
             client.sync_error = NO_TOKEN_MESSAGE
             client.last_synced_at = now
@@ -238,6 +258,52 @@ def run_client_sync(db: Session, client_id: str, days: int = 30) -> SyncJob:
         except Exception as exc:
             search_query_warning = f"{SEARCH_QUERY_SYNC_WARNING} {str(exc)[:300]}"
 
+        daily_warning = None
+        yesterday = now.date() - timedelta(days=1)
+        db.execute(
+            delete(DirectCampaignDailyStat).where(
+                DirectCampaignDailyStat.client_id == client_id,
+                DirectCampaignDailyStat.stat_date == yesterday,
+            )
+        )
+        try:
+            daily_rows = connector.get_campaign_daily_report(stat_date=yesterday, goal_ids=goal_ids or None)
+            for row in daily_rows:
+                cost = _float(row.get("Cost"))
+                clicks = _int(row.get("Clicks"))
+                impressions = _int(row.get("Impressions"))
+                ctr = _float(row.get("Ctr"))
+                goal_conversions = _direct_goal_conversion_value(row, goal_ids) if goal_ids else None
+                goal_cpa = (cost / goal_conversions) if goal_conversions else None
+                conversion_rate = (goal_conversions / clicks * 100) if goal_conversions is not None and clicks else None
+                flags = _daily_campaign_issue_flags(
+                    cost=cost,
+                    clicks=clicks,
+                    impressions=impressions,
+                    ctr=ctr,
+                    goal_conversions=goal_conversions,
+                )
+                db.add(
+                    DirectCampaignDailyStat(
+                        client_id=client_id,
+                        stat_date=yesterday,
+                        campaign_id=str(row.get("CampaignId") or ""),
+                        campaign_name=str(row.get("CampaignName") or ""),
+                        impressions=impressions,
+                        clicks=clicks,
+                        cost=cost,
+                        ctr=ctr,
+                        avg_cpc=_float(row.get("AvgCpc")),
+                        goal_ids=goal_ids_text,
+                        goal_conversions=goal_conversions,
+                        goal_cpa=goal_cpa,
+                        conversion_rate=conversion_rate,
+                        issue_flags=",".join(flags) if flags else None,
+                    )
+                )
+        except Exception as exc:
+            daily_warning = f"{DAILY_SYNC_WARNING} {str(exc)[:300]}"
+
         if rows:
             client.sync_status = "ok"
             if goal_ids and matched_goal_campaigns == 0:
@@ -246,6 +312,8 @@ def run_client_sync(db: Session, client_id: str, days: int = 30) -> SyncJob:
                 client.sync_error = None
             if search_query_warning:
                 client.sync_error = f"{client.sync_error}; {search_query_warning}" if client.sync_error else search_query_warning
+            if daily_warning:
+                client.sync_error = f"{client.sync_error}; {daily_warning}" if client.sync_error else daily_warning
         else:
             client.sync_status = "no_data"
             client.sync_error = NO_DATA_MESSAGE

@@ -124,6 +124,28 @@ class YandexDirectConnector:
             rows = _merge_total_conversion_fallback(rows, total_rows)
         return rows
 
+    def get_campaign_daily_report(
+        self,
+        *,
+        stat_date: date,
+        goal_ids: list[str] | None = None,
+        limit: int = 1000,
+        processing_mode: str = "auto",
+        max_wait_seconds: int = 20,
+    ) -> list[dict[str, str]]:
+        """Read campaign stats for one explicit date without write actions."""
+
+        return self.get_campaign_report(
+            date_from=stat_date,
+            date_to=stat_date,
+            days=1,
+            limit=limit,
+            date_range_type="CUSTOM_DATE",
+            goal_ids=goal_ids,
+            processing_mode=processing_mode,
+            max_wait_seconds=max_wait_seconds,
+        )
+
     def get_search_query_report(
         self,
         *,

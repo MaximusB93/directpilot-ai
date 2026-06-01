@@ -1,9 +1,10 @@
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import ClientAccount, ClientBusinessContext, DirectCampaignPeriodStat, DirectSearchQueryPeriodStat
+from app.models import ClientAccount, ClientBusinessContext, DirectCampaignDailyStat, DirectCampaignPeriodStat, DirectSearchQueryPeriodStat
 from app.services.yandex_direct_audit_skill import build_yandex_direct_audit
 from app.services.yandex_metrika import parse_goal_ids
 
@@ -241,6 +242,120 @@ def build_search_query_insights(rows: list[DirectSearchQueryPeriodStat]) -> dict
     }
 
 
+def _daily_recommendation(*, campaign_name: str, flags: list[str], cost: float, clicks: int) -> str:
+    if "spend_without_conversions" in flags and clicks >= 10:
+        return f"Проверить кампанию «{campaign_name}»: за вчера был расход {cost:.2f} ₽ и {clicks} кликов без конверсий по целям. Начните с запросов, посадочной страницы и корректности целей."
+    if "spend_without_conversions" in flags:
+        return f"Посмотреть кампанию «{campaign_name}»: был расход без конверсий по целям, но данных за один день может быть мало."
+    if "promising_campaign" in flags:
+        return f"Кампания «{campaign_name}» дала конверсии по целям за вчера. Масштабировать только после проверки качества лидов и ограничений бизнеса."
+    if "low_data" in flags:
+        return f"По кампании «{campaign_name}» мало данных за вчера. Не делайте жёстких выводов по одному дню."
+    return f"Продолжить мониторинг кампании «{campaign_name}»."
+
+
+def build_yesterday_campaign_summary(db: Session, client_id: str) -> dict:
+    yesterday = datetime.now(UTC).date() - timedelta(days=1)
+    rows = db.scalars(
+        select(DirectCampaignDailyStat)
+        .where(
+            DirectCampaignDailyStat.client_id == client_id,
+            DirectCampaignDailyStat.stat_date == yesterday,
+        )
+        .order_by(DirectCampaignDailyStat.cost.desc())
+    ).all()
+    empty_totals = {
+        "cost": 0.0,
+        "impressions": 0,
+        "clicks": 0,
+        "ctr": 0.0,
+        "avgCpc": 0.0,
+        "goalConversions": 0.0,
+        "goalCpa": None,
+        "conversionRate": None,
+    }
+    if not rows:
+        return {
+            "date": yesterday.isoformat(),
+            "hasData": False,
+            "totals": empty_totals,
+            "campaigns": [],
+            "insights": {
+                "spendWithoutGoalConversions": [],
+                "highCostCampaigns": [],
+                "lowCtrCampaigns": [],
+                "promisingCampaigns": [],
+            },
+            "recommendations": [],
+            "message": "Данные за вчера ещё не загружены. Запустите синхронизацию.",
+        }
+
+    total_cost = sum(item.cost for item in rows)
+    total_impressions = sum(item.impressions for item in rows)
+    total_clicks = sum(item.clicks for item in rows)
+    total_goal_conversions = sum(item.goal_conversions or 0 for item in rows)
+    campaigns = []
+    insights = {
+        "spendWithoutGoalConversions": [],
+        "highCostCampaigns": [],
+        "lowCtrCampaigns": [],
+        "promisingCampaigns": [],
+    }
+    recommendations = []
+    for item in rows:
+        flags = _flag_list(item.issue_flags)
+        campaign = {
+            "campaignId": item.campaign_id,
+            "campaignName": item.campaign_name,
+            "cost": item.cost,
+            "impressions": item.impressions,
+            "clicks": item.clicks,
+            "ctr": item.ctr,
+            "avgCpc": item.avg_cpc,
+            "goalIds": item.goal_ids,
+            "goalConversions": item.goal_conversions,
+            "goalCpa": item.goal_cpa,
+            "conversionRate": item.conversion_rate,
+            "issueFlags": flags,
+        }
+        campaigns.append(campaign)
+        if "spend_without_conversions" in flags:
+            insights["spendWithoutGoalConversions"].append(campaign)
+        if total_cost and item.cost >= max(500.0, total_cost * 0.25):
+            insights["highCostCampaigns"].append(campaign)
+        if "low_ctr" in flags:
+            insights["lowCtrCampaigns"].append(campaign)
+        if "promising_campaign" in flags:
+            insights["promisingCampaigns"].append(campaign)
+        recommendation = _daily_recommendation(
+            campaign_name=item.campaign_name,
+            flags=flags,
+            cost=item.cost,
+            clicks=item.clicks,
+        )
+        if recommendation not in recommendations:
+            recommendations.append(recommendation)
+
+    return {
+        "date": yesterday.isoformat(),
+        "hasData": True,
+        "totals": {
+            "cost": total_cost,
+            "impressions": total_impressions,
+            "clicks": total_clicks,
+            "ctr": (total_clicks / total_impressions * 100) if total_impressions else 0.0,
+            "avgCpc": (total_cost / total_clicks) if total_clicks else 0.0,
+            "goalConversions": total_goal_conversions,
+            "goalCpa": (total_cost / total_goal_conversions) if total_goal_conversions else None,
+            "conversionRate": (total_goal_conversions / total_clicks * 100) if total_clicks else None,
+        },
+        "campaigns": campaigns,
+        "insights": insights,
+        "recommendations": recommendations[:6],
+        "message": "Сводка за вчера построена по конверсиям выбранных целей Директа.",
+    }
+
+
 def _with_yandex_direct_audit(summary: dict) -> dict:
     summary["yandexDirectAudit"] = build_yandex_direct_audit(summary)
     return summary
@@ -265,6 +380,7 @@ def build_performance_summary(db: Session, client_id: str) -> dict:
         .order_by(DirectSearchQueryPeriodStat.cost.desc())
     ).all()
     search_query_insights = build_search_query_insights(search_rows)
+    yesterday_summary = build_yesterday_campaign_summary(db, client_id)
     if not rows:
         diagnostics = _build_sync_diagnostics(
             client=client,
@@ -294,6 +410,7 @@ def build_performance_summary(db: Session, client_id: str) -> dict:
             "goalDataWarnings": [],
             "syncDiagnostics": diagnostics,
             "searchQueryInsights": search_query_insights,
+            "yesterdayCampaignSummary": yesterday_summary,
             "businessContextStatus": business_context_status,
             "message": "Нет сохранённых данных Яндекс.Директа. Запустите синхронизацию после подключения Яндекса.",
         })
@@ -399,6 +516,7 @@ def build_performance_summary(db: Session, client_id: str) -> dict:
         "goalDataWarnings": warnings,
         "syncDiagnostics": sync_diagnostics,
         "searchQueryInsights": search_query_insights,
+        "yesterdayCampaignSummary": yesterday_summary,
         "businessContextStatus": business_context_status,
         "message": "ok",
     })
