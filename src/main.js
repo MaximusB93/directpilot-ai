@@ -1073,9 +1073,12 @@ async function loadAiPromptDebug() {
   render();
   try {
     const params = new URLSearchParams({
+      mode: 'chat',
       model: activeAiModel(),
       ai_preset: aiPreset === 'custom' ? 'economy' : aiPreset,
       max_tokens: String(activeAiMaxTokens()),
+      selected_campaign_name: selectedAiCampaignName || '',
+      message: aiChatInput.trim() || 'Проанализируй выбранного клиента DirectPilot AI.',
     });
     const response = await apiFetch(`/clients/${selectedClientId}/ai/prompt-debug?${params.toString()}`);
     const payload = await response.json();
@@ -2628,6 +2631,10 @@ function renderAiModelSettings() {
   const promptDebug = aiPromptDebugSnapshot;
   const promptDebugSize = promptDebug?.size || null;
   const promptDebugSections = (promptDebug?.sections || []).slice(0, 5);
+  const promptDebugMode = promptDebug?.mode === 'chat' ? 'AI-chat prompt' : promptDebug?.mode || '';
+  const promptDebugModelMismatch = promptDebugSize?.model && promptDebugSize.model !== resolvedModel
+    ? `Debug проверил модель ${promptDebugSize.model}, а в чате выбрана ${resolvedModel}.`
+    : '';
   return `
     <section class="panel">
       <div class="panelHeader">
@@ -2690,6 +2697,8 @@ function renderAiModelSettings() {
       ${aiModelTestStatus ? `<div class="authStatus integrationStatus">${escapeHtml(aiModelTestStatus)}</div>` : ''}
       ${aiPromptDebugStatus ? `<div class="authStatus integrationStatus">${escapeHtml(aiPromptDebugStatus)}</div>` : ''}
       ${promptDebugSize ? `
+        <p><strong>Проверяется:</strong> ${escapeHtml(promptDebugMode || 'AI prompt')}</p>
+        ${promptDebugModelMismatch ? `<div class="authStatus aiError">${escapeHtml(promptDebugModelMismatch)}</div>` : ''}
         <div class="metricGrid">
           <article><span>Input tokens</span><strong>${formatNumberSafe(promptDebugSize.estimatedInputTokens)}</strong></article>
           <article><span>Total tokens</span><strong>${formatNumberSafe(promptDebugSize.estimatedTotalTokens)}</strong></article>
@@ -2759,7 +2768,7 @@ function renderAiChat() {
         `).join('')}
         ${aiChatLoading ? '<article class="aiChatMessage assistant"><strong>DirectPilot AI</strong><pre>Собираю контекст через MCP tools...</pre></article>' : ''}
       </div>
-      ${aiChatError ? `<div class="authStatus aiError"><p>${escapeHtml(aiChatError)}</p>${aiChatErrorDetails?.model ? `<p>Модель: ${escapeHtml(aiChatErrorDetails.model)}. Free/custom модели могут часто получать rate limit.</p>` : ''}${aiChatErrorDetails?.retryable ? '<button class="secondaryButton" type="button" data-ai-economy-fallback="chat">Повторить на модели Эконом</button>' : ''}</div>` : ''}
+      ${aiChatError ? `<div class="authStatus aiError"><p>${escapeHtml(aiChatError)}</p>${aiChatErrorDetails?.model ? `<p>Модель: ${escapeHtml(aiChatErrorDetails.model)}.${aiChatErrorDetails?.code === 'openrouter_rate_limited' ? ' Free/custom модели могут часто получать rate limit.' : ''}</p>` : ''}${aiChatErrorDetails?.retryable ? '<button class="secondaryButton" type="button" data-ai-economy-fallback="chat">Повторить на модели Эконом</button>' : ''}</div>` : ''}
       <form class="aiChatForm" data-ai-chat-form>
         <textarea name="message" rows="3" data-ai-chat-input placeholder="Например: какие кампании дают расход без конверсий и какие цели Метрики проверить?">${escapeHtml(aiChatInput)}</textarea>
         <button class="approveButton" type="submit" ${aiChatLoading ? 'disabled' : ''}>${aiChatLoading ? 'Думаю...' : 'Отправить в AI-чат'}</button>
