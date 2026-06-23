@@ -125,6 +125,9 @@ let aiError = '';
 let aiLoading = false;
 let aiModelTestLoading = false;
 let aiModelTestStatus = '';
+let aiPromptDebugLoading = false;
+let aiPromptDebugStatus = '';
+let aiPromptDebugSnapshot = null;
 let clientAiRecommendations = null;
 let clientAiLoading = false;
 let clientAiError = '';
@@ -312,7 +315,7 @@ function getViewActionTarget(target) {
 
 function isInteractiveActionTarget(target) {
   return Boolean(
-    target?.closest?.('button, a, [role="button"], [data-save-api-base], [data-client-id], [data-integration], [data-client-ai-recommendations], [data-sync-client], [data-load-summary], [data-load-sync-jobs], [data-load-optimization-plan], [data-load-optimization-actions], [data-save-optimization-actions], [data-update-optimization-action], [data-load-execution-preview], [data-copy-optimization-plan], [data-copy-text], [data-optimization-filter], [data-optimization-action-filter], [data-ai-quick-action], [data-ai-economy-fallback], [data-test-ai-model], [data-clear-ai-chat], [data-refresh-yandex-status], [data-go-view], [data-logout]')
+    target?.closest?.('button, a, [role="button"], [data-save-api-base], [data-client-id], [data-integration], [data-client-ai-recommendations], [data-sync-client], [data-load-summary], [data-load-sync-jobs], [data-load-optimization-plan], [data-load-optimization-actions], [data-save-optimization-actions], [data-update-optimization-action], [data-load-execution-preview], [data-copy-optimization-plan], [data-copy-text], [data-optimization-filter], [data-optimization-action-filter], [data-ai-quick-action], [data-ai-economy-fallback], [data-test-ai-model], [data-check-ai-prompt-size], [data-clear-ai-chat], [data-refresh-yandex-status], [data-go-view], [data-logout]')
     || getViewActionTarget(target)
   );
 }
@@ -1053,6 +1056,39 @@ async function testSelectedAiModel() {
     aiModelTestStatus = `Не удалось проверить модель: ${error.message}`;
   } finally {
     aiModelTestLoading = false;
+    render();
+  }
+}
+
+
+async function loadAiPromptDebug() {
+  if (!selectedClientId) {
+    aiPromptDebugStatus = 'Сначала выберите клиента.';
+    aiPromptDebugSnapshot = null;
+    render();
+    return;
+  }
+  aiPromptDebugLoading = true;
+  aiPromptDebugStatus = 'Оцениваем размер AI-контекста...';
+  render();
+  try {
+    const params = new URLSearchParams({
+      model: activeAiModel(),
+      ai_preset: aiPreset === 'custom' ? 'economy' : aiPreset,
+      max_tokens: String(activeAiMaxTokens()),
+    });
+    const response = await apiFetch(`/clients/${selectedClientId}/ai/prompt-debug?${params.toString()}`);
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.detail || 'Не удалось проверить размер AI-контекста');
+    aiPromptDebugSnapshot = payload;
+    aiPromptDebugStatus = payload.size?.isTooLarge
+      ? 'Контекст слишком большой для выбранной модели.'
+      : 'Размер AI-контекста в пределах лимита модели.';
+  } catch (error) {
+    aiPromptDebugStatus = `Не удалось проверить AI-контекст: ${error.message}`;
+    aiPromptDebugSnapshot = null;
+  } finally {
+    aiPromptDebugLoading = false;
     render();
   }
 }
@@ -2589,6 +2625,9 @@ function renderAiModelSettings() {
   const customModelWarning = customModelActive
     ? 'Своя/free модель может быть нестабильной: возможны лимиты, 429 и временная недоступность.'
     : '';
+  const promptDebug = aiPromptDebugSnapshot;
+  const promptDebugSize = promptDebug?.size || null;
+  const promptDebugSections = (promptDebug?.sections || []).slice(0, 5);
   return `
     <section class="panel">
       <div class="panelHeader">
@@ -2646,8 +2685,34 @@ function renderAiModelSettings() {
       </details>
       <div class="heroActions">
         <button class="secondaryButton" type="button" data-test-ai-model ${aiModelTestLoading ? 'disabled' : ''}>${aiModelTestLoading ? 'Проверяем...' : 'Проверить модель'}</button>
+        <button class="secondaryButton" type="button" data-check-ai-prompt-size ${aiPromptDebugLoading ? 'disabled' : ''}>${aiPromptDebugLoading ? 'Проверяем...' : 'Проверить размер AI-контекста'}</button>
       </div>
       ${aiModelTestStatus ? `<div class="authStatus integrationStatus">${escapeHtml(aiModelTestStatus)}</div>` : ''}
+      ${aiPromptDebugStatus ? `<div class="authStatus integrationStatus">${escapeHtml(aiPromptDebugStatus)}</div>` : ''}
+      ${promptDebugSize ? `
+        <div class="metricGrid">
+          <article><span>Input tokens</span><strong>${formatNumberSafe(promptDebugSize.estimatedInputTokens)}</strong></article>
+          <article><span>Total tokens</span><strong>${formatNumberSafe(promptDebugSize.estimatedTotalTokens)}</strong></article>
+          <article><span>Лимит модели</span><strong>${formatNumberSafe(promptDebugSize.contextLimit)}</strong></article>
+          <article><span>Статус</span><strong>${promptDebugSize.isTooLarge ? 'слишком большой' : 'OK'}</strong></article>
+        </div>
+        ${promptDebugSize.warning ? `<div class="authStatus aiError">${escapeHtml(promptDebugSize.warning)}</div>` : ''}
+        <p class="mutedText">Слишком большой контекст: чаще всего виноваты поисковые запросы, список кампаний или подробный summary.</p>
+        <div class="tableWrap">
+          <table>
+            <thead><tr><th>Секция</th><th>Символы</th><th>~ tokens</th></tr></thead>
+            <tbody>
+              ${promptDebugSections.map((item) => `
+                <tr>
+                  <td>${escapeHtml(item.name)}</td>
+                  <td>${formatNumberSafe(item.chars)}</td>
+                  <td>${formatNumberSafe(item.estimatedTokens)}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      ` : ''}
     </section>
   `;
 }
@@ -2917,6 +2982,7 @@ app.addEventListener('click', async (event) => {
   const aiQuickActionButton = event.target.closest('[data-ai-quick-action]');
   const aiFallbackButton = event.target.closest('[data-ai-economy-fallback]');
   const testAiModelButton = event.target.closest('[data-test-ai-model]');
+  const checkAiPromptSizeButton = event.target.closest('[data-check-ai-prompt-size]');
   const clearAiChatButton = event.target.closest('[data-clear-ai-chat]');
   const resetBusinessContextButton = event.target.closest('[data-reset-business-context]');
   const saveAiMemoryButton = event.target.closest('[data-save-ai-memory]');
@@ -3033,6 +3099,11 @@ app.addEventListener('click', async (event) => {
 
   if (testAiModelButton) {
     await testSelectedAiModel();
+    return;
+  }
+
+  if (checkAiPromptSizeButton) {
+    await loadAiPromptDebug();
     return;
   }
 
@@ -3362,6 +3433,8 @@ app.addEventListener('change', (event) => {
       aiModel = event.target.value;
       if (aiPreset === 'custom') aiPreset = aiStatus.recommended_default_preset || 'economy';
     }
+    aiPromptDebugSnapshot = null;
+    aiPromptDebugStatus = '';
     saveAiModelSettings();
     render();
   }
@@ -3373,11 +3446,15 @@ app.addEventListener('change', (event) => {
       const preset = activeAiPresetInfo();
       aiModel = preset.default_model || aiStatus.recommended_default_model || aiStatus.default_model || aiModel;
     }
+    aiPromptDebugSnapshot = null;
+    aiPromptDebugStatus = '';
     saveAiModelSettings();
     render();
   }
   if (event.target.matches('[data-ai-max-tokens-mode]')) {
     aiMaxTokensMode = event.target.value;
+    aiPromptDebugSnapshot = null;
+    aiPromptDebugStatus = '';
     saveAiModelSettings();
     render();
   }

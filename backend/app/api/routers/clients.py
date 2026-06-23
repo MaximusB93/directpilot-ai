@@ -42,6 +42,7 @@ from app.schemas import (
 )
 from app.services.ai_recommendations import (
     build_client_ai_context_from_db,
+    build_recommendation_prompt_debug_snapshot,
     generate_client_recommendations_from_context,
 )
 from app.services.client_sync import list_sync_jobs, run_client_sync
@@ -604,6 +605,28 @@ def get_client_ai_context(
         return build_client_ai_context_from_db(db, client_id, selected_campaign_name=selected_campaign_name)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/{client_id}/ai/prompt-debug")
+def get_client_ai_prompt_debug(
+    client_id: str,
+    model: str | None = None,
+    ai_preset: str | None = None,
+    max_tokens: int | None = None,
+    include_preview: bool = False,
+    db: Session | None = Depends(get_optional_db),
+    current: CurrentUser = Depends(get_current_session_user),
+) -> dict:
+    db = _require_db(db)
+    _get_owned_client(db, client_id, current)
+    context = build_client_ai_context_from_db(db, client_id)
+    return build_recommendation_prompt_debug_snapshot(
+        context=context,
+        model=model,
+        ai_preset=ai_preset,
+        max_tokens=max_tokens,
+        include_preview=include_preview,
+    )
 
 
 @router.post("/{client_id}/sync", response_model=SyncJobResponse)
