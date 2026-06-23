@@ -43,7 +43,7 @@ from app.schemas import (
     OptimizationActionEventResponse,
     SyncJobResponse,
 )
-from app.services.ai_chat import build_chat_prompt_debug_snapshot, build_enriched_chat_message, compact_client_context_for_chat
+from app.services.ai_chat import build_chat_prompt_debug_snapshot, compact_client_context_for_chat
 from app.services.ai_recommendations import (
     build_client_ai_context_from_db,
     build_recommendation_prompt_debug_snapshot,
@@ -647,11 +647,7 @@ def get_client_ai_prompt_debug(
             search_query_limit=search_query_limit,
             selected_campaign_name=selected_campaign_name,
         )
-        chat_message = build_enriched_chat_message(
-            message or "Проанализируй выбранного клиента DirectPilot AI.",
-            compacted_context,
-            ai_options,
-        )
+        chat_message = message or "Проанализируй выбранного клиента DirectPilot AI."
         chat_history: list[AiChatMessage] = []
         if history_json:
             try:

@@ -17,7 +17,7 @@ from app.core.config import (
 from app.db import get_optional_db
 from app.models import ClientAccount
 from app.schemas import AiChatRequest, AiChatResponse, AiPromptRequest, AiPromptResponse, AiStatusResponse
-from app.services.ai_chat import answer_ai_chat, build_enriched_chat_message, compact_client_context_for_chat
+from app.services.ai_chat import answer_ai_chat, compact_client_context_for_chat
 from app.services.ai_recommendations import build_client_ai_context_from_db
 from app.services.ai_prompt_debug import build_openrouter_request_debug
 from app.services.openrouter import DEFAULT_SYSTEM_PROMPT, generate_openrouter_response, openrouter_status
@@ -158,14 +158,11 @@ async def chat_with_ai(
         search_query_limit=payload.search_query_limit,
         selected_campaign_name=payload.selected_campaign_name,
     )
-    enriched_message = payload.message
-    if compacted_context:
-        enriched_message = build_enriched_chat_message(payload.message, compacted_context, ai_options)
     selected_model = str(ai_options["model"])
     try:
         return await answer_ai_chat(
             client_id=payload.client_id,
-            message=enriched_message,
+            message=payload.message,
             model=selected_model,
             history=payload.history,
             client_context=compacted_context,
