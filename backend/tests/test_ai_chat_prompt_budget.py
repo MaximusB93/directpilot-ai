@@ -78,3 +78,8 @@ def test_chat_prompt_debug_snapshot_uses_chat_mode_and_requested_max_tokens():
     assert snapshot["size"]["model"] == "google/gemma-3-12b-it"
     assert snapshot["size"]["maxTokens"] == 777
     assert snapshot["size"]["isTooLarge"] is False
+    section_names = {item["name"] for item in snapshot["sections"]}
+    assert "chat.message" in section_names
+    assert "chat.serverContext" in section_names
+    assert "chat.toolResults" in section_names
+    assert snapshot["reductionHints"]
