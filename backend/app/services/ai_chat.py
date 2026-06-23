@@ -28,7 +28,19 @@ def _select_mcp_tools(message: str) -> list[tuple[str, Any]]:
         tool_plan.append(("list_yandex_direct_campaigns", lambda client_id: {"client_id": client_id}))
     if any(token in normalized for token in ["интеграц", "подключ", "oauth"]):
         tool_plan.append(("list_integrations", lambda client_id: {}))
-    return tool_plan
+    if any(token in normalized for token in ["metrica", "метрик", "цель", "цели", "конверс"]):
+        tool_plan.append(("list_yandex_metrica_goals", lambda client_id: {"client_id": client_id}))
+    if any(token in normalized for token in ["direct", "директ", "кампан", "расход", "cpa", "ставк", "запрос"]):
+        tool_plan.append(("list_yandex_direct_campaigns", lambda client_id: {"client_id": client_id}))
+    if any(token in normalized for token in ["интеграц", "подключ", "oauth"]):
+        tool_plan.append(("list_integrations", lambda client_id: {}))
+    deduped: list[tuple[str, Any]] = []
+    seen: set[str] = set()
+    for name, factory in tool_plan:
+        if name not in seen:
+            deduped.append((name, factory))
+            seen.add(name)
+    return deduped
 
 
 def _local_tool_result(name: str, client_id: str, client_context: dict[str, Any] | None) -> Any:
@@ -159,6 +171,377 @@ def compact_client_context_for_chat(
     return context
 
 
+def _first_present(*values: Any) -> Any:
+    for value in values:
+        if value not in (None, "", [], {}):
+            return value
+    return None
+
+
+def _number_or_none(value: Any) -> float | int | None:
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return int(number) if number.is_integer() else number
+
+
+def _compact_text(value: Any, limit: int = 500) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    return text[:limit] + ("..." if len(text) > limit else "")
+
+
+def _list_head(value: Any, limit: int = 5) -> list[Any]:
+    return value[:limit] if isinstance(value, list) else []
+
+
+def _normal_text(value: str) -> str:
+    return (value or "").lower().replace("ё", "е")
+
+
+def detect_analysis_intent(message: str) -> dict[str, Any]:
+    text = _normal_text(message)
+    notes: list[str] = []
+    requested_period: str | None = None
+    if "за вчера" in text or "вчера" in text:
+        requested_period = "yesterday"
+    elif "за последние 7" in text or "7 дней" in text:
+        requested_period = "last_7_days"
+    elif "за неделю" in text or "недел" in text:
+        requested_period = "week"
+    elif "за месяц" in text or "месяц" in text:
+        requested_period = "month"
+    elif "за май" in text:
+        requested_period = "may"
+    else:
+        notes.append("Requested period was not parsed; use latest synced period.")
+
+    rules = [
+        (
+            "global_direct_audit",
+            ["аудит", "чеклист", "чек-лист", "полный анализ", "весь аккаунт", "комплексный анализ"],
+            ["account_summary", "campaigns", "audit", "search_queries", "dynamics", "demographics"],
+            True,
+        ),
+        (
+            "search_queries_analysis",
+            ["поисковые запросы", "запросы", "search query", "минус-слова", "минуса"],
+            ["search_queries", "selected_goals", "campaigns"],
+            False,
+        ),
+        (
+            "dynamics_analysis",
+            ["динамика", "по дням", "неделя", "месяц", "вчера", "рост", "падение"],
+            ["daily_summary", "sync_period", "campaigns"],
+            False,
+        ),
+        (
+            "demographics_analysis",
+            ["пол", "возраст", "демография", "соцдем", "устройства", "гео", "регион"],
+            ["demographics", "geo", "devices"],
+            False,
+        ),
+        (
+            "goal_tracking_analysis",
+            ["цели", "метрика", "конверсии", "goal", "tracking"],
+            ["selected_goals", "conversion_source", "tracking_warnings"],
+            False,
+        ),
+        (
+            "campaign_analysis",
+            ["кампания", "кампанию", "campaign", "high cpa", "cpa", "расход"],
+            ["campaigns", "account_summary", "selected_goals"],
+            False,
+        ),
+    ]
+    for intent, tokens, data_needs, requires_cascade in rules:
+        if any(token in text for token in tokens):
+            return {
+                "intent": intent,
+                "scope": "whole_account" if intent in {"global_direct_audit", "search_queries_analysis"} else "focused",
+                "requiresCascade": requires_cascade,
+                "requestedPeriod": requested_period,
+                "dataNeeds": data_needs,
+                "notes": notes,
+            }
+    return {
+        "intent": "general_question",
+        "scope": "focused",
+        "requiresCascade": False,
+        "requestedPeriod": requested_period,
+        "dataNeeds": ["client", "account_summary"],
+        "notes": notes,
+    }
+
+
+def _client_data(context: dict[str, Any]) -> dict[str, Any]:
+    client = context.get("client") if isinstance(context.get("client"), dict) else context
+    return client if isinstance(client, dict) else {}
+
+
+def _business_context_data(context: dict[str, Any]) -> dict[str, Any]:
+    business = context.get("business_context")
+    if isinstance(business, dict):
+        fields = business.get("fields")
+        return fields if isinstance(fields, dict) else business
+    return {}
+
+
+def classify_search_query(query: str, client_context: dict[str, Any] | None) -> dict[str, Any]:
+    context = client_context if isinstance(client_context, dict) else {}
+    client = _client_data(context)
+    business = _business_context_data(context)
+    raw_tokens = [
+        client.get("name"),
+        client.get("directLogin"),
+        client.get("direct_login"),
+        business.get("brandName"),
+        business.get("brand_name"),
+        business.get("brand"),
+        "green flow",
+        "greenflow",
+        "грин флоу",
+        "гринфлоу",
+    ]
+    tokens: set[str] = set()
+    for token in raw_tokens:
+        text = _normal_text(str(token or "")).strip()
+        if len(text) >= 3 and text not in {"none", "null"}:
+            tokens.add(text)
+            tokens.add(text.replace(" ", ""))
+    normalized_query = _normal_text(query)
+    brand_like = any(token and token in normalized_query.replace(" ", "") for token in tokens)
+    return {
+        "query": query,
+        "brandLike": brand_like,
+        "risk": "high" if brand_like else "normal",
+        "classification": "brand_or_tracking_review" if brand_like else "non_brand_query",
+        "safeNegativeKeyword": not brand_like,
+        "brandTokensMatched": sorted(token for token in tokens if token and token in normalized_query.replace(" ", ""))[:5],
+    }
+
+
+def _compact_campaign(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "name": _first_present(item.get("campaign_name"), item.get("name")),
+        "cost": _number_or_none(item.get("cost")),
+        "impressions": _number_or_none(item.get("impressions")),
+        "clicks": _number_or_none(item.get("clicks")),
+        "ctr": _number_or_none(item.get("ctr")),
+        "avgCpc": _number_or_none(_first_present(item.get("avg_cpc"), item.get("avgCpc"))),
+        "goalConversions": _number_or_none(_first_present(item.get("goal_conversions"), item.get("goalConversions"), item.get("conversionsUsed"))),
+        "goalCpa": _number_or_none(_first_present(item.get("goal_cpa"), item.get("goalCpa"), item.get("cpaUsed"))),
+        "severity": _first_present(item.get("severity"), "info"),
+        "issueFlags": item.get("issue_flags") or item.get("issueFlags") or [],
+        "recommendedFocus": item.get("recommended_focus") or item.get("recommendedFocus"),
+    }
+
+
+def _compact_search_query(item: dict[str, Any], client_context: dict[str, Any]) -> dict[str, Any]:
+    query = str(_first_present(item.get("query"), item.get("search_query"), item.get("searchQuery"), "") or "")
+    goal_conversions = _number_or_none(_first_present(item.get("goal_conversions"), item.get("goalConversions"), item.get("conversionsUsed"))) or 0
+    classified = classify_search_query(query, client_context)
+    if goal_conversions > 0:
+        classified["safeNegativeKeyword"] = False
+        classified["classification"] = "has_goal_conversions"
+        classified["risk"] = "high"
+    return {
+        "query": query,
+        "campaign": _first_present(item.get("campaign_name"), item.get("campaign"), item.get("campaignName")),
+        "adGroup": _first_present(item.get("ad_group_name"), item.get("adGroupName")),
+        "cost": _number_or_none(item.get("cost")),
+        "clicks": _number_or_none(item.get("clicks")),
+        "impressions": _number_or_none(item.get("impressions")),
+        "goalConversions": goal_conversions,
+        "totalConversions": _number_or_none(_first_present(item.get("conversions"), item.get("totalConversions"))),
+        "reason": item.get("reason") or item.get("recommendation_reason") or item.get("recommendationReason"),
+        "confidence": item.get("confidence"),
+        "recommendedNegativeKeyword": item.get("recommended_negative_keyword") or item.get("recommendedNegativeKeyword") or query,
+        **classified,
+    }
+
+
+def build_compact_ai_chat_context(
+    client_context: dict[str, Any] | None,
+    intent_plan: dict[str, Any],
+    options: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    context = client_context if isinstance(client_context, dict) else {}
+    summary = context.get("summary") if isinstance(context.get("summary"), dict) else {}
+    client = _client_data(context)
+    business = _business_context_data(context)
+    goals = context.get("goals") if isinstance(context.get("goals"), dict) else {}
+    diagnostics = summary.get("syncDiagnostics") or context.get("sync_diagnostics") or {}
+    selected_goal_ids = (
+        summary.get("selectedGoalIds")
+        or goals.get("selected_goal_ids")
+        or context.get("selectedGoalIds")
+        or []
+    )
+    campaigns_source = context.get("campaigns") or summary.get("campaigns") or []
+    campaigns = [_compact_campaign(item) for item in _list_head(campaigns_source, 12) if isinstance(item, dict)]
+    search_source = summary.get("searchQueryInsights") or context.get("search_query_insights") or {}
+    search_items = search_source.get("insights") if isinstance(search_source, dict) else []
+    compact_queries = [_compact_search_query(item, context) for item in _list_head(search_items, int((options or {}).get("search_query_limit") or 20)) if isinstance(item, dict)]
+    brand_queries = [item for item in compact_queries if item.get("brandLike")][:10]
+    non_brand_waste = [item for item in compact_queries if not item.get("brandLike") and not item.get("goalConversions")][:10]
+    queries_with_goals = [item for item in compact_queries if (item.get("goalConversions") or 0) > 0][:10]
+    audit = summary.get("yandexDirectAudit") or context.get("yandex_direct_audit") or {}
+    saved_actions = context.get("saved_optimization_actions") if isinstance(context.get("saved_optimization_actions"), dict) else {}
+    memory_notes = business.get("memoryNotes") or business.get("memory_notes")
+    limitations = []
+    omitted_sections = [
+        "yandex_binding.account ids/timestamps",
+        "latest_sync_job ids/timestamps",
+        "full direct_analyst_playbook",
+        "full audit checks",
+        "duplicate root summary/search query/audit sections",
+        "full previous AI memory_notes",
+    ]
+    if memory_notes:
+        limitations.append("Previous AI memory is reference-only and must not override current trusted metrics.")
+    if not selected_goal_ids:
+        limitations.append("Selected goal IDs are missing.")
+    if not summary and not campaigns:
+        limitations.append("Performance summary is missing.")
+    return {
+        "analysisPlan": intent_plan,
+        "client": {
+            "id": client.get("id"),
+            "name": client.get("name"),
+            "directLogin": client.get("directLogin") or client.get("direct_login"),
+            "metricaCounter": client.get("metricaCounter") or client.get("metrica_counter"),
+            "targetCpa": client.get("targetCpa") or client.get("target_cpa"),
+            "businessContextStatus": context.get("businessContextStatus", {}).get("status") if isinstance(context.get("businessContextStatus"), dict) else ("partial" if business else "empty"),
+        },
+        "businessMemory": {
+            "type": "previous_ai_memory",
+            "available": bool(memory_notes),
+            "trustLevel": "reference_only",
+            "summary": _compact_text(memory_notes, 500),
+        },
+        "dataQuality": {
+            "syncStatus": client.get("syncStatus") or client.get("sync_status"),
+            "period": summary.get("period") or context.get("period"),
+            "selectedGoalIds": selected_goal_ids,
+            "hasGoalData": bool(summary.get("hasGoalData") or goals.get("has_goal_data")),
+            "goalConversionsTotal": _number_or_none(summary.get("goalConversionsTotal") or goals.get("goal_conversions_total")),
+            "message": summary.get("conversionsSourceMessage") or diagnostics.get("message"),
+        },
+        "accountTotals": {
+            "cost": _number_or_none((summary.get("totals") or {}).get("cost")),
+            "impressions": _number_or_none((summary.get("totals") or {}).get("impressions")),
+            "clicks": _number_or_none((summary.get("totals") or {}).get("clicks")),
+            "ctr": _number_or_none((summary.get("totals") or {}).get("ctr")),
+            "avgCpc": _number_or_none((summary.get("totals") or {}).get("avgCpc")),
+            "goalConversions": _number_or_none(summary.get("goalConversionsTotal")),
+            "goalCpa": _number_or_none((summary.get("totals") or {}).get("goalCpa") or (summary.get("totals") or {}).get("cpa")),
+        },
+        "campaigns": campaigns,
+        "audit": {
+            "score": audit.get("score"),
+            "grade": audit.get("grade"),
+            "summary": audit.get("summary"),
+            "categoryScores": [
+                {
+                    "title": item.get("title"),
+                    "score": item.get("score"),
+                    "grade": item.get("grade"),
+                    "status": item.get("status"),
+                }
+                for item in _list_head(audit.get("categories"), 8)
+                if isinstance(item, dict)
+            ],
+            "criticalIssues": _list_head(audit.get("criticalIssues"), 8),
+            "quickWins": _list_head(audit.get("quickWins"), 8),
+            "limitations": _list_head(audit.get("limitations"), 8),
+        },
+        "searchQueries": {
+            "totalQueries": search_source.get("totalQueries") if isinstance(search_source, dict) else len(compact_queries),
+            "candidateNegativeKeywords": search_source.get("candidateNegativeKeywords") if isinstance(search_source, dict) else len(non_brand_waste),
+            "totalWasteCost": search_source.get("totalWasteCost") if isinstance(search_source, dict) else None,
+            "topWasteQueries": compact_queries[:10],
+            "brandLikeQueries": brand_queries,
+            "nonBrandWasteQueries": non_brand_waste,
+            "queriesWithGoalConversions": queries_with_goals,
+        },
+        "dynamics": {
+            "available": bool(summary.get("yesterdayCampaignSummary") or context.get("yesterday_campaign_summary")),
+            "summary": "Yesterday campaign summary is available." if summary.get("yesterdayCampaignSummary") else "Daily/weekly dynamics are not fully available.",
+            "dailyRows": _list_head((summary.get("yesterdayCampaignSummary") or {}).get("campaigns"), 10),
+        },
+        "demographics": {
+            "available": False,
+            "summary": "Demographics/geo/device breakdown is not loaded yet.",
+            "segments": [],
+        },
+        "optimizationDrafts": {
+            "total": saved_actions.get("total", 0),
+            "draft": saved_actions.get("draft", 0),
+            "appliedToYandex": False,
+            "topActions": _list_head(context.get("optimization_plan"), 8),
+        },
+        "knowledgeRules": [
+            {"title": item.get("title"), "content": _compact_text(item.get("content"), 300)}
+            for item in _list_head(context.get("knowledge_snippets"), 3)
+            if isinstance(item, dict)
+        ],
+        "limitations": limitations,
+        "safety": {
+            "noWriteActions": True,
+            "message": "Изменения в Яндекс.Директ не применялись.",
+        },
+        "omittedSections": omitted_sections,
+    }
+
+
+def _build_data_fetch_trace(compact_prompt_context: dict[str, Any]) -> list[dict[str, Any]]:
+    search_queries = compact_prompt_context.get("searchQueries") if isinstance(compact_prompt_context, dict) else {}
+    campaigns = compact_prompt_context.get("campaigns") if isinstance(compact_prompt_context, dict) else []
+    audit = compact_prompt_context.get("audit") if isinstance(compact_prompt_context, dict) else {}
+    data_quality = compact_prompt_context.get("dataQuality") if isinstance(compact_prompt_context, dict) else {}
+    memory = compact_prompt_context.get("businessMemory") if isinstance(compact_prompt_context, dict) else {}
+    return [
+        {
+            "source": "cached_direct_sync_data",
+            "status": "used" if campaigns else "missing",
+            "rows": len(campaigns) if isinstance(campaigns, list) else 0,
+        },
+        {
+            "source": "cached_search_query_insights",
+            "status": "used" if (search_queries or {}).get("topWasteQueries") else "missing",
+            "rows": len((search_queries or {}).get("topWasteQueries") or []),
+        },
+        {
+            "source": "cached_goal_data",
+            "status": "used" if (data_quality or {}).get("hasGoalData") else "missing",
+            "rows": 1 if (data_quality or {}).get("hasGoalData") else 0,
+        },
+        {
+            "source": "deterministic_yandex_direct_audit",
+            "status": "used" if (audit or {}).get("score") is not None else "missing",
+            "rows": len((audit or {}).get("criticalIssues") or []) + len((audit or {}).get("quickWins") or []),
+        },
+        {
+            "source": "business_context_reference_only_memory",
+            "status": "used" if (memory or {}).get("available") else "missing",
+            "rows": 1 if (memory or {}).get("available") else 0,
+        },
+        {
+            "source": "yandex_direct_read_only_report",
+            "status": "not_implemented",
+            "rows": 0,
+            "message": "Read-only search query fetch by arbitrary period is not implemented yet; using cached sync context.",
+        },
+    ]
+
+
 def _format_history(messages: list[AiChatMessage], chat_history_limit: int | None = 3) -> str:
     messages = _limit_history(messages, chat_history_limit)
     if not messages:
@@ -172,25 +555,53 @@ def _build_chat_prompt(
     history: list[AiChatMessage],
     traces: list[AiToolTrace],
     *,
+    compact_prompt_context: dict[str, Any] | None = None,
+    intent_plan: dict[str, Any] | None = None,
     tool_results_mode: str = "summary",
     chat_history_limit: int | None = 3,
 ) -> str:
     tool_context = [_tool_trace_for_prompt(trace, tool_results_mode=tool_results_mode) for trace in traces]
+    plan = intent_plan or detect_analysis_intent(message)
+    compact_context = compact_prompt_context or {}
+    if plan.get("intent") == "global_direct_audit":
+        output_instructions = (
+            "Выполни каскадный анализ: 1) качество данных и цели; 2) аккаунт целиком; "
+            "3) кампании; 4) поисковые запросы; 5) динамика, если доступна; "
+            "6) демография/гео/устройства, если доступны; 7) ограничения; "
+            "8) безопасный план действий."
+        )
+    elif plan.get("intent") == "search_queries_analysis":
+        output_instructions = (
+            "Фокусируйся на поисковых запросах за requestedPeriod/currentPeriod: раздели брендовые и небрендовые; "
+            "не предлагай брендовые как обычные минус-слова; не минусуй запросы с goalConversions > 0; "
+            "покажи расход, клики, конверсии по выбранным целям, риск и уверенность."
+        )
+    else:
+        output_instructions = "Ответь по задаче пользователя на основе compact trusted context. Если данных нет, явно перечисли limitations/missingData."
     return f"""
 Ты AI-аналитик DirectPilot AI внутри чата PPC-специалиста.
-Отвечай по-русски, кратко и структурно. Используй только факты из MCP tool results ниже.
-Если данных недостаточно, явно напиши, какие данные нужно подключить из Яндекс.Директа, Метрики или CRM.
+Отвечай по-русски, структурно и только по trusted context ниже.
+Не выдумывай метрики, конверсии, причины или факты. Если данных нет, добавь их в limitations/missingData.
 Не применяй изменения и не говори, что изменения уже внесены: только аналитика, dry-run, рекомендации и approval.
 
 client_id: {client_id}
 История диалога:
 {_format_history(history, chat_history_limit)}
 
-Текущий вопрос пользователя:
+Raw user task:
 {message}
 
-MCP tool results:
+Analysis plan:
+{json.dumps(plan, ensure_ascii=False, indent=2)}
+
+Compact trusted context:
+{json.dumps(compact_context, ensure_ascii=False, indent=2)}
+
+Tool summaries:
 {json.dumps(tool_context, ensure_ascii=False, indent=2)}
+
+Output instructions:
+{output_instructions}
 """.strip()
 
 
@@ -302,7 +713,7 @@ def _build_chat_debug_context(
     tool_results_mode: str = "summary",
     chat_history_limit: int | None = 3,
 ) -> dict[str, Any]:
-    if client_context and (client_context.get("context_compaction") or {}).get("enabled"):
+    if client_context and ("analysisPlan" in client_context or (client_context.get("context_compaction") or {}).get("enabled")):
         playbook = "Compact DirectPilot playbook: data quality, goals, campaigns, search queries, draft actions, no applied changes."
     else:
         playbook = build_direct_analyst_instructions(client_context or {}) if client_context else ""
@@ -453,6 +864,9 @@ def _build_request_trace(
     traces: list[AiToolTrace],
     original_context: dict[str, Any] | None,
     compacted_context: dict[str, Any] | None,
+    compact_prompt_context: dict[str, Any] | None,
+    intent_plan: dict[str, Any] | None,
+    data_fetch: list[dict[str, Any]] | None,
     prompt: str | None,
     request_debug: dict[str, Any] | None,
     prompt_debug: dict[str, Any] | None,
@@ -482,6 +896,14 @@ def _build_request_trace(
         "mode": "ai_chat",
         "clientId": client_id,
         "userMessage": user_message,
+        "analysisPlan": intent_plan or detect_analysis_intent(user_message),
+        "compactPromptContext": {
+            "availableSections": sorted((compact_prompt_context or {}).keys()),
+            "omittedSections": (compact_prompt_context or {}).get("omittedSections", []),
+            "limitations": (compact_prompt_context or {}).get("limitations", []),
+        },
+        "omittedSections": (compact_prompt_context or {}).get("omittedSections", []),
+        "dataFetch": data_fetch or [],
         "selectedCampaignName": selected_campaign_name,
         "modelSettings": {
             "model": selected_model,
@@ -545,12 +967,21 @@ def build_chat_prompt_debug_snapshot(
         search_query_limit=search_query_limit,
         selected_campaign_name=selected_campaign_name,
     )
-    traces = _run_mcp_tools(client_id, message, client_context=compacted_context)
+    intent_plan = detect_analysis_intent(display_message or message)
+    compact_prompt_context = build_compact_ai_chat_context(
+        compacted_context,
+        intent_plan,
+        {"search_query_limit": search_query_limit},
+    )
+    data_fetch = _build_data_fetch_trace(compact_prompt_context)
+    traces = _run_mcp_tools(client_id, message, client_context=compact_prompt_context)
     prompt = _build_chat_prompt(
         client_id=client_id,
         message=message,
         history=history,
         traces=traces,
+        compact_prompt_context=compact_prompt_context,
+        intent_plan=intent_plan,
         tool_results_mode=tool_results_mode,
         chat_history_limit=chat_history_limit,
     )
@@ -560,7 +991,7 @@ def build_chat_prompt_debug_snapshot(
             message=message,
             history=history,
             traces=traces,
-            client_context=compacted_context,
+            client_context=compact_prompt_context,
             display_message=display_message,
             tool_results_mode=tool_results_mode,
             chat_history_limit=chat_history_limit,
@@ -583,7 +1014,7 @@ def build_chat_prompt_debug_snapshot(
             message=message,
             history=history,
             traces=traces,
-            client_context=compacted_context,
+            client_context=compact_prompt_context,
             display_message=display_message,
             tool_results_mode=tool_results_mode,
             chat_history_limit=chat_history_limit,
@@ -607,6 +1038,9 @@ def build_chat_prompt_debug_snapshot(
         traces=traces,
         original_context=client_context,
         compacted_context=compacted_context,
+        compact_prompt_context=compact_prompt_context,
+        intent_plan=intent_plan,
+        data_fetch=data_fetch,
         prompt=prompt,
         request_debug=snapshot["openrouterRequestPreview"],
         prompt_debug=snapshot,
@@ -683,12 +1117,21 @@ async def answer_ai_chat(
         search_query_limit=search_query_limit,
         selected_campaign_name=selected_campaign_name,
     )
-    traces = _run_mcp_tools(client_id, message, client_context=compacted_context)
+    intent_plan = detect_analysis_intent(message)
+    compact_prompt_context = build_compact_ai_chat_context(
+        compacted_context,
+        intent_plan,
+        {"search_query_limit": search_query_limit},
+    )
+    data_fetch = _build_data_fetch_trace(compact_prompt_context)
+    traces = _run_mcp_tools(client_id, message, client_context=compact_prompt_context)
     prompt = _build_chat_prompt(
         client_id=client_id,
         message=message,
         history=history,
         traces=traces,
+        compact_prompt_context=compact_prompt_context,
+        intent_plan=intent_plan,
         tool_results_mode=tool_results_mode,
         chat_history_limit=chat_history_limit,
     )
@@ -698,7 +1141,7 @@ async def answer_ai_chat(
             message=message,
             history=history,
             traces=traces,
-            client_context=compacted_context,
+            client_context=compact_prompt_context,
             tool_results_mode=tool_results_mode,
             chat_history_limit=chat_history_limit,
         ),
@@ -720,7 +1163,7 @@ async def answer_ai_chat(
             message=message,
             history=history,
             traces=traces,
-            client_context=compacted_context,
+            client_context=compact_prompt_context,
             tool_results_mode=tool_results_mode,
             chat_history_limit=chat_history_limit,
         ),
@@ -743,6 +1186,9 @@ async def answer_ai_chat(
         "traces": traces,
         "original_context": client_context,
         "compacted_context": compacted_context,
+        "compact_prompt_context": compact_prompt_context,
+        "intent_plan": intent_plan,
+        "data_fetch": data_fetch,
         "prompt": prompt,
         "request_debug": request_debug,
         "prompt_debug": prompt_debug,
