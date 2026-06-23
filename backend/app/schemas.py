@@ -430,12 +430,44 @@ class AiGeneratedRecommendation(BaseModel):
     requires_approval: bool
 
 
+class AiStructuredFinding(BaseModel):
+    type: str
+    entityType: str = "unknown"
+    entityId: str | None = None
+    entityName: str | None = None
+    metric: str | None = None
+    problem: str
+    evidence: str
+    recommendation: str
+    risk: str = "medium"
+
+
+class AiStructuredAction(BaseModel):
+    type: str
+    entityType: str = "unknown"
+    entityId: str | None = None
+    description: str
+    requiresHumanApproval: bool = True
+
+
+class AiStructuredRecommendation(BaseModel):
+    summary: str
+    confidence: str = "medium"
+    riskLevel: str = "medium"
+    missingData: list[str] = Field(default_factory=list)
+    findings: list[AiStructuredFinding] = Field(default_factory=list)
+    actions: list[AiStructuredAction] = Field(default_factory=list)
+    safetyNotes: list[str] = Field(default_factory=list)
+
+
 class AiRecommendationResponse(BaseModel):
     client_id: str
     source: str
     model: str | None = None
     summary: str
     recommendations: list[AiGeneratedRecommendation]
+    structured_output: AiStructuredRecommendation | None = None
+    validation_warnings: list[str] = Field(default_factory=list)
     raw_response: str | None = None
     error: bool = False
     error_code: str | None = None

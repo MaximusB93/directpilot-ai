@@ -370,6 +370,7 @@ function saveAiModelSettings() {
 
 function recommendedAiModelOptions() {
   return [
+    { id: 'google/gemma-3-12b-it', label: 'Google Gemma 3 12B IT', cost_tier: 'low', recommended_for: ['Эконом', 'дешевле', 'ежедневная аналитика'] },
     { id: 'openai/gpt-4.1-mini', label: 'OpenAI GPT-4.1 Mini', cost_tier: 'low', recommended_for: ['Эконом', 'регулярные проверки'] },
     { id: 'google/gemini-2.0-flash-001', label: 'Google Gemini 2.0 Flash', cost_tier: 'low', recommended_for: ['Эконом', 'быстрый аудит'] },
     { id: 'deepseek/deepseek-chat', label: 'DeepSeek Chat', cost_tier: 'low', recommended_for: ['Эконом', 'чат'] },
@@ -378,6 +379,7 @@ function recommendedAiModelOptions() {
     { id: 'anthropic/claude-3.5-sonnet', label: 'Claude 3.5 Sonnet', cost_tier: 'medium', recommended_for: ['Баланс', 'разбор гипотез'] },
     { id: 'google/gemini-2.5-pro', label: 'Google Gemini 2.5 Pro', cost_tier: 'medium', recommended_for: ['Баланс', 'глубокий аудит'] },
     { id: 'deepseek/deepseek-r1', label: 'DeepSeek R1', cost_tier: 'medium', recommended_for: ['Баланс', 'логический анализ'] },
+    { id: 'qwen/qwen3-14b', label: 'Qwen3 14B', cost_tier: 'high', recommended_for: ['Максимум', 'сложный разбор', 'сравнение моделей'] },
     { id: 'anthropic/claude-3.7-sonnet', label: 'Claude 3.7 Sonnet', cost_tier: 'high', recommended_for: ['Максимум', 'сложный аудит'] },
     { id: 'openai/o3-mini', label: 'OpenAI o3-mini', cost_tier: 'high', recommended_for: ['Максимум', 'спорные выводы'] },
   ];
@@ -393,11 +395,20 @@ function getAiModelOptions() {
 }
 
 function getAiPresetOptions() {
-  return aiStatus.presets?.length ? aiStatus.presets : [
+  const presets = aiStatus.presets?.length ? aiStatus.presets : [
     { id: 'economy', label: 'Эконом', purpose: 'Быстрые вопросы и первичный анализ', max_tokens: 1200, cost_tier: 'low' },
     { id: 'balanced', label: 'Баланс', purpose: 'Обычный анализ кампаний', max_tokens: 2500, cost_tier: 'medium' },
     { id: 'advanced', label: 'Максимум', purpose: 'Глубокий анализ и сложные рекомендации', max_tokens: 5000, cost_tier: 'high', warning: 'Может быть дороже' },
   ];
+  return presets.map((preset) => {
+    if (preset.id === 'economy') {
+      return { ...preset, default_model: 'google/gemma-3-12b-it' };
+    }
+    if (preset.id === 'advanced') {
+      return { ...preset, default_model: 'qwen/qwen3-14b', warning: preset.warning || 'Может быть дороже' };
+    }
+    return preset;
+  });
 }
 
 function activeAiPresetInfo() {
@@ -406,9 +417,9 @@ function activeAiPresetInfo() {
 
 function aiPresetGuidance(presetId) {
   return {
-    economy: 'Эконом — быстрые и дешёвые регулярные проверки.',
+    economy: 'Эконом — Gemma, быстрые и дешёвые регулярные проверки.',
     balanced: 'Баланс — основной режим для анализа кампаний и запросов.',
-    advanced: 'Максимум — сложные аудиты, спорные выводы, глубокий разбор.',
+    advanced: 'Максимум — Qwen, сложные аудиты, спорные выводы, глубокий разбор.',
     custom: 'Своя модель — используйте только если понимаете стоимость и лимиты OpenRouter.',
   }[presetId] || '';
 }
@@ -982,7 +993,7 @@ async function loadAiStatus() {
     const hasSavedSettings = Boolean(window.localStorage.getItem(getAiModelSettingsKey()));
     if (!hasSavedSettings) {
       aiPreset = aiStatus.recommended_default_preset || 'economy';
-      aiModel = aiStatus.recommended_default_model || aiStatus.default_model || aiStatus.models?.[0]?.id || aiModel;
+      aiModel = activeAiPresetInfo()?.default_model || aiStatus.recommended_default_model || aiStatus.default_model || aiStatus.models?.[0]?.id || aiModel;
       saveAiModelSettings();
     }
     if (isCustomAiModel()) aiCustomModel = aiModel;
