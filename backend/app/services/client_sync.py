@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -13,7 +13,7 @@ NO_TOKEN_MESSAGE = "Yandex OAuth token is not connected for the bound account. R
 NO_DATA_MESSAGE = "No Yandex Direct data for selected period"
 DIRECT_GOAL_FALLBACK_MESSAGE = "Direct goal conversions unavailable for selected goals. Falling back to total Direct conversions."
 SEARCH_QUERY_SYNC_WARNING = "Search query report could not be loaded. Campaign sync completed; negative keyword insights are unavailable."
-DAILY_SYNC_WARNING = "Yesterday campaign report could not be loaded. Campaign sync completed; daily summary is unavailable."
+DAILY_SYNC_WARNING = "Daily campaign reports could not be loaded. Campaign sync completed; daily dynamics are unavailable."
 
 
 def _int(v: str | None) -> int:
@@ -88,6 +88,102 @@ def _daily_campaign_issue_flags(*, cost: float, clicks: int, impressions: int, c
     if ctr >= 5.0 and conversions > 0:
         flags.append("promising_campaign")
     return flags
+
+
+def _store_daily_campaign_rows(
+    db: Session,
+    *,
+    client_id: str,
+    rows: list[dict[str, str]],
+    goal_ids: list[str],
+    goal_ids_text: str | None,
+) -> int:
+    inserted = 0
+    for row in rows:
+        raw_date = row.get("Date") or row.get("stat_date") or row.get("StatDate")
+        if not raw_date:
+            continue
+        try:
+            stat_date = date.fromisoformat(str(raw_date)[:10])
+        except ValueError:
+            continue
+        cost = _float(row.get("Cost"))
+        clicks = _int(row.get("Clicks"))
+        impressions = _int(row.get("Impressions"))
+        ctr = _float(row.get("Ctr"))
+        goal_conversions = _direct_goal_conversion_value(row, goal_ids) if goal_ids else None
+        goal_cpa = (cost / goal_conversions) if goal_conversions else None
+        conversion_rate = (goal_conversions / clicks * 100) if goal_conversions is not None and clicks else None
+        flags = _daily_campaign_issue_flags(
+            cost=cost,
+            clicks=clicks,
+            impressions=impressions,
+            ctr=ctr,
+            goal_conversions=goal_conversions,
+        )
+        db.add(
+            DirectCampaignDailyStat(
+                client_id=client_id,
+                stat_date=stat_date,
+                campaign_id=str(row.get("CampaignId") or ""),
+                campaign_name=str(row.get("CampaignName") or ""),
+                impressions=impressions,
+                clicks=clicks,
+                cost=cost,
+                ctr=ctr,
+                avg_cpc=_float(row.get("AvgCpc")),
+                goal_ids=goal_ids_text,
+                goal_conversions=goal_conversions,
+                goal_cpa=goal_cpa,
+                conversion_rate=conversion_rate,
+                issue_flags=",".join(flags) if flags else None,
+            )
+        )
+        inserted += 1
+    return inserted
+
+
+def sync_campaign_daily_stats(db: Session, client_id: str, days: int = 30) -> dict[str, object]:
+    client = db.get(ClientAccount, client_id)
+    if not client:
+        raise ValueError("Client not found")
+    if not client.yandex_account_id:
+        return {"status": "skipped", "rows": 0, "warning": NO_BOUND_ACCOUNT_MESSAGE}
+    token = get_yandex_access_token_for_account(db, client.yandex_account_id)
+    if not token:
+        return {"status": "skipped", "rows": 0, "warning": NO_TOKEN_MESSAGE}
+
+    date_to = datetime.now(UTC).date() - timedelta(days=1)
+    date_from = date_to - timedelta(days=max(days, 1) - 1)
+    goal_ids = parse_goal_ids(client.conversion_goal_ids, fallback=client.main_goal_id)
+    goal_ids_text = ", ".join(goal_ids) or None
+    connector = YandexDirectConnector(access_token=token, client_login=client.direct_login)
+
+    db.execute(
+        delete(DirectCampaignDailyStat).where(
+            DirectCampaignDailyStat.client_id == client_id,
+            DirectCampaignDailyStat.stat_date >= date_from,
+            DirectCampaignDailyStat.stat_date <= date_to,
+        )
+    )
+    rows = connector.get_campaign_daily_range_report(
+        date_from=date_from,
+        date_to=date_to,
+        goal_ids=goal_ids or None,
+    )
+    inserted = _store_daily_campaign_rows(
+        db,
+        client_id=client_id,
+        rows=rows,
+        goal_ids=goal_ids,
+        goal_ids_text=goal_ids_text,
+    )
+    return {
+        "status": "success",
+        "rows": inserted,
+        "date_from": date_from.isoformat(),
+        "date_to": date_to.isoformat(),
+    }
 
 
 def run_client_sync(db: Session, client_id: str, days: int = 30) -> SyncJob:
@@ -258,49 +354,9 @@ def run_client_sync(db: Session, client_id: str, days: int = 30) -> SyncJob:
         except Exception as exc:
             search_query_warning = f"{SEARCH_QUERY_SYNC_WARNING} {str(exc)[:300]}"
 
-        daily_warning = None
-        yesterday = now.date() - timedelta(days=1)
-        db.execute(
-            delete(DirectCampaignDailyStat).where(
-                DirectCampaignDailyStat.client_id == client_id,
-                DirectCampaignDailyStat.stat_date == yesterday,
-            )
-        )
         try:
-            daily_rows = connector.get_campaign_daily_report(stat_date=yesterday, goal_ids=goal_ids or None)
-            for row in daily_rows:
-                cost = _float(row.get("Cost"))
-                clicks = _int(row.get("Clicks"))
-                impressions = _int(row.get("Impressions"))
-                ctr = _float(row.get("Ctr"))
-                goal_conversions = _direct_goal_conversion_value(row, goal_ids) if goal_ids else None
-                goal_cpa = (cost / goal_conversions) if goal_conversions else None
-                conversion_rate = (goal_conversions / clicks * 100) if goal_conversions is not None and clicks else None
-                flags = _daily_campaign_issue_flags(
-                    cost=cost,
-                    clicks=clicks,
-                    impressions=impressions,
-                    ctr=ctr,
-                    goal_conversions=goal_conversions,
-                )
-                db.add(
-                    DirectCampaignDailyStat(
-                        client_id=client_id,
-                        stat_date=yesterday,
-                        campaign_id=str(row.get("CampaignId") or ""),
-                        campaign_name=str(row.get("CampaignName") or ""),
-                        impressions=impressions,
-                        clicks=clicks,
-                        cost=cost,
-                        ctr=ctr,
-                        avg_cpc=_float(row.get("AvgCpc")),
-                        goal_ids=goal_ids_text,
-                        goal_conversions=goal_conversions,
-                        goal_cpa=goal_cpa,
-                        conversion_rate=conversion_rate,
-                        issue_flags=",".join(flags) if flags else None,
-                    )
-                )
+            daily_result = sync_campaign_daily_stats(db, client_id, days=min(max(days, 30), 30))
+            daily_warning = str(daily_result.get("warning")) if daily_result.get("warning") else None
         except Exception as exc:
             daily_warning = f"{DAILY_SYNC_WARNING} {str(exc)[:300]}"
 

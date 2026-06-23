@@ -224,6 +224,32 @@ def detect_analysis_intent(message: str) -> dict[str, Any]:
 
     rules = [
         (
+            "campaign_dynamics_analysis",
+            [
+                "динамика",
+                "последние 7",
+                "последние 14",
+                "последние 30",
+                "7 дней",
+                "14 дней",
+                "30 дней",
+                "изменения",
+                "ухудшились",
+                "улучшились",
+                "рост",
+                "падение",
+                "тренд",
+                "что изменилось",
+                "dynamics",
+                "trend",
+                "last 7",
+                "last 14",
+                "last 30",
+            ],
+            ["campaign_dynamics", "daily_campaign_stats", "selected_goals", "campaigns"],
+            False,
+        ),
+        (
             "global_direct_audit",
             ["аудит", "чеклист", "чек-лист", "полный анализ", "весь аккаунт", "комплексный анализ"],
             ["account_summary", "campaigns", "audit", "search_queries", "dynamics", "demographics"],
@@ -367,6 +393,74 @@ def _compact_search_query(item: dict[str, Any], client_context: dict[str, Any]) 
     }
 
 
+def _compact_dynamics_campaign(item: dict[str, Any]) -> dict[str, Any]:
+    last7 = item.get("last7") if isinstance(item.get("last7"), dict) else {}
+    changes = (item.get("changes") or {}).get("last7VsPrevious7") if isinstance(item.get("changes"), dict) else {}
+    return {
+        "campaignName": item.get("campaignName"),
+        "severity": item.get("severity"),
+        "issueFlags": item.get("issueFlags") or [],
+        "last7": {
+            "cost": _number_or_none(last7.get("cost")),
+            "clicks": _number_or_none(last7.get("clicks")),
+            "impressions": _number_or_none(last7.get("impressions")),
+            "ctr": _number_or_none(last7.get("ctr")),
+            "avgCpc": _number_or_none(last7.get("avgCpc")),
+            "goalConversions": _number_or_none(last7.get("goalConversions")),
+            "goalCpa": _number_or_none(last7.get("goalCpa")),
+        },
+        "changes": {
+            "costDeltaPct": _number_or_none((changes or {}).get("costDeltaPct")),
+            "clicksDeltaPct": _number_or_none((changes or {}).get("clicksDeltaPct")),
+            "ctrDeltaPct": _number_or_none((changes or {}).get("ctrDeltaPct")),
+            "avgCpcDeltaPct": _number_or_none((changes or {}).get("avgCpcDeltaPct")),
+            "goalConversionsDeltaPct": _number_or_none((changes or {}).get("goalConversionsDeltaPct")),
+            "goalCpaDeltaPct": _number_or_none((changes or {}).get("goalCpaDeltaPct")),
+        },
+    }
+
+
+def _compact_campaign_dynamics(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {"available": False, "missingData": ["Campaign dynamics analysis is missing."]}
+    data_quality = value.get("dataQuality") if isinstance(value.get("dataQuality"), dict) else {}
+    account = value.get("accountDynamics") if isinstance(value.get("accountDynamics"), dict) else {}
+    campaigns = value.get("campaignDynamics") if isinstance(value.get("campaignDynamics"), dict) else {}
+    return {
+        "available": bool(data_quality.get("rows")),
+        "period": value.get("period") or {},
+        "dataQuality": {
+            "rows": data_quality.get("rows", 0),
+            "campaigns": data_quality.get("campaigns", 0),
+            "hasGoalData": bool(data_quality.get("hasGoalData")),
+            "missingDays": _list_head(data_quality.get("missingDays"), 10),
+            "limitations": _list_head(data_quality.get("limitations"), 8),
+        },
+        "accountDynamics": {
+            "last7": account.get("last7"),
+            "previous7": account.get("previous7"),
+            "last14": account.get("last14"),
+            "previous14": account.get("previous14"),
+            "last30": account.get("last30"),
+            "changes": account.get("changes"),
+            "mainFindings": _list_head(account.get("mainFindings"), 8),
+        },
+        "worstCampaigns": [
+            _compact_dynamics_campaign(item)
+            for item in _list_head(campaigns.get("worstCampaigns"), 8)
+            if isinstance(item, dict)
+        ],
+        "bestCampaigns": [
+            _compact_dynamics_campaign(item)
+            for item in _list_head(campaigns.get("bestCampaigns"), 8)
+            if isinstance(item, dict)
+        ],
+        "drilldownPlan": _list_head(value.get("drilldownPlan"), 8),
+        "recommendations": _list_head(value.get("recommendations"), 8),
+        "missingData": _list_head(value.get("missingData"), 8),
+    }
+
+
 def build_compact_ai_chat_context(
     client_context: dict[str, Any] | None,
     intent_plan: dict[str, Any],
@@ -387,6 +481,8 @@ def build_compact_ai_chat_context(
     campaigns_source = context.get("campaigns") or summary.get("campaigns") or []
     campaigns = [_compact_campaign(item) for item in _list_head(campaigns_source, 12) if isinstance(item, dict)]
     search_source = summary.get("searchQueryInsights") or context.get("search_query_insights") or {}
+    dynamics_source = context.get("campaign_dynamics_analysis") or summary.get("campaignDynamicsAnalysis") or {}
+    intent_name = intent_plan.get("intent")
     search_items = search_source.get("insights") if isinstance(search_source, dict) else []
     compact_queries = [_compact_search_query(item, context) for item in _list_head(search_items, int((options or {}).get("search_query_limit") or 20)) if isinstance(item, dict)]
     brand_queries = [item for item in compact_queries if item.get("brandLike")][:10]
@@ -410,6 +506,25 @@ def build_compact_ai_chat_context(
         limitations.append("Selected goal IDs are missing.")
     if not summary and not campaigns:
         limitations.append("Performance summary is missing.")
+    compact_dynamics = _compact_campaign_dynamics(dynamics_source)
+    if intent_name == "campaign_dynamics_analysis":
+        campaigns = [
+            _compact_dynamics_campaign(item)
+            for item in _list_head(((dynamics_source or {}).get("campaignDynamics") or {}).get("worstCampaigns"), 8)
+            if isinstance(item, dict)
+        ]
+        compact_queries = []
+        brand_queries = []
+        non_brand_waste = []
+        queries_with_goals = []
+        audit = {}
+        omitted_sections.extend(
+            [
+                "full audit details for campaign dynamics intent",
+                "full search query dump for campaign dynamics intent",
+                "optimization drafts for campaign dynamics intent",
+            ]
+        )
     return {
         "analysisPlan": intent_plan,
         "client": {
@@ -471,9 +586,10 @@ def build_compact_ai_chat_context(
             "nonBrandWasteQueries": non_brand_waste,
             "queriesWithGoalConversions": queries_with_goals,
         },
+        "campaignDynamicsAnalysis": compact_dynamics,
         "dynamics": {
-            "available": bool(summary.get("yesterdayCampaignSummary") or context.get("yesterday_campaign_summary")),
-            "summary": "Yesterday campaign summary is available." if summary.get("yesterdayCampaignSummary") else "Daily/weekly dynamics are not fully available.",
+            "available": bool(compact_dynamics.get("available") or summary.get("yesterdayCampaignSummary") or context.get("yesterday_campaign_summary")),
+            "summary": "Campaign dynamics analysis is available." if compact_dynamics.get("available") else "Daily/weekly dynamics are not fully available.",
             "dailyRows": _list_head((summary.get("yesterdayCampaignSummary") or {}).get("campaigns"), 10),
         },
         "demographics": {
@@ -507,11 +623,28 @@ def _build_data_fetch_trace(compact_prompt_context: dict[str, Any]) -> list[dict
     audit = compact_prompt_context.get("audit") if isinstance(compact_prompt_context, dict) else {}
     data_quality = compact_prompt_context.get("dataQuality") if isinstance(compact_prompt_context, dict) else {}
     memory = compact_prompt_context.get("businessMemory") if isinstance(compact_prompt_context, dict) else {}
+    dynamics = compact_prompt_context.get("campaignDynamicsAnalysis") if isinstance(compact_prompt_context, dict) else {}
     return [
         {
             "source": "cached_direct_sync_data",
             "status": "used" if campaigns else "missing",
             "rows": len(campaigns) if isinstance(campaigns, list) else 0,
+        },
+        {
+            "source": "cached_campaign_daily_stats",
+            "status": "used" if (dynamics or {}).get("available") else "missing",
+            "rows": ((dynamics or {}).get("dataQuality") or {}).get("rows", 0),
+        },
+        {
+            "source": "deterministic_campaign_dynamics_analyzer",
+            "status": "used" if (dynamics or {}).get("available") else "missing",
+            "rows": ((dynamics or {}).get("dataQuality") or {}).get("campaigns", 0),
+        },
+        {
+            "source": "yandex_direct_campaign_daily_range_report",
+            "status": "cached" if (dynamics or {}).get("available") else "not_loaded",
+            "rows": ((dynamics or {}).get("dataQuality") or {}).get("rows", 0),
+            "message": "Daily range report is fetched during sync and reused from cache in AI chat.",
         },
         {
             "source": "cached_search_query_insights",
@@ -569,6 +702,15 @@ def _build_chat_prompt(
             "3) кампании; 4) поисковые запросы; 5) динамика, если доступна; "
             "6) демография/гео/устройства, если доступны; 7) ограничения; "
             "8) безопасный план действий."
+        )
+    elif plan.get("intent") == "campaign_dynamics_analysis":
+        output_instructions = (
+            "Разбери динамику от общего к частному: 1) качество дневных данных и ограничения; "
+            "2) аккаунт за last7/previous7, last14/previous14 и last30; "
+            "3) кампании с ухудшением и улучшением; 4) вероятные причины изменений; "
+            "5) какие данные нужны для drill-down: запросы, ключи, объявления, устройства, гео, демография; "
+            "6) безопасный план улучшений. Не утверждай тренд, если данных недостаточно. "
+            "Используй только selected goal conversions, CPA by goals, CTR, CPC, cost and clicks."
         )
     elif plan.get("intent") == "search_queries_analysis":
         output_instructions = (
@@ -904,6 +1046,15 @@ def _build_request_trace(
         },
         "omittedSections": (compact_prompt_context or {}).get("omittedSections", []),
         "dataFetch": data_fetch or [],
+        "campaignDynamicsAnalysis": {
+            "available": bool(((compact_prompt_context or {}).get("campaignDynamicsAnalysis") or {}).get("available")),
+            "rows": ((((compact_prompt_context or {}).get("campaignDynamicsAnalysis") or {}).get("dataQuality") or {}).get("rows", 0)),
+            "campaigns": ((((compact_prompt_context or {}).get("campaignDynamicsAnalysis") or {}).get("dataQuality") or {}).get("campaigns", 0)),
+            "windows": list(((((compact_prompt_context or {}).get("campaignDynamicsAnalysis") or {}).get("period") or {}).get("windows") or {}).keys()),
+            "worstCampaignsCount": len((((compact_prompt_context or {}).get("campaignDynamicsAnalysis") or {}).get("worstCampaigns") or [])),
+            "bestCampaignsCount": len((((compact_prompt_context or {}).get("campaignDynamicsAnalysis") or {}).get("bestCampaigns") or [])),
+            "missingData": (((compact_prompt_context or {}).get("campaignDynamicsAnalysis") or {}).get("missingData") or []),
+        },
         "selectedCampaignName": selected_campaign_name,
         "modelSettings": {
             "model": selected_model,
