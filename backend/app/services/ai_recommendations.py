@@ -10,6 +10,7 @@ from app.models import ClientAccount, ClientBusinessContext, ConnectedAccount, O
 from app.schemas import AiGeneratedRecommendation, AiRecommendationResponse
 from app.services.direct_analyst_playbook import build_direct_analyst_instructions
 from app.services.mock_data import AUDIT_ISSUES, CAMPAIGNS, CLIENTS, RECOMMENDATIONS
+from app.services.ai_output_validation import structured_to_legacy_recommendations, validate_structured_recommendation_payload
 from app.services.openrouter import generate_openrouter_response
 from app.services.performance_summary import build_optimization_plan, build_performance_summary
 
@@ -313,20 +314,42 @@ Yesterday campaign summary:
 - Приоритизируй кампании по выбранной цели, если goal data доступна.
 - Если ai_model_settings.preset = economy, отвечай кратко; если advanced, можно дать более глубокую структуру.
 
-Верни строго JSON без markdown в формате:
+Верни строго JSON без markdown по контракту DirectPilot AI:
 {{
-  "summary": "краткая сводка",
-  "recommendations": [
+  "summary": "string",
+  "confidence": "low|medium|high",
+  "riskLevel": "low|medium|high",
+  "missingData": ["string"],
+  "findings": [
     {{
-      "title": "...",
-      "evidence": ["факт 1", "факт 2"],
-      "risk": "low|medium|high",
-      "expected_impact": "...",
-      "next_step": "...",
-      "requires_approval": true
+      "type": "string",
+      "entityType": "account|campaign|ad_group|keyword|search_query|goal|landing|unknown",
+      "entityId": "string|null",
+      "entityName": "string|null",
+      "metric": "string|null",
+      "problem": "string",
+      "evidence": "string",
+      "recommendation": "string",
+      "risk": "low|medium|high"
     }}
-  ]
+  ],
+  "actions": [
+    {{
+      "type": "review_campaign|review_search_queries|review_goals|review_landing|prepare_negative_keywords|prepare_budget_change|prepare_bid_change|request_more_data",
+      "entityType": "account|campaign|ad_group|keyword|search_query|goal|landing|unknown",
+      "entityId": "string|null",
+      "description": "string",
+      "requiresHumanApproval": true
+    }}
+  ],
+  "safetyNotes": ["string"]
 }}
+
+Контракт обязателен:
+- Все actions должны быть только черновиками и всегда requiresHumanApproval=true.
+- Не добавляй действий, которые выглядят как применение изменений в Яндекс.Директ.
+- Если данных не хватает, заполни missingData и добавь action type=request_more_data.
+- Если выбран режим economy, summary и findings должны быть короче; advanced может быть подробнее.
 
 Контекст клиента:
 {json.dumps(context, ensure_ascii=False, indent=2)}
@@ -472,14 +495,18 @@ async def generate_client_recommendations_from_context(
     raw_content = str(response.get("content", ""))
     try:
         parsed = _extract_json_object(raw_content)
-        recommendations = [AiGeneratedRecommendation(**item) for item in parsed.get("recommendations", [])]
-        summary = parsed.get("summary") or "OpenRouter сформировал рекомендации по контексту клиента."
+        structured_output, validation_warnings = validate_structured_recommendation_payload(parsed)
+        recommendations = structured_to_legacy_recommendations(structured_output)
+        summary = structured_output.summary
     except (json.JSONDecodeError, TypeError, ValueError) as exc:
         fallback = _fallback_recommendations(context)
         fallback.source = "fallback_after_parse_error"
         fallback.model = str(response.get("model") or selected_model)
         fallback.summary = f"Модель ответила неструктурированно, поэтому показан fallback. Ошибка разбора: {exc}"
         fallback.raw_response = raw_content
+        fallback.validation_warnings = [
+            "Structured output validation failed. Fallback recommendations are draft/manual review only."
+        ]
         return fallback
 
     return AiRecommendationResponse(
@@ -488,5 +515,7 @@ async def generate_client_recommendations_from_context(
         model=str(response.get("model") or selected_model),
         summary=summary,
         recommendations=recommendations,
+        structured_output=structured_output,
+        validation_warnings=validation_warnings,
         raw_response=raw_content,
     )
