@@ -2718,11 +2718,16 @@ function renderOpenRouterRequestInspector() {
   const systemPrompt = debug?.systemPrompt || debug?.messages?.find?.((item) => item.role === 'system')?.content || '';
   const userPrompt = debug?.userPrompt || debug?.messages?.find?.((item) => item.role === 'user')?.content || '';
   const size = debug?.size || {};
+  const modeLabel = debug?.mode === 'model_test'
+    ? 'Проверка модели'
+    : debug?.mode === 'chat'
+      ? 'AI-chat запрос'
+      : debug?.mode || 'OpenRouter запрос';
   return `
     <section class="panel compact">
       <div class="panelHeader">
         <div>
-          <h3>OpenRouter request inspector</h3>
+          <h3>OpenRouter request inspector · ${escapeHtml(modeLabel)}</h3>
           <p>Debug payload may contain business data. Do not share it publicly.</p>
         </div>
         <button class="secondaryButton" type="button" data-openrouter-inspector="${debug ? 'hide' : 'show'}">${debug ? 'Скрыть полный запрос' : 'Показать полный запрос'}</button>
@@ -2769,8 +2774,200 @@ function renderAiRequestTrace(trace, index) {
   const response = trace.response || {};
   const tools = trace.tools || [];
   const compaction = context.compaction || [];
+  const userMessage = String(trace.userMessage || '');
+  const userPrompt = String(prompt.user || '');
+  const looksPolluted = [
+    'Trusted server-side client context follows',
+    'DirectPilot analyst playbook',
+    '{',
+    '"client"',
+    '"summary"',
+  ].some((needle) => userMessage.includes(needle));
+  const assemblyWarnings = [];
+  if (userMessage.includes('Trusted server-side client context follows')) {
+    assemblyWarnings.push('server context inside userMessage');
+  }
+  if (userPrompt.includes('searchQueryInsights') && userPrompt.includes('search_query_insights')) {
+    assemblyWarnings.push('search query context may be duplicated');
+  }
+  if (userPrompt.includes('yandexDirectAudit') && userPrompt.includes('yandex_direct_audit')) {
+    assemblyWarnings.push('audit context may be duplicated');
+  }
+  if (userPrompt.includes('"summary"') && userPrompt.includes('"campaigns"') && userPrompt.includes('[')) {
+    assemblyWarnings.push('campaign data may be duplicated');
+  }
+  if (userPrompt.includes('direct_analyst_playbook') && userPrompt.includes('Compact DirectPilot playbook')) {
+    assemblyWarnings.push('playbook may be duplicated');
+  }
+  if (userPrompt.includes('latest_sync_job') && userPrompt.includes('"id"')) {
+    assemblyWarnings.push('technical sync fields are included');
+  }
   const payloadJson = JSON.stringify(payload, null, 2);
   const traceJson = JSON.stringify(trace, null, 2);
+  const scrollPre = (text) => `<pre style="max-height: 360px; overflow:auto; white-space:pre-wrap; word-break:break-word;">${escapeHtml(text || '')}</pre>`;
+  const copyButton = (part, label) => `<button class="secondaryButton" type="button" data-copy-ai-trace="${index}" data-copy-ai-trace-part="${part}">${escapeHtml(label)}</button>`;
+  const resultSummary = (summary) => {
+    if (!summary) return 'нет данных';
+    const count = summary.count != null ? ` · ${formatNumberSafe(summary.count)}` : '';
+    const keys = Array.isArray(summary.keys) && summary.keys.length ? ` · ${summary.keys.slice(0, 4).join(', ')}` : '';
+    return `${summary.type || 'result'}${count}${keys}`;
+  };
+  const toolServerContextWarnings = tools
+    .filter((tool) => (tool.resultSummary?.count === 0 || tool.resultSummary?.type === 'list' && tool.resultSummary?.count === 0) && userPrompt.includes('serverContext'))
+    .map((tool) => tool.name);
+  return `
+    <details class="aiToolTrace aiRequestTrace" style="margin-top:12px;">
+      <summary>Трассировка AI-запроса</summary>
+      <div class="authStatus">
+        Трассировка показывает цепочку сборки запроса. Prompt и payload могут содержать бизнес-данные клиента, не пересылайте их публично.
+      </div>
+
+      <section class="panel compact">
+        <div class="panelHeader">
+          <div>
+            <h4>Что написал пользователь</h4>
+            <p>Пользовательский вопрос должен быть raw-текстом без JSON, serverContext и playbook.</p>
+          </div>
+          <span class="aiStatusBadge ${looksPolluted ? 'pending' : 'ready'}">${looksPolluted ? 'подозрение на загрязнение контекстом' : 'OK'}</span>
+        </div>
+        ${looksPolluted ? `
+          <div class="authStatus aiError">
+            Похоже, в пользовательский вопрос попал серверный контекст. Вопрос должен быть raw-текстом без JSON/playbook. Это увеличивает prompt и может дублировать данные.
+          </div>
+        ` : ''}
+        ${scrollPre(userMessage)}
+        <div class="heroActions">${copyButton('userMessage', 'Копировать вопрос пользователя')}</div>
+      </section>
+
+      <section class="panel compact">
+        <h4>Настройки запроса</h4>
+        <div class="metricGrid">
+          <article><span>Модель</span><strong>${escapeHtml(settings.model || payload.model || '')}</strong></article>
+          <article><span>max_tokens</span><strong>${formatNumberSafe(settings.max_tokens || payload.max_tokens || 0)}</strong></article>
+          <article><span>temperature</span><strong>${escapeHtml(String(settings.temperature ?? payload.temperature ?? ''))}</strong></article>
+          <article><span>AI preset</span><strong>${escapeHtml(settings.ai_preset || '—')}</strong></article>
+          <article><span>Сжатый контекст</span><strong>${settings.compact_context ? 'да' : 'нет'}</strong></article>
+          <article><span>Режим tools</span><strong>${escapeHtml(settings.tool_results_mode || '—')}</strong></article>
+          <article><span>История чата</span><strong>${formatNumberSafe(settings.chat_history_limit || 0)}</strong></article>
+          <article><span>Поисковые запросы</span><strong>${formatNumberSafe(settings.search_query_limit || 0)}</strong></article>
+          <article><span>Кампания</span><strong>${escapeHtml(trace.selectedCampaignName || 'весь аккаунт')}</strong></article>
+        </div>
+      </section>
+
+      <section class="panel compact">
+        <div class="panelHeader">
+          <div>
+            <h4>Откуда подтянулись данные</h4>
+            <p>Часть данных может приходить не из tool result, а из trusted serverContext.</p>
+          </div>
+          <span class="aiStatusBadge ready">Источники данных</span>
+        </div>
+        ${toolServerContextWarnings.length ? `
+          <div class="authStatus">
+            Tool result пустой, но похожие данные могли попасть через serverContext: ${escapeHtml(toolServerContextWarnings.join(', '))}.
+          </div>
+        ` : ''}
+        <div class="tableWrap">
+          <table>
+            <thead><tr><th>Инструмент</th><th>Зачем выбран</th><th>Источник</th><th>Результат</th><th>В prompt</th><th>~ tokens</th></tr></thead>
+            <tbody>
+              ${tools.map((tool) => `
+                <tr>
+                  <td><strong>${escapeHtml(tool.name || '')}</strong></td>
+                  <td>${escapeHtml(tool.reason || '')}</td>
+                  <td>${escapeHtml(tool.source || '')}</td>
+                  <td>${escapeHtml(resultSummary(tool.resultSummary))}</td>
+                  <td>${escapeHtml(tool.includedInPrompt || '')}</td>
+                  <td>${formatNumberSafe(tool.estimatedTokens || 0)}</td>
+                </tr>
+              `).join('') || '<tr><td colspan="6">Инструменты не указаны в trace.</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+        <p><strong>Trusted serverContext:</strong> ${escapeHtml(context.source || 'server-side context')} · клиент ${escapeHtml(context.client?.name || context.client?.id || trace.clientId || '—')}</p>
+      </section>
+
+      <section class="panel compact">
+        <h4>Что было сжато</h4>
+        <div class="tableWrap">
+          <table>
+            <thead><tr><th>Секция</th><th>До</th><th>После</th><th>Правило</th></tr></thead>
+            <tbody>
+              ${compaction.map((item) => `
+                <tr>
+                  <td><strong>${escapeHtml(item.section || '')}</strong></td>
+                  <td>${escapeHtml(String(item.before ?? ''))}</td>
+                  <td>${escapeHtml(String(item.after ?? ''))}</td>
+                  <td>${escapeHtml(item.rule || item.reason || '')}</td>
+                </tr>
+              `).join('') || '<tr><td colspan="4">Сжатие контекста не описано.</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel compact">
+        <div class="panelHeader">
+          <div>
+            <h4>Что вошло в prompt</h4>
+            <p>Финальный prompt и OpenRouter payload ниже свернуты и прокручиваются внутри блока.</p>
+          </div>
+          <span class="aiStatusBadge ${guard.blocked || prompt.isTooLarge ? 'pending' : 'ready'}">${guard.blocked ? 'заблокирован guard' : prompt.isTooLarge ? 'слишком большой' : 'в пределах лимита'}</span>
+        </div>
+        <div class="metricGrid">
+          <article><span>Input tokens</span><strong>${formatNumberSafe(prompt.estimatedInputTokens || 0)}</strong></article>
+          <article><span>Total tokens</span><strong>${formatNumberSafe(prompt.estimatedTotalTokens || 0)}</strong></article>
+          <article><span>Context limit</span><strong>${formatNumberSafe(prompt.contextLimit || 0)}</strong></article>
+          <article><span>isTooLarge</span><strong>${prompt.isTooLarge ? 'да' : 'нет'}</strong></article>
+          <article><span>Guard</span><strong>${guard.blocked ? 'заблокировал' : 'не блокировал'}</strong></article>
+          <article><span>Причина</span><strong>${escapeHtml(guard.reason || '—')}</strong></article>
+          <article><span>Ответ</span><strong>${escapeHtml(response.status || 'success')}</strong></article>
+        </div>
+        ${guard.blocked ? `<div class="authStatus aiError">Запрос не отправлялся в OpenRouter: ${escapeHtml(guard.reason || 'prompt guard')}</div>` : ''}
+        <div class="heroActions">
+          ${copyButton('json', 'Копировать trace JSON')}
+          ${copyButton('system', 'Копировать system prompt')}
+          ${copyButton('user', 'Копировать user prompt')}
+          ${copyButton('payload', 'Копировать OpenRouter payload')}
+        </div>
+        <details>
+          <summary class="secondaryButton">System prompt</summary>
+          <div class="heroActions">${copyButton('system', 'Копировать system prompt')}</div>
+          ${scrollPre(prompt.system || '')}
+        </details>
+        <details>
+          <summary class="secondaryButton">User prompt</summary>
+          <div class="heroActions">${copyButton('user', 'Копировать user prompt')}</div>
+          ${scrollPre(userPrompt)}
+        </details>
+        <details>
+          <summary class="secondaryButton">OpenRouter payload</summary>
+          <div class="heroActions">${copyButton('payload', 'Копировать OpenRouter payload')}</div>
+          ${scrollPre(payloadJson)}
+        </details>
+        <details>
+          <summary class="secondaryButton">Trace JSON</summary>
+          <div class="heroActions">${copyButton('json', 'Копировать trace JSON')}</div>
+          ${scrollPre(traceJson)}
+        </details>
+      </section>
+
+      <section class="panel compact">
+        <div class="panelHeader">
+          <div>
+            <h4>Предупреждения по сборке prompt</h4>
+            <p>Это frontend-диагностика подозрительных дублей, не backend-ошибка.</p>
+          </div>
+          <span class="aiStatusBadge ${assemblyWarnings.length ? 'pending' : 'ready'}">${assemblyWarnings.length ? 'есть предупреждения' : 'дублей не видно'}</span>
+        </div>
+        ${assemblyWarnings.length ? `
+          <div class="actionList">
+            ${assemblyWarnings.map((warning) => `<article class="actionCard"><strong>${escapeHtml(warning)}</strong></article>`).join('')}
+          </div>
+        ` : '<p>Подозрительных дублей в prompt не найдено.</p>'}
+      </section>
+    </details>
+  `;
   return `
     <details class="aiToolTrace aiRequestTrace">
       <summary>AI request trace: что было отправлено в OpenRouter</summary>
@@ -3140,7 +3337,7 @@ function renderAiChat() {
           ${campaigns.map((campaign) => `<option value="${escapeHtml(campaign.campaign_name)}" ${campaign.campaign_name === selectedAiCampaignName ? 'selected' : ''}>${escapeHtml(campaign.campaign_name)}</option>`).join('')}
         </select>
       </label>
-      <div class="aiChatMessages">
+      <div class="aiChatMessages" style="min-height:620px; max-height:75vh; overflow-y:auto; padding-right:6px;">
         ${aiChatMessages.map((item, index) => `
           <article class="aiChatMessage ${item.role}">
             <strong>${item.role === 'user' ? 'Вы' : 'DirectPilot AI'}</strong>
@@ -3153,7 +3350,7 @@ function renderAiChat() {
         ${aiChatLoading ? '<article class="aiChatMessage assistant"><strong>DirectPilot AI</strong><pre>Собираю контекст через MCP tools...</pre></article>' : ''}
       </div>
       ${aiChatError ? `<div class="authStatus aiError"><p>${escapeHtml(aiChatError)}</p>${aiChatErrorDetails?.model ? `<p>Модель: ${escapeHtml(aiChatErrorDetails.model)}.${aiChatErrorDetails?.code === 'openrouter_rate_limited' ? ' Free/custom модели могут часто получать rate limit.' : ''}</p>` : ''}${aiChatErrorDetails?.retryable ? '<button class="secondaryButton" type="button" data-ai-economy-fallback="chat">Повторить на модели Эконом</button>' : ''}</div>` : ''}
-      <form class="aiChatForm" data-ai-chat-form>
+      <form class="aiChatForm" data-ai-chat-form style="position:sticky; bottom:0; z-index:2; background:var(--surface, #fff); padding-top:12px;">
         <textarea name="message" rows="3" data-ai-chat-input placeholder="Например: какие кампании дают расход без конверсий и какие цели Метрики проверить?">${escapeHtml(aiChatInput)}</textarea>
         <button class="approveButton" type="submit" ${aiChatLoading ? 'disabled' : ''}>${aiChatLoading ? 'Думаю...' : 'Отправить в AI-чат'}</button>
         <button class="secondaryButton" type="button" data-clear-ai-chat>Очистить чат</button>
@@ -3551,6 +3748,8 @@ app.addEventListener('click', async (event) => {
       ? (trace.prompt?.system || '')
       : part === 'user'
         ? (trace.prompt?.user || '')
+        : part === 'userMessage'
+          ? (trace.userMessage || '')
         : part === 'payload'
           ? JSON.stringify(trace.openrouterPayload || {}, null, 2)
           : JSON.stringify(trace, null, 2);
