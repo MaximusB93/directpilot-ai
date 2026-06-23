@@ -6,6 +6,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import CurrentUser, get_current_session_user
+from app.core.config import normalize_ai_request_options, settings
 from app.db import get_optional_db
 from app.models import (
     ClientAccount,
@@ -40,6 +41,7 @@ from app.schemas import (
     OptimizationActionEventResponse,
     SyncJobResponse,
 )
+from app.services.ai_chat import build_chat_prompt_debug_snapshot, build_enriched_chat_message
 from app.services.ai_recommendations import (
     build_client_ai_context_from_db,
     build_recommendation_prompt_debug_snapshot,
@@ -613,13 +615,39 @@ def get_client_ai_prompt_debug(
     model: str | None = None,
     ai_preset: str | None = None,
     max_tokens: int | None = None,
+    mode: str = "recommendations",
+    selected_campaign_name: str | None = None,
+    message: str | None = None,
     include_preview: bool = False,
     db: Session | None = Depends(get_optional_db),
     current: CurrentUser = Depends(get_current_session_user),
 ) -> dict:
     db = _require_db(db)
     _get_owned_client(db, client_id, current)
-    context = build_client_ai_context_from_db(db, client_id)
+    context = build_client_ai_context_from_db(db, client_id, selected_campaign_name=selected_campaign_name)
+    if mode == "chat":
+        ai_options = normalize_ai_request_options(
+            model=model,
+            ai_preset=ai_preset,
+            max_tokens=max_tokens,
+            models=settings.openrouter_models,
+            configured_default=settings.openrouter_default_model,
+        )
+        selected_model = str(ai_options["model"])
+        chat_message = build_enriched_chat_message(
+            message or "Проанализируй выбранного клиента DirectPilot AI.",
+            context,
+            ai_options,
+        )
+        return build_chat_prompt_debug_snapshot(
+            client_id=client_id,
+            message=chat_message,
+            model=selected_model,
+            history=[],
+            client_context=context,
+            max_tokens=int(ai_options["max_tokens"]),
+            include_preview=include_preview,
+        )
     return build_recommendation_prompt_debug_snapshot(
         context=context,
         model=model,

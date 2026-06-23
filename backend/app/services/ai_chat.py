@@ -4,7 +4,9 @@ from typing import Any
 from app.core.config import settings
 from app.mcp.tools import call_tool
 from app.schemas import AiChatMessage, AiChatResponse, AiToolTrace
-from app.services.openrouter import generate_openrouter_response
+from app.services.ai_prompt_debug import build_prompt_debug_snapshot
+from app.services.direct_analyst_playbook import build_direct_analyst_instructions
+from app.services.openrouter import DEFAULT_SYSTEM_PROMPT, generate_openrouter_response
 
 BASE_TOOL_PLAN = [
     ("get_client", lambda client_id: {"client_id": client_id}),
@@ -85,6 +87,53 @@ MCP tool results:
 """.strip()
 
 
+def build_enriched_chat_message(message: str, server_context: dict[str, Any] | None, ai_options: dict[str, Any]) -> str:
+    if not server_context:
+        return message
+    playbook = build_direct_analyst_instructions(server_context)
+    return (
+        f"{message}\n\n"
+        "Trusted server-side client context follows. Use it as the source of truth for client, campaigns, goals, "
+        "sync state, diagnostics, and optimization drafts. Do not invent metrics, goal conversions, or applied "
+        "changes. If goal data is missing, say it is missing. All Yandex actions are draft/manual-review only.\n"
+        "Follow the DirectPilot analyst playbook in this order: data quality, goals, account overview, campaign "
+        "segmentation, main issues, draft optimization actions, safety limitations.\n"
+        f"DirectPilot analyst playbook:\n{playbook}\n"
+        f"AI mode: {ai_options['ai_preset']}. Token budget: {ai_options['max_tokens']} "
+        f"(cap {ai_options['max_tokens_cap']}). Keep answers concise in economy mode unless the user asks for detail; "
+        "advanced mode may use deeper structured analysis.\n"
+        f"{json.dumps(server_context, ensure_ascii=False, indent=2)}"
+    )
+
+
+def build_chat_prompt_debug_snapshot(
+    *,
+    client_id: str,
+    message: str,
+    model: str,
+    history: list[AiChatMessage],
+    client_context: dict[str, Any] | None = None,
+    max_tokens: int | None = None,
+    include_preview: bool = False,
+) -> dict[str, Any]:
+    traces = _run_mcp_tools(client_id, message, client_context=client_context)
+    prompt = _build_chat_prompt(client_id=client_id, message=message, history=history, traces=traces)
+    snapshot = build_prompt_debug_snapshot(
+        context={
+            "client": {"id": client_id},
+            "chat_history": [item.model_dump() for item in history[-8:]],
+            "client_context": client_context or {},
+            "mcp_tool_traces": [trace.model_dump() for trace in traces],
+        },
+        system_prompt=DEFAULT_SYSTEM_PROMPT,
+        user_prompt=prompt,
+        model=model,
+        max_tokens=max_tokens or 900,
+        include_preview=include_preview,
+    )
+    return {**snapshot, "mode": "chat", "toolTraceCount": len(traces)}
+
+
 def _fallback_answer(client_id: str, message: str, traces: list[AiToolTrace]) -> str:
     campaign_trace = next((trace for trace in traces if trace.name in {"list_campaigns", "list_yandex_direct_campaigns"}), None)
     audit_trace = next((trace for trace in traces if trace.name == "list_audit_issues"), None)
@@ -132,6 +181,7 @@ async def answer_ai_chat(
     model: str | None,
     history: list[AiChatMessage],
     client_context: dict[str, Any] | None = None,
+    max_tokens: int | None = None,
 ) -> AiChatResponse:
     traces = _run_mcp_tools(client_id, message, client_context=client_context)
     if not settings.openrouter_configured:
@@ -144,9 +194,42 @@ async def answer_ai_chat(
         )
 
     selected_model = model or settings.openrouter_default_model
+    prompt = _build_chat_prompt(client_id=client_id, message=message, history=history, traces=traces)
+    prompt_debug = build_prompt_debug_snapshot(
+        context={
+            "client": {"id": client_id},
+            "chat_history": [item.model_dump() for item in history[-8:]],
+            "client_context": client_context or {},
+            "mcp_tool_traces": [trace.model_dump() for trace in traces],
+        },
+        system_prompt=DEFAULT_SYSTEM_PROMPT,
+        user_prompt=prompt,
+        model=selected_model,
+        max_tokens=max_tokens or 900,
+        include_preview=False,
+    )
+    if prompt_debug["size"]["isTooLarge"]:
+        return AiChatResponse(
+            client_id=client_id,
+            model=selected_model,
+            source="prompt_budget_guard",
+            answer=(
+                "Контекст AI-чата слишком большой для выбранной модели. Выберите конкретную кампанию, "
+                "очистите историю чата или используйте сжатый контекст."
+            ),
+            tool_traces=traces,
+            error=True,
+            error_code="ai_prompt_too_large",
+            message=(
+                "Контекст AI-чата слишком большой для выбранной модели. Выберите конкретную кампанию, "
+                "очистите историю чата или используйте сжатый контекст."
+            ),
+            retryable=False,
+        )
     response = await generate_openrouter_response(
         model=selected_model,
-        prompt=_build_chat_prompt(client_id=client_id, message=message, history=history, traces=traces),
+        prompt=prompt,
+        max_tokens=max_tokens,
     )
     return AiChatResponse(
         client_id=client_id,
