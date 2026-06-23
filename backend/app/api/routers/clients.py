@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -20,6 +21,7 @@ from app.models import (
 from app.schemas import (
     AgencyMetric,
     AiClientRecommendationRequest,
+    AiChatMessage,
     AiRecommendationResponse,
     Campaign,
     ClientAccountResponse,
@@ -622,6 +624,7 @@ def get_client_ai_prompt_debug(
     tool_results_mode: str = "summary",
     chat_history_limit: int = 3,
     search_query_limit: int | None = 20,
+    history_json: str | None = None,
     include_preview: bool = False,
     db: Session | None = Depends(get_optional_db),
     current: CurrentUser = Depends(get_current_session_user),
@@ -639,21 +642,33 @@ def get_client_ai_prompt_debug(
         )
         selected_model = str(ai_options["model"])
         compacted_context = compact_client_context_for_chat(
-            compacted_context,
+            context,
             compact_context=compact_context,
             search_query_limit=search_query_limit,
             selected_campaign_name=selected_campaign_name,
         )
         chat_message = build_enriched_chat_message(
             message or "Проанализируй выбранного клиента DirectPilot AI.",
-            context,
+            compacted_context,
             ai_options,
         )
+        chat_history: list[AiChatMessage] = []
+        if history_json:
+            try:
+                raw_history = json.loads(history_json)
+                if isinstance(raw_history, list):
+                    chat_history = [
+                        AiChatMessage(**item)
+                        for item in raw_history
+                        if isinstance(item, dict) and item.get("role") and item.get("content")
+                    ][-8:]
+            except (TypeError, ValueError):
+                chat_history = []
         return build_chat_prompt_debug_snapshot(
             client_id=client_id,
             message=chat_message,
             model=selected_model,
-            history=[],
+            history=chat_history,
             client_context=compacted_context,
             max_tokens=int(ai_options["max_tokens"]),
             include_preview=include_preview,

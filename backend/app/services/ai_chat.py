@@ -2,12 +2,14 @@ import copy
 import json
 from typing import Any
 
+from fastapi import HTTPException
+
 from app.core.config import settings
 from app.mcp.tools import call_tool
 from app.schemas import AiChatMessage, AiChatResponse, AiToolTrace
-from app.services.ai_prompt_debug import build_openrouter_request_debug, build_prompt_debug_snapshot
+from app.services.ai_prompt_debug import build_openrouter_request_debug, build_prompt_debug_snapshot, estimate_tokens
 from app.services.direct_analyst_playbook import build_direct_analyst_instructions
-from app.services.openrouter import DEFAULT_SYSTEM_PROMPT, generate_openrouter_response
+from app.services.openrouter import DEFAULT_SYSTEM_PROMPT, generate_openrouter_response, redact_openrouter_debug_payload
 
 BASE_TOOL_PLAN = [
     ("get_client", lambda client_id: {"client_id": client_id}),
@@ -316,6 +318,211 @@ def _build_chat_debug_context(
     return context
 
 
+def _count_items(value: Any) -> int | None:
+    if isinstance(value, list):
+        return len(value)
+    if isinstance(value, dict):
+        for key in ("insights", "items", "campaigns", "actions"):
+            if isinstance(value.get(key), list):
+                return len(value[key])
+    return None
+
+
+def _tool_reason(name: str) -> str:
+    return {
+        "get_client": "Client identity and settings are always needed for client-aware chat.",
+        "list_campaigns": "Campaign list helps answer account-level and campaign-level questions.",
+        "list_audit_issues": "Audit issues provide deterministic evidence for the answer.",
+        "list_recommendations": "Saved recommendations and drafts help avoid repeating stale advice.",
+        "list_yandex_metrica_goals": "Goal context is relevant to conversion and CPA questions.",
+        "list_yandex_direct_campaigns": "Direct campaign metrics are relevant to PPC analysis questions.",
+        "list_integrations": "Integration state explains whether data can be trusted or synced.",
+    }.get(name, "Selected by DirectPilot chat routing.")
+
+
+def _tool_source(name: str) -> str:
+    return {
+        "get_client": "DirectPilot client context",
+        "list_campaigns": "DirectPilot campaign context",
+        "list_audit_issues": "DirectPilot audit context",
+        "list_recommendations": "DirectPilot recommendation context",
+        "list_yandex_metrica_goals": "DirectPilot Metrika context",
+        "list_yandex_direct_campaigns": "DirectPilot Direct context",
+        "list_integrations": "DirectPilot integration context",
+    }.get(name, "DirectPilot local MCP tool")
+
+
+def _result_summary(value: Any) -> dict[str, Any]:
+    if isinstance(value, list):
+        first = value[0] if value else None
+        return {
+            "type": "list",
+            "count": len(value),
+            "keys": list(first.keys())[:10] if isinstance(first, dict) else [],
+        }
+    if isinstance(value, dict):
+        return {"type": "object", "count": _count_items(value), "keys": list(value.keys())[:10]}
+    return {"type": type(value).__name__, "count": None, "keys": []}
+
+
+def _context_client_summary(context: dict[str, Any] | None) -> dict[str, Any]:
+    data = context if isinstance(context, dict) else {}
+    client = data.get("client") if isinstance(data.get("client"), dict) else {}
+    return {
+        "id": client.get("id"),
+        "name": client.get("name"),
+        "directLogin": client.get("direct_login") or client.get("directLogin"),
+        "metricaCounter": client.get("metrica_counter") or client.get("metricaCounter"),
+        "syncStatus": client.get("sync_status") or client.get("syncStatus"),
+    }
+
+
+def _tool_trace_entry(trace: AiToolTrace, tool_results_mode: str) -> dict[str, Any]:
+    prompt_value = _tool_trace_for_prompt(trace, tool_results_mode=tool_results_mode)
+    prompt_text = json.dumps(prompt_value, ensure_ascii=False, default=str)
+    return {
+        "name": trace.name,
+        "selected": True,
+        "reason": _tool_reason(trace.name),
+        "arguments": redact_openrouter_debug_payload(trace.arguments),
+        "source": _tool_source(trace.name),
+        "resultSummary": _result_summary(trace.result),
+        "includedInPrompt": "full" if tool_results_mode == "full" else "summary",
+        "estimatedTokens": estimate_tokens(prompt_text),
+    }
+
+
+def _build_compaction_trace(
+    *,
+    original_context: dict[str, Any] | None,
+    compacted_context: dict[str, Any] | None,
+    history: list[AiChatMessage],
+    chat_history_limit: int | None,
+    tool_results_mode: str,
+    search_query_limit: int | None,
+    selected_campaign_name: str | None,
+) -> list[dict[str, Any]]:
+    original = original_context if isinstance(original_context, dict) else {}
+    compacted = compacted_context if isinstance(compacted_context, dict) else {}
+    original_summary = original.get("summary") if isinstance(original.get("summary"), dict) else {}
+    compacted_summary = compacted.get("summary") if isinstance(compacted.get("summary"), dict) else {}
+    original_search = original_summary.get("searchQueryInsights") or original.get("search_query_insights")
+    compacted_search = compacted_summary.get("searchQueryInsights") or compacted.get("search_query_insights")
+    return [
+        {
+            "section": "chat.history",
+            "before": len(history),
+            "after": len(_limit_history(history, chat_history_limit)),
+            "rule": f"last {chat_history_limit if chat_history_limit is not None else 3} messages",
+        },
+        {
+            "section": "serverContext.campaigns",
+            "before": _count_items(original.get("campaigns") or original_summary.get("campaigns")),
+            "after": _count_items(compacted.get("campaigns") or compacted_summary.get("campaigns")),
+            "rule": "selected campaign or first 10 campaigns when compact context is enabled",
+        },
+        {
+            "section": "serverContext.searchQueryInsights",
+            "before": _count_items(original_search),
+            "after": _count_items(compacted_search),
+            "rule": f"top {search_query_limit} search queries" if search_query_limit else "no search query limit",
+        },
+        {
+            "section": "chat.toolResults",
+            "before": "full tool JSON",
+            "after": "summary only" if tool_results_mode != "full" else "full tool JSON",
+            "rule": f"tool_results_mode={tool_results_mode}",
+        },
+        {
+            "section": "selectedCampaign",
+            "before": "whole account",
+            "after": selected_campaign_name or "whole account",
+            "rule": "focus prompt on selected campaign when provided",
+        },
+    ]
+
+
+def _build_request_trace(
+    *,
+    client_id: str,
+    user_message: str,
+    selected_model: str | None,
+    max_tokens: int,
+    ai_preset: str | None,
+    history: list[AiChatMessage],
+    traces: list[AiToolTrace],
+    original_context: dict[str, Any] | None,
+    compacted_context: dict[str, Any] | None,
+    prompt: str | None,
+    request_debug: dict[str, Any] | None,
+    prompt_debug: dict[str, Any] | None,
+    compact_context: bool,
+    tool_results_mode: str,
+    chat_history_limit: int | None,
+    search_query_limit: int | None,
+    selected_campaign_name: str | None,
+    guard_blocked: bool = False,
+    guard_reason: str | None = None,
+    response_status: str = "success",
+    error_code: str | None = None,
+    error_message: str | None = None,
+) -> dict[str, Any]:
+    size = (prompt_debug or {}).get("size") or (request_debug or {}).get("size") or {}
+    payload = (request_debug or {}).get("payload") or {}
+    prompt_info = {
+        "system": DEFAULT_SYSTEM_PROMPT,
+        "user": prompt or "",
+        "messages": (request_debug or {}).get("messages") or payload.get("messages") or [],
+        "estimatedInputTokens": size.get("estimatedInputTokens"),
+        "estimatedTotalTokens": size.get("estimatedTotalTokens"),
+        "contextLimit": size.get("contextLimit"),
+        "isTooLarge": size.get("isTooLarge", False),
+    }
+    trace = {
+        "mode": "ai_chat",
+        "clientId": client_id,
+        "userMessage": user_message,
+        "selectedCampaignName": selected_campaign_name,
+        "modelSettings": {
+            "model": selected_model,
+            "max_tokens": max_tokens,
+            "temperature": payload.get("temperature", 0.2),
+            "ai_preset": ai_preset,
+            "compact_context": compact_context,
+            "tool_results_mode": tool_results_mode,
+            "chat_history_limit": chat_history_limit,
+            "search_query_limit": search_query_limit,
+        },
+        "contextAssembly": {
+            "source": "server-side trusted DirectPilot context",
+            "client": _context_client_summary(compacted_context or original_context),
+            "campaignSelection": {
+                "mode": "selected_campaign" if selected_campaign_name else "whole_account",
+                "selectedCampaignName": selected_campaign_name,
+            },
+            "compaction": _build_compaction_trace(
+                original_context=original_context,
+                compacted_context=compacted_context,
+                history=history,
+                chat_history_limit=chat_history_limit,
+                tool_results_mode=tool_results_mode,
+                search_query_limit=search_query_limit,
+                selected_campaign_name=selected_campaign_name,
+            ),
+        },
+        "tools": [_tool_trace_entry(trace, tool_results_mode=tool_results_mode) for trace in traces],
+        "prompt": prompt_info,
+        "openrouterPayload": payload,
+        "guard": {"blocked": guard_blocked, "reason": guard_reason},
+        "response": {
+            "status": response_status,
+            "errorCode": error_code,
+            "errorMessage": error_message,
+        },
+    }
+    return redact_openrouter_debug_payload(trace)
+
+
 def build_chat_prompt_debug_snapshot(
     *,
     client_id: str,
@@ -390,6 +597,26 @@ def build_chat_prompt_debug_snapshot(
         },
         include_preview=True,
     )
+    snapshot["requestTracePreview"] = _build_request_trace(
+        client_id=client_id,
+        user_message=display_message or message,
+        selected_model=model,
+        max_tokens=max_tokens or 900,
+        ai_preset=None,
+        history=history,
+        traces=traces,
+        original_context=client_context,
+        compacted_context=compacted_context,
+        prompt=prompt,
+        request_debug=snapshot["openrouterRequestPreview"],
+        prompt_debug=snapshot,
+        compact_context=compact_context,
+        tool_results_mode=tool_results_mode,
+        chat_history_limit=chat_history_limit,
+        search_query_limit=search_query_limit,
+        selected_campaign_name=selected_campaign_name,
+        response_status="preview",
+    )
     return {**snapshot, "mode": "chat", "toolTraceCount": len(traces)}
 
 
@@ -448,6 +675,8 @@ async def answer_ai_chat(
     selected_campaign_name: str | None = None,
     inspect_request: bool = False,
 ) -> AiChatResponse:
+    selected_model = model or settings.openrouter_default_model
+    safe_max_tokens = max_tokens or 900
     compacted_context = compact_client_context_for_chat(
         client_context,
         compact_context=compact_context,
@@ -455,16 +684,6 @@ async def answer_ai_chat(
         selected_campaign_name=selected_campaign_name,
     )
     traces = _run_mcp_tools(client_id, message, client_context=compacted_context)
-    if not settings.openrouter_configured:
-        return AiChatResponse(
-            client_id=client_id,
-            model=None,
-            source="mcp_deterministic_fallback",
-            answer=_fallback_answer(client_id, message, traces),
-            tool_traces=traces,
-        )
-
-    selected_model = model or settings.openrouter_default_model
     prompt = _build_chat_prompt(
         client_id=client_id,
         message=message,
@@ -486,7 +705,7 @@ async def answer_ai_chat(
         system_prompt=DEFAULT_SYSTEM_PROMPT,
         user_prompt=prompt,
         model=selected_model,
-        max_tokens=max_tokens or 900,
+        max_tokens=safe_max_tokens,
         include_preview=False,
     )
     request_debug = build_openrouter_request_debug(
@@ -495,7 +714,7 @@ async def answer_ai_chat(
         system_prompt=DEFAULT_SYSTEM_PROMPT,
         user_prompt=prompt,
         model=selected_model,
-        max_tokens=max_tokens or 900,
+        max_tokens=safe_max_tokens,
         context=_build_chat_debug_context(
             client_id=client_id,
             message=message,
@@ -514,6 +733,39 @@ async def answer_ai_chat(
         },
         include_preview=True,
     )
+    base_trace_kwargs = {
+        "client_id": client_id,
+        "user_message": message,
+        "selected_model": selected_model,
+        "max_tokens": safe_max_tokens,
+        "ai_preset": None,
+        "history": history,
+        "traces": traces,
+        "original_context": client_context,
+        "compacted_context": compacted_context,
+        "prompt": prompt,
+        "request_debug": request_debug,
+        "prompt_debug": prompt_debug,
+        "compact_context": compact_context,
+        "tool_results_mode": tool_results_mode,
+        "chat_history_limit": chat_history_limit,
+        "search_query_limit": search_query_limit,
+        "selected_campaign_name": selected_campaign_name,
+    }
+
+    if not settings.openrouter_configured:
+        return AiChatResponse(
+            client_id=client_id,
+            model=None,
+            source="mcp_deterministic_fallback",
+            answer=_fallback_answer(client_id, message, traces),
+            tool_traces=traces,
+            requestTrace=_build_request_trace(
+                **{**base_trace_kwargs, "selected_model": None},
+                response_status="fallback",
+            ),
+        )
+
     if prompt_debug["size"]["isTooLarge"]:
         return AiChatResponse(
             client_id=client_id,
@@ -532,12 +784,54 @@ async def answer_ai_chat(
             ),
             retryable=False,
             requestDebug=request_debug,
+            requestTrace=_build_request_trace(
+                **base_trace_kwargs,
+                guard_blocked=True,
+                guard_reason="ai_prompt_too_large",
+                response_status="blocked",
+                error_code="ai_prompt_too_large",
+            ),
         )
-    response = await generate_openrouter_response(
-        model=selected_model,
-        prompt=prompt,
-        max_tokens=max_tokens,
-    )
+    try:
+        response = await generate_openrouter_response(
+            model=selected_model,
+            prompt=prompt,
+            max_tokens=safe_max_tokens,
+        )
+    except HTTPException as exc:
+        detail_text = json.dumps(exc.detail, ensure_ascii=False) if isinstance(exc.detail, (dict, list)) else str(exc.detail)
+        is_rate_limited = (
+            exc.status_code == 429
+            or "429" in detail_text
+            or "rate limit" in detail_text.lower()
+            or "rate-limited" in detail_text.lower()
+            or "temporarily rate" in detail_text.lower()
+        )
+        error_code = "openrouter_rate_limited" if is_rate_limited else "openrouter_error"
+        message_text = (
+            "Р’С‹Р±СЂР°РЅРЅР°СЏ AI-РјРѕРґРµР»СЊ РІСЂРµРјРµРЅРЅРѕ РїРµСЂРµРіСЂСѓР¶РµРЅР° РёР»Рё РѕРіСЂР°РЅРёС‡РµРЅР° РїРѕ Р»РёРјРёС‚Р°Рј. Р’С‹Р±РµСЂРёС‚Рµ РґСЂСѓРіСѓСЋ РјРѕРґРµР»СЊ РёР»Рё РїРѕРІС‚РѕСЂРёС‚Рµ РїРѕР·Р¶Рµ."
+            if is_rate_limited
+            else "OpenRouter РЅРµ РІРµСЂРЅСѓР» РѕС‚РІРµС‚ РґР»СЏ AI-С‡Р°С‚Р°."
+        )
+        return AiChatResponse(
+            client_id=client_id,
+            model=selected_model,
+            source="openrouter_error_normalized",
+            answer=message_text,
+            tool_traces=traces,
+            error=True,
+            error_code=error_code,
+            message=message_text,
+            retryable=is_rate_limited,
+            suggested_preset="economy" if is_rate_limited else None,
+            requestDebug=request_debug if inspect_request else None,
+            requestTrace=_build_request_trace(
+                **base_trace_kwargs,
+                response_status="error",
+                error_code=error_code,
+                error_message=message_text,
+            ),
+        )
     return AiChatResponse(
         client_id=client_id,
         model=str(response.get("model") or selected_model),
@@ -545,4 +839,5 @@ async def answer_ai_chat(
         answer=str(response.get("content") or "Модель не вернула текстовый ответ."),
         tool_traces=traces,
         requestDebug=request_debug if inspect_request else None,
+        requestTrace=_build_request_trace(**base_trace_kwargs),
     )
