@@ -647,6 +647,7 @@ def get_client_ai_prompt_debug(
             client_context=context,
             max_tokens=int(ai_options["max_tokens"]),
             include_preview=include_preview,
+            display_message=message,
         )
     return build_recommendation_prompt_debug_snapshot(
         context=context,

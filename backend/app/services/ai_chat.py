@@ -106,6 +106,86 @@ def build_enriched_chat_message(message: str, server_context: dict[str, Any] | N
     )
 
 
+def _build_chat_prompt_wrapper_context(client_id: str) -> dict[str, Any]:
+    return {
+        "role": "DirectPilot AI chat prompt wrapper",
+        "client_id": client_id,
+        "rules": [
+            "Answer in Russian.",
+            "Use only trusted context and MCP tool results.",
+            "Do not claim changes were applied.",
+            "Return draft/manual-review recommendations only.",
+        ],
+    }
+
+
+def _build_server_context_debug_sections(server_context: dict[str, Any] | None) -> dict[str, Any]:
+    context = server_context if isinstance(server_context, dict) else {}
+    summary = context.get("summary") if isinstance(context.get("summary"), dict) else {}
+    known = {
+        "client",
+        "business_context",
+        "summary",
+        "campaigns",
+        "diagnostics",
+        "optimization_plan",
+        "saved_optimization_actions",
+        "knowledge_snippets",
+        "warnings",
+    }
+    return {
+        "serverContext.client": context.get("client"),
+        "serverContext.business_context": context.get("business_context"),
+        "serverContext.summary": summary,
+        "serverContext.summary.yesterdayCampaignSummary": summary.get("yesterdayCampaignSummary")
+        or context.get("yesterday_campaign_summary"),
+        "serverContext.summary.searchQueryInsights": summary.get("searchQueryInsights")
+        or context.get("search_query_insights"),
+        "serverContext.campaigns": context.get("campaigns"),
+        "serverContext.diagnostics": context.get("diagnostics"),
+        "serverContext.optimization": context.get("optimization_plan") or context.get("saved_optimization_actions"),
+        "serverContext.knowledge_snippets": context.get("knowledge_snippets"),
+        "serverContext.warnings": context.get("warnings"),
+        "serverContext.other": {key: value for key, value in context.items() if key not in known},
+    }
+
+
+def _summarize_server_context_for_debug(server_context: dict[str, Any] | None) -> dict[str, Any]:
+    context = server_context if isinstance(server_context, dict) else {}
+    summary = context.get("summary") if isinstance(context.get("summary"), dict) else {}
+    search_query_insights = summary.get("searchQueryInsights") or context.get("search_query_insights") or {}
+    return {
+        "available_sections": sorted(context.keys()),
+        "campaigns_count": len(context.get("campaigns") or []),
+        "has_business_context": bool(context.get("business_context")),
+        "has_summary": bool(summary),
+        "search_query_insights_count": len(search_query_insights.get("insights") or []),
+        "warnings_count": len(context.get("warnings") or []),
+    }
+
+
+def _build_chat_debug_context(
+    *,
+    client_id: str,
+    message: str,
+    history: list[AiChatMessage],
+    traces: list[AiToolTrace],
+    client_context: dict[str, Any] | None,
+    display_message: str | None = None,
+) -> dict[str, Any]:
+    playbook = build_direct_analyst_instructions(client_context or {}) if client_context else ""
+    context: dict[str, Any] = {
+        "chat.message": display_message or message,
+        "chat.history": [item.model_dump() for item in history[-8:]],
+        "chat.playbook": playbook,
+        "chat.serverContext": _summarize_server_context_for_debug(client_context),
+        "chat.toolResults": [trace.model_dump() for trace in traces],
+        "chat.finalPromptWrapper": _build_chat_prompt_wrapper_context(client_id),
+    }
+    context.update(_build_server_context_debug_sections(client_context))
+    return context
+
+
 def build_chat_prompt_debug_snapshot(
     *,
     client_id: str,
@@ -115,16 +195,19 @@ def build_chat_prompt_debug_snapshot(
     client_context: dict[str, Any] | None = None,
     max_tokens: int | None = None,
     include_preview: bool = False,
+    display_message: str | None = None,
 ) -> dict[str, Any]:
     traces = _run_mcp_tools(client_id, message, client_context=client_context)
     prompt = _build_chat_prompt(client_id=client_id, message=message, history=history, traces=traces)
     snapshot = build_prompt_debug_snapshot(
-        context={
-            "client": {"id": client_id},
-            "chat_history": [item.model_dump() for item in history[-8:]],
-            "client_context": client_context or {},
-            "mcp_tool_traces": [trace.model_dump() for trace in traces],
-        },
+        context=_build_chat_debug_context(
+            client_id=client_id,
+            message=message,
+            history=history,
+            traces=traces,
+            client_context=client_context,
+            display_message=display_message,
+        ),
         system_prompt=DEFAULT_SYSTEM_PROMPT,
         user_prompt=prompt,
         model=model,
@@ -196,12 +279,13 @@ async def answer_ai_chat(
     selected_model = model or settings.openrouter_default_model
     prompt = _build_chat_prompt(client_id=client_id, message=message, history=history, traces=traces)
     prompt_debug = build_prompt_debug_snapshot(
-        context={
-            "client": {"id": client_id},
-            "chat_history": [item.model_dump() for item in history[-8:]],
-            "client_context": client_context or {},
-            "mcp_tool_traces": [trace.model_dump() for trace in traces],
-        },
+        context=_build_chat_debug_context(
+            client_id=client_id,
+            message=message,
+            history=history,
+            traces=traces,
+            client_context=client_context,
+        ),
         system_prompt=DEFAULT_SYSTEM_PROMPT,
         user_prompt=prompt,
         model=selected_model,

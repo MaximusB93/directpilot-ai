@@ -73,6 +73,33 @@ def _json_size(value: Any) -> tuple[int, int]:
 
 
 def _section_items(context: dict[str, Any]) -> list[tuple[str, Any]]:
+    if any(str(key).startswith(("chat.", "serverContext.")) for key in (context or {})):
+        ordered_names = [
+            "chat.message",
+            "chat.history",
+            "chat.playbook",
+            "chat.serverContext",
+            "chat.toolResults",
+            "chat.finalPromptWrapper",
+            "serverContext.client",
+            "serverContext.business_context",
+            "serverContext.summary",
+            "serverContext.summary.yesterdayCampaignSummary",
+            "serverContext.summary.searchQueryInsights",
+            "serverContext.campaigns",
+            "serverContext.diagnostics",
+            "serverContext.optimization",
+            "serverContext.knowledge_snippets",
+            "serverContext.warnings",
+            "serverContext.other",
+        ]
+        known = set(ordered_names)
+        items = [(name, context.get(name)) for name in ordered_names]
+        other = {key: value for key, value in context.items() if key not in known}
+        if other:
+            items.append(("other", other))
+        return items
+
     summary = context.get("summary") if isinstance(context.get("summary"), dict) else {}
     known = {
         "client",
@@ -111,6 +138,31 @@ def build_context_size_breakdown(context: dict[str, Any]) -> list[dict[str, Any]
     return sorted(sections, key=lambda item: item["estimatedTokens"], reverse=True)
 
 
+def build_reduction_hints(sections: list[dict[str, Any]]) -> list[str]:
+    hints: list[str] = []
+    largest_name = str((sections[0] if sections else {}).get("name") or "")
+    lowered = largest_name.lower()
+
+    if "searchqueryinsights" in lowered or "search_query" in lowered:
+        hints.append("Поисковые запросы занимают больше всего места. Выберите одну кампанию или временно ограничьте анализ поисковых запросов.")
+    if "campaigns" in lowered or "servercontext.campaigns" in lowered:
+        hints.append("Список кампаний занимает больше всего места. Выберите конкретную кампанию вместо всего аккаунта.")
+    if "history" in lowered:
+        hints.append("История чата занимает больше всего места. Очистите историю чата перед повторным запросом.")
+    if "optimization" in lowered:
+        hints.append("Черновики оптимизации занимают больше всего места. Ограничьте список черновиков или откройте конкретное действие.")
+
+    generic_hints = [
+        "Выберите конкретную кампанию вместо всего аккаунта.",
+        "Очистите историю чата перед повторным запросом.",
+        "Используйте сжатый контекст, когда он будет доступен.",
+    ]
+    for hint in generic_hints:
+        if hint not in hints:
+            hints.append(hint)
+    return hints
+
+
 def _preview(text: str, limit: int) -> str:
     return _redact_text(text or "")[:limit]
 
@@ -139,9 +191,11 @@ def build_prompt_debug_snapshot(
     max_tokens: int,
     include_preview: bool = False,
 ) -> dict[str, Any]:
+    sections = build_context_size_breakdown(context)
     snapshot = {
         "size": summarize_prompt_size(system_prompt, user_prompt, model, max_tokens),
-        "sections": build_context_size_breakdown(context),
+        "sections": sections,
+        "reductionHints": build_reduction_hints(sections),
         "preview": None,
     }
     if include_preview:

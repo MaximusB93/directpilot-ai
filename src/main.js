@@ -333,7 +333,7 @@ function makeClientId(name) {
 }
 
 function getConfiguredAiModelIds() {
-  return aiStatus.models?.map((model) => model.id) || [];
+  return getAiModelOptions().map((model) => model.id);
 }
 
 function isCustomAiModel() {
@@ -373,24 +373,16 @@ function saveAiModelSettings() {
 
 function recommendedAiModelOptions() {
   return [
-    { id: 'google/gemma-3-12b-it', label: 'Google Gemma 3 12B IT', cost_tier: 'low', recommended_for: ['Эконом', 'дешевле', 'ежедневная аналитика'] },
-    { id: 'openai/gpt-4.1-mini', label: 'OpenAI GPT-4.1 Mini', cost_tier: 'low', recommended_for: ['Эконом', 'регулярные проверки'] },
-    { id: 'google/gemini-2.0-flash-001', label: 'Google Gemini 2.0 Flash', cost_tier: 'low', recommended_for: ['Эконом', 'быстрый аудит'] },
-    { id: 'deepseek/deepseek-chat', label: 'DeepSeek Chat', cost_tier: 'low', recommended_for: ['Эконом', 'чат'] },
-    { id: 'qwen/qwen-2.5-72b-instruct', label: 'Qwen 2.5 72B Instruct', cost_tier: 'low', recommended_for: ['Эконом', 'структурные ответы'] },
-    { id: 'openai/gpt-4.1', label: 'OpenAI GPT-4.1', cost_tier: 'medium', recommended_for: ['Баланс', 'анализ кампаний'] },
-    { id: 'anthropic/claude-3.5-sonnet', label: 'Claude 3.5 Sonnet', cost_tier: 'medium', recommended_for: ['Баланс', 'разбор гипотез'] },
-    { id: 'google/gemini-2.5-pro', label: 'Google Gemini 2.5 Pro', cost_tier: 'medium', recommended_for: ['Баланс', 'глубокий аудит'] },
-    { id: 'deepseek/deepseek-r1', label: 'DeepSeek R1', cost_tier: 'medium', recommended_for: ['Баланс', 'логический анализ'] },
-    { id: 'qwen/qwen3-14b', label: 'Qwen3 14B', cost_tier: 'high', recommended_for: ['Максимум', 'сложный разбор', 'сравнение моделей'] },
-    { id: 'anthropic/claude-3.7-sonnet', label: 'Claude 3.7 Sonnet', cost_tier: 'high', recommended_for: ['Максимум', 'сложный аудит'] },
-    { id: 'openai/o3-mini', label: 'OpenAI o3-mini', cost_tier: 'high', recommended_for: ['Максимум', 'спорные выводы'] },
+    { id: 'google/gemma-3-12b-it', label: 'Google Gemma 3 12B IT', cost_tier: 'low', recommended_for: ['регулярные проверки', 'контроль бюджета'] },
+    { id: 'qwen/qwen3-14b', label: 'Qwen3 14B', cost_tier: 'medium', recommended_for: ['анализ кампаний', 'структурные выводы'] },
   ];
 }
 
 function getAiModelOptions() {
   const seen = new Set();
-  return [...(aiStatus.models || []), ...recommendedAiModelOptions()].filter((model) => {
+  const allowedModelIds = new Set(['google/gemma-3-12b-it', 'qwen/qwen3-14b']);
+  const backendModels = (aiStatus.models || []).filter((model) => allowedModelIds.has(model.id));
+  return [...backendModels, ...recommendedAiModelOptions()].filter((model) => {
     if (!model?.id || seen.has(model.id)) return false;
     seen.add(model.id);
     return true;
@@ -442,15 +434,13 @@ function activeAiModelInfo() {
 }
 
 function activeAiMaxTokens() {
-  const cap = Number(activeAiPresetInfo()?.max_tokens || 1200);
-  const factors = { compact: 0.5, normal: 0.8, detailed: 1 };
-  return Math.max(1, Math.round(cap * (factors[aiMaxTokensMode] || 0.5)));
+  return 900;
 }
 
 function aiRequestOptions() {
   return {
     model: activeAiModel(),
-    ai_preset: aiPreset === 'custom' ? 'economy' : aiPreset,
+    ai_preset: 'balanced',
     max_tokens: activeAiMaxTokens(),
   };
 }
@@ -486,8 +476,8 @@ function normalizeAiErrorPayload(payload, fallbackMessage) {
 }
 
 function applyEconomyFallback() {
-  aiPreset = 'economy';
-  aiModel = aiStatus.recommended_default_model || aiStatus.default_model || aiStatus.models?.[0]?.id || 'openai/gpt-4o-mini';
+  aiPreset = 'balanced';
+  aiModel = 'google/gemma-3-12b-it';
   aiMaxTokensMode = 'compact';
   saveAiModelSettings();
 }
@@ -995,8 +985,8 @@ async function loadAiStatus() {
     aiStatus = response.ok ? await response.json() : { models: [], configured: false, message: 'Не удалось получить статус OpenRouter.' };
     const hasSavedSettings = Boolean(window.localStorage.getItem(getAiModelSettingsKey()));
     if (!hasSavedSettings) {
-      aiPreset = aiStatus.recommended_default_preset || 'economy';
-      aiModel = activeAiPresetInfo()?.default_model || aiStatus.recommended_default_model || aiStatus.default_model || aiStatus.models?.[0]?.id || aiModel;
+      aiPreset = 'balanced';
+      aiModel = 'google/gemma-3-12b-it';
       saveAiModelSettings();
     }
     if (isCustomAiModel()) aiCustomModel = aiModel;
@@ -1072,11 +1062,12 @@ async function loadAiPromptDebug() {
   aiPromptDebugStatus = 'Оцениваем размер AI-контекста...';
   render();
   try {
+    const options = aiRequestOptions();
     const params = new URLSearchParams({
       mode: 'chat',
-      model: activeAiModel(),
-      ai_preset: aiPreset === 'custom' ? 'economy' : aiPreset,
-      max_tokens: String(activeAiMaxTokens()),
+      model: options.model,
+      ai_preset: options.ai_preset,
+      max_tokens: String(options.max_tokens),
       selected_campaign_name: selectedAiCampaignName || '',
       message: aiChatInput.trim() || 'Проанализируй выбранного клиента DirectPilot AI.',
     });
@@ -2612,7 +2603,124 @@ function renderIntegrations() {
   `);
 }
 
+function promptDebugSectionLabel(name) {
+  return {
+    'serverContext.summary.searchQueryInsights': 'Поисковые запросы',
+    'serverContext.campaigns': 'Кампании',
+    'chat.history': 'История чата',
+    'chat.message': 'Текущий вопрос',
+    'chat.playbook': 'Инструкции AI-аналитика',
+    'chat.toolResults': 'Результаты MCP-инструментов',
+    'serverContext.optimization': 'Черновики оптимизации',
+    'chat.serverContext': 'Контекст клиента',
+    'serverContext.summary': 'Сводка эффективности',
+    'serverContext.summary.yesterdayCampaignSummary': 'Сводка за вчера',
+    'serverContext.business_context': 'Контекст бизнеса',
+    'serverContext.diagnostics': 'Диагностика',
+    'serverContext.knowledge_snippets': 'Память проекта',
+    'serverContext.warnings': 'Предупреждения',
+    'chat.finalPromptWrapper': 'Системная обвязка чата',
+    'serverContext.other': 'Прочий серверный контекст',
+    other: 'Прочее',
+  }[name] || name;
+}
+
 function renderAiModelSettings() {
+  {
+  const model = activeAiModelInfo();
+  const modelOptions = getAiModelOptions();
+  const selectedModelValue = isCustomAiModel() ? CUSTOM_MODEL_VALUE : activeAiModel();
+  const customModelActive = selectedModelValue === CUSTOM_MODEL_VALUE;
+  const resolvedModel = activeAiModel();
+  const resolvedMaxTokens = activeAiMaxTokens();
+  const costLabel = { low: 'низкая стоимость', medium: 'средняя стоимость', high: 'дороже', unknown: 'стоимость неизвестна' }[model.cost_tier || 'unknown'] || 'стоимость неизвестна';
+  const freeModelWarning = resolvedModel.includes(':free')
+    ? 'Free-модели часто получают rate limit у провайдера. Для стабильной работы выберите Gemma или Qwen из списка.'
+    : '';
+  const customModelWarning = customModelActive
+    ? 'Своя/free модель может быть нестабильной: возможны лимиты, 429 и временная недоступность.'
+    : '';
+  const promptDebug = aiPromptDebugSnapshot;
+  const promptDebugSize = promptDebug?.size || null;
+  const promptDebugSections = (promptDebug?.sections || []).slice(0, 8);
+  const promptDebugHints = promptDebug?.reductionHints || [];
+  const promptDebugMode = promptDebug?.mode === 'chat' ? 'AI-chat prompt' : promptDebug?.mode || '';
+  const promptDebugModelMismatch = promptDebugSize?.model && promptDebugSize.model !== resolvedModel
+    ? `Debug проверил модель ${promptDebugSize.model}, а в чате выбрана ${resolvedModel}.`
+    : '';
+  return `
+    <section class="panel">
+      <div class="panelHeader">
+        <div>
+          <h3>AI-модель</h3>
+          <p>${escapeHtml(resolvedModel)} · лимит ответа ${formatNumberSafe(resolvedMaxTokens)} tokens · ${escapeHtml(costLabel)}</p>
+        </div>
+        <span class="aiStatusBadge ${aiStatus.configured ? 'ready' : 'pending'}">${aiStatus.configured ? 'OpenRouter подключён' : 'OpenRouter не настроен'}</span>
+      </div>
+      <p>${escapeHtml(aiStatus.message || '')}</p>
+      <details>
+        <summary class="secondaryButton">Настройки модели</summary>
+        <p>DirectPilot отправляет в OpenRouter конкретную модель и лимит ответа. Сейчас в интерфейсе оставлены два понятных варианта и своя модель для ручной проверки.</p>
+        <p><a href="https://openrouter.ai/models" target="_blank" rel="noopener noreferrer">Каталог моделей OpenRouter</a></p>
+        <div class="clientSettingsGrid">
+          <label class="authField">
+            <span>Модель</span>
+            <select data-ai-model>
+              ${modelOptions.map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === selectedModelValue ? 'selected' : ''}>${escapeHtml(item.label || item.name || item.id)} · ${escapeHtml(item.cost_tier || 'unknown')}</option>`).join('')}
+              <option value="${CUSTOM_MODEL_VALUE}" ${selectedModelValue === CUSTOM_MODEL_VALUE ? 'selected' : ''}>Своя модель OpenRouter</option>
+            </select>
+          </label>
+          ${customModelActive ? `
+            <label class="authField">
+              <span>Своя модель OpenRouter</span>
+              <input data-ai-custom-model value="${escapeHtml(aiCustomModel)}" placeholder="Например: openai/gpt-4o-mini" />
+            </label>
+          ` : ''}
+        </div>
+        <p><strong>Фактически будет использована модель:</strong> ${escapeHtml(resolvedModel)}</p>
+        <p><strong>Лимит ответа:</strong> ${formatNumberSafe(resolvedMaxTokens)} tokens</p>
+        ${customModelWarning ? `<div class="authStatus">${escapeHtml(customModelWarning)}</div>` : ''}
+        ${freeModelWarning ? `<div class="authStatus aiError">${escapeHtml(freeModelWarning)}</div>` : ''}
+      </details>
+      <div class="heroActions">
+        <button class="secondaryButton" type="button" data-test-ai-model ${aiModelTestLoading ? 'disabled' : ''}>${aiModelTestLoading ? 'Проверяем...' : 'Проверить модель'}</button>
+        <button class="secondaryButton" type="button" data-check-ai-prompt-size ${aiPromptDebugLoading ? 'disabled' : ''}>${aiPromptDebugLoading ? 'Проверяем...' : 'Проверить размер AI-контекста'}</button>
+      </div>
+      ${aiModelTestStatus ? `<div class="authStatus integrationStatus">${escapeHtml(aiModelTestStatus)}</div>` : ''}
+      ${aiPromptDebugStatus ? `<div class="authStatus integrationStatus">${escapeHtml(aiPromptDebugStatus)}</div>` : ''}
+      ${promptDebugSize ? `
+        <p><strong>Проверяется:</strong> ${escapeHtml(promptDebugMode || 'AI prompt')}</p>
+        ${promptDebugModelMismatch ? `<div class="authStatus aiError">${escapeHtml(promptDebugModelMismatch)}</div>` : ''}
+        <div class="metricGrid">
+          <article><span>Input tokens</span><strong>${formatNumberSafe(promptDebugSize.estimatedInputTokens)}</strong></article>
+          <article><span>Total tokens</span><strong>${formatNumberSafe(promptDebugSize.estimatedTotalTokens)}</strong></article>
+          <article><span>Лимит модели</span><strong>${formatNumberSafe(promptDebugSize.contextLimit)}</strong></article>
+          <article><span>Статус</span><strong>${promptDebugSize.isTooLarge ? 'слишком большой' : 'OK'}</strong></article>
+        </div>
+        ${promptDebugSize.warning ? `<div class="authStatus aiError">${escapeHtml(promptDebugSize.warning)}</div>` : ''}
+        <h4>Что раздувает контекст</h4>
+        <div class="tableWrap">
+          <table>
+            <thead><tr><th>Секция</th><th>Символы</th><th>~ tokens</th></tr></thead>
+            <tbody>
+              ${promptDebugSections.map((item) => `
+                <tr>
+                  <td><strong>${escapeHtml(promptDebugSectionLabel(item.name))}</strong><br><small>${escapeHtml(item.name)}</small></td>
+                  <td>${formatNumberSafe(item.chars)}</td>
+                  <td>${formatNumberSafe(item.estimatedTokens)}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+        ${promptDebugHints.length ? `
+          <h4>Как уменьшить контекст</h4>
+          <ul>${promptDebugHints.map((hint) => `<li>${escapeHtml(hint)}</li>`).join('')}</ul>
+        ` : ''}
+      ` : ''}
+    </section>
+  `;
+  }
   const preset = activeAiPresetInfo();
   const model = activeAiModelInfo();
   const modelOptions = getAiModelOptions();
