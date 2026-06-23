@@ -1,13 +1,16 @@
+from dataclasses import replace
+
 import pytest
 
-from app.core.config import settings
-from app.services.ai_recommendations import generate_client_recommendations_from_context
-from app.services.openrouter import generate_openrouter_response
+import app.services.ai_recommendations as ai_recommendations_module
+import app.services.openrouter as openrouter_module
+from app.core.config import settings as base_settings
 
 
 @pytest.mark.asyncio
 async def test_oversized_prompt_guard_returns_error_without_openrouter_call(monkeypatch):
-    monkeypatch.setattr(settings, "openrouter_api_key", "test-key")
+    test_settings = replace(base_settings, openrouter_api_key="test-key", openrouter_allow_custom_models=True)
+    monkeypatch.setattr(ai_recommendations_module, "settings", test_settings)
     called = False
 
     async def fake_generate(*args, **kwargs):
@@ -15,14 +18,14 @@ async def test_oversized_prompt_guard_returns_error_without_openrouter_call(monk
         called = True
         raise AssertionError("OpenRouter should not be called for oversized prompts")
 
-    monkeypatch.setattr("app.services.ai_recommendations.generate_openrouter_response", fake_generate)
+    monkeypatch.setattr(ai_recommendations_module, "generate_openrouter_response", fake_generate)
     context = {
         "client": {"id": "client-1", "name": "Client"},
         "business_context": {"status": "good", "fields": {"manual_notes": "x" * 430000}},
         "campaigns": [{"campaign_name": "Campaign", "cost": 100, "goal_conversions": 0}],
     }
 
-    response = await generate_client_recommendations_from_context(
+    response = await ai_recommendations_module.generate_client_recommendations_from_context(
         context=context,
         model="google/gemma-3-12b-it",
         ai_preset="economy",
@@ -38,7 +41,8 @@ async def test_oversized_prompt_guard_returns_error_without_openrouter_call(monk
 
 @pytest.mark.asyncio
 async def test_generate_openrouter_response_clamps_max_tokens(monkeypatch):
-    monkeypatch.setattr(settings, "openrouter_api_key", "test-key")
+    test_settings = replace(base_settings, openrouter_api_key="test-key", openrouter_allow_custom_models=True)
+    monkeypatch.setattr(openrouter_module, "settings", test_settings)
     captured = {}
 
     class Response:
@@ -63,9 +67,9 @@ async def test_generate_openrouter_response_clamps_max_tokens(monkeypatch):
             captured["headers"] = headers
             return Response()
 
-    monkeypatch.setattr("app.services.openrouter.httpx.AsyncClient", AsyncClient)
+    monkeypatch.setattr(openrouter_module.httpx, "AsyncClient", AsyncClient)
 
-    response = await generate_openrouter_response(
+    response = await openrouter_module.generate_openrouter_response(
         model="openrouter/auto",
         prompt="short prompt",
         max_tokens=999999,
