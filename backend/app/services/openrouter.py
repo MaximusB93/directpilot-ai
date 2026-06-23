@@ -16,6 +16,14 @@ DEFAULT_SYSTEM_PROMPT = """
 """.strip()
 
 SECRET_KEY_PARTS = ("authorization", "api_key", "apikey", "token", "secret", "password", "cookie", "refresh")
+SAFE_DEBUG_KEYS = {
+    "max_tokens",
+    "estimatedinputtokens",
+    "estimatedtotaltokens",
+    "contextlimit",
+    "inputtokens",
+    "totaltokens",
+}
 
 
 def _validate_openrouter_model(model: str | None) -> str:
@@ -49,6 +57,9 @@ def redact_openrouter_debug_payload(value: Any) -> Any:
         safe: dict[str, Any] = {}
         for key, item in value.items():
             key_text = str(key).lower()
+            if key_text in SAFE_DEBUG_KEYS:
+                safe[str(key)] = redact_openrouter_debug_payload(item)
+                continue
             if any(part in key_text for part in SECRET_KEY_PARTS):
                 safe[str(key)] = "[redacted]"
             else:
@@ -118,15 +129,6 @@ async def generate_openrouter_response(model: str, prompt: str, max_tokens: int 
             detail=f"Модель {selected_model} не разрешена. Добавьте её в OPENROUTER_MODELS или включите OPENROUTER_ALLOW_CUSTOM_MODELS=true.",
         )
 
-    payload = {
-        "model": selected_model,
-        "messages": [
-            {"role": "system", "content": DEFAULT_SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": 0.2,
-        "max_tokens": clamp_openrouter_max_tokens(max_tokens),
-    }
     payload = build_openrouter_payload(selected_model, prompt, max_tokens=max_tokens)
     selected_model = str(payload["model"])
     headers = {
