@@ -321,7 +321,7 @@ function getViewActionTarget(target) {
 
 function isInteractiveActionTarget(target) {
   return Boolean(
-    target?.closest?.('button, a, [role="button"], [data-save-api-base], [data-client-id], [data-integration], [data-client-ai-recommendations], [data-sync-client], [data-load-summary], [data-load-sync-jobs], [data-load-optimization-plan], [data-load-optimization-actions], [data-save-optimization-actions], [data-update-optimization-action], [data-load-execution-preview], [data-copy-optimization-plan], [data-copy-text], [data-optimization-filter], [data-optimization-action-filter], [data-ai-quick-action], [data-ai-economy-fallback], [data-ai-reduction-action], [data-openrouter-inspector], [data-copy-openrouter-debug], [data-test-ai-model], [data-check-ai-prompt-size], [data-clear-ai-chat], [data-refresh-yandex-status], [data-go-view], [data-logout]')
+    target?.closest?.('button, a, [role="button"], [data-save-api-base], [data-client-id], [data-integration], [data-client-ai-recommendations], [data-sync-client], [data-load-summary], [data-load-sync-jobs], [data-load-optimization-plan], [data-load-optimization-actions], [data-save-optimization-actions], [data-update-optimization-action], [data-load-execution-preview], [data-copy-optimization-plan], [data-copy-text], [data-optimization-filter], [data-optimization-action-filter], [data-ai-quick-action], [data-ai-economy-fallback], [data-ai-reduction-action], [data-openrouter-inspector], [data-copy-openrouter-debug], [data-copy-ai-trace], [data-test-ai-model], [data-check-ai-prompt-size], [data-clear-ai-chat], [data-refresh-yandex-status], [data-go-view], [data-logout]')
     || getViewActionTarget(target)
   );
 }
@@ -1118,6 +1118,7 @@ async function loadAiPromptDebug() {
       message: aiChatInput.trim() || 'Проанализируй выбранного клиента DirectPilot AI.',
     });
     params.set('search_query_limit', String(options.search_query_limit || 0));
+    params.set('history_json', JSON.stringify(aiChatMessages.slice(-Number(options.chat_history_limit || 3)).map((item) => ({ role: item.role, content: item.content }))));
     const response = await apiFetch(`/clients/${selectedClientId}/ai/prompt-debug?${params.toString()}`);
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || 'Не удалось проверить размер AI-контекста');
@@ -1160,6 +1161,7 @@ async function requestAiChatAnswer() {
   aiChatErrorDetails = null;
   aiChatToolTraces = [];
   render();
+  let aiChatErrorPayload = null;
   try {
     const response = await apiFetch('/ai/chat', {
       method: 'POST',
@@ -1167,6 +1169,7 @@ async function requestAiChatAnswer() {
       body: JSON.stringify({ client_id: selectedClientId, ...aiRequestOptions(), message, history, client_context: currentClient(), selected_campaign_name: selectedAiCampaignName || null, inspect_request: aiRequestInspectorEnabled }),
     });
     const payload = await response.json();
+    aiChatErrorPayload = payload;
     if (!response.ok || payload.error) {
       if (payload.requestDebug) openrouterRequestDebug = payload.requestDebug;
       const normalized = normalizeAiErrorPayload(payload, 'AI-чат не вернул ответ');
@@ -1174,9 +1177,18 @@ async function requestAiChatAnswer() {
       throw new Error(normalized.message);
     }
     if (payload.requestDebug) openrouterRequestDebug = payload.requestDebug;
-    aiChatMessages = [...aiChatMessages, { role: 'assistant', content: payload.answer, source: payload.source }];
+    if (!payload.requestDebug && payload.requestTrace?.openrouterPayload) {
+      openrouterRequestDebug = { mode: 'chat', payload: payload.requestTrace.openrouterPayload, size: payload.requestTrace.prompt || {} };
+    }
+    aiChatMessages = [...aiChatMessages, { role: 'assistant', content: payload.answer, source: payload.source, requestTrace: payload.requestTrace || null, requestDebug: payload.requestDebug || null }];
     aiChatToolTraces = payload.tool_traces || [];
   } catch (error) {
+    if (aiChatErrorPayload?.requestTrace && !aiChatMessages.some((item) => item.requestTrace === aiChatErrorPayload.requestTrace)) {
+      if (!aiChatErrorPayload.requestDebug && aiChatErrorPayload.requestTrace?.openrouterPayload) {
+        openrouterRequestDebug = { mode: 'chat', payload: aiChatErrorPayload.requestTrace.openrouterPayload, size: aiChatErrorPayload.requestTrace.prompt || {} };
+      }
+      aiChatMessages = [...aiChatMessages, { role: 'assistant', content: aiChatErrorPayload.answer || error.message, source: aiChatErrorPayload.source, requestTrace: aiChatErrorPayload.requestTrace, requestDebug: aiChatErrorPayload.requestDebug || null }];
+    }
     aiChatError = error.message;
   } finally {
     aiChatLoading = false;
@@ -2747,6 +2759,95 @@ function renderOpenRouterRequestInspector() {
   `;
 }
 
+function renderAiRequestTrace(trace, index) {
+  if (!trace) return '';
+  const prompt = trace.prompt || {};
+  const payload = trace.openrouterPayload || {};
+  const settings = trace.modelSettings || {};
+  const context = trace.contextAssembly || {};
+  const guard = trace.guard || {};
+  const response = trace.response || {};
+  const tools = trace.tools || [];
+  const compaction = context.compaction || [];
+  const payloadJson = JSON.stringify(payload, null, 2);
+  const traceJson = JSON.stringify(trace, null, 2);
+  return `
+    <details class="aiToolTrace aiRequestTrace">
+      <summary>AI request trace: что было отправлено в OpenRouter</summary>
+      <div class="authStatus">
+        Debug-данные могут содержать бизнес-контекст клиента. Не пересылайте их публично.
+      </div>
+      <div class="metricGrid">
+        <article><span>Модель</span><strong>${escapeHtml(settings.model || payload.model || '')}</strong></article>
+        <article><span>Max tokens</span><strong>${formatNumberSafe(settings.max_tokens || payload.max_tokens || 0)}</strong></article>
+        <article><span>Input tokens</span><strong>${formatNumberSafe(prompt.estimatedInputTokens || 0)}</strong></article>
+        <article><span>Total tokens</span><strong>${formatNumberSafe(prompt.estimatedTotalTokens || 0)}</strong></article>
+        <article><span>Guard</span><strong>${guard.blocked ? 'заблокирован' : 'пропущен'}</strong></article>
+        <article><span>Ответ</span><strong>${escapeHtml(response.status || 'success')}</strong></article>
+      </div>
+      <p><strong>Сообщение пользователя:</strong> ${escapeHtml(trace.userMessage || '')}</p>
+      <p><strong>Клиент:</strong> ${escapeHtml(context.client?.name || context.client?.id || trace.clientId || '')}</p>
+      <p><strong>Кампания:</strong> ${escapeHtml(trace.selectedCampaignName || 'весь аккаунт')}</p>
+      ${guard.blocked ? `<div class="authStatus aiError">Запрос не отправлялся в OpenRouter: ${escapeHtml(guard.reason || 'prompt guard')}</div>` : ''}
+      <h4>Инструменты и источники</h4>
+      <div class="tableWrap">
+        <table>
+          <thead><tr><th>Инструмент</th><th>Почему выбран</th><th>Источник</th><th>Результат</th><th>~ tokens</th></tr></thead>
+          <tbody>
+            ${tools.map((tool) => `
+              <tr>
+                <td><strong>${escapeHtml(tool.name || '')}</strong></td>
+                <td>${escapeHtml(tool.reason || '')}</td>
+                <td>${escapeHtml(tool.source || '')}</td>
+                <td>${escapeHtml(tool.resultSummary?.type || '')}${tool.resultSummary?.count != null ? ` · ${formatNumberSafe(tool.resultSummary.count)}` : ''}</td>
+                <td>${formatNumberSafe(tool.estimatedTokens || 0)}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+      <h4>Сборка и сжатие контекста</h4>
+      <div class="tableWrap">
+        <table>
+          <thead><tr><th>Секция</th><th>До</th><th>После</th><th>Правило</th></tr></thead>
+          <tbody>
+            ${compaction.map((item) => `
+              <tr>
+                <td>${escapeHtml(item.section || '')}</td>
+                <td>${escapeHtml(String(item.before ?? ''))}</td>
+                <td>${escapeHtml(String(item.after ?? ''))}</td>
+                <td>${escapeHtml(item.rule || '')}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+      <div class="heroActions">
+        <button class="secondaryButton" type="button" data-copy-ai-trace="${index}" data-copy-ai-trace-part="json">Скопировать trace JSON</button>
+        <button class="secondaryButton" type="button" data-copy-ai-trace="${index}" data-copy-ai-trace-part="system">Скопировать system prompt</button>
+        <button class="secondaryButton" type="button" data-copy-ai-trace="${index}" data-copy-ai-trace-part="user">Скопировать user prompt</button>
+        <button class="secondaryButton" type="button" data-copy-ai-trace="${index}" data-copy-ai-trace-part="payload">Скопировать OpenRouter payload</button>
+      </div>
+      <details>
+        <summary class="secondaryButton">System prompt</summary>
+        <pre>${escapeHtml(prompt.system || '')}</pre>
+      </details>
+      <details>
+        <summary class="secondaryButton">User prompt</summary>
+        <pre>${escapeHtml(prompt.user || '')}</pre>
+      </details>
+      <details>
+        <summary class="secondaryButton">OpenRouter payload</summary>
+        <pre>${escapeHtml(payloadJson)}</pre>
+      </details>
+      <details>
+        <summary class="secondaryButton">Trace JSON</summary>
+        <pre>${escapeHtml(traceJson)}</pre>
+      </details>
+    </details>
+  `;
+}
+
 function renderAiModelSettings() {
   {
   const model = activeAiModelInfo();
@@ -3045,6 +3146,7 @@ function renderAiChat() {
             <strong>${item.role === 'user' ? 'Вы' : 'DirectPilot AI'}</strong>
             <pre>${escapeHtml(item.content)}</pre>
             ${item.source ? `<small>${escapeHtml(item.source)}</small>` : ''}
+            ${item.requestTrace ? renderAiRequestTrace(item.requestTrace, index) : ''}
             ${item.role === 'assistant' ? `<button class="secondaryButton" type="button" data-save-ai-memory="${index}">Сохранить в память проекта</button>` : ''}
           </article>
         `).join('')}
@@ -3275,6 +3377,7 @@ app.addEventListener('click', async (event) => {
   const aiReductionActionButton = event.target.closest('[data-ai-reduction-action]');
   const openrouterInspectorButton = event.target.closest('[data-openrouter-inspector]');
   const copyOpenrouterDebugButton = event.target.closest('[data-copy-openrouter-debug]');
+  const copyAiTraceButton = event.target.closest('[data-copy-ai-trace]');
   const testAiModelButton = event.target.closest('[data-test-ai-model]');
   const checkAiPromptSizeButton = event.target.closest('[data-check-ai-prompt-size]');
   const clearAiChatButton = event.target.closest('[data-clear-ai-chat]');
@@ -3436,6 +3539,23 @@ app.addEventListener('click', async (event) => {
         : JSON.stringify(debug.payload || debug, null, 2);
     await navigator.clipboard?.writeText(text);
     aiPromptDebugStatus = 'OpenRouter debug скопирован.';
+    render();
+    return;
+  }
+
+  if (copyAiTraceButton) {
+    const index = Number(copyAiTraceButton.dataset.copyAiTrace);
+    const part = copyAiTraceButton.dataset.copyAiTracePart || 'json';
+    const trace = aiChatMessages[index]?.requestTrace || {};
+    const text = part === 'system'
+      ? (trace.prompt?.system || '')
+      : part === 'user'
+        ? (trace.prompt?.user || '')
+        : part === 'payload'
+          ? JSON.stringify(trace.openrouterPayload || {}, null, 2)
+          : JSON.stringify(trace, null, 2);
+    await navigator.clipboard?.writeText(text);
+    aiPromptDebugStatus = 'AI request trace скопирован.';
     render();
     return;
   }

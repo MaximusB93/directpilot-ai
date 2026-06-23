@@ -25,15 +25,42 @@ def test_openrouter_debug_redaction_removes_credentials():
     payload = {
         "Authorization": "Bearer secret",
         "api_key": "secret",
-        "nested": {"access_token": "secret", "safe": "visible"},
+        "apikey": "secret",
+        "secret": "secret",
+        "password": "secret",
+        "nested": {
+            "access_token": "secret",
+            "refresh_token": "secret",
+            "oauth_token": "secret",
+            "cookie": "secret",
+            "safe": "visible",
+        },
+        "max_tokens": 777,
+        "estimatedInputTokens": 120,
+        "estimatedTotalTokens": 897,
+        "contextLimit": 131072,
+        "inputTokens": 120,
+        "totalTokens": 897,
     }
 
     redacted = openrouter_module.redact_openrouter_debug_payload(payload)
 
     assert redacted["Authorization"] == "[redacted]"
     assert redacted["api_key"] == "[redacted]"
+    assert redacted["apikey"] == "[redacted]"
+    assert redacted["secret"] == "[redacted]"
+    assert redacted["password"] == "[redacted]"
     assert redacted["nested"]["access_token"] == "[redacted]"
+    assert redacted["nested"]["refresh_token"] == "[redacted]"
+    assert redacted["nested"]["oauth_token"] == "[redacted]"
+    assert redacted["nested"]["cookie"] == "[redacted]"
     assert redacted["nested"]["safe"] == "visible"
+    assert redacted["max_tokens"] == 777
+    assert redacted["estimatedInputTokens"] == 120
+    assert redacted["estimatedTotalTokens"] == 897
+    assert redacted["contextLimit"] == 131072
+    assert redacted["inputTokens"] == 120
+    assert redacted["totalTokens"] == 897
 
 
 def test_openrouter_request_debug_includes_messages_without_credentials(monkeypatch):
@@ -51,6 +78,7 @@ def test_openrouter_request_debug_includes_messages_without_credentials(monkeypa
     )
 
     assert debug["payload"]["model"] == "custom/model"
+    assert debug["payload"]["max_tokens"] == 900
     assert debug["payload"]["messages"][0]["role"] == "system"
     assert debug["payload"]["messages"][1]["role"] == "user"
     assert "secret" not in str(debug)

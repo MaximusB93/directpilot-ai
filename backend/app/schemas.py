@@ -516,6 +516,7 @@ class AiChatResponse(BaseModel):
     retryable: bool = False
     suggested_preset: str | None = None
     requestDebug: dict | None = None
+    requestTrace: dict | None = None
 
 
 class AiPromptResponse(BaseModel):
