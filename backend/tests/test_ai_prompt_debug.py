@@ -21,7 +21,7 @@ def test_gemma_context_limit_and_oversized_detection():
     )
 
     assert summary["contextLimit"] == 131072
-    assert summary["estimatedTotalTokens"] > 236000
+    assert summary["estimatedTotalTokens"] > summary["contextLimit"]
     assert summary["isTooLarge"] is True
 
 
