@@ -249,3 +249,42 @@ def build_prompt_debug_snapshot(
             "userPromptEnd": _preview_end(user_prompt, 6000),
         }
     return snapshot
+
+
+def build_openrouter_request_debug(
+    *,
+    mode: str,
+    endpoint: str,
+    system_prompt: str,
+    user_prompt: str,
+    model: str,
+    max_tokens: int,
+    context: dict[str, Any] | None = None,
+    compact_options: dict[str, Any] | None = None,
+    include_preview: bool = True,
+) -> dict[str, Any]:
+    from app.services.openrouter import build_openrouter_payload, redact_openrouter_debug_payload
+
+    snapshot = build_prompt_debug_snapshot(
+        context=context or {},
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        model=model,
+        max_tokens=max_tokens,
+        include_preview=include_preview,
+    )
+    payload = build_openrouter_payload(model, user_prompt, max_tokens=max_tokens)
+    safe_payload = redact_openrouter_debug_payload(payload)
+    return {
+        "mode": mode,
+        "endpoint": endpoint,
+        "source": endpoint,
+        "payload": safe_payload,
+        "systemPrompt": redact_openrouter_debug_payload(system_prompt),
+        "userPrompt": redact_openrouter_debug_payload(user_prompt),
+        "messages": safe_payload.get("messages", []),
+        "size": snapshot["size"],
+        "sections": snapshot["sections"],
+        "reductionHints": snapshot["reductionHints"],
+        "compactOptions": compact_options or {},
+    }

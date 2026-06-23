@@ -5,7 +5,7 @@ from typing import Any
 from app.core.config import settings
 from app.mcp.tools import call_tool
 from app.schemas import AiChatMessage, AiChatResponse, AiToolTrace
-from app.services.ai_prompt_debug import build_prompt_debug_snapshot
+from app.services.ai_prompt_debug import build_openrouter_request_debug, build_prompt_debug_snapshot
 from app.services.direct_analyst_playbook import build_direct_analyst_instructions
 from app.services.openrouter import DEFAULT_SYSTEM_PROMPT, generate_openrouter_response
 
@@ -364,6 +364,32 @@ def build_chat_prompt_debug_snapshot(
         max_tokens=max_tokens or 900,
         include_preview=include_preview,
     )
+    snapshot["openrouterRequestPreview"] = build_openrouter_request_debug(
+        mode="chat",
+        endpoint="/api/v1/clients/{client_id}/ai/prompt-debug?mode=chat",
+        system_prompt=DEFAULT_SYSTEM_PROMPT,
+        user_prompt=prompt,
+        model=model,
+        max_tokens=max_tokens or 900,
+        context=_build_chat_debug_context(
+            client_id=client_id,
+            message=message,
+            history=history,
+            traces=traces,
+            client_context=compacted_context,
+            display_message=display_message,
+            tool_results_mode=tool_results_mode,
+            chat_history_limit=chat_history_limit,
+        ),
+        compact_options={
+            "compact_context": compact_context,
+            "tool_results_mode": tool_results_mode,
+            "chat_history_limit": chat_history_limit,
+            "search_query_limit": search_query_limit,
+            "selected_campaign_name": selected_campaign_name,
+        },
+        include_preview=True,
+    )
     return {**snapshot, "mode": "chat", "toolTraceCount": len(traces)}
 
 
@@ -420,6 +446,7 @@ async def answer_ai_chat(
     chat_history_limit: int | None = 3,
     search_query_limit: int | None = 20,
     selected_campaign_name: str | None = None,
+    inspect_request: bool = False,
 ) -> AiChatResponse:
     compacted_context = compact_client_context_for_chat(
         client_context,
@@ -462,6 +489,31 @@ async def answer_ai_chat(
         max_tokens=max_tokens or 900,
         include_preview=False,
     )
+    request_debug = build_openrouter_request_debug(
+        mode="chat",
+        endpoint="/api/v1/ai/chat",
+        system_prompt=DEFAULT_SYSTEM_PROMPT,
+        user_prompt=prompt,
+        model=selected_model,
+        max_tokens=max_tokens or 900,
+        context=_build_chat_debug_context(
+            client_id=client_id,
+            message=message,
+            history=history,
+            traces=traces,
+            client_context=compacted_context,
+            tool_results_mode=tool_results_mode,
+            chat_history_limit=chat_history_limit,
+        ),
+        compact_options={
+            "compact_context": compact_context,
+            "tool_results_mode": tool_results_mode,
+            "chat_history_limit": chat_history_limit,
+            "search_query_limit": search_query_limit,
+            "selected_campaign_name": selected_campaign_name,
+        },
+        include_preview=True,
+    )
     if prompt_debug["size"]["isTooLarge"]:
         return AiChatResponse(
             client_id=client_id,
@@ -479,6 +531,7 @@ async def answer_ai_chat(
                 "очистите историю чата или используйте сжатый контекст."
             ),
             retryable=False,
+            requestDebug=request_debug,
         )
     response = await generate_openrouter_response(
         model=selected_model,
@@ -491,4 +544,5 @@ async def answer_ai_chat(
         source="openrouter_with_mcp_tools",
         answer=str(response.get("content") or "Модель не вернула текстовый ответ."),
         tool_traces=traces,
+        requestDebug=request_debug if inspect_request else None,
     )
