@@ -1,3 +1,4 @@
+import copy
 import json
 from typing import Any
 
@@ -61,14 +62,118 @@ def _run_mcp_tools(client_id: str, message: str, client_context: dict[str, Any] 
     return traces
 
 
-def _format_history(messages: list[AiChatMessage]) -> str:
+def _limit_history(messages: list[AiChatMessage], chat_history_limit: int | None) -> list[AiChatMessage]:
+    limit = 3 if chat_history_limit is None else max(0, min(int(chat_history_limit), 8))
+    return messages[-limit:] if limit else []
+
+
+def _brief_value(value: Any, depth: int = 0) -> Any:
+    if depth > 1:
+        return "... omitted ..."
+    if isinstance(value, list):
+        return {
+            "type": "list",
+            "count": len(value),
+            "sample": [_brief_value(item, depth + 1) for item in value[:3]],
+            "note": "full result omitted to reduce prompt size",
+        }
+    if isinstance(value, dict):
+        keys = list(value.keys())
+        return {
+            "type": "object",
+            "keys": keys[:10],
+            "sample": {key: _brief_value(value[key], depth + 1) for key in keys[:3]},
+            "note": "full result omitted to reduce prompt size",
+        }
+    text = str(value)
+    return text[:500] + ("... omitted ..." if len(text) > 500 else "")
+
+
+def _tool_trace_for_prompt(trace: AiToolTrace, tool_results_mode: str = "summary") -> dict[str, Any]:
+    if tool_results_mode == "full":
+        return trace.model_dump()
+    return {
+        "name": trace.name,
+        "arguments": trace.arguments,
+        "result_summary": _brief_value(trace.result),
+        "full_result_omitted": True,
+    }
+
+
+def _limit_search_query_insights(value: Any, limit: int | None) -> Any:
+    if not isinstance(value, dict) or limit is None:
+        return value
+    limited = copy.deepcopy(value)
+    for key in ("insights", "items", "queries", "candidateNegativeKeywords"):
+        if isinstance(limited.get(key), list):
+            limited[key] = limited[key][:limit]
+    return limited
+
+
+def compact_client_context_for_chat(
+    client_context: dict[str, Any] | None,
+    *,
+    compact_context: bool = True,
+    search_query_limit: int | None = 20,
+    selected_campaign_name: str | None = None,
+) -> dict[str, Any] | None:
+    if not client_context:
+        return client_context
+    if not compact_context:
+        return copy.deepcopy(client_context)
+    if search_query_limit is not None and search_query_limit <= 0:
+        search_query_limit = None
+
+    context = copy.deepcopy(client_context)
+    summary = context.get("summary") if isinstance(context.get("summary"), dict) else {}
+    if summary:
+        summary["searchQueryInsights"] = _limit_search_query_insights(summary.get("searchQueryInsights"), search_query_limit)
+        if isinstance(summary.get("campaigns"), list) and not selected_campaign_name:
+            summary["campaigns"] = summary["campaigns"][:10]
+        context["summary"] = summary
+    context["search_query_insights"] = _limit_search_query_insights(context.get("search_query_insights"), search_query_limit)
+    if isinstance(context.get("campaigns"), list) and not selected_campaign_name:
+        context["campaigns"] = context["campaigns"][:10]
+    if isinstance(context.get("diagnostics"), list) and not selected_campaign_name:
+        context["diagnostics"] = context["diagnostics"][:10]
+    if isinstance(context.get("optimization_plan"), list):
+        context["optimization_plan"] = context["optimization_plan"][:10]
+    if isinstance(context.get("knowledge_snippets"), list):
+        context["knowledge_snippets"] = context["knowledge_snippets"][:3]
+
+    saved_actions = context.get("saved_optimization_actions")
+    if isinstance(saved_actions, dict):
+        for key in ("approved", "rejected", "needs_changes", "latest_comments"):
+            if isinstance(saved_actions.get(key), list):
+                saved_actions[key] = saved_actions[key][:3]
+        context["saved_optimization_actions"] = saved_actions
+
+    context["context_compaction"] = {
+        "enabled": True,
+        "search_query_limit": search_query_limit,
+        "selected_campaign_name": selected_campaign_name,
+        "note": "Large lists were trimmed for AI chat prompt budget. Source data is not mutated.",
+    }
+    return context
+
+
+def _format_history(messages: list[AiChatMessage], chat_history_limit: int | None = 3) -> str:
+    messages = _limit_history(messages, chat_history_limit)
     if not messages:
         return "Истории диалога пока нет."
-    return "\n".join(f"{item.role}: {item.content}" for item in messages[-8:])
+    return "\n".join(f"{item.role}: {item.content}" for item in messages)
 
 
-def _build_chat_prompt(client_id: str, message: str, history: list[AiChatMessage], traces: list[AiToolTrace]) -> str:
-    tool_context = [trace.model_dump() for trace in traces]
+def _build_chat_prompt(
+    client_id: str,
+    message: str,
+    history: list[AiChatMessage],
+    traces: list[AiToolTrace],
+    *,
+    tool_results_mode: str = "summary",
+    chat_history_limit: int | None = 3,
+) -> str:
+    tool_context = [_tool_trace_for_prompt(trace, tool_results_mode=tool_results_mode) for trace in traces]
     return f"""
 Ты AI-аналитик DirectPilot AI внутри чата PPC-специалиста.
 Отвечай по-русски, кратко и структурно. Используй только факты из MCP tool results ниже.
@@ -77,7 +182,7 @@ def _build_chat_prompt(client_id: str, message: str, history: list[AiChatMessage
 
 client_id: {client_id}
 История диалога:
-{_format_history(history)}
+{_format_history(history, chat_history_limit)}
 
 Текущий вопрос пользователя:
 {message}
@@ -90,7 +195,15 @@ MCP tool results:
 def build_enriched_chat_message(message: str, server_context: dict[str, Any] | None, ai_options: dict[str, Any]) -> str:
     if not server_context:
         return message
-    playbook = build_direct_analyst_instructions(server_context)
+    if (server_context.get("context_compaction") or {}).get("enabled"):
+        playbook = (
+            "Compact DirectPilot playbook: 1) check data quality and selected goals; "
+            "2) use selected goal conversions and CPA by goals; 3) segment campaigns by severity; "
+            "4) review search query intent and negative-keyword drafts; 5) return draft actions only; "
+            "6) never claim Yandex Direct changes were applied."
+        )
+    else:
+        playbook = build_direct_analyst_instructions(server_context)
     return (
         f"{message}\n\n"
         "Trusted server-side client context follows. Use it as the source of truth for client, campaigns, goals, "
@@ -126,12 +239,24 @@ def _build_server_context_debug_sections(server_context: dict[str, Any] | None) 
         "client",
         "business_context",
         "summary",
+        "sync_diagnostics",
+        "search_query_insights",
+        "yesterday_campaign_summary",
+        "yandex_direct_audit",
+        "direct_analyst_playbook",
+        "latest_sync_job",
+        "goals",
+        "yandex_binding",
         "campaigns",
         "diagnostics",
         "optimization_plan",
         "saved_optimization_actions",
         "knowledge_snippets",
+        "selected_campaign_name",
+        "selected_campaign",
         "warnings",
+        "safety",
+        "context_compaction",
     }
     return {
         "serverContext.client": context.get("client"),
@@ -172,14 +297,19 @@ def _build_chat_debug_context(
     traces: list[AiToolTrace],
     client_context: dict[str, Any] | None,
     display_message: str | None = None,
+    tool_results_mode: str = "summary",
+    chat_history_limit: int | None = 3,
 ) -> dict[str, Any]:
-    playbook = build_direct_analyst_instructions(client_context or {}) if client_context else ""
+    if client_context and (client_context.get("context_compaction") or {}).get("enabled"):
+        playbook = "Compact DirectPilot playbook: data quality, goals, campaigns, search queries, draft actions, no applied changes."
+    else:
+        playbook = build_direct_analyst_instructions(client_context or {}) if client_context else ""
     context: dict[str, Any] = {
         "chat.message": display_message or message,
-        "chat.history": [item.model_dump() for item in history[-8:]],
+        "chat.history": [item.model_dump() for item in _limit_history(history, chat_history_limit)],
         "chat.playbook": playbook,
         "chat.serverContext": _summarize_server_context_for_debug(client_context),
-        "chat.toolResults": [trace.model_dump() for trace in traces],
+        "chat.toolResults": [_tool_trace_for_prompt(trace, tool_results_mode=tool_results_mode) for trace in traces],
         "chat.finalPromptWrapper": _build_chat_prompt_wrapper_context(client_id),
     }
     context.update(_build_server_context_debug_sections(client_context))
@@ -196,17 +326,37 @@ def build_chat_prompt_debug_snapshot(
     max_tokens: int | None = None,
     include_preview: bool = False,
     display_message: str | None = None,
+    compact_context: bool = True,
+    tool_results_mode: str = "summary",
+    chat_history_limit: int | None = 3,
+    search_query_limit: int | None = 20,
+    selected_campaign_name: str | None = None,
 ) -> dict[str, Any]:
-    traces = _run_mcp_tools(client_id, message, client_context=client_context)
-    prompt = _build_chat_prompt(client_id=client_id, message=message, history=history, traces=traces)
+    compacted_context = compact_client_context_for_chat(
+        client_context,
+        compact_context=compact_context,
+        search_query_limit=search_query_limit,
+        selected_campaign_name=selected_campaign_name,
+    )
+    traces = _run_mcp_tools(client_id, message, client_context=compacted_context)
+    prompt = _build_chat_prompt(
+        client_id=client_id,
+        message=message,
+        history=history,
+        traces=traces,
+        tool_results_mode=tool_results_mode,
+        chat_history_limit=chat_history_limit,
+    )
     snapshot = build_prompt_debug_snapshot(
         context=_build_chat_debug_context(
             client_id=client_id,
             message=message,
             history=history,
             traces=traces,
-            client_context=client_context,
+            client_context=compacted_context,
             display_message=display_message,
+            tool_results_mode=tool_results_mode,
+            chat_history_limit=chat_history_limit,
         ),
         system_prompt=DEFAULT_SYSTEM_PROMPT,
         user_prompt=prompt,
@@ -265,8 +415,19 @@ async def answer_ai_chat(
     history: list[AiChatMessage],
     client_context: dict[str, Any] | None = None,
     max_tokens: int | None = None,
+    compact_context: bool = True,
+    tool_results_mode: str = "summary",
+    chat_history_limit: int | None = 3,
+    search_query_limit: int | None = 20,
+    selected_campaign_name: str | None = None,
 ) -> AiChatResponse:
-    traces = _run_mcp_tools(client_id, message, client_context=client_context)
+    compacted_context = compact_client_context_for_chat(
+        client_context,
+        compact_context=compact_context,
+        search_query_limit=search_query_limit,
+        selected_campaign_name=selected_campaign_name,
+    )
+    traces = _run_mcp_tools(client_id, message, client_context=compacted_context)
     if not settings.openrouter_configured:
         return AiChatResponse(
             client_id=client_id,
@@ -277,14 +438,23 @@ async def answer_ai_chat(
         )
 
     selected_model = model or settings.openrouter_default_model
-    prompt = _build_chat_prompt(client_id=client_id, message=message, history=history, traces=traces)
+    prompt = _build_chat_prompt(
+        client_id=client_id,
+        message=message,
+        history=history,
+        traces=traces,
+        tool_results_mode=tool_results_mode,
+        chat_history_limit=chat_history_limit,
+    )
     prompt_debug = build_prompt_debug_snapshot(
         context=_build_chat_debug_context(
             client_id=client_id,
             message=message,
             history=history,
             traces=traces,
-            client_context=client_context,
+            client_context=compacted_context,
+            tool_results_mode=tool_results_mode,
+            chat_history_limit=chat_history_limit,
         ),
         system_prompt=DEFAULT_SYSTEM_PROMPT,
         user_prompt=prompt,

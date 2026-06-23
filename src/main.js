@@ -119,6 +119,10 @@ let aiModel = 'openrouter/auto';
 let aiCustomModel = 'openai/gpt-4o';
 let aiPreset = 'economy';
 let aiMaxTokensMode = 'compact';
+let aiCompactContext = true;
+let aiToolResultsMode = 'summary';
+let aiChatHistoryLimit = 3;
+let aiSearchQueryLimit = '20';
 let aiPrompt = 'Проанализируй выбранного клиента DirectPilot AI: какие данные нужны из Яндекс.Директа и Метрики, чтобы сформировать первые рекомендации?';
 let aiResponse = null;
 let aiError = '';
@@ -315,7 +319,7 @@ function getViewActionTarget(target) {
 
 function isInteractiveActionTarget(target) {
   return Boolean(
-    target?.closest?.('button, a, [role="button"], [data-save-api-base], [data-client-id], [data-integration], [data-client-ai-recommendations], [data-sync-client], [data-load-summary], [data-load-sync-jobs], [data-load-optimization-plan], [data-load-optimization-actions], [data-save-optimization-actions], [data-update-optimization-action], [data-load-execution-preview], [data-copy-optimization-plan], [data-copy-text], [data-optimization-filter], [data-optimization-action-filter], [data-ai-quick-action], [data-ai-economy-fallback], [data-test-ai-model], [data-check-ai-prompt-size], [data-clear-ai-chat], [data-refresh-yandex-status], [data-go-view], [data-logout]')
+    target?.closest?.('button, a, [role="button"], [data-save-api-base], [data-client-id], [data-integration], [data-client-ai-recommendations], [data-sync-client], [data-load-summary], [data-load-sync-jobs], [data-load-optimization-plan], [data-load-optimization-actions], [data-save-optimization-actions], [data-update-optimization-action], [data-load-execution-preview], [data-copy-optimization-plan], [data-copy-text], [data-optimization-filter], [data-optimization-action-filter], [data-ai-quick-action], [data-ai-economy-fallback], [data-ai-reduction-action], [data-test-ai-model], [data-check-ai-prompt-size], [data-clear-ai-chat], [data-refresh-yandex-status], [data-go-view], [data-logout]')
     || getViewActionTarget(target)
   );
 }
@@ -337,13 +341,16 @@ function getConfiguredAiModelIds() {
 }
 
 function isCustomAiModel() {
-  const configuredIds = getConfiguredAiModelIds();
-  if (configuredIds.length === 0) return false;
-  return Boolean(aiModel && !configuredIds.includes(aiModel));
+  return aiModel === CUSTOM_MODEL_VALUE;
 }
 
 function activeAiModel() {
-  return (isCustomAiModel() ? aiCustomModel : aiModel).trim() || aiStatus.default_model || 'openrouter/auto';
+  if (isCustomAiModel()) return aiCustomModel.trim();
+  return (aiModel || '').trim() || 'google/gemma-3-12b-it';
+}
+
+function canUseActiveAiModel() {
+  return Boolean(activeAiModel());
 }
 
 function getAiModelSettingsKey() {
@@ -357,6 +364,14 @@ function loadAiModelSettings() {
     if (saved.selectedPreset) aiPreset = String(saved.selectedPreset);
     if (saved.customModel) aiCustomModel = String(saved.customModel);
     if (saved.maxTokensMode) aiMaxTokensMode = String(saved.maxTokensMode);
+    if (typeof saved.compactContext === 'boolean') aiCompactContext = saved.compactContext;
+    if (saved.toolResultsMode) aiToolResultsMode = String(saved.toolResultsMode);
+    if (saved.chatHistoryLimit !== undefined) aiChatHistoryLimit = Number(saved.chatHistoryLimit);
+    if (saved.searchQueryLimit !== undefined) aiSearchQueryLimit = String(saved.searchQueryLimit);
+    if (saved.selectedModel && !getConfiguredAiModelIds().includes(String(saved.selectedModel)) && saved.selectedModel !== CUSTOM_MODEL_VALUE) {
+      aiCustomModel = String(saved.selectedModel);
+      aiModel = CUSTOM_MODEL_VALUE;
+    }
   } catch (error) {
     window.localStorage.removeItem(getAiModelSettingsKey());
   }
@@ -368,6 +383,10 @@ function saveAiModelSettings() {
     selectedPreset: aiPreset,
     customModel: aiCustomModel,
     maxTokensMode: aiMaxTokensMode,
+    compactContext: aiCompactContext,
+    toolResultsMode: aiToolResultsMode,
+    chatHistoryLimit: aiChatHistoryLimit,
+    searchQueryLimit: aiSearchQueryLimit,
   }));
 }
 
@@ -438,10 +457,15 @@ function activeAiMaxTokens() {
 }
 
 function aiRequestOptions() {
+  const searchQueryLimit = aiSearchQueryLimit === 'all' ? null : Number(aiSearchQueryLimit || 20);
   return {
     model: activeAiModel(),
     ai_preset: 'balanced',
     max_tokens: activeAiMaxTokens(),
+    compact_context: aiCompactContext,
+    tool_results_mode: aiToolResultsMode,
+    chat_history_limit: Number(aiChatHistoryLimit || 3),
+    search_query_limit: searchQueryLimit,
   };
 }
 
@@ -989,7 +1013,11 @@ async function loadAiStatus() {
       aiModel = 'google/gemma-3-12b-it';
       saveAiModelSettings();
     }
-    if (isCustomAiModel()) aiCustomModel = aiModel;
+    if (!getConfiguredAiModelIds().includes(aiModel) && aiModel !== CUSTOM_MODEL_VALUE) {
+      aiCustomModel = aiModel;
+      aiModel = CUSTOM_MODEL_VALUE;
+      saveAiModelSettings();
+    }
     if (activeView === 'ai') render();
   } catch (error) {
     aiStatus = { models: [], configured: false, message: 'Backend OpenRouter недоступен.' };
@@ -1020,6 +1048,11 @@ async function requestAiInsight() {
 }
 
 async function testSelectedAiModel() {
+  if (!canUseActiveAiModel()) {
+    aiModelTestStatus = 'Введите ID своей OpenRouter-модели или выберите Gemma/Qwen.';
+    render();
+    return;
+  }
   aiModelTestLoading = true;
   aiModelTestStatus = 'Проверяем модель коротким запросом...';
   render();
@@ -1058,6 +1091,12 @@ async function loadAiPromptDebug() {
     render();
     return;
   }
+  if (!canUseActiveAiModel()) {
+    aiPromptDebugStatus = 'Введите ID своей OpenRouter-модели или выберите Gemma/Qwen.';
+    aiPromptDebugSnapshot = null;
+    render();
+    return;
+  }
   aiPromptDebugLoading = true;
   aiPromptDebugStatus = 'Оцениваем размер AI-контекста...';
   render();
@@ -1068,9 +1107,13 @@ async function loadAiPromptDebug() {
       model: options.model,
       ai_preset: options.ai_preset,
       max_tokens: String(options.max_tokens),
+      compact_context: String(options.compact_context),
+      tool_results_mode: options.tool_results_mode,
+      chat_history_limit: String(options.chat_history_limit),
       selected_campaign_name: selectedAiCampaignName || '',
       message: aiChatInput.trim() || 'Проанализируй выбранного клиента DirectPilot AI.',
     });
+    params.set('search_query_limit', String(options.search_query_limit || 0));
     const response = await apiFetch(`/clients/${selectedClientId}/ai/prompt-debug?${params.toString()}`);
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || 'Не удалось проверить размер AI-контекста');
@@ -1092,6 +1135,11 @@ async function loadAiPromptDebug() {
 async function requestAiChatAnswer() {
   if (!selectedClientId) {
     aiChatError = 'Сначала добавьте клиента: чат анализирует данные в контексте выбранного клиента.';
+    render();
+    return;
+  }
+  if (!canUseActiveAiModel()) {
+    aiChatError = 'Введите ID своей OpenRouter-модели или выберите Gemma/Qwen.';
     render();
     return;
   }
@@ -1132,6 +1180,11 @@ async function requestAiChatAnswer() {
 async function requestClientAiRecommendations() {
   if (!selectedClientId) {
     clientAiError = 'Сначала добавьте клиента и подключите аккаунты Яндекс.Директа/Метрики.';
+    render();
+    return;
+  }
+  if (!canUseActiveAiModel()) {
+    clientAiError = 'Введите ID своей OpenRouter-модели или выберите Gemma/Qwen.';
     render();
     return;
   }
@@ -2625,6 +2678,17 @@ function promptDebugSectionLabel(name) {
   }[name] || name;
 }
 
+function promptDebugHintActionLabel(action) {
+  return {
+    enable_tool_summary: 'Включить summary-режим MCP',
+    limit_search_queries: 'Ограничить до top 20',
+    select_campaign: 'Показать выбор кампании',
+    clear_chat_history: 'Очистить историю',
+    enable_compact_context: 'Включить сжатый контекст',
+    limit_optimization: 'Ограничить черновики',
+  }[action] || '';
+}
+
 function renderAiModelSettings() {
   {
   const model = activeAiModelInfo();
@@ -2641,6 +2705,7 @@ function renderAiModelSettings() {
     ? 'Своя/free модель может быть нестабильной: возможны лимиты, 429 и временная недоступность.'
     : '';
   const promptDebug = aiPromptDebugSnapshot;
+  const customModelMissing = customModelActive && !resolvedModel;
   const promptDebugSize = promptDebug?.size || null;
   const promptDebugSections = (promptDebug?.sections || []).slice(0, 8);
   const promptDebugHints = promptDebug?.reductionHints || [];
@@ -2680,7 +2745,45 @@ function renderAiModelSettings() {
         <p><strong>Фактически будет использована модель:</strong> ${escapeHtml(resolvedModel)}</p>
         <p><strong>Лимит ответа:</strong> ${formatNumberSafe(resolvedMaxTokens)} tokens</p>
         ${customModelWarning ? `<div class="authStatus">${escapeHtml(customModelWarning)}</div>` : ''}
+        ${customModelMissing ? `<div class="authStatus aiError">Введите ID своей OpenRouter-модели, чтобы отправлять запросы.</div>` : ''}
         ${freeModelWarning ? `<div class="authStatus aiError">${escapeHtml(freeModelWarning)}</div>` : ''}
+      </details>
+      <details open>
+        <summary class="secondaryButton">Сжатие AI-контекста</summary>
+        <div class="clientSettingsGrid">
+          <label class="authField">
+            <span>Сжатый AI-контекст</span>
+            <select data-ai-compact-context>
+              <option value="true" ${aiCompactContext ? 'selected' : ''}>включён</option>
+              <option value="false" ${!aiCompactContext ? 'selected' : ''}>выключен</option>
+            </select>
+          </label>
+          <label class="authField">
+            <span>MCP-инструменты</span>
+            <select data-ai-tool-results-mode>
+              <option value="summary" ${aiToolResultsMode === 'summary' ? 'selected' : ''}>summary вместо полного JSON</option>
+              <option value="full" ${aiToolResultsMode === 'full' ? 'selected' : ''}>полный JSON</option>
+            </select>
+          </label>
+          <label class="authField">
+            <span>История чата</span>
+            <select data-ai-chat-history-limit>
+              <option value="3" ${Number(aiChatHistoryLimit) === 3 ? 'selected' : ''}>последние 3 сообщения</option>
+              <option value="8" ${Number(aiChatHistoryLimit) === 8 ? 'selected' : ''}>последние 8 сообщений</option>
+              <option value="0" ${Number(aiChatHistoryLimit) === 0 ? 'selected' : ''}>без истории</option>
+            </select>
+          </label>
+          <label class="authField">
+            <span>Лимит поисковых запросов</span>
+            <select data-ai-search-query-limit>
+              <option value="10" ${aiSearchQueryLimit === '10' ? 'selected' : ''}>10</option>
+              <option value="20" ${aiSearchQueryLimit === '20' ? 'selected' : ''}>20</option>
+              <option value="50" ${aiSearchQueryLimit === '50' ? 'selected' : ''}>50</option>
+              <option value="all" ${aiSearchQueryLimit === 'all' ? 'selected' : ''}>все</option>
+            </select>
+          </label>
+        </div>
+        ${!selectedAiCampaignName ? '<div class="authStatus">Если контекст всё ещё большой, выберите конкретную кампанию в AI-чате.</div>' : ''}
       </details>
       <div class="heroActions">
         <button class="secondaryButton" type="button" data-test-ai-model ${aiModelTestLoading ? 'disabled' : ''}>${aiModelTestLoading ? 'Проверяем...' : 'Проверить модель'}</button>
@@ -2715,7 +2818,19 @@ function renderAiModelSettings() {
         </div>
         ${promptDebugHints.length ? `
           <h4>Как уменьшить контекст</h4>
-          <ul>${promptDebugHints.map((hint) => `<li>${escapeHtml(hint)}</li>`).join('')}</ul>
+          <div class="actionList">
+            ${promptDebugHints.map((hint) => {
+              const message = typeof hint === 'string' ? hint : hint.message;
+              const action = typeof hint === 'string' ? '' : hint.action;
+              const label = promptDebugHintActionLabel(action);
+              return `
+                <article class="actionCard">
+                  <p>${escapeHtml(message || '')}</p>
+                  ${label ? `<button class="secondaryButton" type="button" data-ai-reduction-action="${escapeHtml(action)}">${escapeHtml(label)}</button>` : ''}
+                </article>
+              `;
+            }).join('')}
+          </div>
         ` : ''}
       ` : ''}
     </section>
@@ -3098,6 +3213,7 @@ app.addEventListener('click', async (event) => {
   const copyTextButton = event.target.closest('[data-copy-text]');
   const aiQuickActionButton = event.target.closest('[data-ai-quick-action]');
   const aiFallbackButton = event.target.closest('[data-ai-economy-fallback]');
+  const aiReductionActionButton = event.target.closest('[data-ai-reduction-action]');
   const testAiModelButton = event.target.closest('[data-test-ai-model]');
   const checkAiPromptSizeButton = event.target.closest('[data-check-ai-prompt-size]');
   const clearAiChatButton = event.target.closest('[data-clear-ai-chat]');
@@ -3211,6 +3327,32 @@ app.addEventListener('click', async (event) => {
     } else {
       render();
     }
+    return;
+  }
+
+  if (aiReductionActionButton) {
+    const action = aiReductionActionButton.dataset.aiReductionAction;
+    if (action === 'enable_tool_summary') {
+      aiToolResultsMode = 'summary';
+    } else if (action === 'limit_search_queries') {
+      aiSearchQueryLimit = '20';
+    } else if (action === 'clear_chat_history') {
+      aiChatMessages = [{ ...initialAiChatMessage }];
+      aiChatToolTraces = [];
+      aiChatInput = '';
+      saveActiveAiState();
+    } else if (action === 'enable_compact_context') {
+      aiCompactContext = true;
+      aiToolResultsMode = 'summary';
+      aiChatHistoryLimit = 3;
+    } else if (action === 'select_campaign') {
+      aiPromptDebugStatus = 'Выберите кампанию в поле «Контекст кампании» ниже и повторите проверку.';
+      saveAiModelSettings();
+      render();
+      return;
+    }
+    saveAiModelSettings();
+    await loadAiPromptDebug();
     return;
   }
 
@@ -3510,7 +3652,9 @@ app.addEventListener('input', (event) => {
   }
   if (event.target.matches('[data-ai-custom-model]')) {
     aiCustomModel = event.target.value;
-    aiModel = aiCustomModel;
+    aiModel = CUSTOM_MODEL_VALUE;
+    aiPromptDebugSnapshot = null;
+    aiPromptDebugStatus = '';
     saveAiModelSettings();
   }
   if (event.target.matches('[data-ai-chat-input]')) {
@@ -3544,12 +3688,40 @@ app.addEventListener('change', (event) => {
   }
   if (event.target.matches('[data-ai-model]')) {
     if (event.target.value === CUSTOM_MODEL_VALUE) {
-      aiModel = aiCustomModel;
-      aiPreset = 'custom';
+      aiModel = CUSTOM_MODEL_VALUE;
     } else {
       aiModel = event.target.value;
-      if (aiPreset === 'custom') aiPreset = aiStatus.recommended_default_preset || 'economy';
     }
+    aiPreset = 'balanced';
+    aiPromptDebugSnapshot = null;
+    aiPromptDebugStatus = '';
+    saveAiModelSettings();
+    render();
+  }
+  if (event.target.matches('[data-ai-compact-context]')) {
+    aiCompactContext = event.target.value === 'true';
+    if (aiCompactContext && aiToolResultsMode !== 'summary') aiToolResultsMode = 'summary';
+    aiPromptDebugSnapshot = null;
+    aiPromptDebugStatus = '';
+    saveAiModelSettings();
+    render();
+  }
+  if (event.target.matches('[data-ai-tool-results-mode]')) {
+    aiToolResultsMode = event.target.value === 'full' ? 'full' : 'summary';
+    aiPromptDebugSnapshot = null;
+    aiPromptDebugStatus = '';
+    saveAiModelSettings();
+    render();
+  }
+  if (event.target.matches('[data-ai-chat-history-limit]')) {
+    aiChatHistoryLimit = Number(event.target.value);
+    aiPromptDebugSnapshot = null;
+    aiPromptDebugStatus = '';
+    saveAiModelSettings();
+    render();
+  }
+  if (event.target.matches('[data-ai-search-query-limit]')) {
+    aiSearchQueryLimit = event.target.value;
     aiPromptDebugSnapshot = null;
     aiPromptDebugStatus = '';
     saveAiModelSettings();

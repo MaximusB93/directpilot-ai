@@ -17,7 +17,7 @@ from app.core.config import (
 from app.db import get_optional_db
 from app.models import ClientAccount
 from app.schemas import AiChatRequest, AiChatResponse, AiPromptRequest, AiPromptResponse, AiStatusResponse
-from app.services.ai_chat import answer_ai_chat, build_enriched_chat_message
+from app.services.ai_chat import answer_ai_chat, build_enriched_chat_message, compact_client_context_for_chat
 from app.services.ai_recommendations import build_client_ai_context_from_db
 from app.services.openrouter import generate_openrouter_response, openrouter_status
 
@@ -135,9 +135,15 @@ async def chat_with_ai(
         if not client or client.organization_id != current.organization.id:
             raise HTTPException(status_code=404, detail="Client not found")
         server_context = build_client_ai_context_from_db(db, payload.client_id, selected_campaign_name=payload.selected_campaign_name)
+    compacted_context = compact_client_context_for_chat(
+        server_context,
+        compact_context=payload.compact_context,
+        search_query_limit=payload.search_query_limit,
+        selected_campaign_name=payload.selected_campaign_name,
+    )
     enriched_message = payload.message
-    if server_context:
-        enriched_message = build_enriched_chat_message(payload.message, server_context, ai_options)
+    if compacted_context:
+        enriched_message = build_enriched_chat_message(payload.message, compacted_context, ai_options)
     selected_model = str(ai_options["model"])
     try:
         return await answer_ai_chat(
@@ -145,8 +151,13 @@ async def chat_with_ai(
             message=enriched_message,
             model=selected_model,
             history=payload.history,
-            client_context=server_context,
+            client_context=compacted_context,
             max_tokens=int(ai_options["max_tokens"]),
+            compact_context=payload.compact_context,
+            tool_results_mode=payload.tool_results_mode,
+            chat_history_limit=payload.chat_history_limit,
+            search_query_limit=payload.search_query_limit,
+            selected_campaign_name=payload.selected_campaign_name,
         )
     except HTTPException as exc:
         normalized = _normalized_ai_error(exc, selected_model)

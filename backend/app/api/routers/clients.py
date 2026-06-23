@@ -41,7 +41,7 @@ from app.schemas import (
     OptimizationActionEventResponse,
     SyncJobResponse,
 )
-from app.services.ai_chat import build_chat_prompt_debug_snapshot, build_enriched_chat_message
+from app.services.ai_chat import build_chat_prompt_debug_snapshot, build_enriched_chat_message, compact_client_context_for_chat
 from app.services.ai_recommendations import (
     build_client_ai_context_from_db,
     build_recommendation_prompt_debug_snapshot,
@@ -618,6 +618,10 @@ def get_client_ai_prompt_debug(
     mode: str = "recommendations",
     selected_campaign_name: str | None = None,
     message: str | None = None,
+    compact_context: bool = True,
+    tool_results_mode: str = "summary",
+    chat_history_limit: int = 3,
+    search_query_limit: int | None = 20,
     include_preview: bool = False,
     db: Session | None = Depends(get_optional_db),
     current: CurrentUser = Depends(get_current_session_user),
@@ -634,6 +638,12 @@ def get_client_ai_prompt_debug(
             configured_default=settings.openrouter_default_model,
         )
         selected_model = str(ai_options["model"])
+        compacted_context = compact_client_context_for_chat(
+            compacted_context,
+            compact_context=compact_context,
+            search_query_limit=search_query_limit,
+            selected_campaign_name=selected_campaign_name,
+        )
         chat_message = build_enriched_chat_message(
             message or "Проанализируй выбранного клиента DirectPilot AI.",
             context,
@@ -644,10 +654,15 @@ def get_client_ai_prompt_debug(
             message=chat_message,
             model=selected_model,
             history=[],
-            client_context=context,
+            client_context=compacted_context,
             max_tokens=int(ai_options["max_tokens"]),
             include_preview=include_preview,
             display_message=message,
+            compact_context=compact_context,
+            tool_results_mode=tool_results_mode,
+            chat_history_limit=chat_history_limit,
+            search_query_limit=search_query_limit,
+            selected_campaign_name=selected_campaign_name,
         )
     return build_recommendation_prompt_debug_snapshot(
         context=context,
