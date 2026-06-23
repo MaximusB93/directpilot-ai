@@ -11,8 +11,9 @@ from app.schemas import AiGeneratedRecommendation, AiRecommendationResponse
 from app.services.direct_analyst_playbook import build_direct_analyst_instructions
 from app.services.mock_data import AUDIT_ISSUES, CAMPAIGNS, CLIENTS, RECOMMENDATIONS
 from app.services.ai_output_validation import structured_to_legacy_recommendations, validate_structured_recommendation_payload
+from app.services.ai_prompt_debug import build_prompt_debug_snapshot
 from app.services.knowledge_base import select_knowledge_snippets
-from app.services.openrouter import generate_openrouter_response
+from app.services.openrouter import DEFAULT_SYSTEM_PROMPT, generate_openrouter_response
 from app.services.performance_summary import build_optimization_plan, build_performance_summary
 
 AI_RATE_LIMIT_MESSAGE = "Выбранная AI-модель временно перегружена или ограничена по лимитам. Выберите другую модель или повторите позже."
@@ -403,6 +404,43 @@ Yesterday campaign summary:
 """.strip()
 
 
+def build_recommendation_prompt_debug_snapshot(
+    *,
+    context: dict[str, Any],
+    model: str | None,
+    ai_preset: str | None = None,
+    max_tokens: int | None = None,
+    include_preview: bool = False,
+) -> dict[str, Any]:
+    ai_options = normalize_ai_request_options(
+        model=model,
+        ai_preset=ai_preset,
+        max_tokens=max_tokens,
+        models=settings.openrouter_models,
+        configured_default=settings.openrouter_default_model,
+    )
+    context_with_model = {
+        **context,
+        "ai_model_settings": {
+            "preset": ai_options["ai_preset"],
+            "model": ai_options["model"],
+            "max_tokens": ai_options["max_tokens"],
+            "max_tokens_cap": ai_options["max_tokens_cap"],
+            "cost_tier": ai_options["cost_tier"],
+            "custom_model": ai_options["is_custom_model"],
+        },
+    }
+    prompt = _build_prompt(context_with_model)
+    return build_prompt_debug_snapshot(
+        context=context_with_model,
+        system_prompt=DEFAULT_SYSTEM_PROMPT,
+        user_prompt=prompt,
+        model=str(ai_options["model"]),
+        max_tokens=int(ai_options["max_tokens"]),
+        include_preview=include_preview,
+    )
+
+
 def _fallback_recommendations(context: dict[str, Any]) -> AiRecommendationResponse:
     client = context["client"]
     campaigns = context.get("campaigns") or []
@@ -453,6 +491,52 @@ def _fallback_recommendations(context: dict[str, Any]) -> AiRecommendationRespon
         summary=f"OpenRouter не настроен, показан безопасный черновик для клиента «{client.get('name', client['id'])}».",
         recommendations=recommendations,
         raw_response=None,
+    )
+
+
+def _prompt_too_large_response(context: dict[str, Any], model: str, debug_snapshot: dict[str, Any]) -> AiRecommendationResponse:
+    sections = debug_snapshot.get("sections") or []
+    top_sections = sections[:3]
+    evidence = [
+        f"{item.get('name')}: ~{item.get('estimatedTokens')} tokens, {item.get('chars')} chars"
+        for item in top_sections
+    ] or ["Не удалось определить крупнейшие секции контекста."]
+    size = debug_snapshot.get("size") or {}
+    warning = (
+        f"Estimated total tokens: {size.get('estimatedTotalTokens')}; "
+        f"context limit: {size.get('contextLimit')}; largest sections: "
+        + ", ".join(item.get("name", "unknown") for item in top_sections)
+    )
+    return AiRecommendationResponse(
+        client_id=context["client"]["id"],
+        source="prompt_budget_guard",
+        model=model,
+        summary=(
+            "Контекст слишком большой для выбранной модели. Сократите период, выберите конкретную кампанию "
+            "или используйте сжатый контекст."
+        ),
+        recommendations=[
+            AiGeneratedRecommendation(
+                title="Сократить AI-контекст",
+                evidence=evidence,
+                risk="medium",
+                expected_impact="AI-запрос станет меньше и сможет пройти лимит контекста выбранной модели.",
+                next_step=(
+                    "Выберите конкретную кампанию, уменьшите период или ограничьте поисковые запросы "
+                    "перед повторным анализом."
+                ),
+                requires_approval=False,
+            )
+        ],
+        validation_warnings=[warning],
+        raw_response=None,
+        error=True,
+        error_code="ai_prompt_too_large",
+        message=(
+            "Контекст слишком большой для выбранной модели. Сократите период, выберите конкретную кампанию "
+            "или используйте сжатый контекст."
+        ),
+        retryable=False,
     )
 
 
@@ -525,8 +609,24 @@ async def generate_client_recommendations_from_context(
         return _fallback_recommendations(context)
 
     selected_model = str(ai_options["model"])
+    prompt = _build_prompt(context)
+    prompt_debug = build_prompt_debug_snapshot(
+        context=context,
+        system_prompt=DEFAULT_SYSTEM_PROMPT,
+        user_prompt=prompt,
+        model=selected_model,
+        max_tokens=int(ai_options["max_tokens"]),
+        include_preview=False,
+    )
+    if prompt_debug["size"]["isTooLarge"]:
+        return _prompt_too_large_response(context, selected_model, prompt_debug)
+
     try:
-        response = await generate_openrouter_response(model=selected_model, prompt=_build_prompt(context))
+        response = await generate_openrouter_response(
+            model=selected_model,
+            prompt=prompt,
+            max_tokens=int(ai_options["max_tokens"]),
+        )
     except HTTPException as exc:
         normalized = normalize_openrouter_error(exc, selected_model)
         if normalized:

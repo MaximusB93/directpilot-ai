@@ -2,6 +2,7 @@ import httpx
 from fastapi import HTTPException, status
 
 from app.core.config import settings
+from app.services.ai_prompt_debug import clamp_openrouter_max_tokens
 
 OPENROUTER_CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions"
 
@@ -44,7 +45,7 @@ def openrouter_status() -> dict[str, object]:
     }
 
 
-async def generate_openrouter_response(model: str, prompt: str) -> dict[str, object]:
+async def generate_openrouter_response(model: str, prompt: str, max_tokens: int | None = None) -> dict[str, object]:
     if not settings.openrouter_configured:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -68,7 +69,7 @@ async def generate_openrouter_response(model: str, prompt: str) -> dict[str, obj
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.2,
-        "max_tokens": 900,
+        "max_tokens": clamp_openrouter_max_tokens(max_tokens),
     }
     headers = {
         "Authorization": f"Bearer {settings.openrouter_api_key}",
