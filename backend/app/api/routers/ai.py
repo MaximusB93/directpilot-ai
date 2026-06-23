@@ -17,7 +17,7 @@ from app.core.config import (
 from app.db import get_optional_db
 from app.models import ClientAccount
 from app.schemas import AiChatRequest, AiChatResponse, AiPromptRequest, AiPromptResponse, AiStatusResponse
-from app.services.ai_chat import answer_ai_chat, compact_client_context_for_chat
+from app.services.ai_chat import answer_ai_chat, compact_client_context_for_chat, detect_analysis_intent
 from app.services.ai_recommendations import build_client_ai_context_from_db
 from app.services.ai_prompt_debug import build_openrouter_request_debug
 from app.services.openrouter import DEFAULT_SYSTEM_PROMPT, generate_openrouter_response, openrouter_status
@@ -71,6 +71,23 @@ def _resolved_ai_options(model: str | None, ai_preset: str | None, max_tokens: i
         models=settings.openrouter_models,
         configured_default=settings.openrouter_default_model,
     )
+
+
+def _apply_intent_token_floor(ai_options: dict[str, object], *, message: str, explicit_max_tokens: bool) -> dict[str, object]:
+    if explicit_max_tokens:
+        return ai_options
+    intent = detect_analysis_intent(message).get("intent")
+    floors = {
+        "campaign_dynamics_analysis": 2500,
+        "global_direct_audit": 3000,
+        "search_queries_analysis": 2000,
+    }
+    floor = floors.get(str(intent))
+    if not floor:
+        return ai_options
+    current = int(ai_options["max_tokens"])
+    cap = int(ai_options.get("max_tokens_cap") or current)
+    return {**ai_options, "max_tokens": min(max(current, floor), cap)}
 
 
 def _is_rate_limit_error(exc: HTTPException) -> bool:
@@ -145,7 +162,11 @@ async def chat_with_ai(
     db: Session | None = Depends(get_optional_db),
     current: CurrentUser = Depends(get_current_session_user),
 ) -> AiChatResponse:
-    ai_options = _resolved_ai_options(payload.model, payload.ai_preset, payload.max_tokens)
+    ai_options = _apply_intent_token_floor(
+        _resolved_ai_options(payload.model, payload.ai_preset, payload.max_tokens),
+        message=payload.message,
+        explicit_max_tokens=payload.max_tokens is not None,
+    )
     server_context = payload.client_context
     if db is not None:
         client = db.get(ClientAccount, payload.client_id)

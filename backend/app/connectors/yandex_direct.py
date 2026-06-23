@@ -146,6 +146,40 @@ class YandexDirectConnector:
             max_wait_seconds=max_wait_seconds,
         )
 
+    def get_campaign_daily_range_report(
+        self,
+        *,
+        date_from: date,
+        date_to: date,
+        goal_ids: list[str] | None = None,
+        limit: int = 1000,
+        processing_mode: str = "auto",
+        max_wait_seconds: int = 20,
+    ) -> list[dict[str, str]]:
+        """Read campaign stats for each day in a range without write actions.
+
+        This intentionally reuses the already-supported one-day campaign report
+        path. A single report with the Date field would be cheaper, but this
+        fallback avoids relying on an unsupported field combination while still
+        preserving goal-specific conversion parsing.
+        """
+
+        if date_to < date_from:
+            return []
+        rows: list[dict[str, str]] = []
+        current = date_from
+        while current <= date_to:
+            for row in self.get_campaign_daily_report(
+                stat_date=current,
+                goal_ids=goal_ids,
+                limit=limit,
+                processing_mode=processing_mode,
+                max_wait_seconds=max_wait_seconds,
+            ):
+                rows.append({"Date": current.isoformat(), **row})
+            current += timedelta(days=1)
+        return rows
+
     def get_search_query_report(
         self,
         *,

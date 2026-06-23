@@ -12,6 +12,7 @@ from app.services.direct_analyst_playbook import build_direct_analyst_instructio
 from app.services.mock_data import AUDIT_ISSUES, CAMPAIGNS, CLIENTS, RECOMMENDATIONS
 from app.services.ai_output_validation import structured_to_legacy_recommendations, validate_structured_recommendation_payload
 from app.services.ai_prompt_debug import build_openrouter_request_debug, build_prompt_debug_snapshot
+from app.services.campaign_dynamics_analyzer import analyze_campaign_dynamics
 from app.services.knowledge_base import select_knowledge_snippets
 from app.services.openrouter import DEFAULT_SYSTEM_PROMPT, generate_openrouter_response
 from app.services.performance_summary import build_optimization_plan, build_performance_summary
@@ -138,6 +139,13 @@ def build_client_ai_context_from_db(db, client_id: str, selected_campaign_name: 
         raise ValueError("Client not found")
     summary = build_performance_summary(db, client_id)
     plan = build_optimization_plan(db, client_id)
+    try:
+        campaign_dynamics_analysis = analyze_campaign_dynamics(db, client_id)
+    except Exception as exc:
+        campaign_dynamics_analysis = {
+            "dataQuality": {"rows": 0, "campaigns": 0, "hasGoalData": False, "limitations": [str(exc)[:300]]},
+            "missingData": [str(exc)[:300]],
+        }
     latest_sync_job = db.scalar(
         select(SyncJob)
         .where(SyncJob.client_id == client_id)
@@ -224,6 +232,7 @@ def build_client_ai_context_from_db(db, client_id: str, selected_campaign_name: 
         "sync_diagnostics": summary.get("syncDiagnostics", {}),
         "search_query_insights": summary.get("searchQueryInsights", {}),
         "yesterday_campaign_summary": summary.get("yesterdayCampaignSummary", {}),
+        "campaign_dynamics_analysis": campaign_dynamics_analysis,
         "yandex_direct_audit": summary.get("yandexDirectAudit", {}),
         "direct_analyst_playbook": build_direct_analyst_instructions({
             "summary": summary,
