@@ -52,6 +52,11 @@ DIRECT_ANALYST_PLAYBOOK_TEXT = """
 - N/A/needs_more_data — это ограничения, а не провалы.
 - Все действия — только черновики: manual_review, tracking_fix, add_negative_keywords, improve_ads, budget_reallocation, pause_campaign.
 
+9. База знаний DirectPilot
+- Используй выбранные knowledge_snippets как методические правила, но не подменяй ими факты клиента.
+- Если фрагмент базы знаний говорит об ограничении данных, явно добавь это ограничение в missingData или safetyNotes.
+- Не утверждай факт о бизнесе, лендингах, сезонности, динамике или конкурентах, если он есть только как общее правило, а не как trusted client data.
+
 Daily summary:
 - Use yesterdayCampaignSummary / yesterday_campaign_summary for operational daily analysis when present.
 - Focus on selected goal conversions, goal CPA, CTR, cost, clicks, and campaign issue flags.

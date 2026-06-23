@@ -11,6 +11,7 @@ from app.schemas import AiGeneratedRecommendation, AiRecommendationResponse
 from app.services.direct_analyst_playbook import build_direct_analyst_instructions
 from app.services.mock_data import AUDIT_ISSUES, CAMPAIGNS, CLIENTS, RECOMMENDATIONS
 from app.services.ai_output_validation import structured_to_legacy_recommendations, validate_structured_recommendation_payload
+from app.services.knowledge_base import select_knowledge_snippets
 from app.services.openrouter import generate_openrouter_response
 from app.services.performance_summary import build_optimization_plan, build_performance_summary
 
@@ -164,7 +165,7 @@ def build_client_ai_context_from_db(db, client_id: str, selected_campaign_name: 
     warnings = list(summary.get("goalDataWarnings") or [])
     if client.conversion_goal_ids is None and client.main_goal_id is None:
         warnings.append("ID целей Метрики не указаны.")
-    return {
+    context_payload = {
         "client": {
             "id": client.id,
             "name": client.name,
@@ -280,16 +281,61 @@ def build_client_ai_context_from_db(db, client_id: str, selected_campaign_name: 
             "message": "Все действия являются черновиками и требуют approval. Предпросмотр применения только информационный. Изменения в Яндекс.Директ не применялись.",
         },
     }
+    return _context_with_knowledge(context_payload)
+
+
+def _knowledge_query_from_context(context: dict[str, Any]) -> str:
+    parts = [
+        str(context.get("user_request") or ""),
+        str(context.get("message") or ""),
+        str(context.get("selected_campaign_name") or ""),
+    ]
+    summary = context.get("summary") or {}
+    if isinstance(summary, dict):
+        parts.extend(
+            [
+                "yesterday summary" if summary.get("yesterdayCampaignSummary") else "",
+                "search query insights" if summary.get("searchQueryInsights") else "",
+                "goal conversions" if summary.get("selectedGoalIds") else "",
+            ]
+        )
+    return " ".join(item for item in parts if item)
+
+
+def _context_with_knowledge(context: dict[str, Any], query: str | None = None) -> dict[str, Any]:
+    existing = context.get("knowledge_snippets")
+    if existing:
+        return context
+    snippets = select_knowledge_snippets(query or _knowledge_query_from_context(context), context, limit=5)
+    return {**context, "knowledge_snippets": snippets}
+
+
+def _format_knowledge_snippets(snippets: list[dict[str, str]]) -> str:
+    if not snippets:
+        return "Нет выбранных фрагментов базы знаний."
+    return "\n\n".join(
+        (
+            f"Источник: {item.get('source')}\n"
+            f"Раздел: {item.get('title')}\n"
+            f"{item.get('content')}"
+        )
+        for item in snippets[:5]
+    )
 
 
 def _build_prompt(context: dict[str, Any]) -> str:
+    context = _context_with_knowledge(context)
     playbook = build_direct_analyst_instructions(context)
+    knowledge_snippets = context.get("knowledge_snippets") or []
     return f"""
 Сформируй 3 проверяемые AI-рекомендации для PPC-специалиста DirectPilot AI.
 Используй методику DirectPilot ниже. Сохраняй порядок анализа: качество данных → цели → обзор аккаунта → сегменты кампаний → проблемы → черновики действий.
 
 Методика DirectPilot:
 {playbook}
+
+База знаний DirectPilot:
+{_format_knowledge_snippets(knowledge_snippets)}
 
 Yandex Direct audit skill:
 - If yandex_direct_audit is present, use audit score, grade, category scores, failed checks, quick wins, and limitations before generic advice.
@@ -349,6 +395,7 @@ Yesterday campaign summary:
 - Все actions должны быть только черновиками и всегда requiresHumanApproval=true.
 - Не добавляй действий, которые выглядят как применение изменений в Яндекс.Директ.
 - Если данных не хватает, заполни missingData и добавь action type=request_more_data.
+- Если фрагмент базы знаний указывает на ограничение данных, добавь это в missingData или safetyNotes.
 - Если выбран режим economy, summary и findings должны быть короче; advanced может быть подробнее.
 
 Контекст клиента:
