@@ -138,27 +138,71 @@ def build_context_size_breakdown(context: dict[str, Any]) -> list[dict[str, Any]
     return sorted(sections, key=lambda item: item["estimatedTokens"], reverse=True)
 
 
-def build_reduction_hints(sections: list[dict[str, Any]]) -> list[str]:
-    hints: list[str] = []
+def build_reduction_hints(sections: list[dict[str, Any]]) -> list[dict[str, str]]:
+    hints: list[dict[str, str]] = []
     largest_name = str((sections[0] if sections else {}).get("name") or "")
     lowered = largest_name.lower()
 
+    if "toolresults" in lowered or "tool_results" in lowered:
+        hints.append(
+            {
+                "section": largest_name,
+                "message": "Результаты MCP-инструментов занимают больше всего места. Включите summary-режим MCP, чтобы не отправлять полный JSON в AI.",
+                "action": "enable_tool_summary",
+            }
+        )
     if "searchqueryinsights" in lowered or "search_query" in lowered:
-        hints.append("Поисковые запросы занимают больше всего места. Выберите одну кампанию или временно ограничьте анализ поисковых запросов.")
+        hints.append(
+            {
+                "section": largest_name,
+                "message": "Поисковые запросы раздувают контекст. Ограничьте их до top 20 или выберите конкретную кампанию.",
+                "action": "limit_search_queries",
+            }
+        )
     if "campaigns" in lowered or "servercontext.campaigns" in lowered:
-        hints.append("Список кампаний занимает больше всего места. Выберите конкретную кампанию вместо всего аккаунта.")
+        hints.append(
+            {
+                "section": largest_name,
+                "message": "Список кампаний занимает больше всего места. Выберите конкретную кампанию вместо всего аккаунта.",
+                "action": "select_campaign",
+            }
+        )
     if "history" in lowered:
-        hints.append("История чата занимает больше всего места. Очистите историю чата перед повторным запросом.")
+        hints.append(
+            {
+                "section": largest_name,
+                "message": "История чата занимает больше всего места. Очистите историю чата перед повторным запросом.",
+                "action": "clear_chat_history",
+            }
+        )
     if "optimization" in lowered:
-        hints.append("Черновики оптимизации занимают больше всего места. Ограничьте список черновиков или откройте конкретное действие.")
+        hints.append(
+            {
+                "section": largest_name,
+                "message": "Черновики оптимизации занимают больше всего места. Ограничьте список черновиков или откройте конкретное действие.",
+                "action": "limit_optimization",
+            }
+        )
 
     generic_hints = [
-        "Выберите конкретную кампанию вместо всего аккаунта.",
-        "Очистите историю чата перед повторным запросом.",
-        "Используйте сжатый контекст, когда он будет доступен.",
+        {
+            "section": "serverContext.campaigns",
+            "message": "Выберите конкретную кампанию вместо всего аккаунта.",
+            "action": "select_campaign",
+        },
+        {
+            "section": "chat.history",
+            "message": "Очистите историю чата перед повторным запросом.",
+            "action": "clear_chat_history",
+        },
+        {
+            "section": "chat.serverContext",
+            "message": "Используйте сжатый контекст.",
+            "action": "enable_compact_context",
+        },
     ]
     for hint in generic_hints:
-        if hint not in hints:
+        if not any(item.get("message") == hint["message"] for item in hints):
             hints.append(hint)
     return hints
 

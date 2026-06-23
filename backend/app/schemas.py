@@ -490,6 +490,10 @@ class AiChatRequest(BaseModel):
     history: list[AiChatMessage] = Field(default_factory=list)
     client_context: dict | None = None
     selected_campaign_name: str | None = None
+    compact_context: bool = True
+    tool_results_mode: str = "summary"
+    chat_history_limit: int = Field(default=3, ge=0, le=8)
+    search_query_limit: int | None = Field(default=20, ge=1, le=200)
 
 
 class AiToolTrace(BaseModel):

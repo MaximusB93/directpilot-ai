@@ -83,3 +83,38 @@ def test_chat_prompt_debug_snapshot_uses_chat_mode_and_requested_max_tokens():
     assert "chat.serverContext" in section_names
     assert "chat.toolResults" in section_names
     assert snapshot["reductionHints"]
+
+
+def test_chat_prompt_debug_summary_tool_results_are_smaller_than_full():
+    context = {
+        "client": {"id": "client-1"},
+        "summary": {"searchQueryInsights": {"insights": [{"query": "x" * 1000} for _ in range(100)]}},
+        "campaigns": [{"name": f"campaign-{index}", "notes": "x" * 1000} for index in range(40)],
+    }
+    full_snapshot = ai_chat_module.build_chat_prompt_debug_snapshot(
+        client_id="client-1",
+        message="direct campaign analysis",
+        model="google/gemma-3-12b-it",
+        history=[],
+        client_context=context,
+        max_tokens=900,
+        tool_results_mode="full",
+        compact_context=False,
+        search_query_limit=None,
+    )
+    compact_snapshot = ai_chat_module.build_chat_prompt_debug_snapshot(
+        client_id="client-1",
+        message="direct campaign analysis",
+        model="google/gemma-3-12b-it",
+        history=[],
+        client_context=context,
+        max_tokens=900,
+        tool_results_mode="summary",
+        compact_context=True,
+        search_query_limit=20,
+    )
+
+    full_tool_tokens = next(item["estimatedTokens"] for item in full_snapshot["sections"] if item["name"] == "chat.toolResults")
+    compact_tool_tokens = next(item["estimatedTokens"] for item in compact_snapshot["sections"] if item["name"] == "chat.toolResults")
+    assert compact_tool_tokens < full_tool_tokens
+    assert compact_snapshot["size"]["estimatedTotalTokens"] < full_snapshot["size"]["estimatedTotalTokens"]

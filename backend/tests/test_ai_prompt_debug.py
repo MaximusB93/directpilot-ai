@@ -71,7 +71,7 @@ def test_chat_debug_breakdown_uses_named_sections_instead_of_other():
     assert "chat.message" in names
     assert snapshot["sections"][0]["name"] == "serverContext.summary.searchQueryInsights"
     assert snapshot["sections"][0]["name"] != "other"
-    assert any("Поисковые запросы" in hint for hint in snapshot["reductionHints"])
+    assert any("Поисковые запросы" in hint["message"] for hint in snapshot["reductionHints"])
 
 
 def test_chat_debug_campaign_and_history_reduction_hints():
@@ -96,5 +96,5 @@ def test_chat_debug_campaign_and_history_reduction_hints():
         max_tokens=900,
     )
 
-    assert any("конкретную кампанию" in hint for hint in campaigns_snapshot["reductionHints"])
-    assert any("История чата" in hint for hint in history_snapshot["reductionHints"])
+    assert any("конкретную кампанию" in hint["message"] for hint in campaigns_snapshot["reductionHints"])
+    assert any("История чата" in hint["message"] for hint in history_snapshot["reductionHints"])
