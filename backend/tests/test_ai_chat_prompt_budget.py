@@ -61,6 +61,31 @@ def test_answer_ai_chat_passes_max_tokens_to_openrouter(monkeypatch):
     assert response.answer == "ok"
     assert captured["max_tokens"] == 777
     assert captured["model"] == "google/gemma-3-12b-it"
+    assert response.requestDebug is None
+
+
+def test_answer_ai_chat_includes_request_debug_when_inspected(monkeypatch):
+    monkeypatch.setattr(ai_chat_module, "settings", _test_settings())
+
+    async def fake_generate(*args, **kwargs):
+        return {"model": kwargs["model"], "content": "ok"}
+
+    monkeypatch.setattr(ai_chat_module, "generate_openrouter_response", fake_generate)
+
+    response = asyncio.run(
+        ai_chat_module.answer_ai_chat(
+            client_id="client-1",
+            message="short question",
+            model="google/gemma-3-12b-it",
+            history=[],
+            client_context={"client": {"id": "client-1"}},
+            max_tokens=777,
+            inspect_request=True,
+        )
+    )
+
+    assert response.requestDebug is not None
+    assert response.requestDebug["payload"]["messages"][1]["role"] == "user"
 
 
 def test_chat_prompt_debug_snapshot_uses_chat_mode_and_requested_max_tokens():

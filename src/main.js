@@ -132,6 +132,8 @@ let aiModelTestStatus = '';
 let aiPromptDebugLoading = false;
 let aiPromptDebugStatus = '';
 let aiPromptDebugSnapshot = null;
+let aiRequestInspectorEnabled = false;
+let openrouterRequestDebug = null;
 let clientAiRecommendations = null;
 let clientAiLoading = false;
 let clientAiError = '';
@@ -319,7 +321,7 @@ function getViewActionTarget(target) {
 
 function isInteractiveActionTarget(target) {
   return Boolean(
-    target?.closest?.('button, a, [role="button"], [data-save-api-base], [data-client-id], [data-integration], [data-client-ai-recommendations], [data-sync-client], [data-load-summary], [data-load-sync-jobs], [data-load-optimization-plan], [data-load-optimization-actions], [data-save-optimization-actions], [data-update-optimization-action], [data-load-execution-preview], [data-copy-optimization-plan], [data-copy-text], [data-optimization-filter], [data-optimization-action-filter], [data-ai-quick-action], [data-ai-economy-fallback], [data-ai-reduction-action], [data-test-ai-model], [data-check-ai-prompt-size], [data-clear-ai-chat], [data-refresh-yandex-status], [data-go-view], [data-logout]')
+    target?.closest?.('button, a, [role="button"], [data-save-api-base], [data-client-id], [data-integration], [data-client-ai-recommendations], [data-sync-client], [data-load-summary], [data-load-sync-jobs], [data-load-optimization-plan], [data-load-optimization-actions], [data-save-optimization-actions], [data-update-optimization-action], [data-load-execution-preview], [data-copy-optimization-plan], [data-copy-text], [data-optimization-filter], [data-optimization-action-filter], [data-ai-quick-action], [data-ai-economy-fallback], [data-ai-reduction-action], [data-openrouter-inspector], [data-copy-openrouter-debug], [data-test-ai-model], [data-check-ai-prompt-size], [data-clear-ai-chat], [data-refresh-yandex-status], [data-go-view], [data-logout]')
     || getViewActionTarget(target)
   );
 }
@@ -1060,10 +1062,11 @@ async function testSelectedAiModel() {
     const response = await apiFetch('/ai/openrouter/generate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...aiRequestOptions(), prompt: 'Ответь одним словом: OK' }),
+      body: JSON.stringify({ ...aiRequestOptions(), prompt: 'Ответь одним словом: OK', inspect_request: true }),
     });
     const payload = await response.json();
     if (!response.ok || payload.error) {
+      if (payload.requestDebug) openrouterRequestDebug = payload.requestDebug;
       const normalized = normalizeAiErrorPayload(payload, 'Модель не ответила на тестовый запрос.');
       if (normalized.code === 'openrouter_rate_limited' || response.status === 429) {
         aiModelTestStatus = `Модель временно ограничена по лимитам: ${normalized.model}. Free/custom модели могут чаще получать rate limit.`;
@@ -1074,6 +1077,7 @@ async function testSelectedAiModel() {
       }
       return;
     }
+    if (payload.requestDebug) openrouterRequestDebug = payload.requestDebug;
     aiModelTestStatus = `Модель отвечает. Фактическая модель: ${payload.model || activeAiModel()}.`;
   } catch (error) {
     aiModelTestStatus = `Не удалось проверить модель: ${error.message}`;
@@ -1118,6 +1122,8 @@ async function loadAiPromptDebug() {
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || 'Не удалось проверить размер AI-контекста');
     aiPromptDebugSnapshot = payload;
+    openrouterRequestDebug = payload.openrouterRequestPreview || payload.openrouterRequest || openrouterRequestDebug;
+    aiRequestInspectorEnabled = true;
     aiPromptDebugStatus = payload.size?.isTooLarge
       ? 'Контекст слишком большой для выбранной модели.'
       : 'Размер AI-контекста в пределах лимита модели.';
@@ -1158,14 +1164,16 @@ async function requestAiChatAnswer() {
     const response = await apiFetch('/ai/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ client_id: selectedClientId, ...aiRequestOptions(), message, history, client_context: currentClient(), selected_campaign_name: selectedAiCampaignName || null }),
+      body: JSON.stringify({ client_id: selectedClientId, ...aiRequestOptions(), message, history, client_context: currentClient(), selected_campaign_name: selectedAiCampaignName || null, inspect_request: aiRequestInspectorEnabled }),
     });
     const payload = await response.json();
     if (!response.ok || payload.error) {
+      if (payload.requestDebug) openrouterRequestDebug = payload.requestDebug;
       const normalized = normalizeAiErrorPayload(payload, 'AI-чат не вернул ответ');
       aiChatErrorDetails = normalized;
       throw new Error(normalized.message);
     }
+    if (payload.requestDebug) openrouterRequestDebug = payload.requestDebug;
     aiChatMessages = [...aiChatMessages, { role: 'assistant', content: payload.answer, source: payload.source }];
     aiChatToolTraces = payload.tool_traces || [];
   } catch (error) {
@@ -2689,6 +2697,56 @@ function promptDebugHintActionLabel(action) {
   }[action] || '';
 }
 
+function renderOpenRouterRequestInspector() {
+  const debug = openrouterRequestDebug || aiPromptDebugSnapshot?.openrouterRequestPreview || aiPromptDebugSnapshot?.openrouterRequest;
+  if (!debug && !aiRequestInspectorEnabled) {
+    return `<button class="secondaryButton" type="button" data-openrouter-inspector="show">Показать полный запрос</button>`;
+  }
+  const payloadJson = debug ? JSON.stringify(debug.payload || {}, null, 2) : '';
+  const systemPrompt = debug?.systemPrompt || debug?.messages?.find?.((item) => item.role === 'system')?.content || '';
+  const userPrompt = debug?.userPrompt || debug?.messages?.find?.((item) => item.role === 'user')?.content || '';
+  const size = debug?.size || {};
+  return `
+    <section class="panel compact">
+      <div class="panelHeader">
+        <div>
+          <h3>OpenRouter request inspector</h3>
+          <p>Debug payload may contain business data. Do not share it publicly.</p>
+        </div>
+        <button class="secondaryButton" type="button" data-openrouter-inspector="${debug ? 'hide' : 'show'}">${debug ? 'Скрыть полный запрос' : 'Показать полный запрос'}</button>
+      </div>
+      ${debug ? `
+        <div class="metricGrid">
+          <article><span>Model</span><strong>${escapeHtml(debug.payload?.model || '')}</strong></article>
+          <article><span>Max tokens</span><strong>${formatNumberSafe(debug.payload?.max_tokens || 0)}</strong></article>
+          <article><span>Temperature</span><strong>${escapeHtml(String(debug.payload?.temperature ?? ''))}</strong></article>
+          <article><span>Mode</span><strong>${escapeHtml(debug.mode || '')}</strong></article>
+          <article><span>Input tokens</span><strong>${formatNumberSafe(size.estimatedInputTokens || 0)}</strong></article>
+          <article><span>Total tokens</span><strong>${formatNumberSafe(size.estimatedTotalTokens || 0)}</strong></article>
+        </div>
+        <p><strong>Compact options:</strong> <code>${escapeHtml(JSON.stringify(debug.compactOptions || {}))}</code></p>
+        <div class="heroActions">
+          <button class="secondaryButton" type="button" data-copy-openrouter-debug="json">Скопировать JSON</button>
+          <button class="secondaryButton" type="button" data-copy-openrouter-debug="system">Скопировать system prompt</button>
+          <button class="secondaryButton" type="button" data-copy-openrouter-debug="user">Скопировать user prompt</button>
+        </div>
+        <details>
+          <summary class="secondaryButton">Full system prompt</summary>
+          <pre>${escapeHtml(systemPrompt)}</pre>
+        </details>
+        <details>
+          <summary class="secondaryButton">Full user prompt</summary>
+          <pre>${escapeHtml(userPrompt)}</pre>
+        </details>
+        <details>
+          <summary class="secondaryButton">Full JSON payload</summary>
+          <pre>${escapeHtml(payloadJson)}</pre>
+        </details>
+      ` : '<p>Сначала запустите проверку размера AI-контекста или AI-запрос с inspector.</p>'}
+    </section>
+  `;
+}
+
 function renderAiModelSettings() {
   {
   const model = activeAiModelInfo();
@@ -2833,6 +2891,7 @@ function renderAiModelSettings() {
           </div>
         ` : ''}
       ` : ''}
+      ${renderOpenRouterRequestInspector()}
     </section>
   `;
   }
@@ -3214,6 +3273,8 @@ app.addEventListener('click', async (event) => {
   const aiQuickActionButton = event.target.closest('[data-ai-quick-action]');
   const aiFallbackButton = event.target.closest('[data-ai-economy-fallback]');
   const aiReductionActionButton = event.target.closest('[data-ai-reduction-action]');
+  const openrouterInspectorButton = event.target.closest('[data-openrouter-inspector]');
+  const copyOpenrouterDebugButton = event.target.closest('[data-copy-openrouter-debug]');
   const testAiModelButton = event.target.closest('[data-test-ai-model]');
   const checkAiPromptSizeButton = event.target.closest('[data-check-ai-prompt-size]');
   const clearAiChatButton = event.target.closest('[data-clear-ai-chat]');
@@ -3353,6 +3414,29 @@ app.addEventListener('click', async (event) => {
     }
     saveAiModelSettings();
     await loadAiPromptDebug();
+    return;
+  }
+
+  if (openrouterInspectorButton) {
+    aiRequestInspectorEnabled = openrouterInspectorButton.dataset.openrouterInspector !== 'hide';
+    if (aiRequestInspectorEnabled && !openrouterRequestDebug && aiPromptDebugSnapshot?.openrouterRequestPreview) {
+      openrouterRequestDebug = aiPromptDebugSnapshot.openrouterRequestPreview;
+    }
+    render();
+    return;
+  }
+
+  if (copyOpenrouterDebugButton) {
+    const debug = openrouterRequestDebug || aiPromptDebugSnapshot?.openrouterRequestPreview || {};
+    const kind = copyOpenrouterDebugButton.dataset.copyOpenrouterDebug;
+    const text = kind === 'system'
+      ? (debug.systemPrompt || '')
+      : kind === 'user'
+        ? (debug.userPrompt || '')
+        : JSON.stringify(debug.payload || debug, null, 2);
+    await navigator.clipboard?.writeText(text);
+    aiPromptDebugStatus = 'OpenRouter debug скопирован.';
+    render();
     return;
   }
 

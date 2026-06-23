@@ -11,7 +11,7 @@ from app.schemas import AiGeneratedRecommendation, AiRecommendationResponse
 from app.services.direct_analyst_playbook import build_direct_analyst_instructions
 from app.services.mock_data import AUDIT_ISSUES, CAMPAIGNS, CLIENTS, RECOMMENDATIONS
 from app.services.ai_output_validation import structured_to_legacy_recommendations, validate_structured_recommendation_payload
-from app.services.ai_prompt_debug import build_prompt_debug_snapshot
+from app.services.ai_prompt_debug import build_openrouter_request_debug, build_prompt_debug_snapshot
 from app.services.knowledge_base import select_knowledge_snippets
 from app.services.openrouter import DEFAULT_SYSTEM_PROMPT, generate_openrouter_response
 from app.services.performance_summary import build_optimization_plan, build_performance_summary
@@ -431,7 +431,7 @@ def build_recommendation_prompt_debug_snapshot(
         },
     }
     prompt = _build_prompt(context_with_model)
-    return build_prompt_debug_snapshot(
+    snapshot = build_prompt_debug_snapshot(
         context=context_with_model,
         system_prompt=DEFAULT_SYSTEM_PROMPT,
         user_prompt=prompt,
@@ -439,6 +439,19 @@ def build_recommendation_prompt_debug_snapshot(
         max_tokens=int(ai_options["max_tokens"]),
         include_preview=include_preview,
     )
+    snapshot["mode"] = "recommendations"
+    snapshot["openrouterRequestPreview"] = build_openrouter_request_debug(
+        mode="recommendations",
+        endpoint="/api/v1/clients/{client_id}/ai/prompt-debug?mode=recommendations",
+        system_prompt=DEFAULT_SYSTEM_PROMPT,
+        user_prompt=prompt,
+        model=str(ai_options["model"]),
+        max_tokens=int(ai_options["max_tokens"]),
+        context=context_with_model,
+        compact_options={"ai_preset": ai_options["ai_preset"]},
+        include_preview=True,
+    )
+    return snapshot
 
 
 def _fallback_recommendations(context: dict[str, Any]) -> AiRecommendationResponse:

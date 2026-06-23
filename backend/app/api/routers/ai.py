@@ -19,7 +19,8 @@ from app.models import ClientAccount
 from app.schemas import AiChatRequest, AiChatResponse, AiPromptRequest, AiPromptResponse, AiStatusResponse
 from app.services.ai_chat import answer_ai_chat, build_enriched_chat_message, compact_client_context_for_chat
 from app.services.ai_recommendations import build_client_ai_context_from_db
-from app.services.openrouter import generate_openrouter_response, openrouter_status
+from app.services.ai_prompt_debug import build_openrouter_request_debug
+from app.services.openrouter import DEFAULT_SYSTEM_PROMPT, generate_openrouter_response, openrouter_status
 
 router = APIRouter(prefix="/ai", tags=["ai"])
 
@@ -109,16 +110,32 @@ async def generate_ai_response(
         "advanced mode may use deeper structured analysis."
     )
     selected_model = str(ai_options["model"])
+    request_debug = build_openrouter_request_debug(
+        mode="model_test",
+        endpoint="/api/v1/ai/openrouter/generate",
+        system_prompt=DEFAULT_SYSTEM_PROMPT,
+        user_prompt=prompt,
+        model=selected_model,
+        max_tokens=int(ai_options["max_tokens"]),
+        context={"prompt": payload.prompt},
+        compact_options={"ai_preset": ai_options["ai_preset"]},
+        include_preview=True,
+    )
     try:
-        return await generate_openrouter_response(
+        result = await generate_openrouter_response(
             model=selected_model,
             prompt=prompt,
             max_tokens=int(ai_options["max_tokens"]),
         )
+        if payload.inspect_request:
+            result["requestDebug"] = request_debug
+        return result
     except HTTPException as exc:
         normalized = _normalized_ai_error(exc, selected_model)
         if normalized:
-            return {"content": "", **normalized}
+            payload_out = {"content": "", **normalized}
+            payload_out["requestDebug"] = request_debug
+            return payload_out
         raise
 
 
@@ -158,6 +175,7 @@ async def chat_with_ai(
             chat_history_limit=payload.chat_history_limit,
             search_query_limit=payload.search_query_limit,
             selected_campaign_name=payload.selected_campaign_name,
+            inspect_request=payload.inspect_request,
         )
     except HTTPException as exc:
         normalized = _normalized_ai_error(exc, selected_model)

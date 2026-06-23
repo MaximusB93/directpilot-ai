@@ -412,6 +412,7 @@ class AiPromptRequest(BaseModel):
     ai_preset: str | None = None
     max_tokens: int | None = Field(default=None, ge=1, le=5000)
     prompt: str = Field(min_length=10, max_length=4000)
+    inspect_request: bool = False
 
 
 class AiClientRecommendationRequest(BaseModel):
@@ -494,6 +495,7 @@ class AiChatRequest(BaseModel):
     tool_results_mode: str = "summary"
     chat_history_limit: int = Field(default=3, ge=0, le=8)
     search_query_limit: int | None = Field(default=20, ge=1, le=200)
+    inspect_request: bool = False
 
 
 class AiToolTrace(BaseModel):
@@ -513,6 +515,7 @@ class AiChatResponse(BaseModel):
     message: str | None = None
     retryable: bool = False
     suggested_preset: str | None = None
+    requestDebug: dict | None = None
 
 
 class AiPromptResponse(BaseModel):
@@ -525,6 +528,7 @@ class AiPromptResponse(BaseModel):
     message: str | None = None
     retryable: bool = False
     suggested_preset: str | None = None
+    requestDebug: dict | None = None
 
 
 class SyncJobResponse(BaseModel):
