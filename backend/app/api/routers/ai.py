@@ -124,11 +124,74 @@ def _apply_intent_token_floor(ai_options: dict[str, object], *, message: str, ex
 
 
 def _apply_specific_date_token_floor(ai_options: dict[str, object], *, explicit_max_tokens: bool, requested_date: date | None) -> dict[str, object]:
-    if explicit_max_tokens or requested_date is None:
+    if requested_date is None:
         return ai_options
     current = int(ai_options["max_tokens"])
+    if explicit_max_tokens and current > 900:
+        return ai_options
     cap = int(ai_options.get("max_tokens_cap") or current)
     return {**ai_options, "max_tokens": min(max(current, 2500), cap)}
+
+
+def _single_day_analysis_plan(requested_date: date) -> dict[str, Any]:
+    return {
+        "intent": "single_day_campaign_analysis",
+        "scope": "whole_account",
+        "requiresCascade": True,
+        "requestedPeriod": {"type": "single_date", "date": requested_date.isoformat()},
+        "dataNeeds": [
+            "yandex_direct_campaign_daily_report",
+            "selected_goals",
+            "campaigns",
+            "campaign_issue_flags",
+            "drilldown_plan",
+        ],
+        "notes": [
+            "Specific date was parsed by DirectPilot router before AI prompt assembly.",
+            "Use read-only Yandex Direct daily campaign report as the primary source.",
+        ],
+    }
+
+
+def _decorate_specific_date_response_trace(
+    response: AiChatResponse,
+    *,
+    requested_date: date | None,
+    analysis: dict[str, Any] | None,
+) -> AiChatResponse:
+    if requested_date is None or not response.requestTrace:
+        return response
+    trace = dict(response.requestTrace)
+    plan = _single_day_analysis_plan(requested_date)
+    live_rows = int((analysis or {}).get("rows") or 0)
+    trace["analysisPlan"] = plan
+    trace["singleDayDirectAnalysis"] = {
+        "available": bool((analysis or {}).get("available")),
+        "source": (analysis or {}).get("source") or "yandex_direct_read_only_daily_report",
+        "requestedDate": requested_date.isoformat(),
+        "rows": live_rows,
+        "status": (analysis or {}).get("status"),
+        "missingData": (analysis or {}).get("missingData") or [],
+    }
+    trace["dataFetch"] = [
+        {
+            "source": "yandex_direct_live_campaign_daily_report",
+            "status": "used" if live_rows else ((analysis or {}).get("status") or "missing"),
+            "date": requested_date.isoformat(),
+            "rows": live_rows,
+            "message": "Fetched read-only from Yandex Direct during AI chat for a specific date.",
+        },
+        *[item for item in trace.get("dataFetch", []) if item.get("source") != "yandex_direct_live_campaign_daily_report"],
+    ]
+    if isinstance(trace.get("modelSettings"), dict):
+        trace["modelSettings"] = {**trace["modelSettings"], "max_tokens": max(int(trace["modelSettings"].get("max_tokens") or 0), 2500)}
+    if isinstance(trace.get("prompt"), dict):
+        trace["prompt"] = {
+            **trace["prompt"],
+            "singleDayInstruction": "Answer account -> campaigns -> issues -> drill-down -> safe actions. Keep the answer compact; avoid long tables.",
+        }
+    response.requestTrace = trace
+    return response
 
 
 def _int(value: str | None) -> int:
@@ -383,6 +446,10 @@ def _apply_specific_date_analysis_to_context(context: dict[str, Any] | None, ana
     warnings = list(next_context.get("warnings") or [])
     warnings.append(f"AI chat used read-only Yandex Direct daily report for {requested_date}.")
     next_context["warnings"] = warnings
+    try:
+        next_context["forced_analysis_plan"] = _single_day_analysis_plan(date.fromisoformat(requested_date))
+    except ValueError:
+        next_context["forced_analysis_plan"] = None
 
     if not analysis.get("available"):
         return next_context
@@ -549,6 +616,7 @@ async def chat_with_ai(
         explicit_max_tokens=payload.max_tokens is not None,
     )
     server_context = payload.client_context
+    specific_date_analysis: dict[str, Any] | None = None
     if db is not None:
         client = db.get(ClientAccount, payload.client_id)
         if not client or client.organization_id != current.organization.id:
@@ -565,7 +633,7 @@ async def chat_with_ai(
     )
     selected_model = str(ai_options["model"])
     try:
-        return await answer_ai_chat(
+        response = await answer_ai_chat(
             client_id=payload.client_id,
             message=payload.message,
             model=selected_model,
@@ -578,6 +646,11 @@ async def chat_with_ai(
             search_query_limit=payload.search_query_limit,
             selected_campaign_name=payload.selected_campaign_name,
             inspect_request=payload.inspect_request,
+        )
+        return _decorate_specific_date_response_trace(
+            response,
+            requested_date=requested_date,
+            analysis=specific_date_analysis,
         )
     except HTTPException as exc:
         normalized = _normalized_ai_error(exc, selected_model)
