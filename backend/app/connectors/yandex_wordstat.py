@@ -52,11 +52,12 @@ class YandexWordstatConnector:
         if not self.is_configured:
             raise RuntimeError("Yandex Wordstat/Search API credentials are not configured")
 
+        api_from_date, api_to_date = _normalize_api_date_range(period=period, from_date=from_date, to_date=to_date)
         payload: dict[str, Any] = {
             "phrase": phrase,
             "period": period,
-            "fromDate": _date_start_rfc3339(from_date),
-            "toDate": _date_end_rfc3339(to_date),
+            "fromDate": _date_start_rfc3339(api_from_date),
+            "toDate": _date_end_rfc3339(api_to_date),
             "regions": regions or [],
             "devices": devices or ["DEVICE_ALL"],
         }
@@ -69,6 +70,15 @@ class YandexWordstatConnector:
             return list(body.get("results") or [])
 
         raise RuntimeError(_wordstat_error_message(response))
+
+
+def _normalize_api_date_range(*, period: str, from_date: date, to_date: date) -> tuple[date, date]:
+    """Yandex Wordstat requires monthly ranges to start from the first day of a month."""
+
+    if period == "PERIOD_MONTHLY":
+        from_date = from_date.replace(day=1)
+        to_date = to_date.replace(day=1)
+    return from_date, to_date
 
 
 def _date_start_rfc3339(value: date) -> str:
