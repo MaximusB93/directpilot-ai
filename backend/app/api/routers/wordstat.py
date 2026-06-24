@@ -109,7 +109,7 @@ def get_wordstat_dynamics_batch(
             to_date=request.toDate,
             regions=request.regions,
             devices=request.devices,
-            organization_id=current.organization_id,
+            organization_id=current.organization.id,
             client_id=request.clientId,
             force_refresh=request.forceRefresh,
         )
