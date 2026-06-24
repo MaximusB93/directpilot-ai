@@ -166,6 +166,8 @@ class Settings:
             os.getenv("YANDEX_OAUTH_SCOPES", "direct:api metrika:read login:info")
         )
     )
+    yandex_search_api_key: str | None = os.getenv("YANDEX_SEARCH_API_KEY")
+    yandex_search_folder_id: str | None = os.getenv("YANDEX_SEARCH_FOLDER_ID")
     allowed_origins: list[str] = field(
         default_factory=lambda: [
             "http://localhost:5173",
