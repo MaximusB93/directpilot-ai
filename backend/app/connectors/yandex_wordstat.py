@@ -73,12 +73,20 @@ class YandexWordstatConnector:
 
 
 def _normalize_api_date_range(*, period: str, from_date: date, to_date: date) -> tuple[date, date]:
-    """Yandex Wordstat requires monthly ranges to start from the first day of a month."""
+    """Yandex Wordstat requires monthly ranges to start and end on month boundaries."""
 
     if period == "PERIOD_MONTHLY":
         from_date = from_date.replace(day=1)
-        to_date = to_date.replace(day=1)
+        to_date = _last_day_of_month(to_date)
     return from_date, to_date
+
+
+def _last_day_of_month(value: date) -> date:
+    if value.month == 12:
+        next_month = date(value.year + 1, 1, 1)
+    else:
+        next_month = date(value.year, value.month + 1, 1)
+    return date.fromordinal(next_month.toordinal() - 1)
 
 
 def _date_start_rfc3339(value: date) -> str:
