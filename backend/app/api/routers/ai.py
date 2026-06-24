@@ -1,9 +1,14 @@
+import copy
 import json
+import re
+from datetime import UTC, date, datetime
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.api.deps import CurrentUser, get_current_session_user
+from app.connectors.yandex_direct import YandexDirectConnector
 from app.core.config import (
     AI_MODEL_PRESETS,
     AI_RECOMMENDED_DEFAULT_PRESET,
@@ -20,11 +25,39 @@ from app.schemas import AiChatRequest, AiChatResponse, AiPromptRequest, AiPrompt
 from app.services.ai_chat import answer_ai_chat, compact_client_context_for_chat, detect_analysis_intent
 from app.services.ai_recommendations import build_client_ai_context_from_db
 from app.services.ai_prompt_debug import build_openrouter_request_debug
+from app.services.connected_accounts import get_yandex_access_token_for_account
 from app.services.openrouter import DEFAULT_SYSTEM_PROMPT, generate_openrouter_response, openrouter_status
+from app.services.yandex_metrika import parse_goal_ids
 
 router = APIRouter(prefix="/ai", tags=["ai"])
 
 AI_RATE_LIMIT_MESSAGE = "Выбранная AI-модель временно перегружена или ограничена по лимитам. Выберите другую модель или повторите позже."
+MONTHS_RU = {
+    "января": 1,
+    "январь": 1,
+    "февраля": 2,
+    "февраль": 2,
+    "марта": 3,
+    "март": 3,
+    "апреля": 4,
+    "апрель": 4,
+    "мая": 5,
+    "май": 5,
+    "июня": 6,
+    "июнь": 6,
+    "июля": 7,
+    "июль": 7,
+    "августа": 8,
+    "август": 8,
+    "сентября": 9,
+    "сентябрь": 9,
+    "октября": 10,
+    "октябрь": 10,
+    "ноября": 11,
+    "ноябрь": 11,
+    "декабря": 12,
+    "декабрь": 12,
+}
 
 
 def _provider_from_model(model_id: str) -> str:
@@ -88,6 +121,349 @@ def _apply_intent_token_floor(ai_options: dict[str, object], *, message: str, ex
     current = int(ai_options["max_tokens"])
     cap = int(ai_options.get("max_tokens_cap") or current)
     return {**ai_options, "max_tokens": min(max(current, floor), cap)}
+
+
+def _apply_specific_date_token_floor(ai_options: dict[str, object], *, explicit_max_tokens: bool, requested_date: date | None) -> dict[str, object]:
+    if explicit_max_tokens or requested_date is None:
+        return ai_options
+    current = int(ai_options["max_tokens"])
+    cap = int(ai_options.get("max_tokens_cap") or current)
+    return {**ai_options, "max_tokens": min(max(current, 2500), cap)}
+
+
+def _int(value: str | None) -> int:
+    return int(float(value or 0)) if value not in {None, "", "--"} else 0
+
+
+def _float(value: str | None) -> float:
+    return float(value or 0) if value not in {None, "", "--"} else 0.0
+
+
+def _round(value: float | None, digits: int = 2) -> float | None:
+    return round(value, digits) if value is not None else None
+
+
+def _parse_specific_date_request(message: str, *, today: date | None = None) -> date | None:
+    text = (message or "").lower().replace("ё", "е")
+    reference = today or datetime.now(UTC).date()
+
+    iso_match = re.search(r"\b(20\d{2})-(\d{1,2})-(\d{1,2})\b", text)
+    if iso_match:
+        year, month, day = (int(part) for part in iso_match.groups())
+        try:
+            return date(year, month, day)
+        except ValueError:
+            return None
+
+    numeric_match = re.search(r"\b(\d{1,2})[./](\d{1,2})(?:[./](20\d{2}))?\b", text)
+    if numeric_match:
+        day = int(numeric_match.group(1))
+        month = int(numeric_match.group(2))
+        year = int(numeric_match.group(3) or reference.year)
+        try:
+            candidate = date(year, month, day)
+        except ValueError:
+            return None
+        if numeric_match.group(3) is None and candidate > reference:
+            candidate = date(year - 1, month, day)
+        return candidate
+
+    month_pattern = "|".join(sorted(MONTHS_RU, key=len, reverse=True))
+    word_match = re.search(rf"\b(\d{{1,2}})\s+({month_pattern})(?:\s+(20\d{{2}}))?\b", text)
+    if not word_match:
+        return None
+    day = int(word_match.group(1))
+    month = MONTHS_RU[word_match.group(2)]
+    year = int(word_match.group(3) or reference.year)
+    try:
+        candidate = date(year, month, day)
+    except ValueError:
+        return None
+    if word_match.group(3) is None and candidate > reference:
+        candidate = date(year - 1, month, day)
+    return candidate
+
+
+def _direct_goal_conversion_value(row: dict[str, str], goal_ids: list[str]) -> float | None:
+    total = 0.0
+    found = False
+    normalized_goal_ids = {str(item).strip() for item in goal_ids if str(item).strip()}
+    for key, value in row.items():
+        parts = key.split("_")
+        if len(parts) < 2 or parts[0] != "Conversions":
+            continue
+        if parts[1] not in normalized_goal_ids:
+            continue
+        found = True
+        total += _float(value)
+    if found:
+        return total
+    if row.get("_TotalConversions") is not None and row.get("Conversions") not in {None, "", "--"}:
+        return _float(row.get("Conversions"))
+    return None
+
+
+def _campaign_issue_flags(*, cost: float, impressions: int, clicks: int, ctr: float, goal_conversions: float | None, goal_cpa: float | None, target_cpa: int | None) -> list[str]:
+    conversions = goal_conversions if goal_conversions is not None else 0
+    flags: list[str] = []
+    if impressions < 100 or clicks < 10:
+        flags.append("low_data")
+    if cost > 0 and conversions == 0 and clicks >= 10:
+        flags.append("spend_without_conversions")
+    if target_cpa and goal_cpa is not None and goal_cpa > target_cpa * 1.25:
+        flags.append("high_cpa")
+    if impressions >= 500 and ctr < 1.0:
+        flags.append("low_ctr")
+    if conversions > 0 and target_cpa and goal_cpa is not None and goal_cpa <= target_cpa:
+        flags.append("promising_campaign")
+    return flags or ["ok"]
+
+
+def _severity(flags: list[str]) -> str:
+    if any(item in flags for item in ["spend_without_conversions", "high_cpa"]):
+        return "critical"
+    if "low_ctr" in flags:
+        return "warning"
+    if "promising_campaign" in flags:
+        return "opportunity"
+    if "low_data" in flags:
+        return "info"
+    return "ok"
+
+
+def _recommended_focus(flags: list[str]) -> str:
+    if "spend_without_conversions" in flags:
+        return "Проверить поисковые запросы, цели, посадочную страницу и стратегию. Изменения только через dry-run/approval."
+    if "high_cpa" in flags:
+        return "Проверить запросы, группы, ставки, цели и посадочную. Подготовить только черновики действий."
+    if "low_ctr" in flags:
+        return "Проверить релевантность объявлений, ключевые фразы и интент запросов."
+    if "promising_campaign" in flags:
+        return "Проверить качество лидов и рассмотреть аккуратное масштабирование через approval."
+    if "low_data" in flags:
+        return "Данных мало: не делать жёстких выводов, проверить больший период или детализацию."
+    return "Существенных проблем по дневным метрикам не выявлено."
+
+
+def _drilldown_next_level(flags: list[str]) -> list[str]:
+    if "spend_without_conversions" in flags:
+        return ["search_queries", "goals", "landing", "strategy"]
+    if "high_cpa" in flags:
+        return ["search_queries", "ad_groups", "goals", "landing"]
+    if "low_ctr" in flags:
+        return ["ads", "keywords", "search_queries"]
+    if "promising_campaign" in flags:
+        return ["lead_quality", "budget", "search_queries"]
+    return ["campaign"]
+
+
+def _specific_date_totals(campaigns: list[dict[str, Any]]) -> dict[str, Any]:
+    cost = sum(float(item.get("cost") or 0) for item in campaigns)
+    impressions = sum(int(item.get("impressions") or 0) for item in campaigns)
+    clicks = sum(int(item.get("clicks") or 0) for item in campaigns)
+    goal_conversions = sum(float(item.get("goal_conversions") or 0) for item in campaigns)
+    return {
+        "cost": _round(cost),
+        "impressions": impressions,
+        "clicks": clicks,
+        "ctr": _round(clicks / impressions * 100) if impressions else 0.0,
+        "avgCpc": _round(cost / clicks) if clicks else 0.0,
+        "goalCpa": _round(cost / goal_conversions) if goal_conversions else None,
+        "cpa": _round(cost / goal_conversions) if goal_conversions else None,
+    }
+
+
+def _build_specific_date_analysis(client: ClientAccount, requested_date: date, rows: list[dict[str, str]], goal_ids: list[str]) -> dict[str, Any]:
+    campaigns: list[dict[str, Any]] = []
+    goal_ids_text = ", ".join(goal_ids) or None
+    for row in rows:
+        cost = _float(row.get("Cost"))
+        impressions = _int(row.get("Impressions"))
+        clicks = _int(row.get("Clicks"))
+        ctr = _float(row.get("Ctr"))
+        avg_cpc = _float(row.get("AvgCpc"))
+        goal_conversions = _direct_goal_conversion_value(row, goal_ids) if goal_ids else _float(row.get("Conversions"))
+        goal_cpa = (cost / goal_conversions) if goal_conversions else None
+        flags = _campaign_issue_flags(
+            cost=cost,
+            impressions=impressions,
+            clicks=clicks,
+            ctr=ctr,
+            goal_conversions=goal_conversions,
+            goal_cpa=goal_cpa,
+            target_cpa=client.target_cpa,
+        )
+        campaigns.append(
+            {
+                "campaign_id": str(row.get("CampaignId") or ""),
+                "campaign_name": str(row.get("CampaignName") or ""),
+                "period_date": requested_date.isoformat(),
+                "cost": _round(cost),
+                "impressions": impressions,
+                "clicks": clicks,
+                "ctr": _round(ctr),
+                "avg_cpc": _round(avg_cpc),
+                "goal_ids": goal_ids_text,
+                "goal_conversions": _round(goal_conversions),
+                "goal_cpa": _round(goal_cpa),
+                "conversion_rate": _round(goal_conversions / clicks * 100) if goal_conversions is not None and clicks else None,
+                "severity": _severity(flags),
+                "issue_flags": flags,
+                "diagnostic_explanation": f"Данные Яндекс.Директа за {requested_date.isoformat()}: расход {_round(cost)} ₽, клики {clicks}, конверсии по выбранным целям {_round(goal_conversions)}, CPA {_round(goal_cpa)}.",
+                "recommended_focus": _recommended_focus(flags),
+                "drilldown_next_level": _drilldown_next_level(flags),
+            }
+        )
+    severity_rank = {"critical": 0, "warning": 1, "info": 2, "opportunity": 3, "ok": 4}
+    campaigns = sorted(campaigns, key=lambda item: (severity_rank.get(item["severity"], 9), -(item.get("cost") or 0)))
+    totals = _specific_date_totals(campaigns)
+    goal_conversions_total = _round(sum(float(item.get("goal_conversions") or 0) for item in campaigns))
+    missing_data = [] if campaigns else ["Yandex Direct returned no campaign rows for requested date."]
+    return {
+        "available": bool(campaigns),
+        "status": "used" if campaigns else "no_data",
+        "source": "yandex_direct_read_only_daily_report",
+        "requestedDate": requested_date.isoformat(),
+        "rows": len(campaigns),
+        "accountTotals": {**totals, "goalConversions": goal_conversions_total},
+        "campaigns": campaigns,
+        "dataQuality": {
+            "period": {"from": requested_date.isoformat(), "to": requested_date.isoformat(), "source": "live_yandex_direct_daily_report"},
+            "selectedGoalIds": goal_ids,
+            "hasGoalData": any(item.get("goal_conversions") is not None for item in campaigns),
+            "goalConversionsTotal": goal_conversions_total,
+            "message": f"Данные подтянуты read-only из Яндекс.Директа за {requested_date.isoformat()} по выбранным целям: {goal_ids_text or 'цели не выбраны'}.",
+        },
+        "drilldownPlan": [
+            {
+                "campaignName": item["campaign_name"],
+                "issueFlags": item["issue_flags"],
+                "nextLevel": item["drilldown_next_level"],
+                "safeActions": ["manual_review", "dry_run_only"],
+                "why": item["diagnostic_explanation"],
+            }
+            for item in campaigns[:8]
+            if item["severity"] in {"critical", "warning", "info", "opportunity"}
+        ],
+        "mainFindings": [
+            f"{item['campaign_name']}: {', '.join(item['issue_flags'])}; расход {item['cost']} ₽, клики {item['clicks']}, конверсии по целям {item['goal_conversions']}."
+            for item in campaigns[:6]
+        ],
+        "missingData": missing_data,
+        "safety": {"readOnly": True, "canApplyAutomatically": False, "message": "Данные только прочитаны из Яндекс.Директа; изменения не применялись."},
+    }
+
+
+def _fetch_specific_date_analysis(db: Session, client: ClientAccount, requested_date: date) -> dict[str, Any]:
+    if not client.yandex_account_id:
+        return {"available": False, "status": "no_yandex_account", "requestedDate": requested_date.isoformat(), "missingData": ["Yandex account is not bound to this client."]}
+    token = get_yandex_access_token_for_account(db, client.yandex_account_id)
+    if not token:
+        return {"available": False, "status": "no_yandex_token", "requestedDate": requested_date.isoformat(), "missingData": ["Yandex account token is not connected for the bound account."]}
+    goal_ids = parse_goal_ids(client.conversion_goal_ids, fallback=client.main_goal_id)
+    connector = YandexDirectConnector(access_token=token, client_login=client.direct_login)
+    try:
+        rows = connector.get_campaign_daily_report(stat_date=requested_date, goal_ids=goal_ids or None)
+    except Exception as exc:
+        return {
+            "available": False,
+            "status": "fetch_error",
+            "source": "yandex_direct_read_only_daily_report",
+            "requestedDate": requested_date.isoformat(),
+            "missingData": [f"Read-only Yandex Direct daily report failed: {str(exc)[:300]}"],
+            "safety": {"readOnly": True, "canApplyAutomatically": False},
+        }
+    return _build_specific_date_analysis(client, requested_date, rows, goal_ids)
+
+
+def _apply_specific_date_analysis_to_context(context: dict[str, Any] | None, analysis: dict[str, Any]) -> dict[str, Any]:
+    next_context = copy.deepcopy(context or {})
+    next_context["specific_date_analysis"] = analysis
+    requested_date = str(analysis.get("requestedDate") or "")
+    warnings = list(next_context.get("warnings") or [])
+    warnings.append(f"AI chat used read-only Yandex Direct daily report for {requested_date}.")
+    next_context["warnings"] = warnings
+
+    if not analysis.get("available"):
+        return next_context
+
+    summary = copy.deepcopy(next_context.get("summary") if isinstance(next_context.get("summary"), dict) else {})
+    summary["period"] = analysis["dataQuality"]["period"]
+    summary["totals"] = analysis["accountTotals"]
+    summary["campaigns"] = analysis["campaigns"]
+    summary["selectedGoalIds"] = analysis["dataQuality"].get("selectedGoalIds") or []
+    summary["hasGoalData"] = analysis["dataQuality"].get("hasGoalData", False)
+    summary["goalConversionsTotal"] = analysis["dataQuality"].get("goalConversionsTotal")
+    summary["conversionsSourceMessage"] = analysis["dataQuality"].get("message")
+    summary["searchQueryInsights"] = {}
+    summary["yandexDirectAudit"] = {}
+
+    next_context["summary"] = summary
+    next_context["campaigns"] = analysis["campaigns"]
+    next_context["diagnostics"] = [
+        {
+            "campaign_name": item.get("campaign_name"),
+            "severity": item.get("severity"),
+            "flags": item.get("issue_flags"),
+            "explanation": item.get("diagnostic_explanation"),
+            "recommended_focus": item.get("recommended_focus"),
+            "next_level": item.get("drilldown_next_level"),
+        }
+        for item in analysis["campaigns"]
+    ]
+    next_context["search_query_insights"] = {}
+    next_context["yandex_direct_audit"] = {}
+    next_context["optimization_plan"] = []
+    next_context["campaign_dynamics_analysis"] = {
+        "period": {
+            "dateTo": requested_date,
+            "windows": {"selectedDate": {"dateFrom": requested_date, "dateTo": requested_date}},
+            "requestedPeriods": ["selected_date"],
+        },
+        "dataQuality": {
+            "rows": analysis.get("rows", 0),
+            "campaigns": len(analysis.get("campaigns") or []),
+            "hasGoalData": analysis["dataQuality"].get("hasGoalData", False),
+            "missingDays": [],
+            "limitations": analysis.get("missingData") or [],
+        },
+        "accountDynamics": {
+            "last7": analysis["accountTotals"],
+            "previous7": {},
+            "last14": analysis["accountTotals"],
+            "previous14": {},
+            "last30": analysis["accountTotals"],
+            "changes": {},
+            "mainFindings": analysis.get("mainFindings") or [],
+        },
+        "campaignDynamics": {
+            "worstCampaigns": [
+                {
+                    "campaignName": item.get("campaign_name"),
+                    "severity": item.get("severity"),
+                    "issueFlags": item.get("issue_flags"),
+                    "last7": {
+                        "cost": item.get("cost"),
+                        "clicks": item.get("clicks"),
+                        "impressions": item.get("impressions"),
+                        "ctr": item.get("ctr"),
+                        "avgCpc": item.get("avg_cpc"),
+                        "goalConversions": item.get("goal_conversions"),
+                        "goalCpa": item.get("goal_cpa"),
+                    },
+                    "changes": {"last7VsPrevious7": {}},
+                }
+                for item in analysis.get("campaigns", [])[:8]
+            ],
+            "bestCampaigns": [],
+            "allCampaignsCompact": analysis.get("campaigns", [])[:20],
+        },
+        "drilldownPlan": analysis.get("drilldownPlan") or [],
+        "recommendations": [],
+        "missingData": analysis.get("missingData") or [],
+        "safety": analysis.get("safety") or {},
+    }
+    return next_context
 
 
 def _is_rate_limit_error(exc: HTTPException) -> bool:
@@ -162,9 +538,14 @@ async def chat_with_ai(
     db: Session | None = Depends(get_optional_db),
     current: CurrentUser = Depends(get_current_session_user),
 ) -> AiChatResponse:
-    ai_options = _apply_intent_token_floor(
-        _resolved_ai_options(payload.model, payload.ai_preset, payload.max_tokens),
-        message=payload.message,
+    requested_date = _parse_specific_date_request(payload.message)
+    ai_options = _apply_specific_date_token_floor(
+        _apply_intent_token_floor(
+            _resolved_ai_options(payload.model, payload.ai_preset, payload.max_tokens),
+            message=payload.message,
+            explicit_max_tokens=payload.max_tokens is not None,
+        ),
+        requested_date=requested_date,
         explicit_max_tokens=payload.max_tokens is not None,
     )
     server_context = payload.client_context
@@ -173,6 +554,9 @@ async def chat_with_ai(
         if not client or client.organization_id != current.organization.id:
             raise HTTPException(status_code=404, detail="Client not found")
         server_context = build_client_ai_context_from_db(db, payload.client_id, selected_campaign_name=payload.selected_campaign_name)
+        if requested_date:
+            specific_date_analysis = _fetch_specific_date_analysis(db, client, requested_date)
+            server_context = _apply_specific_date_analysis_to_context(server_context, specific_date_analysis)
     compacted_context = compact_client_context_for_chat(
         server_context,
         compact_context=payload.compact_context,
