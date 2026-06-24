@@ -153,17 +153,37 @@ def _single_day_analysis_plan(requested_date: date) -> dict[str, Any]:
     }
 
 
+def _single_day_prompt_message(user_message: str, requested_date: date) -> str:
+    return f"""{user_message}
+
+DirectPilot internal routing:
+intent = single_day_campaign_analysis
+requested_date = {requested_date.isoformat()}
+
+Single-day answer rules:
+- Use only the selected date from trusted context. Do not call this last7, last14 or last30.
+- Start with account totals for the selected date, then split campaigns into critical, low-data and opportunity groups.
+- If account CPA is above target CPA, call it high CPA. Do not call it low CPA.
+- For Search campaigns, next drill-down is semantic/query report, keywords, goals and landing alignment.
+- For RSYA, retargeting and content campaigns, next drill-down is placements, audiences, retargeting segments, creatives/ads, devices, geo and goals. Do not present semantic/query report as the primary check for RSYA.
+- Do not recommend budget scaling from one day only. Say that 7/14/30-day stability and lead quality must be checked first.
+- Keep the answer compact: facts, campaign groups, hypotheses, next checks, limitations.
+- All actions are dry-run/manual approval only."""
+
+
 def _decorate_specific_date_response_trace(
     response: AiChatResponse,
     *,
     requested_date: date | None,
     analysis: dict[str, Any] | None,
+    original_message: str | None = None,
 ) -> AiChatResponse:
     if requested_date is None or not response.requestTrace:
         return response
     trace = dict(response.requestTrace)
     plan = _single_day_analysis_plan(requested_date)
     live_rows = int((analysis or {}).get("rows") or 0)
+    trace["userMessage"] = original_message or trace.get("userMessage")
     trace["analysisPlan"] = plan
     trace["singleDayDirectAnalysis"] = {
         "available": bool((analysis or {}).get("available")),
@@ -188,10 +208,9 @@ def _decorate_specific_date_response_trace(
     if isinstance(trace.get("prompt"), dict):
         trace["prompt"] = {
             **trace["prompt"],
-            "singleDayInstruction": "Answer account -> campaigns -> issues -> drill-down -> safe actions. Keep the answer compact; avoid long tables.",
+            "singleDayInstruction": "Answer account -> campaigns -> issues -> drill-down -> safe actions. Treat selectedDate as one day only. Do not recommend scaling from one day.",
         }
-    response.requestTrace = trace
-    return response
+    return response.model_copy(update={"requestTrace": trace})
 
 
 def _int(value: str | None) -> int:
@@ -294,29 +313,37 @@ def _severity(flags: list[str]) -> str:
     return "ok"
 
 
-def _recommended_focus(flags: list[str]) -> str:
+def _recommended_focus(flags: list[str], campaign_name: str | None = None) -> str:
+    name = (campaign_name or "").lower()
+    is_network = any(token in name for token in ["рся", "ретаргет", "интерес", "товарная", "мк"])
     if "spend_without_conversions" in flags:
-        return "Проверить поисковые запросы, цели, посадочную страницу и стратегию. Изменения только через dry-run/approval."
+        if is_network:
+            return "Проверить площадки, аудитории/сегменты, креативы, устройства, гео и цели. Изменения только через dry-run/approval."
+        return "Проверить семантику, ключевые фразы, цели, посадочную страницу и стратегию. Изменения только через dry-run/approval."
     if "high_cpa" in flags:
-        return "Проверить запросы, группы, ставки, цели и посадочную. Подготовить только черновики действий."
+        return "Проверить источники трафика, группы, ставки, цели и посадочную. Подготовить только черновики действий."
     if "low_ctr" in flags:
-        return "Проверить релевантность объявлений, ключевые фразы и интент запросов."
+        if is_network:
+            return "Проверить креативы, аудитории, площадки, устройства и частоту показов."
+        return "Проверить релевантность объявлений, ключевые фразы и интент пользователей."
     if "promising_campaign" in flags:
-        return "Проверить качество лидов и рассмотреть аккуратное масштабирование через approval."
+        return "Проверить качество лидов и стабильность CPA за 7/14/30 дней перед масштабированием."
     if "low_data" in flags:
         return "Данных мало: не делать жёстких выводов, проверить больший период или детализацию."
     return "Существенных проблем по дневным метрикам не выявлено."
 
 
-def _drilldown_next_level(flags: list[str]) -> list[str]:
+def _drilldown_next_level(flags: list[str], campaign_name: str | None = None) -> list[str]:
+    name = (campaign_name or "").lower()
+    is_network = any(token in name for token in ["рся", "ретаргет", "интерес", "товарная", "мк"])
     if "spend_without_conversions" in flags:
-        return ["search_queries", "goals", "landing", "strategy"]
+        return ["placements", "audiences", "creatives", "devices", "geo", "goals"] if is_network else ["query_report", "keywords", "goals", "landing", "strategy"]
     if "high_cpa" in flags:
-        return ["search_queries", "ad_groups", "goals", "landing"]
+        return ["placements", "audiences", "ad_groups", "goals", "landing"] if is_network else ["query_report", "ad_groups", "goals", "landing"]
     if "low_ctr" in flags:
-        return ["ads", "keywords", "search_queries"]
+        return ["creatives", "audiences", "placements", "devices"] if is_network else ["ads", "keywords", "query_report"]
     if "promising_campaign" in flags:
-        return ["lead_quality", "budget", "search_queries"]
+        return ["lead_quality", "7_14_30_day_stability", "budget_dry_run"]
     return ["campaign"]
 
 
@@ -347,6 +374,7 @@ def _build_specific_date_analysis(client: ClientAccount, requested_date: date, r
         avg_cpc = _float(row.get("AvgCpc"))
         goal_conversions = _direct_goal_conversion_value(row, goal_ids) if goal_ids else _float(row.get("Conversions"))
         goal_cpa = (cost / goal_conversions) if goal_conversions else None
+        campaign_name = str(row.get("CampaignName") or "")
         flags = _campaign_issue_flags(
             cost=cost,
             impressions=impressions,
@@ -359,7 +387,7 @@ def _build_specific_date_analysis(client: ClientAccount, requested_date: date, r
         campaigns.append(
             {
                 "campaign_id": str(row.get("CampaignId") or ""),
-                "campaign_name": str(row.get("CampaignName") or ""),
+                "campaign_name": campaign_name,
                 "period_date": requested_date.isoformat(),
                 "cost": _round(cost),
                 "impressions": impressions,
@@ -373,8 +401,8 @@ def _build_specific_date_analysis(client: ClientAccount, requested_date: date, r
                 "severity": _severity(flags),
                 "issue_flags": flags,
                 "diagnostic_explanation": f"Данные Яндекс.Директа за {requested_date.isoformat()}: расход {_round(cost)} ₽, клики {clicks}, конверсии по выбранным целям {_round(goal_conversions)}, CPA {_round(goal_cpa)}.",
-                "recommended_focus": _recommended_focus(flags),
-                "drilldown_next_level": _drilldown_next_level(flags),
+                "recommended_focus": _recommended_focus(flags, campaign_name),
+                "drilldown_next_level": _drilldown_next_level(flags, campaign_name),
             }
         )
     severity_rank = {"critical": 0, "warning": 1, "info": 2, "opportunity": 3, "ok": 4}
@@ -606,10 +634,11 @@ async def chat_with_ai(
     current: CurrentUser = Depends(get_current_session_user),
 ) -> AiChatResponse:
     requested_date = _parse_specific_date_request(payload.message)
+    chat_message = _single_day_prompt_message(payload.message, requested_date) if requested_date else payload.message
     ai_options = _apply_specific_date_token_floor(
         _apply_intent_token_floor(
             _resolved_ai_options(payload.model, payload.ai_preset, payload.max_tokens),
-            message=payload.message,
+            message=chat_message,
             explicit_max_tokens=payload.max_tokens is not None,
         ),
         requested_date=requested_date,
@@ -635,7 +664,7 @@ async def chat_with_ai(
     try:
         response = await answer_ai_chat(
             client_id=payload.client_id,
-            message=payload.message,
+            message=chat_message,
             model=selected_model,
             history=payload.history,
             client_context=compacted_context,
@@ -651,6 +680,7 @@ async def chat_with_ai(
             response,
             requested_date=requested_date,
             analysis=specific_date_analysis,
+            original_message=payload.message,
         )
     except HTTPException as exc:
         normalized = _normalized_ai_error(exc, selected_model)
