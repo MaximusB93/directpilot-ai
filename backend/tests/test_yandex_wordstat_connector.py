@@ -6,7 +6,7 @@ import httpx
 from app.connectors.yandex_wordstat import YandexWordstatConnector
 
 
-def test_wordstat_connector_normalizes_monthly_from_date(monkeypatch) -> None:
+def test_wordstat_connector_normalizes_monthly_date_boundaries(monkeypatch) -> None:
     captured: dict[str, Any] = {}
 
     def fake_post(url, json, headers, timeout):
@@ -26,7 +26,7 @@ def test_wordstat_connector_normalizes_monthly_from_date(monkeypatch) -> None:
     )
 
     assert captured["payload"]["fromDate"] == "2026-06-01T00:00:00Z"
-    assert captured["payload"]["toDate"] == "2026-08-01T23:59:59Z"
+    assert captured["payload"]["toDate"] == "2026-08-31T23:59:59Z"
 
 
 def test_wordstat_connector_keeps_daily_dates(monkeypatch) -> None:
