@@ -26,6 +26,7 @@ def init_db() -> None:
     if engine is None:
         return
     import app.models  # noqa: F401
+    import app.models_wordstat  # noqa: F401
     import app.models_workflow  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
@@ -179,6 +180,80 @@ def ensure_mvp_schema() -> None:
         )
         """,
         "CREATE INDEX IF NOT EXISTS ix_client_business_contexts_client_id ON client_business_contexts (client_id)",
+        """
+        CREATE TABLE IF NOT EXISTS wordstat_query_batches (
+            id VARCHAR(36) PRIMARY KEY,
+            organization_id VARCHAR(36),
+            client_id VARCHAR(64),
+            period VARCHAR(32) NOT NULL,
+            from_date DATE NOT NULL,
+            to_date DATE NOT NULL,
+            regions_hash VARCHAR(64) NOT NULL,
+            devices_hash VARCHAR(64) NOT NULL,
+            regions_json TEXT,
+            devices_json TEXT,
+            status VARCHAR(32) NOT NULL DEFAULT 'created',
+            total_phrases INTEGER NOT NULL DEFAULT 0,
+            completed_phrases INTEGER NOT NULL DEFAULT 0,
+            failed_phrases INTEGER NOT NULL DEFAULT 0,
+            error_message TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_wordstat_query_batches_organization_id ON wordstat_query_batches (organization_id)",
+        "CREATE INDEX IF NOT EXISTS ix_wordstat_query_batches_client_id ON wordstat_query_batches (client_id)",
+        """
+        CREATE TABLE IF NOT EXISTS wordstat_query_items (
+            id VARCHAR(36) PRIMARY KEY,
+            batch_id VARCHAR(36) NOT NULL,
+            phrase TEXT NOT NULL,
+            phrase_normalized TEXT NOT NULL,
+            status VARCHAR(32) NOT NULL DEFAULT 'created',
+            points_loaded INTEGER NOT NULL DEFAULT 0,
+            error_message TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_wordstat_query_items_batch_id ON wordstat_query_items (batch_id)",
+        """
+        CREATE TABLE IF NOT EXISTS wordstat_dynamics (
+            id VARCHAR(36) PRIMARY KEY,
+            phrase_original TEXT NOT NULL,
+            phrase_normalized TEXT NOT NULL,
+            period VARCHAR(32) NOT NULL,
+            stat_date DATE NOT NULL,
+            count INTEGER NOT NULL DEFAULT 0,
+            share FLOAT,
+            regions_hash VARCHAR(64) NOT NULL,
+            devices_hash VARCHAR(64) NOT NULL,
+            regions_json TEXT,
+            devices_json TEXT,
+            loaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            CONSTRAINT uq_wordstat_dynamics_cache_key UNIQUE (phrase_normalized, period, stat_date, regions_hash, devices_hash)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_wordstat_dynamics_phrase_normalized ON wordstat_dynamics (phrase_normalized)",
+        "CREATE INDEX IF NOT EXISTS ix_wordstat_dynamics_period ON wordstat_dynamics (period)",
+        "CREATE INDEX IF NOT EXISTS ix_wordstat_dynamics_stat_date ON wordstat_dynamics (stat_date)",
+        "CREATE INDEX IF NOT EXISTS ix_wordstat_dynamics_regions_hash ON wordstat_dynamics (regions_hash)",
+        "CREATE INDEX IF NOT EXISTS ix_wordstat_dynamics_devices_hash ON wordstat_dynamics (devices_hash)",
+        """
+        CREATE TABLE IF NOT EXISTS wordstat_request_log (
+            id VARCHAR(36) PRIMARY KEY,
+            provider VARCHAR(64) NOT NULL DEFAULT 'yandex_search_api',
+            method VARCHAR(64) NOT NULL DEFAULT 'dynamics',
+            phrase TEXT,
+            request_hash VARCHAR(64) NOT NULL,
+            http_status INTEGER,
+            status VARCHAR(32) NOT NULL DEFAULT 'started',
+            error_message TEXT,
+            started_at TIMESTAMPTZ NOT NULL,
+            finished_at TIMESTAMPTZ
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_wordstat_request_log_request_hash ON wordstat_request_log (request_hash)",
     ]
     with engine.begin() as connection:
         for statement in statements:
