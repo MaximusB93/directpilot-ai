@@ -61,9 +61,9 @@ body[data-page="app"] .sidebarNote {
 }
 
 body[data-page="app"] .workspace {
-  width: 100%;
-  max-width: none;
-  margin: 0;
+  width: min(100%, 1720px);
+  max-width: calc(100vw - 250px);
+  margin: 0 auto;
   padding: 18px 22px 44px;
 }
 
@@ -316,14 +316,116 @@ body[data-page="app"] .integrationStatus {
   line-height: 1.45;
 }
 
+body[data-page="app"] .wordstatChartPanel {
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.92);
+}
+
+body[data-page="app"] .wordstatChartPanel .panelHeader {
+  margin-bottom: 8px;
+}
+
+body[data-page="app"] .wordstatChartPanel > div[style*="overflow"] {
+  overflow: hidden !important;
+  border: 1px solid rgba(19, 34, 56, 0.06);
+  border-radius: 24px;
+  background:
+    linear-gradient(180deg, rgba(248, 251, 255, 0.94), rgba(255, 255, 255, 0.98));
+}
+
+body[data-page="app"] .wordstatChartPanel svg {
+  display: block;
+  min-width: 0 !important;
+  width: 100% !important;
+  height: clamp(330px, 30vw, 500px) !important;
+  background: transparent !important;
+  border-radius: 24px !important;
+}
+
+body[data-page="app"] .wordstatChartPanel polyline {
+  transition: opacity .16s ease, stroke-width .16s ease, filter .16s ease;
+}
+
+body[data-page="app"] .wordstatChartPanel circle {
+  transition: r .16s ease, opacity .16s ease, filter .16s ease;
+}
+
+body[data-page="app"] .wordstatChartPanel.has-hover polyline:not(.wordstat-hovered-series):not(.wordstat-chart-hit),
+body[data-page="app"] .wordstatChartPanel.has-hover circle:not(.wordstat-hovered-point) {
+  opacity: .26;
+}
+
+body[data-page="app"] .wordstatChartPanel .wordstat-hovered-series {
+  stroke-width: 6 !important;
+  opacity: 1 !important;
+  filter: drop-shadow(0 7px 12px rgba(15, 23, 42, 0.2));
+}
+
+body[data-page="app"] .wordstatChartPanel .wordstat-hovered-point {
+  r: 8;
+  opacity: 1 !important;
+  filter: drop-shadow(0 5px 10px rgba(15, 23, 42, 0.24));
+}
+
+body[data-page="app"] .wordstatChartPanel .wordstat-chart-hit {
+  cursor: crosshair;
+  opacity: 0;
+  pointer-events: stroke;
+}
+
+.wordstatChartTooltip {
+  position: fixed;
+  z-index: 999;
+  display: none;
+  min-width: 220px;
+  max-width: 320px;
+  padding: 12px 14px;
+  border: 1px solid rgba(19, 34, 56, 0.1);
+  border-radius: 18px;
+  color: #132238;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 20px 56px rgba(15, 23, 42, 0.18);
+  backdrop-filter: blur(16px);
+  pointer-events: none;
+}
+
+.wordstatChartTooltip.visible {
+  display: block;
+}
+
+.wordstatChartTooltip strong {
+  display: block;
+  margin-bottom: 6px;
+  color: #101928;
+  font-size: 14px;
+  line-height: 1.25;
+}
+
+.wordstatChartTooltip span {
+  display: block;
+  color: #5b6b80;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.wordstatChartTooltip b {
+  display: block;
+  margin-top: 6px;
+  color: #1e5dff;
+  font-size: 20px;
+  letter-spacing: -0.03em;
+}
+
 @media (min-width: 1500px) {
   body[data-page="app"] .appShell {
     grid-template-columns: 260px minmax(0, 1fr);
   }
 
   body[data-page="app"] .workspace {
-    padding-left: 28px;
-    padding-right: 28px;
+    width: min(100%, 1760px);
+    max-width: calc(100vw - 260px);
+    padding-left: 24px;
+    padding-right: 24px;
   }
 
   body[data-page="app"] .dashboardLayout {
@@ -357,6 +459,8 @@ body[data-page="app"] .integrationStatus {
   }
 
   body[data-page="app"] .workspace {
+    width: 100%;
+    max-width: none;
     padding: 14px;
   }
 
@@ -408,5 +512,9 @@ body[data-page="app"] .integrationStatus {
 
   body[data-page="app"] .aiChatForm {
     grid-template-columns: 1fr;
+  }
+
+  body[data-page="app"] .wordstatChartPanel svg {
+    height: 320px !important;
   }
 }
