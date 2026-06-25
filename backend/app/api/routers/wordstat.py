@@ -1,4 +1,5 @@
 import hashlib
+import json
 from datetime import date
 from typing import Any
 
@@ -9,9 +10,10 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import CurrentUser, get_current_session_user
 from app.connectors.yandex_wordstat import YandexWordstatConnector
-from app.core.config import settings
+from app.core.config import normalize_ai_request_options, settings
 from app.db import get_db
 from app.services.connected_accounts import get_latest_yandex_access_token
+from app.services.openrouter import generate_openrouter_response
 from app.services.wordstat_dynamics import WordstatDynamicsService, normalize_period
 
 router = APIRouter(prefix="/wordstat", tags=["wordstat"])
@@ -44,6 +46,21 @@ class WordstatDynamicsSingleRequest(BaseModel):
     devices: list[str] = Field(default_factory=lambda: ["DEVICE_ALL"], max_length=3)
     clientId: str | None = None
     forceRefresh: bool = False
+
+
+class WordstatAiChatMessage(BaseModel):
+    role: str
+    content: str = Field(min_length=1, max_length=4000)
+
+
+class WordstatAiChatRequest(BaseModel):
+    question: str = Field(min_length=2, max_length=4000)
+    wordstat: dict[str, Any]
+    comparison: dict[str, Any] | None = None
+    history: list[WordstatAiChatMessage] = Field(default_factory=list, max_length=8)
+    model: str | None = None
+    ai_preset: str | None = "economy"
+    max_tokens: int | None = Field(default=None, ge=500, le=5000)
 
 
 def _wordstat_connector(db: Session) -> YandexWordstatConnector:
@@ -88,6 +105,59 @@ def _wordstat_error_body(response: httpx.Response) -> Any:
         return response.json()
     except ValueError:
         return response.text
+
+
+def _compact_wordstat_payload(value: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    compact = {
+        "status": value.get("status"),
+        "meta": value.get("meta"),
+        "summary": value.get("summary"),
+    }
+    compact_series = []
+    for series in list(value.get("series") or [])[:20]:
+        points = list(series.get("points") or [])
+        compact_series.append(
+            {
+                "phrase": series.get("phrase"),
+                "source": series.get("source"),
+                "error": series.get("error"),
+                "pointsCount": len(points),
+                "points": points[:80],
+            }
+        )
+    compact["series"] = compact_series
+    return compact
+
+
+def _build_wordstat_ai_prompt(payload: WordstatAiChatRequest) -> str:
+    current = _compact_wordstat_payload(payload.wordstat)
+    comparison = _compact_wordstat_payload(payload.comparison)
+    history = [item.model_dump() for item in payload.history[-6:]]
+    return f"""Ты senior PPC/SEO-аналитик. Проанализируй данные Yandex Wordstat Dynamics, которые пользователь только что запросил в DirectPilot AI.
+
+Правила ответа:
+- Пиши по-русски, кратко, но по делу.
+- Отделяй факты от гипотез.
+- Не выдумывай данные, которых нет в payload.
+- Учитывай период, группировку, регионы, устройства, фразы, суммы, MoM/YoY/index, сравнение периодов, если оно есть.
+- Давай практические выводы для маркетинга/контекстной рекламы/SEO: спрос, сезонность, тренд, какие фразы сильнее, где нужна проверка.
+- Если данных мало, прямо скажи об ограничениях.
+- Не предлагай автоматически менять рекламные кампании; только рекомендации для ручной проверки.
+
+Вопрос пользователя:
+{payload.question}
+
+История чата:
+{json.dumps(history, ensure_ascii=False)}
+
+Текущий Wordstat payload:
+{json.dumps(current, ensure_ascii=False)}
+
+Payload сравнения:
+{json.dumps(comparison, ensure_ascii=False) if comparison else "null"}
+"""
 
 
 @router.get("/connection", response_model=WordstatConnectionCheck)
@@ -179,6 +249,36 @@ def debug_wordstat_connection(
         diagnostics["result"] = {"ok": False, "exception": str(exc)}
 
     return diagnostics
+
+
+@router.post("/ai-chat", response_model=dict[str, Any])
+async def chat_with_wordstat_ai(
+    payload: WordstatAiChatRequest,
+    current: CurrentUser = Depends(get_current_session_user),
+) -> dict[str, Any]:
+    ai_options = normalize_ai_request_options(
+        model=payload.model,
+        ai_preset=payload.ai_preset,
+        max_tokens=payload.max_tokens,
+        models=settings.openrouter_models,
+        configured_default=settings.openrouter_default_model,
+    )
+    prompt = _build_wordstat_ai_prompt(payload)
+    selected_model = str(ai_options["model"])
+    try:
+        result = await generate_openrouter_response(
+            model=selected_model,
+            prompt=prompt,
+            max_tokens=int(ai_options["max_tokens"]),
+        )
+    except HTTPException:
+        raise
+    return {
+        "answer": result.get("content") or "",
+        "model": result.get("model") or selected_model,
+        "usage": result.get("usage"),
+        "source": "wordstat_openrouter_analysis",
+    }
 
 
 @router.post("/dynamics", response_model=dict[str, Any])
