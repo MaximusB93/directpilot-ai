@@ -9,10 +9,7 @@ const WORDSTAT_PAYLOAD_KEY = 'directpilot_wordstat_last_payload';
 const WORDSTAT_NEXT_PAYLOAD_KIND_KEY = 'directpilot_wordstat_next_payload_kind';
 const CUSTOM_MODEL_VALUE = '__custom_openrouter_model__';
 
-const wordstatAiState = {
-  messages: [],
-  loading: false,
-};
+const wordstatAiState = { messages: [], loading: false };
 
 function resolveApiBase() {
   const custom = window.localStorage.getItem('directpilot_api_base')?.trim();
@@ -97,9 +94,7 @@ function writeStoredWordstatPayload(next) {
 function storeWordstatApiPayload(payload, kind = 'current') {
   if (!payload || typeof payload !== 'object') return;
   const previous = readStoredWordstatPayload() || {};
-  const next = kind === 'comparison'
-    ? { ...previous, comparison: payload }
-    : { current: payload, comparison: null };
+  const next = kind === 'comparison' ? { ...previous, comparison: payload } : { current: payload, comparison: null };
   writeStoredWordstatPayload(next);
 }
 
@@ -111,14 +106,13 @@ function patchFetchForWordstatPayload() {
     try {
       const url = String(args[0] instanceof Request ? args[0].url : args[0] || '');
       if (url.includes('/wordstat/dynamics/batch') && response.ok) {
-        const clone = response.clone();
-        const payload = await clone.json();
+        const payload = await response.clone().json();
         const kind = sessionStorage.getItem(WORDSTAT_NEXT_PAYLOAD_KIND_KEY) || 'current';
         sessionStorage.removeItem(WORDSTAT_NEXT_PAYLOAD_KIND_KEY);
         storeWordstatApiPayload(payload, kind === 'comparison' ? 'comparison' : 'current');
       }
     } catch {
-      // Do not break the original request if diagnostics storage fails.
+      // Do not break original requests if storage fails.
     }
     return response;
   };
@@ -159,6 +153,11 @@ function currentModelLabel() {
   return settings.model || 'модель из backend по умолчанию';
 }
 
+function isModelQuestion(question) {
+  const text = String(question || '').toLowerCase();
+  return text.includes('модель') || text.includes('model');
+}
+
 function renderWordstatAiChat() {
   const resultPanel = [...document.querySelectorAll('.panel')].find((panel) => panel.textContent.includes('Итоги batch-запроса'));
   if (!resultPanel || document.querySelector('[data-wordstat-ai-chat]')) return;
@@ -170,7 +169,7 @@ function renderWordstatAiChat() {
     <div class="panelHeader">
       <div>
         <h3>AI-анализ Wordstat</h3>
-        <p>ИИ берёт последний полный Wordstat payload из batch-запроса, а не гадает по пустой странице. Используемая модель: <strong>${escapeHtml(currentModelLabel())}</strong>.</p>
+        <p>ИИ берёт последний полный Wordstat payload из batch-запроса. Используемая модель: <strong>${escapeHtml(currentModelLabel())}</strong>.</p>
       </div>
       <span class="aiStatusBadge ready">AI chat</span>
     </div>
@@ -219,6 +218,16 @@ function rerenderMessages() {
 }
 
 async function askWordstatAi(question) {
+  const aiSettings = getSelectedAiSettings();
+  const model = aiSettings.model || 'backend-default';
+  wordstatAiState.messages.push({ role: 'user', content: question });
+
+  if (isModelQuestion(question)) {
+    wordstatAiState.messages.push({ role: 'assistant', content: model, model });
+    rerenderMessages();
+    return;
+  }
+
   const context = collectWordstatContext();
   const current = context.current;
   const hasData = Boolean(current?.series?.length || context.visibleRows.length);
@@ -227,11 +236,10 @@ async function askWordstatAi(question) {
     rerenderMessages();
     return;
   }
-  wordstatAiState.messages.push({ role: 'user', content: question });
+
   wordstatAiState.loading = true;
   rerenderMessages();
 
-  const aiSettings = getSelectedAiSettings();
   try {
     const response = await apiFetch('/wordstat/ai-chat', {
       method: 'POST',
