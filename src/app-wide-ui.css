@@ -1,0 +1,412 @@
+/* Wide workspace redesign for DirectPilot AI app pages.
+   This file intentionally overrides src/styles.css without touching landing styles. */
+
+:root {
+  --dp-bg: #edf3fb;
+  --dp-surface: rgba(255, 255, 255, 0.88);
+  --dp-surface-strong: #ffffff;
+  --dp-border: rgba(19, 34, 56, 0.09);
+  --dp-shadow-soft: 0 16px 44px rgba(41, 65, 103, 0.09);
+  --dp-shadow-card: 0 24px 80px rgba(32, 53, 89, 0.14);
+  --dp-blue: #1e5dff;
+  --dp-ink: #101928;
+  --dp-muted: #5b6b80;
+}
+
+body[data-page="app"] main {
+  overflow: visible;
+  background:
+    radial-gradient(circle at 18% 0%, rgba(255, 216, 77, 0.24), transparent 34rem),
+    radial-gradient(circle at 92% 10%, rgba(30, 93, 255, 0.14), transparent 32rem),
+    linear-gradient(180deg, #f8fbff 0%, var(--dp-bg) 100%);
+}
+
+body[data-page="app"] .appShell {
+  grid-template-columns: 250px minmax(0, 1fr);
+  min-height: 100vh;
+}
+
+body[data-page="app"] .sidebar {
+  gap: 18px;
+  padding: 18px;
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow: 14px 0 44px rgba(41, 65, 103, 0.06);
+}
+
+body[data-page="app"] .appBrand {
+  padding: 8px 6px;
+}
+
+body[data-page="app"] .sideNav {
+  gap: 6px;
+}
+
+body[data-page="app"] .sideNavItem {
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  border-radius: 14px;
+}
+
+body[data-page="app"] .sideNavItem.active {
+  border-color: rgba(30, 93, 255, 0.12);
+  background: linear-gradient(135deg, rgba(255, 216, 77, 0.34), rgba(255, 255, 255, 0.95));
+  box-shadow: var(--dp-shadow-soft);
+}
+
+body[data-page="app"] .sidebarNote {
+  padding: 14px;
+  border-radius: 20px;
+  box-shadow: 0 18px 46px rgba(19, 34, 56, 0.18);
+}
+
+body[data-page="app"] .workspace {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 18px 22px 44px;
+}
+
+body[data-page="app"] .appHeader {
+  position: sticky;
+  top: 14px;
+  z-index: 15;
+  margin-bottom: 14px;
+  padding: 14px 16px;
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.86);
+  backdrop-filter: blur(18px);
+  box-shadow: var(--dp-shadow-soft);
+}
+
+body[data-page="app"] .appHeader h1 {
+  font-size: clamp(22px, 2vw, 30px);
+}
+
+body[data-page="app"] .clientSelect {
+  min-width: min(380px, 42vw);
+}
+
+body[data-page="app"] .clientSelect select {
+  width: 100%;
+  min-width: 0;
+}
+
+body[data-page="app"] .pageIntro {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 18px;
+  max-width: none;
+  margin: 8px 0 16px;
+  padding: 18px 20px;
+  border: 1px solid var(--dp-border);
+  border-radius: 28px;
+  background: rgba(255, 255, 255, 0.62);
+}
+
+body[data-page="app"] .pageIntro .eyebrow {
+  margin-bottom: 10px;
+}
+
+body[data-page="app"] .pageIntro h2 {
+  max-width: 1100px;
+  font-size: clamp(30px, 3vw, 48px);
+}
+
+body[data-page="app"] .pageIntro p {
+  max-width: 980px;
+  margin-top: 10px;
+  font-size: 16px;
+}
+
+body[data-page="app"] .panel,
+body[data-page="app"] .metricCard,
+body[data-page="app"] .clientCard,
+body[data-page="app"] .auditItem,
+body[data-page="app"] .actionCard,
+body[data-page="app"] .integrationCard,
+body[data-page="app"] .featureCard {
+  border-color: var(--dp-border);
+  background: var(--dp-surface);
+  box-shadow: var(--dp-shadow-soft);
+}
+
+body[data-page="app"] .panel {
+  padding: 18px;
+  border-radius: 24px;
+}
+
+body[data-page="app"] .panelHeader {
+  align-items: flex-start;
+  margin-bottom: 14px;
+}
+
+body[data-page="app"] .panelHeader h3 {
+  font-size: 19px;
+}
+
+body[data-page="app"] .heroActions {
+  gap: 10px;
+  margin-top: 16px;
+}
+
+body[data-page="app"] .primaryButton,
+body[data-page="app"] .secondaryButton,
+body[data-page="app"] .approveButton {
+  min-height: 42px;
+  padding: 11px 15px;
+}
+
+body[data-page="app"] .clientSourcePanel {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(140px, 1fr));
+  gap: 10px;
+  margin: 0 0 16px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+body[data-page="app"] .clientSourcePanel > div {
+  min-width: 0;
+  padding: 12px;
+  border-radius: 18px;
+  background: rgba(246, 248, 251, 0.9);
+}
+
+body[data-page="app"] .clientSourcePanel strong {
+  display: block;
+  overflow: hidden;
+  margin: 4px 0;
+  color: var(--dp-ink);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body[data-page="app"] .clientSourcePanel small {
+  color: var(--dp-muted);
+  font-weight: 900;
+}
+
+body[data-page="app"] .metricGrid,
+body[data-page="app"] .kpiGrid {
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 12px;
+}
+
+body[data-page="app"] .metricCard,
+body[data-page="app"] .kpi {
+  min-height: 112px;
+  padding: 16px;
+  border-radius: 20px;
+}
+
+body[data-page="app"] .metricCard strong,
+body[data-page="app"] .kpi strong {
+  font-size: clamp(22px, 2vw, 30px);
+}
+
+body[data-page="app"] .dashboardLayout {
+  grid-template-columns: minmax(320px, 0.82fr) minmax(480px, 1.18fr);
+  gap: 16px;
+}
+
+body[data-page="app"] .featureGrid,
+body[data-page="app"] .clientGrid,
+body[data-page="app"] .recommendationGrid,
+body[data-page="app"] .reportGrid,
+body[data-page="app"] .rulesGrid,
+body[data-page="app"] .modeCards {
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 14px;
+}
+
+body[data-page="app"] .integrationGrid {
+  grid-template-columns: minmax(360px, 1.25fr) repeat(2, minmax(260px, 0.8fr));
+}
+
+body[data-page="app"] .clientConnectPanel {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.72fr) minmax(520px, 1.28fr);
+  gap: 18px;
+  align-items: start;
+}
+
+body[data-page="app"] .clientConnectForm,
+body[data-page="app"] .clientSettingsGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+body[data-page="app"] .clientConnectForm textarea,
+body[data-page="app"] .clientSettingsGrid textarea,
+body[data-page="app"] .authForm textarea {
+  grid-column: 1 / -1;
+}
+
+body[data-page="app"] .aiGrid {
+  grid-template-columns: minmax(560px, 1.35fr) minmax(340px, 0.65fr);
+  gap: 16px;
+}
+
+body[data-page="app"] .aiConsole,
+body[data-page="app"] .aiSide,
+body[data-page="app"] .aiChatPanel {
+  min-width: 0;
+}
+
+body[data-page="app"] .aiChatPanel {
+  margin-bottom: 0;
+}
+
+body[data-page="app"] .aiChatMessages {
+  max-height: min(64vh, 720px);
+  padding: 6px;
+  border: 1px solid rgba(19, 34, 56, 0.06);
+  border-radius: 22px;
+  background: rgba(248, 251, 255, 0.7);
+}
+
+body[data-page="app"] .aiChatMessage {
+  width: min(100%, 980px);
+}
+
+body[data-page="app"] .aiChatMessage.assistant {
+  justify-self: stretch;
+}
+
+body[data-page="app"] .aiChatMessage.user {
+  width: min(760px, 86%);
+}
+
+body[data-page="app"] .aiChatForm {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+}
+
+body[data-page="app"] .aiChatForm textarea {
+  min-height: 72px;
+}
+
+body[data-page="app"] .aiDraftGrid {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+body[data-page="app"] .tableWrap {
+  border: 1px solid rgba(19, 34, 56, 0.07);
+  border-radius: 20px;
+  background: #fff;
+}
+
+body[data-page="app"] table {
+  min-width: 960px;
+}
+
+body[data-page="app"] th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f8fbff;
+}
+
+body[data-page="app"] .authStatus,
+body[data-page="app"] .integrationStatus {
+  max-width: 100%;
+  line-height: 1.45;
+}
+
+@media (min-width: 1500px) {
+  body[data-page="app"] .appShell {
+    grid-template-columns: 260px minmax(0, 1fr);
+  }
+
+  body[data-page="app"] .workspace {
+    padding-left: 28px;
+    padding-right: 28px;
+  }
+
+  body[data-page="app"] .dashboardLayout {
+    grid-template-columns: minmax(360px, 0.75fr) minmax(720px, 1.25fr);
+  }
+
+  body[data-page="app"] .aiGrid {
+    grid-template-columns: minmax(760px, 1.45fr) minmax(380px, 0.55fr);
+  }
+}
+
+@media (max-width: 1180px) {
+  body[data-page="app"] .appShell {
+    grid-template-columns: 1fr;
+  }
+
+  body[data-page="app"] .sidebar {
+    position: static;
+    height: auto;
+    padding: 12px 14px;
+    border-right: 0;
+    border-bottom: 1px solid var(--dp-border);
+  }
+
+  body[data-page="app"] .sideNav {
+    grid-template-columns: repeat(3, 1fr);
+  }
+
+  body[data-page="app"] .sidebarNote {
+    display: none;
+  }
+
+  body[data-page="app"] .workspace {
+    padding: 14px;
+  }
+
+  body[data-page="app"] .appHeader {
+    position: static;
+  }
+
+  body[data-page="app"] .dashboardLayout,
+  body[data-page="app"] .aiGrid,
+  body[data-page="app"] .clientConnectPanel,
+  body[data-page="app"] .integrationGrid {
+    grid-template-columns: 1fr;
+  }
+
+  body[data-page="app"] .clientSourcePanel {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+@media (max-width: 720px) {
+  body[data-page="app"] .workspace {
+    padding: 10px;
+  }
+
+  body[data-page="app"] .appHeader,
+  body[data-page="app"] .pageIntro,
+  body[data-page="app"] .panel {
+    border-radius: 20px;
+  }
+
+  body[data-page="app"] .appHeader,
+  body[data-page="app"] .pageIntro {
+    grid-template-columns: 1fr;
+  }
+
+  body[data-page="app"] .clientSelect {
+    min-width: 0;
+  }
+
+  body[data-page="app"] .sideNav {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  body[data-page="app"] .clientSourcePanel,
+  body[data-page="app"] .metricGrid,
+  body[data-page="app"] .kpiGrid {
+    grid-template-columns: 1fr;
+  }
+
+  body[data-page="app"] .aiChatForm {
+    grid-template-columns: 1fr;
+  }
+}
