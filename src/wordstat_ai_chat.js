@@ -5,10 +5,13 @@ const WORDSTAT_AI_QUICK_QUESTIONS = [
   'Сравни текущий период с периодом сравнения и дай выводы.',
 ];
 
+const WORDSTAT_PAYLOAD_KEY = 'directpilot_wordstat_last_payload';
+const WORDSTAT_NEXT_PAYLOAD_KIND_KEY = 'directpilot_wordstat_next_payload_kind';
+const CUSTOM_MODEL_VALUE = '__custom_openrouter_model__';
+
 const wordstatAiState = {
   messages: [],
   loading: false,
-  lastAnswer: '',
 };
 
 function resolveApiBase() {
@@ -22,6 +25,35 @@ function resolveApiBase() {
 
 function getSessionToken() {
   return window.localStorage.getItem('directpilot_session') || '';
+}
+
+function getCurrentEmail() {
+  return (window.localStorage.getItem('directpilot_email') || '').trim().toLowerCase();
+}
+
+function scopedStorageKey(key) {
+  const email = getCurrentEmail();
+  return email ? `${key}_${email}` : key;
+}
+
+function getSelectedAiSettings() {
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(scopedStorageKey('directpilot_ai_model_settings')) || '{}');
+    const selectedModel = String(saved.selectedModel || '').trim();
+    const customModel = String(saved.customModel || '').trim();
+    const model = selectedModel === CUSTOM_MODEL_VALUE ? customModel : selectedModel;
+    return {
+      model: model || null,
+      ai_preset: saved.selectedPreset ? String(saved.selectedPreset) : null,
+      max_tokens: 2500,
+      compactContext: saved.compactContext,
+      toolResultsMode: saved.toolResultsMode,
+      chatHistoryLimit: saved.chatHistoryLimit,
+      searchQueryLimit: saved.searchQueryLimit,
+    };
+  } catch {
+    return { model: null, ai_preset: null, max_tokens: 2500 };
+  }
 }
 
 async function apiFetch(path, options = {}) {
@@ -48,39 +80,83 @@ function escapeHtml(value) {
     .replaceAll("'", '&#039;');
 }
 
-function getLatestWordstatJsonFromCopyButton() {
-  // The primary module keeps Wordstat state in module scope. This patch cannot read it directly,
-  // so we mirror the Copy JSON action by monkey-patching clipboard writes below.
+function readStoredWordstatPayload() {
   try {
-    const raw = sessionStorage.getItem('directpilot_wordstat_last_payload');
+    const raw = sessionStorage.getItem(WORDSTAT_PAYLOAD_KEY);
     return raw ? JSON.parse(raw) : null;
   } catch {
     return null;
   }
 }
 
+function writeStoredWordstatPayload(next) {
+  sessionStorage.setItem(WORDSTAT_PAYLOAD_KEY, JSON.stringify(next));
+  window.dispatchEvent(new CustomEvent('directpilot:wordstat-payload-updated', { detail: next }));
+}
+
+function storeWordstatApiPayload(payload, kind = 'current') {
+  if (!payload || typeof payload !== 'object') return;
+  const previous = readStoredWordstatPayload() || {};
+  const next = kind === 'comparison'
+    ? { ...previous, comparison: payload }
+    : { current: payload, comparison: null };
+  writeStoredWordstatPayload(next);
+}
+
+function patchFetchForWordstatPayload() {
+  if (window.fetch.__wordstatPayloadPatched) return;
+  const originalFetch = window.fetch.bind(window);
+  window.fetch = async (...args) => {
+    const response = await originalFetch(...args);
+    try {
+      const url = String(args[0] instanceof Request ? args[0].url : args[0] || '');
+      if (url.includes('/wordstat/dynamics/batch') && response.ok) {
+        const clone = response.clone();
+        const payload = await clone.json();
+        const kind = sessionStorage.getItem(WORDSTAT_NEXT_PAYLOAD_KIND_KEY) || 'current';
+        sessionStorage.removeItem(WORDSTAT_NEXT_PAYLOAD_KIND_KEY);
+        storeWordstatApiPayload(payload, kind === 'comparison' ? 'comparison' : 'current');
+      }
+    } catch {
+      // Do not break the original request if diagnostics storage fails.
+    }
+    return response;
+  };
+  window.fetch.__wordstatPayloadPatched = true;
+}
+
+function getLatestWordstatJson() {
+  return readStoredWordstatPayload();
+}
+
 function compactVisibleWordstatTables() {
   const details = [...document.querySelectorAll('.aiToolTrace')].slice(0, 12);
   return details.map((item) => {
     const title = item.querySelector('summary')?.textContent?.trim() || '';
-    const rows = [...item.querySelectorAll('tbody tr')].slice(0, 40).map((row) => [...row.children].map((cell) => cell.textContent.trim()));
+    const rows = [...item.querySelectorAll('tbody tr')].slice(0, 60).map((row) => [...row.children].map((cell) => cell.textContent.trim()));
     return { title, rows };
   });
 }
 
 function collectWordstatContext() {
-  const payload = getLatestWordstatJsonFromCopyButton();
-  const current = payload?.current || payload || null;
+  const payload = getLatestWordstatJson();
+  const current = payload?.current || null;
   const comparison = payload?.comparison || null;
   const summaryCards = [...document.querySelectorAll('.clientSourcePanel div')].map((item) => item.textContent.trim()).filter(Boolean);
-  const phraseRows = [...document.querySelectorAll('.tableWrap table tbody tr')].slice(0, 80).map((row) => [...row.children].map((cell) => cell.textContent.trim()));
+  const phraseRows = [...document.querySelectorAll('.tableWrap table tbody tr')].slice(0, 120).map((row) => [...row.children].map((cell) => cell.textContent.trim()));
   return {
     current: current || { visibleSummaryCards: summaryCards, visibleRows: phraseRows, visibleDetails: compactVisibleWordstatTables() },
     comparison,
     visibleSummaryCards: summaryCards,
     visibleRows: phraseRows,
     visibleDetails: compactVisibleWordstatTables(),
+    hasStoredPayload: Boolean(current),
   };
+}
+
+function currentModelLabel() {
+  const settings = getSelectedAiSettings();
+  return settings.model || 'модель из backend по умолчанию';
 }
 
 function renderWordstatAiChat() {
@@ -94,7 +170,7 @@ function renderWordstatAiChat() {
     <div class="panelHeader">
       <div>
         <h3>AI-анализ Wordstat</h3>
-        <p>Задай вопрос по последней выгрузке. ИИ возьмёт текущие данные Wordstat, таблицы, суммы и сравнение, если оно загружено.</p>
+        <p>ИИ берёт последний полный Wordstat payload из batch-запроса, а не гадает по пустой странице. Используемая модель: <strong>${escapeHtml(currentModelLabel())}</strong>.</p>
       </div>
       <span class="aiStatusBadge ready">AI chat</span>
     </div>
@@ -118,11 +194,15 @@ function renderWordstatAiChat() {
 
 function renderMessages() {
   if (!wordstatAiState.messages.length) {
-    return '<div class="authStatus integrationStatus">ИИ пока ничего не анализировал. Нажми авто-анализ или задай вопрос по данным.</div>';
+    const payload = getLatestWordstatJson();
+    const status = payload?.current?.series?.length
+      ? `Контекст готов: ${payload.current.series.length} фраз.`
+      : 'Контекст ещё не сохранён. Получи динамику Wordstat заново, чтобы ИИ увидел полный JSON.';
+    return `<div class="authStatus integrationStatus">${escapeHtml(status)}</div>`;
   }
   return wordstatAiState.messages.map((message) => `
     <article style="border:1px solid #d8e0ec;border-radius:16px;padding:12px;background:${message.role === 'user' ? '#f8fafc' : '#fff'};">
-      <strong>${message.role === 'user' ? 'Вы' : 'AI'}</strong>
+      <strong>${message.role === 'user' ? 'Вы' : 'AI'}${message.model ? ` · ${escapeHtml(message.model)}` : ''}</strong>
       <div style="white-space:pre-wrap;margin-top:6px;">${escapeHtml(message.content)}</div>
     </article>
   `).join('');
@@ -141,8 +221,9 @@ function rerenderMessages() {
 async function askWordstatAi(question) {
   const context = collectWordstatContext();
   const current = context.current;
-  if (!current && !context.visibleRows.length) {
-    wordstatAiState.messages.push({ role: 'assistant', content: 'Сначала получи динамику Wordstat, иначе анализировать нечего. Даже ИИ не должен гадать на пустой таблице.' });
+  const hasData = Boolean(current?.series?.length || context.visibleRows.length);
+  if (!hasData) {
+    wordstatAiState.messages.push({ role: 'assistant', content: 'Сначала получи динамику Wordstat заново. Сейчас в контексте нет ни series, ни видимых строк таблицы.' });
     rerenderMessages();
     return;
   }
@@ -150,6 +231,7 @@ async function askWordstatAi(question) {
   wordstatAiState.loading = true;
   rerenderMessages();
 
+  const aiSettings = getSelectedAiSettings();
   try {
     const response = await apiFetch('/wordstat/ai-chat', {
       method: 'POST',
@@ -158,13 +240,14 @@ async function askWordstatAi(question) {
         wordstat: current || context,
         comparison: context.comparison,
         history: wordstatAiState.messages.slice(-6).map((item) => ({ role: item.role, content: item.content })),
-        ai_preset: 'economy',
-        max_tokens: 2500,
+        model: aiSettings.model,
+        ai_preset: aiSettings.ai_preset || 'balanced',
+        max_tokens: aiSettings.max_tokens || 2500,
       }),
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || 'AI не вернул ответ');
-    wordstatAiState.messages.push({ role: 'assistant', content: payload.answer || 'Пустой ответ от AI.' });
+    wordstatAiState.messages.push({ role: 'assistant', content: payload.answer || 'Пустой ответ от AI.', model: payload.model || aiSettings.model || '' });
   } catch (error) {
     if (error.message === 'Authentication required') return;
     wordstatAiState.messages.push({ role: 'assistant', content: `Ошибка AI-анализа: ${error.message}` });
@@ -181,7 +264,7 @@ function patchClipboardForWordstatPayload() {
     try {
       const parsed = JSON.parse(text);
       if (parsed?.current || parsed?.series || parsed?.summary) {
-        sessionStorage.setItem('directpilot_wordstat_last_payload', JSON.stringify(parsed));
+        writeStoredWordstatPayload(parsed?.current ? parsed : { current: parsed, comparison: null });
       }
     } catch {
       // ignore non-json clipboard writes
@@ -193,10 +276,14 @@ function patchClipboardForWordstatPayload() {
 
 const observer = new MutationObserver(() => renderWordstatAiChat());
 observer.observe(document.body, { childList: true, subtree: true });
+patchFetchForWordstatPayload();
 patchClipboardForWordstatPayload();
 renderWordstatAiChat();
 
 document.addEventListener('submit', async (event) => {
+  if (event.target.closest('[data-wordstat-form]')) {
+    sessionStorage.setItem(WORDSTAT_NEXT_PAYLOAD_KIND_KEY, 'current');
+  }
   const form = event.target.closest('[data-wordstat-ai-form]');
   if (!form) return;
   event.preventDefault();
@@ -204,9 +291,12 @@ document.addEventListener('submit', async (event) => {
   if (!question) return;
   form.reset();
   await askWordstatAi(question);
-});
+}, true);
 
 document.addEventListener('click', async (event) => {
+  if (event.target.closest('[data-wordstat-run-compare]')) {
+    sessionStorage.setItem(WORDSTAT_NEXT_PAYLOAD_KIND_KEY, 'comparison');
+  }
   const quick = event.target.closest('[data-wordstat-ai-question]');
   if (quick) {
     await askWordstatAi(quick.dataset.wordstatAiQuestion || quick.textContent.trim());
@@ -215,4 +305,6 @@ document.addEventListener('click', async (event) => {
   if (event.target.closest('[data-wordstat-ai-summary]')) {
     await askWordstatAi('Проанализируй текущие данные Wordstat: дай вывод по спросу, трендам, сезонности, сильным/слабым фразам, ограничениям данных и практическим действиям для рекламы и SEO.');
   }
-});
+}, true);
+
+window.addEventListener('directpilot:wordstat-payload-updated', () => rerenderMessages());
