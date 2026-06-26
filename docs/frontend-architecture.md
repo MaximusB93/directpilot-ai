@@ -75,7 +75,9 @@ This is a temporary debugging and migration aid while `src/main.js` still owns m
 ## Page modules
 
 - `src/pages/index.js` is the registry for page metadata, page contracts and renderer adapters.
-- `src/pages/dashboard.js` currently exposes `renderDashboardPage({ legacyRenderDashboard })`. The legacy markup still lives in `renderDashboard` inside `src/main.js`, but the module boundary is ready.
+- `src/pages/dashboard.js` exposes `renderDashboardPage({ legacyRenderDashboard })` and the first extracted dashboard builders: `renderDashboardIntro` and `renderDashboardNextStepPanel`.
+
+The dashboard legacy markup still mostly lives in `renderDashboard` inside `src/main.js`, but the page module now owns the first pure HTML builder slices.
 
 The contract records:
 
@@ -83,6 +85,7 @@ The contract records:
 - required page context;
 - current legacy renderer;
 - extraction status;
+- extracted builders;
 - next migration step.
 
 This lets new page modules appear before we move the heavy render functions, instead of ripping apart the legacy file in one heroic mistake.
@@ -100,11 +103,13 @@ Preferred sequence:
 5. Connect pages registry to the app routing layer.
 6. Add dashboard renderer adapter.
 7. Wire `src/main.js` dashboard route to `renderDashboardPage`.
-8. Move dashboard markup behind the page module in smaller slices.
-9. Extract clients page.
-10. Extract integrations page.
-11. Extract AI assistant page.
-12. Extract Wordstat last, because it is the most sensitive and stateful area.
+8. Extract dashboard intro and next-step builders.
+9. Wire `src/main.js` `renderDashboard` to the extracted builders.
+10. Move the remaining dashboard panels behind the page module in smaller slices.
+11. Extract clients page.
+12. Extract integrations page.
+13. Extract AI assistant page.
+14. Extract Wordstat last, because it is the most sensitive and stateful area.
 
 ## What not to do
 
