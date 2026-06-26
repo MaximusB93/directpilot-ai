@@ -1,8 +1,11 @@
+@import url("./design-tokens.css");
+@import url("./app-ui-foundation.css");
+
 body[data-page="app"] .businessAutofillPanel {
   margin-bottom: 16px;
   background:
     linear-gradient(135deg, rgba(255, 216, 77, 0.18), rgba(255, 255, 255, 0.94)),
-    var(--dp-surface, #fff);
+    var(--dp-color-surface, var(--dp-surface, #fff));
 }
 
 body[data-page="app"] .businessAutofillPanel .authField textarea {
@@ -16,10 +19,10 @@ body[data-page="app"] .businessAutofillCheckbox {
   width: fit-content;
   margin-top: 10px;
   padding: 10px 12px;
-  border: 1px solid rgba(19, 34, 56, 0.08);
-  border-radius: 999px;
+  border: 1px solid var(--dp-color-border, rgba(19, 34, 56, 0.08));
+  border-radius: var(--dp-radius-pill, 999px);
   background: rgba(255, 255, 255, 0.74);
-  color: #536276;
+  color: var(--dp-color-text-secondary, #536276);
   font-size: 13px;
   font-weight: 800;
 }
