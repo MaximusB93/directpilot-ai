@@ -13,6 +13,7 @@ import {
 } from './core/storage.js';
 import { createClientId } from './core/ids.js';
 import { requestEmailCode, verifyEmailCode } from './core/session-api.js';
+import { resolvePageRenderer } from './app/page-router.js';
 import {
   agencyMetrics,
   auditIssues,
@@ -2215,6 +2216,18 @@ function renderDashboard() {
   `);
 }
 
+function renderDashboardViaPageModule() {
+  const renderer = resolvePageRenderer('dashboard');
+
+  if (!renderer) {
+    return renderDashboard();
+  }
+
+  return renderer({
+    legacyRenderDashboard: renderDashboard,
+  });
+}
+
 function renderClients() {
   const selected = currentClient();
   const hasSelectedClient = Boolean(selected.id);
@@ -3384,7 +3397,7 @@ function render() {
   const views = {
     landing: renderLanding,
     login: renderLogin,
-    dashboard: renderDashboard,
+    dashboard: renderDashboardViaPageModule,
     clients: renderClients,
     'business-context': renderBusinessContext,
     audit: renderAudit,
