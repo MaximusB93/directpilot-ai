@@ -11,6 +11,10 @@
   --dp-polish-muted: #64748b;
   --dp-polish-brand: #2557e8;
   --dp-polish-brand-soft: #edf3ff;
+  --dp-polish-action: #111827;
+  --dp-polish-action-top: #1f2937;
+  --dp-polish-action-hover: #0b1220;
+  --dp-polish-action-shadow: rgba(15, 23, 42, 0.18);
   --dp-polish-shadow: 0 10px 26px rgba(15, 23, 42, 0.07);
   --dp-polish-shadow-sm: 0 2px 8px rgba(15, 23, 42, 0.04);
 }
@@ -201,9 +205,16 @@ body[data-page="app"] .kpi strong {
 body[data-page="app"] .primaryButton,
 body[data-page="app"] .approveButton {
   min-height: 40px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
   border-radius: 11px;
-  background: linear-gradient(180deg, #3267ff 0%, var(--dp-polish-brand) 100%);
-  box-shadow: 0 8px 18px rgba(37, 87, 232, 0.2);
+  background: linear-gradient(180deg, var(--dp-polish-action-top) 0%, var(--dp-polish-action) 100%);
+  box-shadow: 0 8px 18px var(--dp-polish-action-shadow);
+}
+
+body[data-page="app"] .primaryButton:hover,
+body[data-page="app"] .approveButton:hover {
+  background: linear-gradient(180deg, #263241 0%, var(--dp-polish-action-hover) 100%);
+  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.22);
 }
 
 body[data-page="app"] .secondaryButton {
