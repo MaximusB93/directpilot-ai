@@ -1,6 +1,19 @@
 import { access, readFile } from 'node:fs/promises';
 
-const requiredFiles = ['index.html', 'login.html', 'app.html', 'src/styles.css', 'src/main.js', 'src/data.js'];
+const requiredFiles = [
+  'index.html',
+  'login.html',
+  'app.html',
+  'src/styles.css',
+  'src/main.js',
+  'src/login.js',
+  'src/data.js',
+  'src/core/api.js',
+  'src/core/date.js',
+  'src/core/format.js',
+  'src/core/html.js',
+  'src/core/storage.js',
+];
 
 await Promise.all(requiredFiles.map((file) => access(file)));
 
@@ -9,7 +22,11 @@ const login = await readFile('login.html', 'utf8');
 const cabinet = await readFile('app.html', 'utf8');
 const css = await readFile('src/styles.css', 'utf8');
 const js = await readFile('src/main.js', 'utf8');
+const loginJs = await readFile('src/login.js', 'utf8');
 const data = await readFile('src/data.js', 'utf8');
+const coreApi = await readFile('src/core/api.js', 'utf8');
+const coreStorage = await readFile('src/core/storage.js', 'utf8');
+const coreFormat = await readFile('src/core/format.js', 'utf8');
 
 const checks = [
   ['root mount point', html.includes('id="app"')],
@@ -18,6 +35,10 @@ const checks = [
   ['stylesheet link', html.includes('src/styles.css')],
   ['script link', html.includes('src/main.js')],
   ['data module import', js.includes("from './data.js'")],
+  ['shared api module', coreApi.includes('export async function apiFetch') && coreApi.includes('export async function postJson')],
+  ['shared storage module', coreStorage.includes('export function scopedStorageKey') && coreStorage.includes('export function saveSession')],
+  ['shared format module', coreFormat.includes('export function formatNumber') && coreFormat.includes('export function formatMoney')],
+  ['standalone login auth', loginJs.includes("from './core/api.js'") && loginJs.includes("from './core/storage.js'")],
   ['email auth view', js.includes('renderLogin') && js.includes('/auth/email/request-code')],
   ['cabinet view', js.includes('renderDashboard')],
   ['audit view', js.includes('renderAudit')],
