@@ -15,6 +15,22 @@ const requiredFiles = [
   'src/app/hash-route-bridge.js',
   'src/pages/index.js',
   'src/pages/dashboard.js',
+  'src/pages/clients.js',
+  'src/pages/integrations.js',
+  'src/pages/business-context.js',
+  'src/pages/ai-assistant.js',
+  'src/pages/optimization.js',
+  'src/services/index.js',
+  'src/services/clients-service.js',
+  'src/services/integrations-service.js',
+  'src/services/business-context-service.js',
+  'src/services/sync-service.js',
+  'src/services/performance-service.js',
+  'src/services/optimization-service.js',
+  'src/services/ai-service.js',
+  'src/stores/index.js',
+  'src/stores/client-store.js',
+  'src/stores/ai-store.js',
   'src/main.js',
   'src/login.js',
   'src/data.js',
@@ -47,6 +63,22 @@ const appState = await readFile('src/app/state.js', 'utf8');
 const hashRouteBridge = await readFile('src/app/hash-route-bridge.js', 'utf8');
 const pagesRegistry = await readFile('src/pages/index.js', 'utf8');
 const dashboardPage = await readFile('src/pages/dashboard.js', 'utf8');
+const clientsPage = await readFile('src/pages/clients.js', 'utf8');
+const integrationsPage = await readFile('src/pages/integrations.js', 'utf8');
+const businessContextPage = await readFile('src/pages/business-context.js', 'utf8');
+const aiAssistantPage = await readFile('src/pages/ai-assistant.js', 'utf8');
+const optimizationPage = await readFile('src/pages/optimization.js', 'utf8');
+const servicesIndex = await readFile('src/services/index.js', 'utf8');
+const clientsService = await readFile('src/services/clients-service.js', 'utf8');
+const integrationsService = await readFile('src/services/integrations-service.js', 'utf8');
+const businessContextService = await readFile('src/services/business-context-service.js', 'utf8');
+const syncService = await readFile('src/services/sync-service.js', 'utf8');
+const performanceService = await readFile('src/services/performance-service.js', 'utf8');
+const optimizationService = await readFile('src/services/optimization-service.js', 'utf8');
+const aiService = await readFile('src/services/ai-service.js', 'utf8');
+const storesIndex = await readFile('src/stores/index.js', 'utf8');
+const clientStore = await readFile('src/stores/client-store.js', 'utf8');
+const aiStore = await readFile('src/stores/ai-store.js', 'utf8');
 const js = await readFile('src/main.js', 'utf8');
 const loginJs = await readFile('src/login.js', 'utf8');
 const data = await readFile('src/data.js', 'utf8');
@@ -73,18 +105,34 @@ const checks = [
   ['stylesheet link', html.includes('src/styles.css')],
   ['product polish stylesheet', cabinet.includes('src/app-product-polish.css') && productPolishCss.includes('Product polish layer')],
   ['layout hotfix stylesheet', cabinet.includes('src/app-layout-hotfix.css') && layoutHotfixCss.includes('Hotfix for cabinet layout')],
-  ['app routes registry', appRoutes.includes('APP_ROUTES') && appRoutes.includes('DEFAULT_ROUTE_ID') && appRoutes.includes('normalizeRouteId')],
+  ['app routes registry', appRoutes.includes('APP_ROUTES') && appRoutes.includes('business-context') && appRoutes.includes('DEFAULT_ROUTE_ID') && appRoutes.includes('normalizeRouteId')],
   ['app router foundation', appRouter.includes('currentHashRoute') && appRouter.includes('navigateToRoute') && appRouter.includes('onRouteChange')],
   ['app page router', appPageRouter.includes('resolveAppPage') && appPageRouter.includes('getPageRenderer') && appPageRouter.includes('resolvePageRenderer') && appPageRouter.includes('resolvePageContentRenderer')],
   ['app state foundation', appState.includes('getAppState') && appState.includes('setSelectedClientId') && appState.includes('directpilot:state-change')],
   ['hash route bridge', hashRouteBridge.includes('resolveAppPage') && hashRouteBridge.includes('markRouteResolution') && hashRouteBridge.includes('data-page-module')],
   ['hash route bridge before main', bridgeIndex !== -1 && mainIndex !== -1 && bridgeIndex < mainIndex],
-  ['pages registry', pagesRegistry.includes('APP_PAGES') && pagesRegistry.includes('PAGE_CONTRACTS') && pagesRegistry.includes('PAGE_RENDERERS') && pagesRegistry.includes('PAGE_CONTENT_RENDERERS') && pagesRegistry.includes('getPageContentRenderer')],
+  ['pages registry', pagesRegistry.includes('APP_PAGES') && pagesRegistry.includes('PAGE_CONTRACTS') && pagesRegistry.includes('PAGE_RENDERERS') && pagesRegistry.includes('PAGE_CONTENT_RENDERERS') && pagesRegistry.includes('clientsPageContract') && pagesRegistry.includes('integrationsPageContract')],
+  ['clients page contract', clientsPage.includes('CLIENTS_PAGE_ID') && clientsPage.includes('legacyRenderer') && clientsPage.includes('renderClients')],
+  ['integrations page contract', integrationsPage.includes('INTEGRATIONS_PAGE_ID') && integrationsPage.includes('legacyRenderer') && integrationsPage.includes('renderIntegrations')],
+  ['business context page contract', businessContextPage.includes('BUSINESS_CONTEXT_PAGE_ID') && businessContextPage.includes('legacyRenderer') && businessContextPage.includes('renderBusinessContext')],
+  ['ai assistant page contract', aiAssistantPage.includes('AI_ASSISTANT_PAGE_ID') && aiAssistantPage.includes('legacyRenderer') && aiAssistantPage.includes('renderAiAssistant')],
+  ['optimization page contract', optimizationPage.includes('OPTIMIZATION_PAGE_ID') && optimizationPage.includes('legacyRenderer') && optimizationPage.includes('renderOptimization')],
   ['dashboard renderer adapter', dashboardPage.includes('renderDashboardPage') && dashboardPage.includes('legacyRenderDashboard') && dashboardPage.includes('content-composer-ready')],
   ['dashboard extracted builders', dashboardPage.includes('renderDashboardIntro') && dashboardPage.includes('renderDashboardNextStepPanel') && dashboardPage.includes('renderDashboardEmptyClientPanel') && dashboardPage.includes('renderDashboardConnectedPanels') && dashboardPage.includes('extractedBuilders')],
   ['dashboard content composer', dashboardPage.includes('renderDashboardContent') && dashboardPage.includes('renderReadinessPanel') && dashboardPage.includes('renderDashboardConnectedPanels')],
+  ['services index exports', servicesIndex.includes('clients-service') && servicesIndex.includes('integrations-service') && servicesIndex.includes('ai-service')],
+  ['clients service layer', clientsService.includes('fetchClients') && clientsService.includes('createClient') && clientsService.includes('updateClient') && clientsService.includes('deleteClient')],
+  ['integrations service layer', integrationsService.includes('startYandexOAuth') && integrationsService.includes('fetchClientYandexIntegration') && integrationsService.includes('bindClientYandexIntegration')],
+  ['business context service layer', businessContextService.includes('fetchBusinessContext') && businessContextService.includes('saveBusinessContext') && businessContextService.includes('saveBusinessContextMemoryNote')],
+  ['sync service layer', syncService.includes('runClientSync') && syncService.includes('fetchSyncJobs')],
+  ['performance service layer', performanceService.includes('fetchPerformanceSummary')],
+  ['optimization service layer', optimizationService.includes('fetchOptimizationPlan') && optimizationService.includes('fetchOptimizationActions') && optimizationService.includes('fetchOptimizationExecutionPreview')],
+  ['ai service layer', aiService.includes('fetchOpenRouterStatus') && aiService.includes('requestAiChat') && aiService.includes('fetchClientAiRecommendations')],
+  ['stores exports', storesIndex.includes('client-store') && storesIndex.includes('ai-store')],
+  ['client store scaffold', clientStore.includes('loadSelectedClientId') && clientStore.includes('saveSelectedClientId') && clientStore.includes('ensureSelectedClientId')],
+  ['ai store scaffold', aiStore.includes('createInitialAiChatState') && aiStore.includes('createInitialAiModelState') && aiStore.includes('CUSTOM_MODEL_VALUE')],
   ['dashboard page contract', dashboardPage.includes('DASHBOARD_PAGE_ID') && dashboardPage.includes('dashboardPageContract') && dashboardPage.includes('renderDashboard')],
-  ['frontend architecture docs', frontendArchitecture.includes('renderer adapters') && frontendArchitecture.includes('renderDashboardPage')],
+  ['frontend architecture docs', frontendArchitecture.includes('service layer') && frontendArchitecture.includes('renderDashboardContent')],
   ['landing module script', html.includes('type="module"') && html.includes('src/main.js')],
   ['login module script', login.includes('type="module"') && login.includes('src/login.js')],
   ['cabinet module scripts', cabinet.includes('type="module"') && cabinet.includes('src/main.js') && cabinet.includes('src/business_context_autofill.js')],
