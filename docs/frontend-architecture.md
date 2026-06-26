@@ -16,6 +16,7 @@ src/app/
   routes.js
   router.js
   state.js
+  hash-route-bridge.js
 
 src/pages/
   dashboard.js
@@ -56,6 +57,21 @@ This keeps the app static-hosting friendly and makes page state shareable/reload
 - `src/app/routes.js` stores route metadata and normalization helpers.
 - `src/app/router.js` owns hash navigation helpers.
 - `src/app/state.js` stores shared app state and dispatches typed browser events.
+- `src/app/hash-route-bridge.js` temporarily synchronizes hash routes with legacy `?view=` routing in `src/main.js`.
+
+## Page modules
+
+`src/pages/dashboard.js` currently defines the dashboard page contract only. The legacy implementation still lives in `renderDashboard` inside `src/main.js`.
+
+The contract records:
+
+- route id;
+- required page context;
+- current legacy renderer;
+- extraction status;
+- next migration step.
+
+This lets new page modules appear before we move the heavy render functions, instead of ripping apart the legacy file in one heroic mistake.
 
 ## Migration rule
 
@@ -64,11 +80,13 @@ Do not rewrite `src/main.js` in one large commit.
 Preferred sequence:
 
 1. Add router/state foundation.
-2. Extract dashboard page.
-3. Extract clients page.
-4. Extract integrations page.
-5. Extract AI assistant page.
-6. Extract Wordstat last, because it is the most sensitive and stateful area.
+2. Add hash route bridge.
+3. Add dashboard page contract.
+4. Move dashboard renderer behind the page module.
+5. Extract clients page.
+6. Extract integrations page.
+7. Extract AI assistant page.
+8. Extract Wordstat last, because it is the most sensitive and stateful area.
 
 ## What not to do
 
