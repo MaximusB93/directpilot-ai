@@ -1,42 +1,16 @@
+import {
+  API_BASE,
+  backendConnectionError,
+  escapeHtml,
+  postJson,
+  saveApiBase,
+} from './core/api.js';
+
 const app = document.querySelector('#app');
-const DEFAULT_PRODUCTION_API_BASE = 'https://directpilot-ai.vercel.app/api/v1';
-const API_BASE = resolveApiBase();
 
 let authStep = 'email';
 let authLoading = false;
 let devCode = null;
-
-function resolveApiBase() {
-  const custom = window.localStorage.getItem('directpilot_api_base')?.trim();
-  if (custom) return custom.replace(/\/$/, '');
-
-  const { hostname, origin } = window.location;
-  if (hostname === 'localhost' || hostname === '127.0.0.1') {
-    return 'http://localhost:8000/api/v1';
-  }
-  if (hostname === 'maximusb93.github.io') {
-    return DEFAULT_PRODUCTION_API_BASE;
-  }
-
-  return `${origin}/api/v1`;
-}
-
-function hasCustomApiBase() {
-  return Boolean(window.localStorage.getItem('directpilot_api_base')?.trim());
-}
-
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#039;');
-}
-
-function backendConnectionError() {
-  return `Не удалось подключиться к backend. Проверьте Vercel URL или directpilot_api_base. Текущий API_BASE: ${API_BASE}`;
-}
 
 function render() {
   const githubPagesWarning = window.location.hostname === 'maximusb93.github.io' && API_BASE.includes('github.io/api/v1')
@@ -129,29 +103,18 @@ function showCodeStep() {
 
 async function requestEmailCode(email) {
   try {
-    const response = await fetch(`${API_BASE}/auth/email/request-code`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email }),
-    });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.detail || 'Не удалось отправить код');
-    return payload;
+    return await postJson('/auth/email/request-code', { email }, 'Не удалось отправить код');
   } catch (error) {
-    throw new Error(backendConnectionError());
+    if (error.message.includes('directpilot_api_base')) {
+      throw error;
+    }
+    throw new Error(error.message || backendConnectionError());
   }
 }
 
 async function verifyEmailCode(email, code) {
   try {
-    const response = await fetch(`${API_BASE}/auth/email/verify-code`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, code }),
-    });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.detail || 'Не удалось подтвердить код');
-    return payload;
+    return await postJson('/auth/email/verify-code', { email, code }, 'Не удалось подтвердить код');
   } catch (error) {
     throw new Error(`${error.message}. Текущий API_BASE: ${API_BASE}`);
   }
@@ -162,12 +125,7 @@ render();
 app.querySelector('[data-save-api-base]').addEventListener('click', () => {
   const apiBaseConfig = app.querySelector('[data-api-base-config]');
   const apiBaseInput = apiBaseConfig.querySelector('[data-api-base-input]');
-  const apiBase = String(apiBaseInput.value || '').trim().replace(/\/$/, '');
-  if (apiBase) {
-    localStorage.setItem('directpilot_api_base', apiBase);
-  } else {
-    localStorage.removeItem('directpilot_api_base');
-  }
+  saveApiBase(apiBaseInput.value);
   window.location.reload();
 });
 
