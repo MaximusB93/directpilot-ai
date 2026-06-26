@@ -12,6 +12,7 @@ const requiredFiles = [
   'src/app/router.js',
   'src/app/state.js',
   'src/app/hash-route-bridge.js',
+  'src/pages/dashboard.js',
   'src/main.js',
   'src/login.js',
   'src/data.js',
@@ -41,6 +42,7 @@ const appRoutes = await readFile('src/app/routes.js', 'utf8');
 const appRouter = await readFile('src/app/router.js', 'utf8');
 const appState = await readFile('src/app/state.js', 'utf8');
 const hashRouteBridge = await readFile('src/app/hash-route-bridge.js', 'utf8');
+const dashboardPage = await readFile('src/pages/dashboard.js', 'utf8');
 const js = await readFile('src/main.js', 'utf8');
 const loginJs = await readFile('src/login.js', 'utf8');
 const data = await readFile('src/data.js', 'utf8');
@@ -70,9 +72,10 @@ const checks = [
   ['app routes registry', appRoutes.includes('APP_ROUTES') && appRoutes.includes('DEFAULT_ROUTE_ID') && appRoutes.includes('normalizeRouteId')],
   ['app router foundation', appRouter.includes('currentHashRoute') && appRouter.includes('navigateToRoute') && appRouter.includes('onRouteChange')],
   ['app state foundation', appState.includes('getAppState') && appState.includes('setSelectedClientId') && appState.includes('directpilot:state-change')],
-  ['hash route bridge', hashRouteBridge.includes('hash-route') || (hashRouteBridge.includes('navigateLegacyAppToRoute') && hashRouteBridge.includes('setRouteId'))],
+  ['hash route bridge', hashRouteBridge.includes('navigateLegacyAppToRoute') && hashRouteBridge.includes('setRouteId')],
   ['hash route bridge before main', bridgeIndex !== -1 && mainIndex !== -1 && bridgeIndex < mainIndex],
-  ['frontend architecture docs', frontendArchitecture.includes('page-module architecture') && frontendArchitecture.includes('Do not rewrite `src/main.js` in one large commit')],
+  ['dashboard page contract', dashboardPage.includes('DASHBOARD_PAGE_ID') && dashboardPage.includes('dashboardPageContract') && dashboardPage.includes('renderDashboard')],
+  ['frontend architecture docs', frontendArchitecture.includes('page-module architecture') && frontendArchitecture.includes('dashboard page contract')],
   ['landing module script', html.includes('type="module"') && html.includes('src/main.js')],
   ['login module script', login.includes('type="module"') && login.includes('src/login.js')],
   ['cabinet module scripts', cabinet.includes('type="module"') && cabinet.includes('src/main.js') && cabinet.includes('src/business_context_autofill.js')],
