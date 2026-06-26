@@ -12,6 +12,7 @@ const requiredFiles = [
   'src/core/date.js',
   'src/core/format.js',
   'src/core/html.js',
+  'src/core/ids.js',
   'src/core/session-api.js',
   'src/core/storage.js',
 ];
@@ -26,6 +27,7 @@ const js = await readFile('src/main.js', 'utf8');
 const loginJs = await readFile('src/login.js', 'utf8');
 const data = await readFile('src/data.js', 'utf8');
 const coreApi = await readFile('src/core/api.js', 'utf8');
+const coreIds = await readFile('src/core/ids.js', 'utf8');
 const coreSessionApi = await readFile('src/core/session-api.js', 'utf8');
 const coreStorage = await readFile('src/core/storage.js', 'utf8');
 const coreFormat = await readFile('src/core/format.js', 'utf8');
@@ -38,6 +40,7 @@ const checks = [
   ['script link', html.includes('src/main.js')],
   ['data module import', js.includes("from './data.js'")],
   ['shared api module', coreApi.includes('export async function apiFetch') && coreApi.includes('export async function postJson')],
+  ['shared id module', coreIds.includes('export function createClientId') && coreIds.includes('export function normalizeId')],
   ['shared session api module', coreSessionApi.includes('requestEmailCode') && coreSessionApi.includes('verifyEmailCode')],
   ['shared storage module', coreStorage.includes('export function scopedStorageKey') && coreStorage.includes('export function saveSession')],
   ['shared format module', coreFormat.includes('export function formatNumber') && coreFormat.includes('export function formatMoney')],
