@@ -66,6 +66,21 @@ function parseUrls(value) {
     .slice(0, 5);
 }
 
+function renderSourceNote(source) {
+  const titleOrError = source.error || source.title || source.contentSample || '—';
+  const method = source.extractionMethod || (source.error ? 'error' : 'unknown');
+  const textInfo = `${source.textLength || 0} / html ${source.contentLength || 0}`;
+  return `
+    <tr>
+      <td>${escapeHtml(source.finalUrl || source.url || '—')}</td>
+      <td>${escapeHtml(String(source.statusCode || '—'))}</td>
+      <td>${escapeHtml(method)}</td>
+      <td>${escapeHtml(textInfo)}</td>
+      <td>${escapeHtml(titleOrError)}</td>
+    </tr>
+  `;
+}
+
 function renderSources(payload) {
   const warnings = payload?.warnings || [];
   const sources = payload?.sources || [];
@@ -74,15 +89,8 @@ function renderSources(payload) {
     ${sources.length ? `
       <div class="tableWrap businessAutofillSources">
         <table>
-          <thead><tr><th>URL</th><th>Статус</th><th>Текст</th><th>Заголовок / ошибка</th></tr></thead>
-          <tbody>${sources.map((source) => `
-            <tr>
-              <td>${escapeHtml(source.finalUrl || source.url || '—')}</td>
-              <td>${escapeHtml(String(source.statusCode || '—'))}</td>
-              <td>${escapeHtml(String(source.textLength || 0))}</td>
-              <td>${escapeHtml(source.error || source.title || '—')}</td>
-            </tr>
-          `).join('')}</tbody>
+          <thead><tr><th>URL</th><th>Статус</th><th>Метод</th><th>Текст / HTML</th><th>Заголовок / ошибка / sample</th></tr></thead>
+          <tbody>${sources.map(renderSourceNote).join('')}</tbody>
         </table>
       </div>
     ` : ''}
