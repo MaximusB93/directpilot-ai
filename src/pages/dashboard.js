@@ -22,7 +22,15 @@ export function dashboardPageContract() {
       'yandexIntegration',
     ],
     legacyRenderer: 'renderDashboard',
-    extractionStatus: 'contract-only',
-    nextStep: 'Move renderDashboard markup from src/main.js after routing is stable.',
+    extractionStatus: 'adapter-ready',
+    nextStep: 'Wire src/main.js dashboard route to renderDashboardPage, then move markup in smaller slices.',
   };
+}
+
+export function renderDashboardPage({ legacyRenderDashboard } = {}) {
+  if (typeof legacyRenderDashboard !== 'function') {
+    throw new Error('renderDashboardPage requires legacyRenderDashboard while dashboard markup still lives in src/main.js');
+  }
+
+  return legacyRenderDashboard();
 }
