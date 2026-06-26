@@ -16,6 +16,7 @@ const requiredFiles = [
   'src/core/ids.js',
   'src/core/session-api.js',
   'src/core/storage.js',
+  'docs/wordstat-refactor.md',
 ];
 
 await Promise.all(requiredFiles.map((file) => access(file)));
@@ -33,6 +34,7 @@ const coreIds = await readFile('src/core/ids.js', 'utf8');
 const coreSessionApi = await readFile('src/core/session-api.js', 'utf8');
 const coreStorage = await readFile('src/core/storage.js', 'utf8');
 const coreFormat = await readFile('src/core/format.js', 'utf8');
+const wordstatRefactor = await readFile('docs/wordstat-refactor.md', 'utf8');
 
 const checks = [
   ['root mount point', html.includes('id="app"')],
@@ -49,6 +51,7 @@ const checks = [
   ['shared storage module', coreStorage.includes('export function scopedStorageKey') && coreStorage.includes('export function saveSession')],
   ['shared format module', coreFormat.includes('export function formatNumber') && coreFormat.includes('export function formatMoney')],
   ['business autofill core import', businessAutofill.includes("from './core/api.js'") && businessAutofill.includes('apiFetch')],
+  ['wordstat refactor plan', wordstatRefactor.includes('src/wordstat.js') && wordstatRefactor.includes('npm run build')],
   ['standalone login auth', loginJs.includes("from './core/api.js'") && loginJs.includes("from './core/storage.js'")],
   ['email auth view', js.includes('renderLogin') && js.includes('/auth/email/request-code')],
   ['cabinet view', js.includes('renderDashboard')],
