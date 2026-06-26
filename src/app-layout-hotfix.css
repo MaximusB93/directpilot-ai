@@ -1,6 +1,24 @@
 /* Hotfix for cabinet layout after product polish layer.
    Keeps the app compact and fixes unreadable disabled buttons. */
 
+:root {
+  --dp-button-height: 40px;
+  --dp-button-radius: 10px;
+  --dp-button-font-size: 14px;
+  --dp-button-font-weight: 800;
+  --dp-button-primary-bg: #111827;
+  --dp-button-primary-bg-hover: #020617;
+  --dp-button-primary-border: #111827;
+  --dp-button-secondary-bg: #ffffff;
+  --dp-button-secondary-bg-hover: #f8fafc;
+  --dp-button-secondary-border: #d9e2ef;
+  --dp-button-secondary-border-hover: #cbd5e1;
+  --dp-button-secondary-text: #0f172a;
+  --dp-button-disabled-bg: #f1f5f9;
+  --dp-button-disabled-border: #e2e8f0;
+  --dp-button-disabled-text: #94a3b8;
+}
+
 body[data-page="app"] .appHeader {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(260px, 340px);
@@ -103,44 +121,132 @@ body[data-page="app"] .clientSourcePanel strong {
 
 body[data-page="app"] .heroActions,
 body[data-page="app"] .panelActions,
+body[data-page="app"] .actionRow,
+body[data-page="app"] .clientConnectForm,
+body[data-page="app"] .authForm {
+  gap: 8px;
+}
+
+body[data-page="app"] .heroActions,
+body[data-page="app"] .panelActions,
 body[data-page="app"] .actionRow {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
   align-items: center;
 }
 
+body[data-page="app"] button:not(.sideNavItem),
+body[data-page="app"] a.primaryButton,
+body[data-page="app"] a.secondaryButton,
+body[data-page="app"] a.approveButton,
 body[data-page="app"] .primaryButton,
 body[data-page="app"] .secondaryButton,
 body[data-page="app"] .approveButton {
-  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: var(--dp-button-height);
   padding: 0 14px;
-  border-radius: 10px;
-  font-size: 14px;
-  font-weight: 800;
+  border: 1px solid var(--dp-button-secondary-border);
+  border-radius: var(--dp-button-radius);
+  color: var(--dp-button-secondary-text);
+  background: var(--dp-button-secondary-bg);
+  box-shadow: none;
+  font-size: var(--dp-button-font-size);
+  font-weight: var(--dp-button-font-weight);
+  line-height: 1;
+  letter-spacing: 0;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color .16s ease,
+    border-color .16s ease,
+    color .16s ease,
+    box-shadow .16s ease,
+    transform .16s ease;
 }
 
+body[data-page="app"] button:not(.sideNavItem):hover,
+body[data-page="app"] a.secondaryButton:hover,
+body[data-page="app"] .secondaryButton:hover {
+  border-color: var(--dp-button-secondary-border-hover);
+  background: var(--dp-button-secondary-bg-hover);
+  transform: translateY(-1px);
+}
+
+body[data-page="app"] .primaryButton,
+body[data-page="app"] .approveButton,
+body[data-page="app"] button.primaryButton,
+body[data-page="app"] button.approveButton,
+body[data-page="app"] a.primaryButton,
+body[data-page="app"] a.approveButton {
+  border-color: var(--dp-button-primary-border);
+  color: #ffffff;
+  background: var(--dp-button-primary-bg);
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.16);
+}
+
+body[data-page="app"] .primaryButton:hover,
+body[data-page="app"] .approveButton:hover,
+body[data-page="app"] button.primaryButton:hover,
+body[data-page="app"] button.approveButton:hover,
+body[data-page="app"] a.primaryButton:hover,
+body[data-page="app"] a.approveButton:hover {
+  border-color: var(--dp-button-primary-bg-hover);
+  color: #ffffff;
+  background: var(--dp-button-primary-bg-hover);
+  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.2);
+  transform: translateY(-1px);
+}
+
+body[data-page="app"] .secondaryButton,
+body[data-page="app"] button.secondaryButton,
+body[data-page="app"] a.secondaryButton {
+  border-color: var(--dp-button-secondary-border);
+  color: var(--dp-button-secondary-text);
+  background: var(--dp-button-secondary-bg);
+}
+
+body[data-page="app"] .secondaryButton:hover,
+body[data-page="app"] button.secondaryButton:hover,
+body[data-page="app"] a.secondaryButton:hover {
+  border-color: var(--dp-button-secondary-border-hover);
+  color: var(--dp-button-secondary-text);
+  background: var(--dp-button-secondary-bg-hover);
+}
+
+body[data-page="app"] button:disabled,
 body[data-page="app"] .primaryButton:disabled,
 body[data-page="app"] .secondaryButton:disabled,
 body[data-page="app"] .approveButton:disabled,
-body[data-page="app"] button:disabled {
-  color: #94a3b8 !important;
-  border-color: #e2e8f0 !important;
-  background: #f1f5f9 !important;
+body[data-page="app"] [aria-disabled="true"] {
+  color: var(--dp-button-disabled-text) !important;
+  border-color: var(--dp-button-disabled-border) !important;
+  background: var(--dp-button-disabled-bg) !important;
   box-shadow: none !important;
-  cursor: not-allowed;
-  opacity: 1;
+  transform: none !important;
+  cursor: not-allowed !important;
+  opacity: 1 !important;
 }
 
-body[data-page="app"] .secondaryButton:not(:disabled) {
-  color: #0f172a;
-  border-color: #d9e2ef;
-  background: #ffffff;
+body[data-page="app"] button svg,
+body[data-page="app"] .primaryButton svg,
+body[data-page="app"] .secondaryButton svg,
+body[data-page="app"] .approveButton svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
 }
 
-body[data-page="app"] .secondaryButton:not(:disabled):hover {
-  border-color: #cbd5e1;
-  background: #f8fafc;
+body[data-page="app"] .sideNavItem {
+  min-height: 40px;
+  border-radius: 10px;
+  transition:
+    background-color .16s ease,
+    border-color .16s ease,
+    color .16s ease;
 }
 
 body[data-page="app"] hr,
@@ -170,5 +276,15 @@ body[data-page="app"] .divider {
 
   body[data-page="app"] .clientSourcePanel {
     grid-template-columns: 1fr;
+  }
+
+  body[data-page="app"] button:not(.sideNavItem),
+  body[data-page="app"] a.primaryButton,
+  body[data-page="app"] a.secondaryButton,
+  body[data-page="app"] a.approveButton,
+  body[data-page="app"] .primaryButton,
+  body[data-page="app"] .secondaryButton,
+  body[data-page="app"] .approveButton {
+    width: 100%;
   }
 }
