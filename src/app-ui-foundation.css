@@ -1,0 +1,211 @@
+/* App-only foundation overrides.
+   Goal: make the cabinet feel like a working SaaS tool, not a landing-page demo. */
+
+body[data-page="app"] main,
+body[data-page="login"] main {
+  background: var(--dp-color-bg);
+}
+
+body[data-page="app"] .appShell {
+  grid-template-columns: var(--dp-sidebar-width) minmax(0, 1fr);
+  background: var(--dp-color-bg);
+}
+
+body[data-page="app"] .sidebar {
+  background: var(--dp-color-surface);
+  border-right: 1px solid var(--dp-color-border);
+  box-shadow: none;
+}
+
+body[data-page="app"] .workspace {
+  width: min(100%, var(--dp-workspace-max));
+  max-width: calc(100vw - var(--dp-sidebar-width));
+  padding: var(--dp-space-5) var(--dp-space-6) 48px;
+}
+
+body[data-page="app"] .appHeader,
+body[data-page="app"] .pageIntro,
+body[data-page="app"] .panel,
+body[data-page="app"] .metricCard,
+body[data-page="app"] .clientCard,
+body[data-page="app"] .auditItem,
+body[data-page="app"] .actionCard,
+body[data-page="app"] .integrationCard,
+body[data-page="app"] .featureCard {
+  border: 1px solid var(--dp-color-border);
+  background: var(--dp-color-surface);
+  box-shadow: var(--dp-shadow-xs);
+}
+
+body[data-page="app"] .appHeader {
+  top: 0;
+  margin-bottom: var(--dp-space-4);
+  border-radius: var(--dp-radius-xl);
+}
+
+body[data-page="app"] .pageIntro {
+  margin: 0 0 var(--dp-space-4);
+  padding: var(--dp-space-5);
+  border-radius: var(--dp-radius-xl);
+}
+
+body[data-page="app"] .pageIntro h2 {
+  font-size: clamp(28px, 2.6vw, 40px);
+  line-height: 1.05;
+  letter-spacing: -0.04em;
+}
+
+body[data-page="app"] .pageIntro p {
+  color: var(--dp-color-text-secondary);
+  font-size: var(--dp-font-size-lg);
+  line-height: 1.55;
+}
+
+body[data-page="app"] .panel {
+  padding: var(--dp-space-5);
+  border-radius: var(--dp-radius-xl);
+}
+
+body[data-page="app"] .sideNavItem {
+  min-height: 44px;
+  border-radius: var(--dp-radius-md);
+  color: var(--dp-color-text-secondary);
+}
+
+body[data-page="app"] .sideNavItem:hover,
+body[data-page="app"] .sideNavItem.active {
+  color: var(--dp-color-text);
+  background: var(--dp-color-brand-50);
+  box-shadow: none;
+}
+
+body[data-page="app"] .primaryButton,
+body[data-page="app"] .secondaryButton,
+body[data-page="app"] .approveButton,
+body[data-page="login"] .primaryButton,
+body[data-page="login"] .secondaryButton {
+  min-height: 44px;
+  border-radius: var(--dp-radius-md);
+  transition: background .16s ease, border-color .16s ease, box-shadow .16s ease, transform .16s ease;
+}
+
+body[data-page="app"] .primaryButton:hover,
+body[data-page="app"] .secondaryButton:hover,
+body[data-page="app"] .approveButton:hover,
+body[data-page="login"] .primaryButton:hover,
+body[data-page="login"] .secondaryButton:hover {
+  transform: none;
+  box-shadow: var(--dp-shadow-sm);
+}
+
+body[data-page="app"] button:focus-visible,
+body[data-page="app"] a:focus-visible,
+body[data-page="app"] input:focus,
+body[data-page="app"] textarea:focus,
+body[data-page="app"] select:focus,
+body[data-page="login"] button:focus-visible,
+body[data-page="login"] a:focus-visible,
+body[data-page="login"] input:focus {
+  outline: none;
+  box-shadow: var(--dp-focus-ring);
+}
+
+body[data-page="app"] .metricGrid,
+body[data-page="app"] .kpiGrid {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--dp-space-3);
+}
+
+body[data-page="app"] .metricCard,
+body[data-page="app"] .kpi {
+  min-height: 104px;
+  padding: var(--dp-space-4);
+  border-radius: var(--dp-radius-lg);
+}
+
+body[data-page="app"] .metricCard strong,
+body[data-page="app"] .kpi strong {
+  font-variant-numeric: tabular-nums;
+}
+
+body[data-page="app"] .tableWrap {
+  border: 1px solid var(--dp-color-border);
+  border-radius: var(--dp-radius-lg);
+  background: var(--dp-color-surface);
+}
+
+body[data-page="app"] table {
+  min-width: 960px;
+  font-size: var(--dp-font-size-md);
+}
+
+body[data-page="app"] th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  color: var(--dp-color-text-muted);
+  background: var(--dp-color-bg-soft);
+}
+
+body[data-page="app"] td {
+  color: var(--dp-color-text-secondary);
+}
+
+body[data-page="app"] tbody tr:hover td {
+  background: var(--dp-color-surface-soft);
+}
+
+body[data-page="app"] .aiStatusBadge.ready,
+body[data-page="app"] .integrationTop strong {
+  color: var(--dp-color-success-700);
+  background: var(--dp-color-success-50);
+}
+
+body[data-page="app"] .aiError,
+body[data-page="app"] .auditItem.high .priorityBadge {
+  color: var(--dp-color-danger-700);
+  background: var(--dp-color-danger-50);
+}
+
+body[data-page="app"] .authStatus,
+body[data-page="app"] .aiToolTrace,
+body[data-page="app"] .taskList article,
+body[data-page="app"] .modeCards article,
+body[data-page="app"] .rule,
+body[data-page="app"] .limitsBox {
+  border-radius: var(--dp-radius-lg);
+  background: var(--dp-color-bg-soft);
+}
+
+body[data-page="app"] details {
+  margin-top: var(--dp-space-4);
+}
+
+body[data-page="app"] summary.secondaryButton {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+}
+
+@media (max-width: 1180px) {
+  body[data-page="app"] .appShell {
+    grid-template-columns: 1fr;
+  }
+
+  body[data-page="app"] .workspace {
+    max-width: none;
+    padding: var(--dp-space-4);
+  }
+}
+
+@media (max-width: 720px) {
+  body[data-page="app"] .workspace {
+    padding: var(--dp-space-3);
+  }
+
+  body[data-page="app"] .pageIntro,
+  body[data-page="app"] .panel,
+  body[data-page="app"] .appHeader {
+    border-radius: var(--dp-radius-lg);
+  }
+}
