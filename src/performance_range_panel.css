@@ -1,0 +1,83 @@
+body[data-page="app"] .performanceRangePanel {
+  margin-bottom: 16px;
+  background:
+    linear-gradient(135deg, rgba(30, 93, 255, 0.06), rgba(255, 255, 255, 0.96)),
+    var(--dp-surface, #fff);
+}
+
+body[data-page="app"] .periodControls {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.8fr) minmax(160px, 0.6fr) minmax(160px, 0.6fr) auto;
+  gap: 12px;
+  align-items: end;
+  margin: 14px 0 16px;
+}
+
+body[data-page="app"] .periodActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+body[data-page="app"] .periodActions button {
+  white-space: nowrap;
+}
+
+body[data-page="app"] .mutedControl {
+  opacity: .55;
+}
+
+body[data-page="app"] .periodSummaryCaption {
+  margin: 8px 0 12px;
+  color: #536276;
+  font-weight: 800;
+}
+
+body[data-page="app"] .periodSummaryKpis .kpi small {
+  margin-top: 8px;
+}
+
+body[data-page="app"] .periodDelta.up {
+  color: #bf5b00;
+}
+
+body[data-page="app"] .periodDelta.down {
+  color: #07824b;
+}
+
+body[data-page="app"] .periodDelta.flat {
+  color: #536276;
+}
+
+body[data-page="app"] .periodAiResultPanel {
+  margin-top: 16px;
+  background: #fff;
+}
+
+body[data-page="app"] .aiMarkdownAnswer {
+  max-width: 1180px;
+  padding: 16px;
+  border: 1px solid rgba(19, 34, 56, 0.08);
+  border-radius: 18px;
+  background: rgba(248, 251, 255, 0.88);
+  color: #152238;
+  font-size: 14px;
+  line-height: 1.62;
+}
+
+@media (max-width: 960px) {
+  body[data-page="app"] .periodControls {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  body[data-page="app"] .periodActions {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 640px) {
+  body[data-page="app"] .periodControls {
+    grid-template-columns: 1fr;
+  }
+}
