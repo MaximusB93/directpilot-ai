@@ -1,4 +1,19 @@
 import {
+  API_BASE,
+  apiFetch,
+  escapeHtml,
+  saveApiBase,
+} from './core/api.js';
+import {
+  clearSession,
+  getCurrentEmail,
+  getSessionToken,
+  saveSession,
+  scopedStorageKey,
+} from './core/storage.js';
+import { createClientId } from './core/ids.js';
+import { requestEmailCode, verifyEmailCode } from './core/session-api.js';
+import {
   agencyMetrics,
   auditIssues,
   autopilotRules,
@@ -9,56 +24,12 @@ import {
 } from './data.js';
 
 const app = document.querySelector('#app');
-const DEFAULT_PRODUCTION_API_BASE = 'https://directpilot-ai.vercel.app/api/v1';
-const API_BASE = resolveApiBase();
 const page = document.body.dataset.page ?? 'landing';
-const currentEmail = (window.localStorage.getItem('directpilot_email') || '').trim().toLowerCase();
+const currentEmail = getCurrentEmail();
 
 if (page === 'app' && !getSessionToken()) {
   window.location.href = 'login.html';
   throw new Error('Authentication required');
-}
-
-function resolveApiBase() {
-  const custom = window.localStorage.getItem('directpilot_api_base')?.trim();
-  if (custom) return custom.replace(/\/$/, '');
-  const { hostname, origin } = window.location;
-  if (hostname === 'localhost' || hostname === '127.0.0.1') {
-    return 'http://localhost:8000/api/v1';
-  }
-  if (hostname === 'maximusb93.github.io') {
-    return DEFAULT_PRODUCTION_API_BASE;
-  }
-  return `${origin}/api/v1`;
-}
-
-function hasCustomApiBase() {
-  return Boolean(window.localStorage.getItem('directpilot_api_base')?.trim());
-}
-
-function getSessionToken() {
-  return window.localStorage.getItem('directpilot_session') || '';
-}
-
-function scopedStorageKey(key) {
-  return currentEmail ? `${key}_${currentEmail}` : key;
-}
-
-async function apiFetch(path, options = {}) {
-  const headers = new Headers(options.headers || {});
-  const token = getSessionToken();
-  if (token) headers.set('Authorization', `Bearer ${token}`);
-  if (options.body && !headers.has('Content-Type')) {
-    headers.set('Content-Type', 'application/json');
-  }
-  const response = await fetch(`${API_BASE}${path}`, { ...options, headers });
-  if (response.status === 401) {
-    localStorage.removeItem('directpilot_session');
-    localStorage.removeItem('directpilot_email');
-    window.location.href = 'login.html';
-    throw new Error('Authentication required');
-  }
-  return response;
 }
 
 const navItems = [
@@ -335,7 +306,7 @@ function getEditableFieldTarget(target) {
 
 function makeClientId(name) {
   const slug = name.toLowerCase().replace(/[^a-z0-9а-яё]+/gi, '-').replace(/^-|-$/g, '').slice(0, 32);
-  return `${slug || 'client'}-${Date.now().toString(36)}`;
+  return createClientId(slug || 'client');
 }
 
 function getConfiguredAiModelIds() {
@@ -745,15 +716,6 @@ function saveActiveAiState() {
   };
 }
 
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#039;');
-}
-
 function renderBackendApiConfig() {
   const githubPagesWarning = window.location.hostname === 'maximusb93.github.io' && API_BASE.includes('github.io/api/v1')
     ? '<div class="authStatus aiError">GitHub Pages не содержит backend. Укажите Vercel backend URL.</div>'
@@ -970,32 +932,6 @@ function renderLogin() {
       </div>
     </section>
   `;
-}
-
-async function requestEmailCode(email) {
-  try {
-    const response = await fetch(`${API_BASE}/auth/email/request-code`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email }),
-    });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.detail || 'Не удалось отправить код');
-    return payload;
-  } catch (error) {
-    throw new Error(`Не удалось подключиться к backend. Проверьте Vercel URL или directpilot_api_base. Текущий API_BASE: ${API_BASE}`);
-  }
-}
-
-async function verifyEmailCode(email, code) {
-  const response = await fetch(`${API_BASE}/auth/email/verify-code`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, code }),
-  });
-  const payload = await response.json();
-  if (!response.ok) throw new Error(payload.detail || 'Не удалось подтвердить код');
-  return payload;
 }
 
 async function connectYandexIntegration() {
@@ -3535,11 +3471,7 @@ app.addEventListener('click', async (event) => {
     const apiBaseConfig = saveApiBaseButton.closest('[data-api-base-config]');
     const apiBaseInput = apiBaseConfig?.querySelector('[data-api-base-input]');
     const apiBase = String(apiBaseInput?.value || apiBaseDraft).trim().replace(/\/$/, '');
-    if (apiBase) {
-      localStorage.setItem('directpilot_api_base', apiBase);
-    } else {
-      localStorage.removeItem('directpilot_api_base');
-    }
+    saveApiBase(apiBase);
     window.location.reload();
     return;
   }
@@ -3582,8 +3514,7 @@ app.addEventListener('click', async (event) => {
   const saveAiMemoryButton = event.target.closest('[data-save-ai-memory]');
 
   if (logoutButton) {
-    localStorage.removeItem('directpilot_session');
-    localStorage.removeItem('directpilot_email');
+    clearSession();
     window.location.href = 'login.html';
     return;
   }
@@ -4027,8 +3958,7 @@ app.addEventListener('submit', async (event) => {
       authStatus = 'Код отправлен на почту. Проверьте входящие и спам.' + (result.dev_code ? ' Dev code доступен ниже.' : '');
     } else {
       const result = await verifyEmailCode(email, code);
-      localStorage.setItem('directpilot_session', result.session_token);
-      localStorage.setItem('directpilot_email', result.email);
+      saveSession(result.session_token, result.email);
       window.location.href = 'app.html';
       return;
     }

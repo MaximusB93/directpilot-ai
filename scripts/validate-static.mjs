@@ -8,6 +8,7 @@ const requiredFiles = [
   'src/main.js',
   'src/login.js',
   'src/data.js',
+  'src/wordstat.js',
   'src/business_context_autofill.js',
   'src/core/api.js',
   'src/core/date.js',
@@ -29,6 +30,7 @@ const js = await readFile('src/main.js', 'utf8');
 const loginJs = await readFile('src/login.js', 'utf8');
 const data = await readFile('src/data.js', 'utf8');
 const businessAutofill = await readFile('src/business_context_autofill.js', 'utf8');
+const wordstatJs = await readFile('src/wordstat.js', 'utf8');
 const coreApi = await readFile('src/core/api.js', 'utf8');
 const coreIds = await readFile('src/core/ids.js', 'utf8');
 const coreSessionApi = await readFile('src/core/session-api.js', 'utf8');
@@ -50,10 +52,19 @@ const checks = [
   ['shared session api module', coreSessionApi.includes('requestEmailCode') && coreSessionApi.includes('verifyEmailCode')],
   ['shared storage module', coreStorage.includes('export function scopedStorageKey') && coreStorage.includes('export function saveSession')],
   ['shared format module', coreFormat.includes('export function formatNumber') && coreFormat.includes('export function formatMoney')],
+  ['wordstat core api import', wordstatJs.includes("from './core/api.js'") && wordstatJs.includes('apiFetch')],
+  ['wordstat html import', wordstatJs.includes("from './core/html.js'") && wordstatJs.includes('escapeHtml')],
+  ['wordstat format import', wordstatJs.includes("from './core/format.js'") && wordstatJs.includes('formatNumber') && wordstatJs.includes('formatPercent')],
+  ['wordstat storage import', wordstatJs.includes("from './core/storage.js'") && wordstatJs.includes('scopedStorageKey')],
+  ['wordstat no local api helpers', !wordstatJs.includes('function resolveApiBase') && !wordstatJs.includes('function getSessionToken') && !wordstatJs.includes('async function apiFetch')],
+  ['wordstat no local html/format helpers', !wordstatJs.includes('function escapeHtml') && !wordstatJs.includes('function formatNumber') && !wordstatJs.includes('function formatPercent')],
+  ['main shared api imports', js.includes("from './core/api.js'") && js.includes('apiFetch')],
+  ['main shared storage imports', js.includes("from './core/storage.js'") && js.includes('getSessionToken')],
+  ['main shared session api imports', js.includes("from './core/session-api.js'") && js.includes('requestEmailCode') && js.includes('verifyEmailCode')],
   ['business autofill core import', businessAutofill.includes("from './core/api.js'") && businessAutofill.includes('apiFetch')],
   ['wordstat refactor plan', wordstatRefactor.includes('src/wordstat.js') && wordstatRefactor.includes('npm run build')],
   ['standalone login auth', loginJs.includes("from './core/api.js'") && loginJs.includes("from './core/storage.js'")],
-  ['email auth view', js.includes('renderLogin') && js.includes('/auth/email/request-code')],
+  ['email auth view', js.includes('renderLogin') && js.includes('requestEmailCode')],
   ['cabinet view', js.includes('renderDashboard')],
   ['audit view', js.includes('renderAudit')],
   ['recommendations view', js.includes('renderRecommendations')],
