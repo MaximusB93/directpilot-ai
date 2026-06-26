@@ -1,3 +1,5 @@
+import { escapeHtml } from './core/html.js';
+
 function ensureWordstatTooltip() {
   let tooltip = document.querySelector('.wordstatChartTooltip');
   if (tooltip) return tooltip;
@@ -20,16 +22,7 @@ function parseSvgPoints(pointsAttribute) {
 
 function tooltipHtml(rawText) {
   const [phrase = 'Фраза', date = '—', value = '—'] = String(rawText || '').split('\n');
-  return `<strong>${escapeHtmlLocal(phrase)}</strong><span>${escapeHtmlLocal(date)}</span><b>${escapeHtmlLocal(value)}</b>`;
-}
-
-function escapeHtmlLocal(value) {
-  return String(value ?? '')
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#039;');
+  return `<strong>${escapeHtml(phrase)}</strong><span>${escapeHtml(date)}</span><b>${escapeHtml(value)}</b>`;
 }
 
 function placeTooltip(tooltip, event) {
