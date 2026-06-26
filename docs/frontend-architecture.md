@@ -122,7 +122,7 @@ Other page modules are currently contract-only. They document required context a
 
 ## Service layer
 
-Service modules now isolate backend calls that currently live inside `src/main.js`:
+Service modules isolate backend calls that previously lived inside `src/main.js`:
 
 ```text
 clients-service.js            /clients CRUD
@@ -134,7 +134,7 @@ optimization-service.js       optimization plan/actions/execution preview
 ai-service.js                 OpenRouter status, generation, chat, recommendations, prompt debug
 ```
 
-These services are not fully wired into `src/main.js` yet. They are staged so the later `main.js` patch can replace inline API functions with imports in one controlled pass.
+`src/main.js` now uses these service modules instead of direct inline `apiFetch(...)` calls. The static validator checks this with `main no inline apiFetch calls`, so direct backend access should stay in `src/services/` or dedicated feature modules.
 
 ## Store layer
 
@@ -166,13 +166,14 @@ Preferred sequence:
 11. Add service and store scaffolds.
 12. Wire `src/main.js` `renderDashboard` to `renderDashboardContent` in one controlled patch.
 13. Replace inline API functions in `src/main.js` with service imports.
-14. Move remaining dashboard panels behind the page module in smaller slices.
-15. Extract clients page.
-16. Extract integrations page.
-17. Extract business context page.
-18. Extract AI assistant page.
-19. Extract optimization page.
-20. Extract Wordstat last, because it is the most sensitive and stateful area.
+14. Update static validation to guard service-layer wiring.
+15. Move remaining dashboard panels behind the page module in smaller slices.
+16. Extract clients page.
+17. Extract integrations page.
+18. Extract business context page.
+19. Extract AI assistant page.
+20. Extract optimization page.
+21. Extract Wordstat last, because it is the most sensitive and stateful area.
 
 ## What not to do
 
