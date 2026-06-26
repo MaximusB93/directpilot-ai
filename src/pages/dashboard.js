@@ -22,12 +22,15 @@ export function dashboardPageContract() {
       'yandexIntegration',
     ],
     legacyRenderer: 'renderDashboard',
-    extractionStatus: 'partial-builders-ready',
+    extractionStatus: 'content-composer-ready',
     extractedBuilders: [
       'renderDashboardIntro',
       'renderDashboardNextStepPanel',
+      'renderDashboardEmptyClientPanel',
+      'renderDashboardConnectedPanels',
+      'renderDashboardContent',
     ],
-    nextStep: 'Wire src/main.js renderDashboard to the extracted dashboard builders, then move the remaining panels in smaller slices.',
+    nextStep: 'Wire src/main.js renderDashboard to renderDashboardContent in one controlled patch.',
   };
 }
 
@@ -83,6 +86,50 @@ export function renderDashboardNextStepPanel({
       </div>
       ${syncStatusMessage ? `<div class="authStatus integrationStatus">${escapeHtml(syncStatusMessage)}</div>` : ''}
     </section>
+  `;
+}
+
+export function renderDashboardEmptyClientPanel() {
+  return `
+    <section class="panel emptyStatePanel">
+      <h3>Нет клиента</h3>
+      <p>Создайте клиента, чтобы подключить данные и запустить анализ. После этого DirectPilot покажет готовность, синхронизацию, сводку и AI-план.</p>
+      <button class="approveButton" data-view="clients">Перейти к клиентам</button>
+    </section>
+  `;
+}
+
+export function renderDashboardConnectedPanels({
+  renderSyncCenter,
+  renderBusinessContextPanel,
+  renderSyncDiagnosticsPanel,
+  renderYesterdaySummaryPanel,
+  renderYandexDirectAuditPanel,
+  renderPerformanceSummaryPanel,
+}) {
+  return `
+    ${renderSyncCenter()}
+    ${renderBusinessContextPanel(true)}
+    ${renderSyncDiagnosticsPanel(true)}
+    ${renderYesterdaySummaryPanel()}
+    ${renderYandexDirectAuditPanel(true)}
+    ${renderPerformanceSummaryPanel()}
+  `;
+}
+
+export function renderDashboardContent(context) {
+  const {
+    hasClient,
+    readiness,
+    nextAction,
+    renderReadinessPanel,
+  } = context;
+
+  return `
+    ${renderDashboardIntro(context)}
+    ${renderDashboardNextStepPanel(context)}
+    ${renderReadinessPanel(readiness, nextAction)}
+    ${hasClient ? renderDashboardConnectedPanels(context) : renderDashboardEmptyClientPanel(context)}
   `;
 }
 
