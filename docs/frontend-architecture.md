@@ -7,9 +7,9 @@ DirectPilot AI frontend is moving from a single large `src/main.js` file to a pa
 Keep one static shell:
 
 - `app.html` — cabinet shell.
-- `src/main.js` — temporary bootstrap and legacy renderer.
+- `src/main.js` — temporary bootstrap, legacy renderer and event orchestrator.
 
-Move new code toward:
+Move new code toward layered modules:
 
 ```text
 src/app/
@@ -24,10 +24,26 @@ src/pages/
   dashboard.js
   clients.js
   integrations.js
+  business-context.js
   ai-assistant.js
-  wordstat.js
   optimization.js
+  wordstat.js
   journal.js
+
+src/services/
+  index.js
+  clients-service.js
+  integrations-service.js
+  business-context-service.js
+  sync-service.js
+  performance-service.js
+  optimization-service.js
+  ai-service.js
+
+src/stores/
+  index.js
+  client-store.js
+  ai-store.js
 
 src/components/
   button.js
@@ -45,6 +61,7 @@ The cabinet should use hash routes during the MVP stage:
 ```text
 app.html#dashboard
 app.html#clients
+app.html#business-context
 app.html#integrations
 app.html#ai
 app.html#wordstat
@@ -74,8 +91,20 @@ This is a temporary debugging and migration aid while `src/main.js` still owns m
 
 ## Page modules
 
-- `src/pages/index.js` is the registry for page metadata, page contracts, renderer adapters and content composers.
-- `src/pages/dashboard.js` exposes `renderDashboardPage({ legacyRenderDashboard })` and `renderDashboardContent(context)`.
+`src/pages/index.js` is the registry for page metadata, page contracts, renderer adapters and content composers.
+
+Registered page contracts now exist for:
+
+```text
+dashboard
+clients
+business-context
+integrations
+ai
+optimization
+```
+
+`src/pages/dashboard.js` exposes `renderDashboardPage({ legacyRenderDashboard })` and `renderDashboardContent(context)`.
 
 The dashboard legacy markup still partly lives in `src/main.js`, but the page module now owns the dashboard content composition and these pure HTML builder slices:
 
@@ -89,16 +118,34 @@ renderDashboardContent
 
 `renderDashboardContent(context)` is intentionally dependency-injected: it receives legacy panel renderers from `src/main.js` until those panels are extracted one by one.
 
-The contract records:
+Other page modules are currently contract-only. They document required context and legacy renderer names before we move their markup.
 
-- route id;
-- required page context;
-- current legacy renderer;
-- extraction status;
-- extracted builders;
-- next migration step.
+## Service layer
 
-This lets new page modules appear before we move the heavy render functions, instead of ripping apart the legacy file in one heroic mistake.
+Service modules now isolate backend calls that currently live inside `src/main.js`:
+
+```text
+clients-service.js            /clients CRUD
+integrations-service.js       Yandex OAuth and client binding
+business-context-service.js   business context and memory notes
+sync-service.js               sync run and sync job history
+performance-service.js        performance summary
+optimization-service.js       optimization plan/actions/execution preview
+ai-service.js                 OpenRouter status, generation, chat, recommendations, prompt debug
+```
+
+These services are not fully wired into `src/main.js` yet. They are staged so the later `main.js` patch can replace inline API functions with imports in one controlled pass.
+
+## Store layer
+
+Store scaffolds now exist for:
+
+```text
+client-store.js   selected client id, selected client resolution, localStorage key helpers
+ai-store.js       initial AI chat/model state constants
+```
+
+They are intentionally small until `main.js` stops owning all mutable state.
 
 ## Migration rule
 
@@ -115,12 +162,17 @@ Preferred sequence:
 7. Wire `src/main.js` dashboard route to `renderDashboardPage`.
 8. Extract dashboard intro and next-step builders.
 9. Add dashboard content composer.
-10. Wire `src/main.js` `renderDashboard` to `renderDashboardContent` in one controlled patch.
-11. Move the remaining dashboard panels behind the page module in smaller slices.
-12. Extract clients page.
-13. Extract integrations page.
-14. Extract AI assistant page.
-15. Extract Wordstat last, because it is the most sensitive and stateful area.
+10. Add contract-only page modules for clients, integrations, business context, AI assistant and optimization.
+11. Add service and store scaffolds.
+12. Wire `src/main.js` `renderDashboard` to `renderDashboardContent` in one controlled patch.
+13. Replace inline API functions in `src/main.js` with service imports.
+14. Move remaining dashboard panels behind the page module in smaller slices.
+15. Extract clients page.
+16. Extract integrations page.
+17. Extract business context page.
+18. Extract AI assistant page.
+19. Extract optimization page.
+20. Extract Wordstat last, because it is the most sensitive and stateful area.
 
 ## What not to do
 
