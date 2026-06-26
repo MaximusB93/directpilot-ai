@@ -1,5 +1,5 @@
 import { apiFetch, escapeHtml } from './core/api.js';
-import { getCurrentEmail } from './core/storage.js';
+import { scopedStorageKey } from './core/storage.js';
 
 const WORDSTAT_AI_QUICK_QUESTIONS = [
   'Сделай краткий вывод по спросу: что растёт, что падает и что важно проверить?',
@@ -13,11 +13,6 @@ const WORDSTAT_NEXT_PAYLOAD_KIND_KEY = 'directpilot_wordstat_next_payload_kind';
 const CUSTOM_MODEL_VALUE = '__custom_openrouter_model__';
 
 const wordstatAiState = { messages: [], loading: false };
-
-function scopedStorageKey(key) {
-  const email = getCurrentEmail().trim().toLowerCase();
-  return email ? `${key}_${email}` : key;
-}
 
 function getSelectedAiSettings() {
   try {
