@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routers import ai, approvals, audit, auth, business_context, clients, debug, health, integrations, recommendations, wordstat, yandex_direct
+from app.api.routers import ai, approvals, audit, auth, business_context, clients, debug, health, integrations, performance_range, recommendations, wordstat, yandex_direct
 from app.core.config import settings
 from app.db import init_db
 
@@ -33,6 +33,7 @@ app.add_middleware(
 app.include_router(health.router)
 app.include_router(clients.router, prefix=settings.api_prefix)
 app.include_router(business_context.router, prefix=settings.api_prefix)
+app.include_router(performance_range.router, prefix=settings.api_prefix)
 app.include_router(auth.router, prefix=settings.api_prefix)
 app.include_router(audit.router, prefix=settings.api_prefix)
 app.include_router(recommendations.router, prefix=settings.api_prefix)
@@ -56,6 +57,8 @@ def read_root() -> dict[str, object]:
         "sample_endpoints": [
             f"{settings.api_prefix}/clients",
             f"{settings.api_prefix}/clients/{{client_id}}/business-context/autofill",
+            f"{settings.api_prefix}/clients/{{client_id}}/performance-range",
+            f"{settings.api_prefix}/clients/{{client_id}}/performance-range/ai-analysis",
             f"{settings.api_prefix}/recommendations",
             f"{settings.api_prefix}/integrations",
             f"{settings.api_prefix}/auth/email/request-code",
