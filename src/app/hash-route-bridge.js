@@ -1,3 +1,4 @@
+import { resolveAppPage } from './page-router.js';
 import { currentHashRoute, navigateToRoute } from './router.js';
 import { normalizeRouteId } from './routes.js';
 import { setRouteId } from './state.js';
@@ -15,6 +16,13 @@ function viewParamToRouteId(view) {
 
 function routeIdToLegacyView(routeId) {
   return normalizeRouteId(routeId);
+}
+
+function markRouteResolution(routeId) {
+  const resolvedPage = resolveAppPage(routeId);
+  document.body.dataset.routeId = resolvedPage.routeId;
+  document.body.dataset.routeMode = resolvedPage.isRegistered ? 'module' : 'legacy';
+  document.body.dataset.pageModule = resolvedPage.page?.id || '';
 }
 
 function replaceLegacyViewParam(routeId) {
@@ -43,6 +51,7 @@ function initialRouteId() {
 function syncInitialRoute() {
   const routeId = initialRouteId();
   setRouteId(routeId);
+  markRouteResolution(routeId);
   replaceLegacyViewParam(routeId);
 }
 
@@ -55,6 +64,7 @@ function bindRouteClicks() {
 
     const routeId = normalizeRouteId(routeLink.dataset.view || routeLink.dataset.goView || '');
     setRouteId(routeId);
+    markRouteResolution(routeId);
     navigateToRoute(routeId);
     replaceLegacyViewParam(routeId);
   }, true);
@@ -64,6 +74,7 @@ function bindHashChanges() {
   window.addEventListener('hashchange', () => {
     const routeId = currentHashRoute();
     setRouteId(routeId);
+    markRouteResolution(routeId);
 
     if (currentViewParam() !== routeIdToLegacyView(routeId)) {
       navigateLegacyAppToRoute(routeId);
