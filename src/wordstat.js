@@ -1,4 +1,8 @@
-const DEFAULT_PRODUCTION_API_BASE = 'https://directpilot-ai.vercel.app/api/v1';
+import { apiFetch } from './core/api.js';
+import { formatNumber, formatPercent } from './core/format.js';
+import { escapeHtml } from './core/html.js';
+import { getCurrentEmail, scopedStorageKey } from './core/storage.js';
+
 const WORDSTAT_VIEW_ID = 'wordstat';
 const WORDSTAT_DEFAULT_PHRASES = 'купить диван\nдиван кровать\nугловой диван';
 const WORDSTAT_COLORS = ['#1677ff', '#16a34a', '#f97316', '#9333ea', '#dc2626', '#0891b2', '#4f46e5', '#65a30d'];
@@ -91,34 +95,6 @@ function collectRegions(nodes) {
   return nodes.flatMap((node) => [node, ...collectRegions(node.children || [])]);
 }
 
-function resolveApiBase() {
-  const custom = window.localStorage.getItem('directpilot_api_base')?.trim();
-  if (custom) return custom.replace(/\/$/, '');
-  const { hostname, origin } = window.location;
-  if (hostname === 'localhost' || hostname === '127.0.0.1') return 'http://localhost:8000/api/v1';
-  if (hostname === 'maximusb93.github.io') return DEFAULT_PRODUCTION_API_BASE;
-  return `${origin}/api/v1`;
-}
-
-function getSessionToken() {
-  return window.localStorage.getItem('directpilot_session') || '';
-}
-
-async function apiFetch(path, options = {}) {
-  const headers = new Headers(options.headers || {});
-  const token = getSessionToken();
-  if (token) headers.set('Authorization', `Bearer ${token}`);
-  if (options.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
-  const response = await fetch(`${resolveApiBase()}${path}`, { ...options, headers });
-  if (response.status === 401) {
-    localStorage.removeItem('directpilot_session');
-    localStorage.removeItem('directpilot_email');
-    window.location.href = 'login.html';
-    throw new Error('Authentication required');
-  }
-  return response;
-}
-
 function defaultWordstatForm() {
   const today = startOfDay(new Date());
   const from = addMonths(today, -3);
@@ -168,26 +144,6 @@ function toInputDate(date) {
   return `${year}-${month}-${day}`;
 }
 
-function escapeHtml(value) {
-  return String(value ?? '')
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#039;');
-}
-
-function formatNumber(value) {
-  const number = Number(value || 0);
-  return Number.isFinite(number) ? new Intl.NumberFormat('ru-RU').format(number) : '0';
-}
-
-function formatPercent(value) {
-  if (value === null || value === undefined || value === '') return '—';
-  const number = Number(value);
-  return Number.isFinite(number) ? `${number > 0 ? '+' : ''}${number.toFixed(2)}%` : '—';
-}
-
 function parsePhrases(value) {
   return String(value || '').split(/\n+/).map((item) => item.trim()).filter(Boolean);
 }
@@ -199,8 +155,7 @@ function parseCustomRegions(value) {
 function selectedClientIdFromStorageOrDom() {
   const select = document.querySelector('[data-client-select]');
   if (select?.value) return select.value;
-  const email = (window.localStorage.getItem('directpilot_email') || '').trim().toLowerCase();
-  const key = email ? `directpilot_selected_client_id_${email}` : 'directpilot_selected_client_id';
+  const key = scopedStorageKey('directpilot_selected_client_id', getCurrentEmail());
   return window.localStorage.getItem(key) || '';
 }
 
