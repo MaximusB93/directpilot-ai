@@ -213,7 +213,7 @@ function clientPayloadFromForm(name, directLogin, metricaCounter) {
   };
 }
 
-async async function loadClientsFromApi(force = false) {
+async function loadClientsFromApi(force = false) {
   if (page !== 'app') return;
   if (backendClientsLoading || (backendClientsLoaded && !force)) return;
   backendClientsLoading = true;
@@ -726,7 +726,7 @@ function aiPromptDebugParams() {
   return params;
 }
 
-async async function loadAiPromptDebug() {
+async function loadAiPromptDebug() {
   if (!selectedClientId) {
     aiPromptDebugError = 'Сначала выберите клиента.';
     render();
@@ -746,7 +746,7 @@ async async function loadAiPromptDebug() {
 }
 
 
-async async function requestAiRecommendations() {
+async function requestAiRecommendations() {
   if (!selectedClientId) {
     aiRecommendationsError = 'Сначала выберите клиента.';
     render();
@@ -781,7 +781,7 @@ async async function requestAiRecommendations() {
 }
 
 
-async async function sendAiChatMessage(message) {
+async function sendAiChatMessage(message) {
   const text = String(message || aiChatInput || '').trim();
   if (!text || aiChatLoading) return;
   aiChatMessages = [...aiChatMessages, { role: 'user', content: text }];
@@ -811,7 +811,7 @@ async async function sendAiChatMessage(message) {
 }
 
 
-async async function saveAiMemoryNote(note) {
+async function saveAiMemoryNote(note) {
   if (!selectedClientId || !note) return;
   aiMemoryStatus = 'Сохраняем вывод в память проекта...';
   try {
@@ -825,7 +825,7 @@ async async function saveAiMemoryNote(note) {
 }
 
 
-async async function loadAiStatus() {
+async function loadAiStatus() {
   try {
     aiStatus = await aiService.fetchOpenRouterStatus();
   } catch (error) {
@@ -835,7 +835,7 @@ async async function loadAiStatus() {
 }
 
 
-async async function generateAiInsight(prompt) {
+async function generateAiInsight(prompt) {
   aiLoading = true;
   aiError = '';
   aiResult = null;
@@ -915,7 +915,7 @@ function getFilteredOptimizationActions() {
   return optimizationActions.filter((action) => optimizationActionFilter === 'all' || action.status === optimizationActionFilter);
 }
 
-async async function loadPerformanceSummary() {
+async function loadPerformanceSummary() {
   if (!selectedClientId || perfLoading) return;
   perfLoading = true;
   perfStatus = 'Загружаем сводку по кампаниям...';
@@ -932,7 +932,7 @@ async async function loadPerformanceSummary() {
 }
 
 
-async async function loadBusinessContext() {
+async function loadBusinessContext() {
   if (!selectedClientId || businessContextLoading) return;
   businessContextLoading = true;
   businessContextStatus = 'Загружаем контекст бизнеса...';
@@ -953,7 +953,7 @@ async async function loadBusinessContext() {
 }
 
 
-async async function saveBusinessContext(form) {
+async function saveBusinessContext(form) {
   if (!selectedClientId) return;
   const draft = setBusinessContextDraftFromForm(form);
   businessContextSaving = true;
@@ -973,7 +973,7 @@ async async function saveBusinessContext(form) {
 }
 
 
-async async function startSync() {
+async function startSync() {
   if (!selectedClientId || !canRunSync() || syncLoading) return;
   syncLoading = true;
   syncStatusMessage = 'Запускаем синхронизацию с Директом и Метрикой...';
@@ -992,7 +992,7 @@ async async function startSync() {
 }
 
 
-async async function loadSyncJobs() {
+async function loadSyncJobs() {
   if (!selectedClientId || syncJobsLoading) return;
   syncJobsLoading = true;
   render();
@@ -1007,7 +1007,7 @@ async async function loadSyncJobs() {
 }
 
 
-async async function loadOptimizationPlan() {
+async function loadOptimizationPlan() {
   if (!selectedClientId || optimizationPlanLoading) return;
   optimizationPlanLoading = true;
   optimizationStatus = 'Формируем план оптимизации...';
@@ -1025,7 +1025,7 @@ async async function loadOptimizationPlan() {
 }
 
 
-async async function loadOptimizationActions(force = false) {
+async function loadOptimizationActions(force = false) {
   if (!selectedClientId || optimizationActionsLoading) return;
   if (!force && optimizationActionsLoadedFor === selectedClientId) return;
   optimizationActionsLoading = true;
@@ -1045,7 +1045,7 @@ async async function loadOptimizationActions(force = false) {
 }
 
 
-async async function createOptimizationDraftsFromPlan() {
+async function createOptimizationDraftsFromPlan() {
   if (!selectedClientId || optimizationActionsLoading) return;
   optimizationActionsLoading = true;
   optimizationActionsStatus = 'Сохраняем рекомендации как черновики...';
@@ -1064,7 +1064,7 @@ async async function createOptimizationDraftsFromPlan() {
 }
 
 
-async async function updateOptimizationActionStatus(actionId, status, reviewerNote = '') {
+async function updateOptimizationActionStatus(actionId, status, reviewerNote = '') {
   if (!selectedClientId || !actionId) return;
   optimizationActionsStatus = 'Обновляем статус черновика...';
   render();
@@ -1084,7 +1084,7 @@ async async function updateOptimizationActionStatus(actionId, status, reviewerNo
 }
 
 
-async async function loadOptimizationExecutionPreview(actionId) {
+async function loadOptimizationExecutionPreview(actionId) {
   if (!selectedClientId || !actionId) return;
   optimizationExecutionPreviews = {
     ...optimizationExecutionPreviews,
@@ -2066,7 +2066,7 @@ app.addEventListener('click', async (event) => {
   }
 });
 
-async async function loadIntegrationStatus() {
+async function loadIntegrationStatus() {
   try {
     const payload = await integrationsService.fetchYandexStatus();
     integrationStatus = {
@@ -2081,7 +2081,7 @@ async async function loadIntegrationStatus() {
 }
 
 
-async async function loadClientYandexIntegration(force = false) {
+async function loadClientYandexIntegration(force = false) {
   if (!selectedClientId || clientYandexLoading || (clientYandexIntegration && !force)) return;
   clientYandexLoading = true;
   clientYandexStatus = 'Загружаем привязку клиента к Яндексу...';
@@ -2103,7 +2103,7 @@ async async function loadClientYandexIntegration(force = false) {
 }
 
 
-async async function bindClientYandexAccount(accountId) {
+async function bindClientYandexAccount(accountId) {
   if (!selectedClientId || !accountId) return;
   clientYandexLoading = true;
   clientYandexStatus = 'Привязываем аккаунт Яндекса к клиенту...';
@@ -2123,7 +2123,7 @@ async async function bindClientYandexAccount(accountId) {
 }
 
 
-async async function unbindClientYandexAccount() {
+async function unbindClientYandexAccount() {
   if (!selectedClientId) return;
   clientYandexLoading = true;
   clientYandexStatus = 'Отвязываем аккаунт Яндекса...';
@@ -2157,7 +2157,7 @@ function setClientSettingsDraftFromForm(form) {
   return clientSettingsDraft;
 }
 
-async async function saveClientSettings(form) {
+async function saveClientSettings(form) {
   if (!selectedClientId) return;
   const draft = setClientSettingsDraftFromForm(form);
   clientSettingsSaving = true;
@@ -2205,7 +2205,7 @@ async async function saveClientSettings(form) {
 }
 
 
-async async function deleteClient(clientId) {
+async function deleteClient(clientId) {
   if (!clientId) return;
   if (!window.confirm('Удалить клиента? Это действие нельзя отменить.')) return;
   clientSettingsStatus = 'Удаляем клиента...';
