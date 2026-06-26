@@ -15,7 +15,7 @@ from app.services.openrouter import generate_openrouter_response
 from app.services.yandex_metrika import parse_goal_ids
 
 MAX_RANGE_DAYS = 31
-DEFAULT_SEARCH_QUERY_LIMIT = 500
+DEFAULT_SEARCH_QUERY_LIMIT = 300
 
 
 def _today() -> date:
@@ -243,6 +243,22 @@ def _changes(current: dict[str, Any], previous: dict[str, Any]) -> dict[str, Any
     }
 
 
+def _row_date(row: dict[str, str]) -> date | None:
+    try:
+        return date.fromisoformat(str(row.get("Date") or ""))
+    except ValueError:
+        return None
+
+
+def _filter_rows_by_date(rows: list[dict[str, str]], start: date, end: date) -> list[dict[str, str]]:
+    result: list[dict[str, str]] = []
+    for row in rows:
+        stat_date = _row_date(row)
+        if stat_date and start <= stat_date <= end:
+            result.append(row)
+    return result
+
+
 def _build_search_query_drilldown(rows: list[dict[str, str]], goal_ids: list[str], limit: int = 12) -> dict[str, Any]:
     insights = []
     for row in rows:
@@ -291,20 +307,17 @@ def build_live_period_summary(db: Session, client_id: str, *, preset: str = "yes
         raise HTTPException(status_code=404, detail="Client not found")
     start, end, label = resolve_period(preset=preset, date_from=date_from, date_to=date_to)
     connector, goal_ids = _client_connector(db, client)
-    rows = connector.get_campaign_daily_range_report(date_from=start, date_to=end, goal_ids=goal_ids or None, processing_mode="auto", max_wait_seconds=25)
+    previous_from, previous_to = _split_previous_range(start, end)
+    load_from = previous_from if label != "yesterday" else start
+    all_rows = connector.get_campaign_daily_range_report(date_from=load_from, date_to=end, goal_ids=goal_ids or None, processing_mode="auto", max_wait_seconds=25)
+    rows = _filter_rows_by_date(all_rows, start, end)
+    previous_rows = _filter_rows_by_date(all_rows, previous_from, previous_to) if label != "yesterday" else []
     campaigns = _group_campaign_rows(rows, goal_ids, client.target_cpa)
     daily = _group_daily(rows, goal_ids)
     totals = _aggregate_values(campaigns)
-    previous_from, previous_to = _split_previous_range(start, end)
-    previous_rows: list[dict[str, str]] = []
-    if label != "yesterday":
-        try:
-            previous_rows = connector.get_campaign_daily_range_report(date_from=previous_from, date_to=previous_to, goal_ids=goal_ids or None, processing_mode="auto", max_wait_seconds=25)
-        except Exception:
-            previous_rows = []
     previous_totals = _aggregate_values(_group_campaign_rows(previous_rows, goal_ids, client.target_cpa)) if previous_rows else {}
     return {
-        "source": "yandex_direct_live_range_report",
+        "source": "yandex_direct_live_range_report_fast_date_field",
         "client": {"id": client.id, "name": client.name, "targetCpa": client.target_cpa},
         "period": {
             "preset": label,
@@ -383,7 +396,7 @@ async def build_live_period_ai_analysis(db: Session, client_id: str, *, preset: 
             limit=DEFAULT_SEARCH_QUERY_LIMIT,
             goal_ids=goal_ids or None,
             processing_mode="offline",
-            max_wait_seconds=25,
+            max_wait_seconds=18,
         )
     except Exception:
         search_rows = []

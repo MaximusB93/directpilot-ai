@@ -156,16 +156,51 @@ class YandexDirectConnector:
         processing_mode: str = "auto",
         max_wait_seconds: int = 20,
     ) -> list[dict[str, str]]:
-        """Read campaign stats for each day in a range without write actions.
+        """Read dated campaign stats for a range without write actions.
 
-        This intentionally reuses the already-supported one-day campaign report
-        path. A single report with the Date field would be cheaper, but this
-        fallback avoids relying on an unsupported field combination while still
-        preserving goal-specific conversion parsing.
+        Fast path: one CAMPAIGN_PERFORMANCE_REPORT with the Date field.
+        Fallback: the older per-day path if Direct rejects the Date field
+        combination for a specific account/report setup.
         """
 
         if date_to < date_from:
             return []
+        selection_criteria = {"DateFrom": date_from.isoformat(), "DateTo": date_to.isoformat()}
+        report_period = f"{date_from.isoformat()} {date_to.isoformat()} daily"
+        try:
+            payload = _build_campaign_report_payload(
+                selection_criteria=selection_criteria,
+                report_period=report_period,
+                date_range_type="CUSTOM_DATE",
+                limit=limit,
+                goal_ids=goal_ids,
+                include_date=True,
+            )
+            rows = self._request_report_with_retries(
+                payload=payload,
+                processing_mode=processing_mode.lower(),
+                max_wait_seconds=max_wait_seconds,
+            )
+            if goal_ids:
+                total_payload = _build_campaign_report_payload(
+                    selection_criteria=selection_criteria,
+                    report_period=f"{report_period} totals",
+                    date_range_type="CUSTOM_DATE",
+                    limit=limit,
+                    goal_ids=None,
+                    include_date=True,
+                )
+                total_rows = self._request_report_with_retries(
+                    payload=total_payload,
+                    processing_mode=processing_mode.lower(),
+                    max_wait_seconds=max_wait_seconds,
+                )
+                rows = _merge_total_conversion_fallback_by_keys(rows, total_rows, ["Date", "CampaignId"])
+            if rows and all(row.get("Date") for row in rows):
+                return rows
+        except RuntimeError:
+            pass
+
         rows: list[dict[str, str]] = []
         current = date_from
         while current <= date_to:
@@ -283,22 +318,26 @@ def _build_campaign_report_payload(
     date_range_type: str,
     limit: int,
     goal_ids: list[str] | None = None,
+    include_date: bool = False,
 ) -> dict[str, Any]:
+    field_names = [
+        "CampaignId",
+        "CampaignName",
+        "Impressions",
+        "Clicks",
+        "Cost",
+        "Ctr",
+        "AvgCpc",
+        "Conversions",
+        "CostPerConversion",
+        "ConversionRate",
+    ]
+    if include_date:
+        field_names.insert(0, "Date")
     params: dict[str, Any] = {
         "SelectionCriteria": selection_criteria,
-        "FieldNames": [
-            "CampaignId",
-            "CampaignName",
-            "Impressions",
-            "Clicks",
-            "Cost",
-            "Ctr",
-            "AvgCpc",
-            "Conversions",
-            "CostPerConversion",
-            "ConversionRate",
-        ],
-        "OrderBy": [{"Field": "CampaignId"}],
+        "FieldNames": field_names,
+        "OrderBy": ([{"Field": "Date"}, {"Field": "CampaignId"}] if include_date else [{"Field": "CampaignId"}]),
         "ReportName": f"DirectPilot Campaign Report {report_period}",
         "ReportType": "CAMPAIGN_PERFORMANCE_REPORT",
         "DateRangeType": date_range_type,
@@ -380,46 +419,28 @@ def _merge_total_conversion_fallback_by_keys(
     return merged
 
 
-def _parse_tsv_report(report_text: str) -> list[dict[str, str]]:
-    stripped = report_text.strip()
-    if not stripped:
-        return []
-    reader = csv.DictReader(StringIO(stripped), delimiter="\t")
-    if reader.fieldnames is None:
-        return []
-    rows: list[dict[str, str]] = []
-    for row in reader:
-        if not row or row.get(reader.fieldnames[0], "").startswith("Total rows"):
-            continue
-        rows.append({key: value for key, value in row.items() if key is not None})
-    return rows
+def _retry_in_seconds(response: httpx.Response) -> int:
+    retry_after = response.headers.get("retryIn") or response.headers.get("Retry-After")
+    try:
+        return max(1, int(float(retry_after or 1)))
+    except ValueError:
+        return 1
 
 
 def _format_direct_error(response: httpx.Response) -> str:
-    request_id = response.headers.get("RequestId") or response.headers.get("requestId") or response.headers.get("X-Request-Id")
-    detail = response.text.strip()
     try:
-        payload = response.json()
+        body = response.json()
     except ValueError:
-        payload = None
-    if isinstance(payload, dict):
-        error = payload.get("error") or payload
-        if isinstance(error, dict):
-            detail = (
-                error.get("error_detail")
-                or error.get("error_string")
-                or error.get("error_description")
-                or error.get("message")
-                or str(error)
-            )
-        else:
-            detail = str(error)
-    suffix = f" RequestId: {request_id}." if request_id else ""
-    return f"Yandex Direct API returned {response.status_code}: {detail}.{suffix}"
+        return response.text[:500] or f"Direct API HTTP {response.status_code}"
+    error = body.get("error") if isinstance(body, dict) else None
+    if not error:
+        return str(body)[:500]
+    return str(error.get("error_detail") or error.get("error_string") or error.get("error_code") or error)[:500]
 
 
-def _retry_in_seconds(response: httpx.Response) -> int:
-    try:
-        return max(1, min(int(response.headers.get("retryIn", "5")), 10))
-    except ValueError:
-        return 5
+def _parse_tsv_report(text: str) -> list[dict[str, str]]:
+    cleaned = text.strip("\ufeff\n\r\t ")
+    if not cleaned:
+        return []
+    reader = csv.DictReader(StringIO(cleaned), delimiter="\t")
+    return [{key: value for key, value in row.items() if key is not None} for row in reader]
