@@ -13,7 +13,16 @@ import {
 } from './core/storage.js';
 import { createClientId } from './core/ids.js';
 import { requestEmailCode, verifyEmailCode } from './core/session-api.js';
-import { resolvePageRenderer } from './app/page-router.js';
+import { resolvePageContentRenderer, resolvePageRenderer } from './app/page-router.js';
+import * as aiService from './services/ai-service.js';
+import * as businessContextService from './services/business-context-service.js';
+import * as clientsService from './services/clients-service.js';
+import * as integrationsService from './services/integrations-service.js';
+import * as optimizationService from './services/optimization-service.js';
+import * as performanceService from './services/performance-service.js';
+import * as syncService from './services/sync-service.js';
+import * as aiStore from './stores/ai-store.js';
+import * as clientStore from './stores/client-store.js';
 import {
   agencyMetrics,
   auditIssues,
@@ -65,551 +74,369 @@ let activeView = page === 'login' ? 'login' : page === 'app' ? 'dashboard' : 'la
 if (page === 'app' && appQueryParams.get('view')) {
   activeView = normalizeAppView(appQueryParams.get('view'));
 }
-let apiBaseDraft = API_BASE;
-let pendingEditableFocusTarget = null;
-let authEmail = '';
+const storedApiBase = window.localStorage.getItem('directpilot_api_base');
+let apiBaseDraft = storedApiBase || API_BASE;
+let authEmail = currentEmail || window.localStorage.getItem('directpilot_auth_email') || '';
+let authCode = '';
 let authStatus = '';
 let authStep = 'email';
-let authCode = '';
 let authLoading = false;
-let devCode = null;
-let integrationStatus = {};
+let selectedClientId = '';
+let accountClients = [...initialClients];
+let backendClientsLoaded = false;
+let backendClientsLoading = false;
+let backendClientsAvailable = false;
+let backendClientsStatus = 'Клиенты хранятся локально. Backend пока не проверен.';
+let clientFormStatus = '';
+let clientDraftName = '';
+let clientDraftDirectLogin = '';
+let clientDraftMetricaCounter = '';
+let clientSettingsDraft = null;
+let clientSettingsSaving = false;
+let clientSettingsStatus = '';
+let integrationStatus = { connected: undefined, message: '', accounts: [] };
 let clientYandexIntegration = null;
 let clientYandexLoading = false;
-let clientYandexStatus = oauthReturnStatus === 'connected'
-  ? 'Яндекс-аккаунт подключён. Теперь выберите его и привяжите к клиенту.'
-  : oauthReturnStatus === 'missing_code'
-    ? 'Яндекс OAuth не вернул код подтверждения. Попробуйте подключить аккаунт ещё раз.'
-    : oauthReturnStatus === 'error'
-      ? 'Не удалось завершить подключение Яндекса. Попробуйте начать подключение из приложения ещё раз.'
-      : '';
-let clientYandexLoadedFor = '';
-let accountClients = loadAccountClients();
-let aiStatus = { models: [], configured: false, message: 'Статус OpenRouter ещё не загружен.' };
+let clientYandexStatus = '';
+let syncLoading = false;
+let syncStatusMessage = '';
+let syncJobs = [];
+let syncJobsLoading = false;
+let perfSummary = null;
+let perfLoading = false;
+let perfStatus = '';
+let optimizationPlan = null;
+let optimizationPlanLoading = false;
+let optimizationStatus = '';
+let optimizationFilter = 'all';
+let optimizationActions = [];
+let optimizationActionsLoading = false;
+let optimizationActionsStatus = '';
+let optimizationActionsLoadedFor = '';
+let optimizationActionFilter = 'all';
+let optimizationExecutionPreviews = {};
+let businessContext = null;
+let businessContextLoading = false;
+let businessContextStatus = '';
+let businessContextSaving = false;
+let businessContextDraft = null;
 const CUSTOM_MODEL_VALUE = '__custom_openrouter_model__';
-let aiModel = 'openrouter/auto';
-let aiCustomModel = 'openai/gpt-4o';
-let aiPreset = 'economy';
+let aiStatus = { models: [], configured: false, message: 'Статус OpenRouter ещё не загружен.' };
+let selectedAiModel = 'openrouter/auto';
+let customAiModel = 'openai/gpt-4o';
+let selectedAiPreset = 'economy';
 let aiMaxTokensMode = 'compact';
 let aiCompactContext = true;
 let aiToolResultsMode = 'summary';
 let aiChatHistoryLimit = 3;
 let aiSearchQueryLimit = '20';
-let aiPrompt = 'Проанализируй выбранного клиента DirectPilot AI: какие данные нужны из Яндекс.Директа и Метрики, чтобы сформировать первые рекомендации?';
-let aiResponse = null;
-let aiError = '';
 let aiLoading = false;
-let aiModelTestLoading = false;
-let aiModelTestStatus = '';
+let aiResult = null;
+let aiError = '';
+let aiPromptDebug = null;
 let aiPromptDebugLoading = false;
-let aiPromptDebugStatus = '';
-let aiPromptDebugSnapshot = null;
-let aiRequestInspectorEnabled = false;
-let openrouterRequestDebug = null;
+let aiPromptDebugError = '';
+let aiRecommendationsLoading = false;
+let aiRecommendationsError = '';
 let clientAiRecommendations = null;
-let clientAiLoading = false;
-let clientAiError = '';
-let clientFormStatus = '';
-let clientDraftName = '';
-let clientDraftDirectLogin = '';
-let clientDraftMetricaCounter = '';
-let syncStatusMessage = '';
-let syncLoading = false;
-let perfSummary = null;
-let perfLoading = false;
-let syncJobs = [];
-let syncJobsLoading = false;
-let syncJobsStatus = '';
-let optimizationPlan = null;
-let optimizationPlanLoading = false;
-let optimizationPlanStatus = '';
-let optimizationFilter = 'all';
-const optimizationPlanByClientId = {};
-let optimizationActions = [];
-let optimizationActionsLoading = false;
-let optimizationActionsStatus = '';
-let optimizationActionFilter = 'all';
-let optimizationActionsLoadedFor = '';
-const optimizationActionsByClientId = {};
-const optimizationActionFilterByClientId = {};
-const optimizationExecutionPreviewsByActionId = {};
-let optimizationExecutionPreviewStatus = '';
-let businessContext = null;
-let businessContextLoading = false;
-let businessContextStatus = '';
-let businessContextLoadedFor = '';
-let clientsLoaded = false;
-let backendClientsAvailable = false;
-let backendClientsStatus = 'Проверяем подключение backend...';
-const initialAiChatMessage = { role: 'assistant', content: 'Здравствуйте! Я AI-аналитик DirectPilot. Спросите про Директ, Метрику, CPA, цели или рекомендации — я соберу данные через MCP-инструменты и отвечу по контексту.' };
-let aiChatMessages = [{ ...initialAiChatMessage }];
+let aiMemoryStatus = '';
+let aiChatMessages = [
+  {
+    role: 'assistant',
+    content: 'Здравствуйте! Я AI-аналитик DirectPilot. Спросите про Директ, Метрику, CPA, цели или рекомендации — я соберу данные через MCP-инструменты и отвечу по контексту.',
+  },
+];
 let aiChatInput = 'Почему растёт CPA и что проверить в Яндекс.Метрике?';
 let aiChatLoading = false;
 let aiChatError = '';
 let aiChatErrorDetails = null;
 let aiChatToolTraces = [];
-let selectedAiCampaignName = '';
-const clientAiRecommendationsByClientId = {};
-const aiChatStateByClientId = {};
-let lastAiAction = null;
+let aiChatSelectedCampaignName = '';
+let pendingEditableFocusTarget = null;
 
-let selectedClientId = window.localStorage.getItem(scopedStorageKey('directpilot_selected_client_id')) || accountClients[0]?.id || '';
+function storageKey(key) {
+  return scopedStorageKey(key);
+}
 
+function loadSelectedClientId() {
+  return window.localStorage.getItem(storageKey('directpilot_selected_client_id')) || accountClients[0]?.id || '';
+}
 
+function saveSelectedClientId(clientId) {
+  window.localStorage.setItem(storageKey('directpilot_selected_client_id'), clientId);
+}
 
-
-function saveSelectedClientId() {
-  if (selectedClientId) {
-    localStorage.setItem(scopedStorageKey('directpilot_selected_client_id'), selectedClientId);
-  } else {
-    localStorage.removeItem(scopedStorageKey('directpilot_selected_client_id'));
+function loadStoredClients() {
+  try {
+    const raw = window.localStorage.getItem(storageKey('directpilot_clients'));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (error) {
+    return [];
   }
 }
 
-async function loadClientsFromApi() {
-  if (clientsLoaded) return;
-  clientsLoaded = true;
-  const previousSelectedClientId = selectedClientId;
+function saveStoredClients() {
+  try {
+    window.localStorage.setItem(storageKey('directpilot_clients'), JSON.stringify(accountClients));
+  } catch (error) {
+    console.warn('Failed to persist clients locally', error);
+  }
+}
+
+function normalizeBackendClient(client) {
+  return {
+    id: client.id,
+    name: client.name,
+    segment: client.segment || 'Клиент',
+    directLogin: client.direct_login || 'Не подключен',
+    metricaCounter: client.metrica_counter || 'Не подключен',
+    yandexAccountId: client.yandex_account_id || '',
+    targetCpa: client.target_cpa ?? '',
+    mainGoalId: client.main_goal_id || '',
+    conversionGoalIds: client.conversion_goal_ids || client.main_goal_id || '',
+    notes: client.notes || '',
+    lastSync: client.last_sync || '—',
+    backend: true,
+  };
+}
+
+function clientPayloadFromForm(name, directLogin, metricaCounter) {
+  return {
+    id: createClientId(name || 'client'),
+    name,
+    directLogin: directLogin || 'Не подключен',
+    metricaCounter: metricaCounter || 'Не подключен',
+    lastSync: '—',
+    segment: 'Новый клиент',
+  };
+}
+
+async function loadClientsFromApi(force = false) {
+  if (page !== 'app') return;
+  if (backendClientsLoading || (backendClientsLoaded && !force)) return;
+  backendClientsLoading = true;
   try {
     const response = await apiFetch('/clients');
-    if (!response.ok) throw new Error(`Backend responded with ${response.status}`);
     const payload = await response.json();
-    if (!Array.isArray(payload)) throw new Error('Invalid clients payload');
-
+    if (!response.ok || !Array.isArray(payload)) throw new Error(payload.detail || `Backend responded with ${response.status}`);
+    accountClients = payload.map(normalizeBackendClient);
+    backendClientsLoaded = true;
     backendClientsAvailable = true;
-    backendClientsStatus = 'Backend режим: клиенты загружаются из API.';
-    accountClients = payload;
-    if (!selectedClientId || !accountClients.some((client) => client.id === selectedClientId)) {
-      selectedClientId = accountClients[0]?.id || '';
-    }
-    saveSelectedClientId();
-    if (selectedClientId !== previousSelectedClientId) {
-      resetClientDerivedState();
-      resetSelectedClientOperationalState();
-    }
-    saveAccountClients();
-    render();
+    backendClientsStatus = accountClients.length ? 'Клиенты загружены из базы данных.' : 'В базе пока нет клиентов. Создайте первого клиента.';
+    const storedSelected = loadSelectedClientId();
+    selectedClientId = accountClients.find((client) => client.id === storedSelected)?.id || accountClients[0]?.id || '';
+    if (selectedClientId) saveSelectedClientId(selectedClientId);
+    saveStoredClients();
+    if (!businessContextLoading) businessContext = null;
   } catch (error) {
-    if (error.message === 'Authentication required') return;
+    if (!backendClientsLoaded) {
+      const storedClients = loadStoredClients();
+      if (storedClients.length) {
+        accountClients = storedClients;
+        selectedClientId = accountClients.find((client) => client.id === loadSelectedClientId())?.id || accountClients[0]?.id || '';
+      }
+    }
     backendClientsAvailable = false;
-    backendClientsStatus = 'Backend недоступен. Включён demo/fallback режим (данные из localStorage).';
-    accountClients = loadAccountClients();
-    if (!selectedClientId || !accountClients.some((client) => client.id === selectedClientId)) {
-      selectedClientId = accountClients[0]?.id || '';
-    }
-    saveSelectedClientId();
-    if (selectedClientId !== previousSelectedClientId) {
-      resetClientDerivedState();
-      resetSelectedClientOperationalState();
-    }
+    backendClientsStatus = 'Backend недоступен, временно используем локальное хранилище.';
+  } finally {
+    backendClientsLoading = false;
     render();
   }
 }
 
-async function createClientOnApi(client) {
-  const response = await apiFetch('/clients', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      id: client.id,
-      name: client.name,
-      direct_login: client.directLogin === 'Не подключен' ? null : client.directLogin,
-      metrica_counter: client.metricaCounter === 'Не подключен' ? null : client.metricaCounter,
-      yandex_account_id: client.yandexAccountId || null,
-      target_cpa: client.targetCpa || null,
-      main_goal_id: client.mainGoalId || null,
-      conversion_goal_ids: client.conversionGoalIds || client.mainGoalId || null,
-      notes: client.notes || null,
-      segment: client.segment,
-    }),
-  });
-  const payload = await response.json();
-  if (!response.ok) throw new Error(payload.detail || 'Не удалось сохранить клиента в базе данных');
-  return payload;
+const localClients = loadStoredClients();
+if (localClients.length) {
+  accountClients = localClients;
 }
-
-async function updateClientOnApi(clientId, values) {
-  const response = await apiFetch(`/clients/${clientId}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(values),
-  });
-  const payload = await response.json();
-  if (!response.ok) throw new Error(payload.detail || 'Не удалось сохранить настройки клиента');
-  return payload;
+selectedClientId = loadSelectedClientId();
+if (!accountClients.find((client) => client.id === selectedClientId)) {
+  selectedClientId = accountClients[0]?.id || '';
 }
-
-async function deleteClientOnApi(clientId) {
-  const response = await apiFetch(`/clients/${clientId}`, { method: 'DELETE' });
-  const payload = await response.json();
-  if (!response.ok) throw new Error(payload.detail || 'Не удалось удалить клиента');
-  return payload;
-}
-
-function emptyClient() {
-  return {
-    id: '',
-    name: 'Клиент не выбран',
-    segment: 'Добавьте клиента',
-    spend: '—',
-    leads: 0,
-    cpa: '—',
-    roas: '—',
-    trend: 'Нет подключённых аккаунтов',
-    score: 0,
-    status: 'Ожидает подключения',
-    directLogin: 'Не подключен',
-    metricaCounter: 'Не подключен',
-  };
-}
-
-function loadAccountClients() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(scopedStorageKey('directpilot_clients')) || '[]');
-    return Array.isArray(saved) ? saved : initialClients;
-  } catch (error) {
-    return initialClients;
-  }
-}
-
-function saveAccountClients() {
-  localStorage.setItem(scopedStorageKey('directpilot_clients'), JSON.stringify(accountClients));
-}
-
-function isEditingTextField() {
-  const element = document.activeElement;
-  return Boolean(element?.matches?.('input, textarea, select'));
-}
-
-function isPlainTextInputTarget(target) {
-  return Boolean(target?.closest?.('input, textarea, select, label'));
-}
-
-function getViewActionTarget(target) {
-  const viewTarget = target?.closest?.('[data-view]');
-  if (!viewTarget || viewTarget === document.body) return null;
-  return viewTarget;
-}
-
-function isInteractiveActionTarget(target) {
-  return Boolean(
-    target?.closest?.('button, a, [role="button"], [data-save-api-base], [data-client-id], [data-integration], [data-client-ai-recommendations], [data-sync-client], [data-load-summary], [data-load-sync-jobs], [data-load-optimization-plan], [data-load-optimization-actions], [data-save-optimization-actions], [data-update-optimization-action], [data-load-execution-preview], [data-copy-optimization-plan], [data-copy-text], [data-optimization-filter], [data-optimization-action-filter], [data-ai-quick-action], [data-ai-economy-fallback], [data-ai-reduction-action], [data-openrouter-inspector], [data-copy-openrouter-debug], [data-copy-ai-trace], [data-test-ai-model], [data-check-ai-prompt-size], [data-clear-ai-chat], [data-refresh-yandex-status], [data-go-view], [data-logout]')
-    || getViewActionTarget(target)
-  );
-}
-
-function getEditableFieldTarget(target) {
-  const field = target?.closest?.('input, textarea, select');
-  if (!field) return null;
-  if (field.disabled || field.readOnly) return null;
-  return field;
-}
-
-function makeClientId(name) {
-  const slug = name.toLowerCase().replace(/[^a-z0-9а-яё]+/gi, '-').replace(/^-|-$/g, '').slice(0, 32);
-  return createClientId(slug || 'client');
-}
-
-function getConfiguredAiModelIds() {
-  return getAiModelOptions().map((model) => model.id);
-}
-
-function isCustomAiModel() {
-  return aiModel === CUSTOM_MODEL_VALUE;
-}
-
-function activeAiModel() {
-  if (isCustomAiModel()) return aiCustomModel.trim();
-  return (aiModel || '').trim() || 'google/gemma-3-12b-it';
-}
-
-function canUseActiveAiModel() {
-  return Boolean(activeAiModel());
-}
-
-function getAiModelSettingsKey() {
-  return scopedStorageKey('directpilot_ai_model_settings');
-}
-
-function loadAiModelSettings() {
-  try {
-    const saved = JSON.parse(window.localStorage.getItem(getAiModelSettingsKey()) || '{}');
-    if (saved.selectedModel) aiModel = String(saved.selectedModel);
-    if (saved.selectedPreset) aiPreset = String(saved.selectedPreset);
-    if (saved.customModel) aiCustomModel = String(saved.customModel);
-    if (saved.maxTokensMode) aiMaxTokensMode = String(saved.maxTokensMode);
-    if (typeof saved.compactContext === 'boolean') aiCompactContext = saved.compactContext;
-    if (saved.toolResultsMode) aiToolResultsMode = String(saved.toolResultsMode);
-    if (saved.chatHistoryLimit !== undefined) aiChatHistoryLimit = Number(saved.chatHistoryLimit);
-    if (saved.searchQueryLimit !== undefined) aiSearchQueryLimit = String(saved.searchQueryLimit);
-    if (saved.selectedModel && !getConfiguredAiModelIds().includes(String(saved.selectedModel)) && saved.selectedModel !== CUSTOM_MODEL_VALUE) {
-      aiCustomModel = String(saved.selectedModel);
-      aiModel = CUSTOM_MODEL_VALUE;
-    }
-  } catch (error) {
-    window.localStorage.removeItem(getAiModelSettingsKey());
-  }
-}
-
-function saveAiModelSettings() {
-  window.localStorage.setItem(getAiModelSettingsKey(), JSON.stringify({
-    selectedModel: aiModel,
-    selectedPreset: aiPreset,
-    customModel: aiCustomModel,
-    maxTokensMode: aiMaxTokensMode,
-    compactContext: aiCompactContext,
-    toolResultsMode: aiToolResultsMode,
-    chatHistoryLimit: aiChatHistoryLimit,
-    searchQueryLimit: aiSearchQueryLimit,
-  }));
-}
-
-function recommendedAiModelOptions() {
-  return [
-    { id: 'google/gemma-3-12b-it', label: 'Google Gemma 3 12B IT', cost_tier: 'low', recommended_for: ['регулярные проверки', 'контроль бюджета'] },
-    { id: 'qwen/qwen3-14b', label: 'Qwen3 14B', cost_tier: 'medium', recommended_for: ['анализ кампаний', 'структурные выводы'] },
-  ];
-}
-
-function getAiModelOptions() {
-  const seen = new Set();
-  const allowedModelIds = new Set(['google/gemma-3-12b-it', 'qwen/qwen3-14b']);
-  const backendModels = (aiStatus.models || []).filter((model) => allowedModelIds.has(model.id));
-  return [...backendModels, ...recommendedAiModelOptions()].filter((model) => {
-    if (!model?.id || seen.has(model.id)) return false;
-    seen.add(model.id);
-    return true;
-  });
-}
-
-function getAiPresetOptions() {
-  const presets = aiStatus.presets?.length ? aiStatus.presets : [
-    { id: 'economy', label: 'Эконом', purpose: 'Быстрые вопросы и первичный анализ', max_tokens: 1200, cost_tier: 'low' },
-    { id: 'balanced', label: 'Баланс', purpose: 'Обычный анализ кампаний', max_tokens: 2500, cost_tier: 'medium' },
-    { id: 'advanced', label: 'Максимум', purpose: 'Глубокий анализ и сложные рекомендации', max_tokens: 5000, cost_tier: 'high', warning: 'Может быть дороже' },
-  ];
-  return presets.map((preset) => {
-    if (preset.id === 'economy') {
-      return { ...preset, default_model: 'google/gemma-3-12b-it' };
-    }
-    if (preset.id === 'advanced') {
-      return { ...preset, default_model: 'qwen/qwen3-14b', warning: preset.warning || 'Может быть дороже' };
-    }
-    return preset;
-  });
-}
-
-function activeAiPresetInfo() {
-  return getAiPresetOptions().find((preset) => preset.id === aiPreset) || getAiPresetOptions()[0];
-}
-
-function aiPresetGuidance(presetId) {
-  return {
-    economy: 'Эконом — Gemma, быстрые и дешёвые регулярные проверки.',
-    balanced: 'Баланс — основной режим для анализа кампаний и запросов.',
-    advanced: 'Максимум — Qwen, сложные аудиты, спорные выводы, глубокий разбор.',
-    custom: 'Своя модель — используйте только если понимаете стоимость и лимиты OpenRouter.',
-  }[presetId] || '';
-}
-
-function aiPresetLabel(preset) {
-  return { economy: 'Эконом', balanced: 'Баланс', advanced: 'Максимум', custom: 'Своя модель' }[preset?.id || preset] || preset?.label || preset;
-}
-
-function activeAiModelInfo() {
-  const modelId = activeAiModel();
-  return getAiModelOptions().find((model) => model.id === modelId) || {
-    id: modelId,
-    label: modelId,
-    cost_tier: isCustomAiModel() ? 'unknown' : 'unknown',
-    recommended_for: ['Своя модель OpenRouter'],
-  };
-}
-
-function activeAiMaxTokens() {
-  return 900;
-}
-
-function aiRequestOptions() {
-  const searchQueryLimit = aiSearchQueryLimit === 'all' ? null : Number(aiSearchQueryLimit || 20);
-  return {
-    model: activeAiModel(),
-    ai_preset: 'balanced',
-    max_tokens: activeAiMaxTokens(),
-    compact_context: aiCompactContext,
-    tool_results_mode: aiToolResultsMode,
-    chat_history_limit: Number(aiChatHistoryLimit || 3),
-    search_query_limit: searchQueryLimit,
-  };
-}
-
-function normalizeAiErrorPayload(payload, fallbackMessage) {
-  if (payload?.error) {
-    return {
-      message: payload.message || fallbackMessage,
-      code: payload.error_code || '',
-      model: payload.model || activeAiModel(),
-      retryable: Boolean(payload.retryable),
-      suggestedPreset: payload.suggested_preset || 'economy',
-    };
-  }
-  const detail = payload?.detail;
-  const rawMessage = typeof detail === 'string' ? detail : JSON.stringify(detail || payload || {});
-  if (rawMessage.includes('429') || rawMessage.toLowerCase().includes('rate')) {
-    return {
-      message: 'Выбранная AI-модель временно перегружена или ограничена по лимитам. Выберите другую модель или повторите позже.',
-      code: 'openrouter_rate_limited',
-      model: activeAiModel(),
-      retryable: true,
-      suggestedPreset: 'economy',
-    };
-  }
-  return {
-    message: rawMessage || fallbackMessage,
-    code: '',
-    model: activeAiModel(),
-    retryable: false,
-    suggestedPreset: '',
-  };
-}
-
-function applyEconomyFallback() {
-  aiPreset = 'balanced';
-  aiModel = 'google/gemma-3-12b-it';
-  aiMaxTokensMode = 'compact';
-  saveAiModelSettings();
-}
-
-loadAiModelSettings();
+if (selectedClientId) saveSelectedClientId(selectedClientId);
 
 function currentClient() {
-  return accountClients.find((client) => client.id === selectedClientId) ?? accountClients[0] ?? emptyClient();
+  return accountClients.find((client) => client.id === selectedClientId) || accountClients[0] || {};
 }
 
-function getSelectedClient() {
-  return currentClient();
+function currentClientName() {
+  return currentClient().name || 'Клиент не выбран';
 }
 
 function formatNumberSafe(value) {
-  const number = Number(value || 0);
-  return Number.isFinite(number) ? new Intl.NumberFormat('ru-RU').format(number) : '0';
+  return typeof value === 'number' && Number.isFinite(value) ? new Intl.NumberFormat('ru-RU').format(value) : '0';
 }
 
-function formatMoneySafe(value) {
-  const number = Number(value || 0);
-  return Number.isFinite(number) ? `${new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 }).format(number)} ₽` : '0 ₽';
+function formatMoney(value) {
+  return `${formatNumberSafe(value)} ₽`;
 }
 
-function formatPercentSafe(value) {
-  const number = Number(value || 0);
-  return Number.isFinite(number) ? `${number.toFixed(2)}%` : '0.00%';
+function formatPercent(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '0%';
+  return `${value.toFixed(1).replace('.', ',')}%`;
 }
 
-function formatDateSafe(value) {
-  if (!value) return '—';
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('ru-RU');
-}
-
-function conversionSourceLabel(source) {
-  return {
-    yandex_direct_goals: 'Цели Директа',
-    yandex_direct_total: 'Общие конверсии Директа',
-    fallback_total_when_goal_unavailable: 'Данные по выбранным целям недоступны',
-    metrika_goal: 'Цель Метрики',
-    metrika_goals: 'Цели Метрики',
-    metrika_goal_unavailable: 'Данные Метрики недоступны',
-    unavailable: 'Данные по целям недоступны',
-    unknown: 'Нет данных',
-  }[source] || source || 'Нет данных';
-}
-
-function issueFlagLabel(flag) {
-  return {
-    spend_without_conversions: 'Расход без конверсий',
-    high_cpa: 'CPA выше цели',
-    low_ctr: 'Низкий CTR',
-    low_data: 'Мало данных',
-    inefficient_spend_share: 'Неэффективная доля расхода',
-    promising_campaign: 'Перспективная кампания',
-    candidate_negative_keyword: 'Кандидат в минус-слова',
-    costly_no_goal_conversion: 'Расход без целевых конверсий',
-    low_relevance: 'Низкая релевантность',
-    check_queries_landing_goals: 'Проверить запросы, посадочную и цели',
-  }[flag] || flag || '—';
-}
-
-function renderIssueFlags(flags) {
-  const normalized = Array.isArray(flags) ? flags : [];
-  return normalized.length ? normalized.map(issueFlagLabel).join(', ') : '—';
-}
-
-function humanizeDataWarning(message) {
-  const value = String(message || '');
-  if (value.includes('Direct goal conversions unavailable') || value.includes('fallback_total_when_goal_unavailable')) {
-    return 'Директ не вернул данные по выбранным целям. Проверьте ID целей и запустите синхронизацию повторно.';
-  }
-  return value;
-}
-
-function auditStatusLabel(status) {
-  return {
-    pass: 'Ок',
-    warning: 'Требует внимания',
-    fail: 'Проблема',
-    na: 'Нужны дополнительные данные',
-  }[status] || status || '—';
-}
-
-function auditSourceLabel(source) {
-  return source === 'needs_more_data' ? 'нужны дополнительные данные' : 'данные DirectPilot';
-}
-
-function auditGradeLabel(grade) {
-  return grade === 'N/A' ? 'Нужны данные' : (grade || '—');
-}
-
-function actionSourceLabel(source) {
-  return {
-    rule_based: 'Правила DirectPilot',
-    ai: 'AI',
-    manual: 'Вручную',
-    deterministic_fallback: 'Правила DirectPilot',
-  }[source] || 'Черновик';
-}
-
-function severityLabel(severity) {
-  return {
-    critical: 'Критично',
-    warning: 'Требует внимания',
-    info: 'Информация',
-    ok: 'Ок',
-    low: 'Низкий',
-    medium: 'Средний',
-    high: 'Высокий',
-  }[severity] || severity || 'Информация';
-}
-
-function renderActionButton(label, attributes = '', variant = 'secondary') {
-  const className = variant === 'primary' ? 'approveButton' : 'secondaryButton';
-  return `<button class="${className}" type="button" ${attributes}>${escapeHtml(label)}</button>`;
-}
-
-function hasClientValue(value) {
-  return Boolean(value && value !== 'Не подключен' && value !== '—');
-}
-
-function hasPerformanceData() {
-  return Boolean(perfSummary?.campaigns?.length || Number(perfSummary?.totals?.clicks || 0) > 0);
+function clientSyncPath(clientId) {
+  return `/clients/${clientId}/sync`;
 }
 
 function canRunSync() {
-  const client = getSelectedClient();
-  return Boolean(client.id && hasClientValue(client.directLogin) && clientYandexIntegration?.connected);
+  const client = currentClient();
+  return Boolean(client.id && client.directLogin && client.directLogin !== 'Не подключен');
 }
 
-function canRunAiAnalysis() {
-  return Boolean(getSelectedClient().id && hasPerformanceData());
+function syncJobStatusLabel(status) {
+  return {
+    completed: 'Завершено',
+    failed: 'Ошибка',
+    running: 'В процессе',
+    pending: 'Ожидает',
+  }[status] || status || 'Неизвестно';
+}
+
+function normalizeDate(value) {
+  if (!value) return '—';
+  try {
+    return new Date(value).toLocaleString('ru-RU');
+  } catch (error) {
+    return value;
+  }
+}
+
+const spend = agencyMetrics.reduce((sum, item) => sum + item.spend, 0);
+const leads = agencyMetrics.reduce((sum, item) => sum + item.leads, 0);
+const revenue = agencyMetrics.reduce((sum, item) => sum + item.revenue, 0);
+const avgCpl = Math.round(spend / leads);
+const avgRoi = Math.round((revenue / spend) * 100);
+
+function renderLanding() {
+  return `
+    <header class="hero">
+      <nav class="topNav">
+        <div class="brand"><span class="logo">D</span><span>DirectPilot AI</span></div>
+        <div class="navLinks"><a href="#features">Возможности</a><a href="#workflow">Как работает</a><a href="#pricing">Тарифы</a><a class="loginLink" href="login.html">Войти</a></div>
+      </nav>
+      <div class="heroGrid">
+        <div>
+          <span class="eyebrow">AI-сервис для агентств и специалистов по Яндекс.Директу</span>
+          <h1>Автоматизируйте аудит, отчёты и оптимизацию рекламных кампаний</h1>
+          <p>DirectPilot AI подключается к Метрике, Директу и вашим клиентским данным, находит слабые места, формирует рекомендации и готовит отчёты в стиле вашего агентства.</p>
+          <div class="heroActions"><a class="primaryButton" href="login.html">Начать бесплатно</a><a class="secondaryButton" href="#workflow">Посмотреть процесс</a></div>
+        </div>
+        <div class="heroCard">
+          <div class="scoreHeader"><span>AI-аудит кампании</span><strong>92%</strong></div>
+          <div class="progress"><span style="width:92%"></span></div>
+          <ul>
+            <li>3 кампании с перерасходом бюджета</li>
+            <li>18 минус-слов к добавлению</li>
+            <li>2 сегмента готовы к масштабированию</li>
+          </ul>
+        </div>
+      </div>
+    </header>
+    <section id="features" class="section"><h2>Что берёт на себя AI</h2><div class="featureGrid">
+      <article><span>01</span><h3>Аудит кампаний</h3><p>Проверка структуры, ставок, поисковых запросов, минус-слов и посадочных страниц.</p></article>
+      <article><span>02</span><h3>Рекомендации</h3><p>AI объясняет, что исправить, какой эффект ждать и какие действия согласовать с клиентом.</p></article>
+      <article><span>03</span><h3>Отчётность</h3><p>Еженедельные и месячные отчёты с выводами, KPI и планом работ без ручной сборки.</p></article>
+    </div></section>
+    <section id="workflow" class="section split"><div><span class="eyebrow">Процесс</span><h2>Подключите данные один раз — получайте план действий каждый день</h2><p>Сервис собирает статистику, анализирует отклонения и предлагает оптимизации. Специалист остаётся главным: он проверяет, согласует и применяет изменения.</p></div><div class="steps"><div>Подключение Метрики и Директа</div><div>Импорт KPI и целей клиента</div><div>AI-аудит и рекомендации</div><div>Согласование и отчёт</div></div></section>
+    <section id="pricing" class="section cta"><h2>Соберите пилотный кабинет для первых клиентов</h2><p>Начните с демо-версии, подключите 1–3 проекта и оцените экономию времени на регулярной аналитике.</p><a class="primaryButton" href="login.html">Войти в кабинет</a></section>
+  `;
+}
+
+function renderLogin() {
+  return `
+    <section class="loginPage">
+      <div class="loginCard">
+        <div class="brand"><span class="logo">D</span><span>DirectPilot AI</span></div>
+        <h1>${authStep === 'code' ? 'Введите код из письма' : 'Вход по email'}</h1>
+        <p>${authStep === 'code' ? 'Мы отправили одноразовый код на почту. После подтверждения вы попадёте в кабинет.' : 'Введите рабочий email, и мы отправим код для входа без пароля.'}</p>
+        <form class="loginForm" data-auth-form>
+          ${authStep === 'email' ? `
+            <label>Email</label>
+            <input name="email" type="email" value="${escapeHtml(authEmail)}" placeholder="you@agency.ru" required />
+          ` : `
+            <label>Код подтверждения</label>
+            <input name="code" inputmode="numeric" value="${escapeHtml(authCode)}" placeholder="123456" required />
+          `}
+          <button class="primaryButton" type="submit" ${authLoading ? 'disabled' : ''}>${authLoading ? 'Проверяем...' : authStep === 'code' ? 'Подтвердить' : 'Получить код'}</button>
+        </form>
+        ${authStep === 'code' ? `<button class="linkButton" data-auth-back>Изменить email</button>` : ''}
+        ${authStatus ? `<div class="authStatus">${escapeHtml(authStatus)}</div>` : ''}
+      </div>
+    </section>
+  `;
+}
+
+function renderShell(content) {
+  const client = currentClient();
+  const showClientSelector = page === 'app';
+  return `
+    <div class="appShell">
+      <aside class="sidebar">
+        <div class="brand"><span class="logo">D</span><span>DirectPilot AI</span></div>
+        <div class="clientMini">
+          <span>${showClientSelector ? 'Активный клиент' : 'Аккаунт'}</span>
+          <strong>${escapeHtml(showClientSelector ? currentClientName() : currentEmail || 'Гость')}</strong>
+          ${showClientSelector ? `<small>${escapeHtml(client.directLogin || 'Direct не подключен')}</small>` : ''}
+        </div>
+        <nav>${navItems.map((item) => `<button class="${activeView === item.id ? 'active' : ''}" data-view="${item.id}"><span>${item.icon}</span>${item.label}</button>`).join('')}</nav>
+        <button class="logoutButton" data-logout>Выйти</button>
+      </aside>
+      <main class="dashboard">
+        <header class="dashboardHeader">
+          <div>
+            <span class="eyebrow">Кабинет</span>
+            <h1>${escapeHtml(activeView === 'dashboard' ? 'Обзор проекта' : navItems.find((item) => item.id === activeView)?.label || 'DirectPilot')}</h1>
+          </div>
+          <div class="headerActions">
+            ${showClientSelector ? renderClientSelector() : ''}
+            <button class="secondaryButton" data-open-settings>API</button>
+          </div>
+        </header>
+        ${renderSettingsPanel()}
+        ${content}
+      </main>
+    </div>
+  `;
+}
+
+function renderSettingsPanel() {
+  return `
+    <section class="settingsPanel" data-settings-panel hidden>
+      <form data-api-base-form>
+        <label>Backend API URL</label>
+        <div class="settingsRow">
+          <input name="apiBase" value="${escapeHtml(apiBaseDraft)}" placeholder="http://127.0.0.1:8000" />
+          <button class="secondaryButton" type="submit">Сохранить</button>
+        </div>
+        <small>Для локальной разработки можно указать адрес FastAPI. Текущее значение: ${escapeHtml(API_BASE)}</small>
+      </form>
+    </section>
+  `;
+}
+
+function renderClientSelector() {
+  if (!accountClients.length) {
+    return `<button class="clientSelector" data-view="clients"><span>Клиент</span><strong>Создать</strong></button>`;
+  }
+  return `
+    <div class="clientSelectorWrap">
+      <button class="clientSelector" data-client-menu-toggle><span>Клиент</span><strong>${escapeHtml(currentClientName())}</strong></button>
+      <div class="clientMenu" data-client-menu hidden>
+        ${accountClients.map((client) => `<button type="button" data-client-id="${escapeHtml(client.id)}" class="${client.id === selectedClientId ? 'active' : ''}">${escapeHtml(client.name)}<small>${escapeHtml(client.directLogin || 'Direct не подключен')}</small></button>`).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function renderActionButton(label, attrs = '', variant = 'secondary') {
+  return `<button class="${variant === 'primary' ? 'approveButton' : 'secondaryButton'}" type="button" ${attrs}>${escapeHtml(label)}</button>`;
+}
+
+function badgeClassForStatus(status) {
+  return status === 'ready' || status === 'approved' || status === 'reviewed' ? 'ready' : 'pending';
 }
 
 function compactStatusLabel(status) {
@@ -628,886 +455,673 @@ function compactStatusLabel(status) {
   }[status] || status || 'Нет данных';
 }
 
-function badgeClassForStatus(status) {
-  return status === 'ready' || status === 'approved' || status === 'reviewed' ? 'ready' : 'pending';
-}
-
-function getOptimizationActionCounts(actions = optimizationActions) {
-  return actions.reduce((counts, action) => {
-    counts.total += 1;
-    counts[action.status] = (counts[action.status] || 0) + 1;
-    return counts;
-  }, { total: 0, draft: 0, reviewed: 0, approved: 0, rejected: 0, needs_changes: 0 });
-}
-
-function optimizationStatusLabel(status) {
-  return {
-    draft: 'Черновик',
-    reviewed: 'Просмотрено',
-    approved: 'Одобрено',
-    rejected: 'Отклонено',
-    needs_changes: 'Нужны правки',
-  }[status] || status || 'Черновик';
-}
-
-function formatSyncStatus(value) {
-  return {
-    never_synced: 'Синхронизация ещё не запускалась',
-    no_connection: 'Нет подключения к данным',
-    no_data: 'Нет сохранённых данных',
-    ok: 'Данные загружены',
-    error: 'Ошибка синхронизации',
-  }[value || 'never_synced'] || value || 'Неизвестно';
+function renderReadinessPanel(readiness, nextAction) {
+  return `
+    <section class="panel readinessPanel">
+      <div class="panelHeader">
+        <div>
+          <h3>Готовность проекта</h3>
+          <p>Что уже подключено и что мешает AI делать точные рекомендации.</p>
+        </div>
+      </div>
+      <div class="readinessGrid">
+        ${readiness.map((item) => `
+          <article class="readinessCard ${badgeClassForStatus(item.status)}">
+            <div><strong>${escapeHtml(item.label)}</strong><span>${escapeHtml(item.description)}</span></div>
+            <span class="aiStatusBadge ${badgeClassForStatus(item.status)}">${escapeHtml(compactStatusLabel(item.status))}</span>
+          </article>
+        `).join('')}
+      </div>
+      ${nextAction ? `<div class="authStatus integrationStatus"><strong>Фокус:</strong> ${escapeHtml(nextAction.nextAction)}</div>` : ''}
+    </section>
+  `;
 }
 
 function getReadinessState() {
-  const client = getSelectedClient();
+  const client = currentClient();
   const hasClient = Boolean(client.id);
-  const directReady = hasClientValue(client.directLogin);
-  const metricaReady = hasClientValue(client.metricaCounter);
-  const yandexBound = Boolean(clientYandexIntegration?.connected);
-  const firstSyncDone = Boolean(client.lastSyncedAt || client.syncVersion > 0);
-  const statsReady = hasPerformanceData();
-  const aiReady = Boolean(clientAiRecommendationsByClientId[client.id] || clientAiRecommendations);
+  const hasDirectLogin = Boolean(client.directLogin && client.directLogin !== 'Не подключен');
+  const hasMetrica = Boolean(client.metricaCounter && client.metricaCounter !== 'Не подключен');
+  const hasYandexBinding = Boolean(client.yandexAccountId || clientYandexIntegration?.selected_account?.id || clientYandexIntegration?.yandex_account_id);
+  const hasSync = syncJobs.some((job) => job.status === 'completed') || hasPerformanceData();
+  const hasGoals = Boolean(client.mainGoalId || client.conversionGoalIds);
+  const hasContext = hasBusinessContextData(businessContext);
+  const hasOptimizationDrafts = optimizationActions.length > 0;
 
   return [
-    { status: getSessionToken() ? 'ready' : 'blocked', label: 'Пользователь авторизован', description: currentEmail || 'Нет активной сессии', nextAction: 'Войдите по email', targetView: 'login' },
-    { status: backendClientsAvailable ? 'ready' : 'pending', label: 'Backend API подключён', description: backendClientsStatus, nextAction: 'Проверьте Backend API URL', targetView: 'integrations' },
-    { status: hasClient ? 'ready' : 'action_needed', label: 'Клиент выбран', description: hasClient ? client.name : 'Нет клиента', nextAction: 'Добавьте клиента', targetView: 'clients' },
-    { status: !hasClient ? 'blocked' : directReady ? 'ready' : 'action_needed', label: 'Direct login указан', description: directReady ? client.directLogin : 'Укажите логин Яндекс.Директа в настройках клиента.', nextAction: 'Укажите Direct login', targetView: 'clients' },
-    { status: !hasClient ? 'blocked' : metricaReady ? 'ready' : 'action_needed', label: 'Счётчик Метрики указан', description: metricaReady ? client.metricaCounter : 'Укажите ID счётчика Метрики.', nextAction: 'Укажите счётчик Метрики', targetView: 'clients' },
-    { status: !hasClient ? 'blocked' : yandexBound ? 'ready' : 'action_needed', label: 'Яндекс-аккаунт привязан', description: yandexBound ? 'Аккаунт привязан к выбранному клиенту.' : 'Яндекс-аккаунт не привязан к этому клиенту.', nextAction: 'Привяжите Яндекс-аккаунт', targetView: 'integrations' },
-    { status: !canRunSync() && !firstSyncDone ? 'blocked' : firstSyncDone ? 'ready' : 'action_needed', label: 'Первая синхронизация выполнена', description: formatSyncStatus(client.syncStatus), nextAction: 'Запустите синхронизацию', targetView: 'dashboard' },
-    { status: statsReady ? 'ready' : firstSyncDone ? 'action_needed' : 'pending', label: 'Статистика кампаний доступна', description: statsReady ? `${perfSummary.campaigns.length} кампаний в сводке` : 'Нет сохранённых данных', nextAction: 'Обновите сводку или синхронизацию', targetView: 'dashboard' },
-    { status: !hasClient ? 'blocked' : client.mainGoalId ? 'ready' : 'action_needed', label: 'ID основной цели указан', description: client.mainGoalId || 'Цель не выбрана. CPA будет считаться по общим конверсиям Директа.', nextAction: 'Укажите ID основной цели в настройках клиента', targetView: 'clients' },
-    { status: !client.mainGoalId ? 'pending' : perfSummary?.hasGoalData ? 'ready' : 'action_needed', label: 'Конверсии по цели загружены', description: perfSummary?.hasGoalData ? 'Данные по выбранным целям Директа загружены' : 'Цель указана, но конверсии по ней ещё не загружены', nextAction: 'Запустите синхронизацию и проверьте цели', targetView: 'dashboard' },
-    { status: aiReady ? 'ready' : statsReady ? 'action_needed' : 'pending', label: 'AI-анализ сгенерирован', description: aiReady ? 'AI-план готов для ревью.' : 'AI-анализ станет доступнее после загрузки статистики.', nextAction: 'Откройте AI-аналитик', targetView: 'ai' },
+    {
+      id: 'client',
+      label: 'Клиент',
+      status: hasClient ? 'ready' : 'action_needed',
+      description: hasClient ? `Выбран «${client.name}».` : 'Создайте карточку клиента.',
+    },
+    {
+      id: 'yandex',
+      label: 'Привязка Яндекса',
+      status: hasYandexBinding ? 'ready' : hasDirectLogin ? 'action_needed' : 'blocked',
+      description: hasYandexBinding ? 'Аккаунт Яндекса привязан к клиенту.' : hasDirectLogin ? 'Нужно выбрать аккаунт из OAuth-доступов.' : 'Сначала укажите логин Директа.',
+    },
+    {
+      id: 'metrica',
+      label: 'Метрика и цели',
+      status: hasMetrica && hasGoals ? 'ready' : hasMetrica ? 'action_needed' : 'blocked',
+      description: hasMetrica && hasGoals ? 'Счётчик и цели указаны.' : hasMetrica ? 'Добавьте основную цель и цели конверсий.' : 'Укажите ID счётчика Метрики.',
+    },
+    {
+      id: 'context',
+      label: 'Контекст бизнеса',
+      status: hasContext ? 'ready' : 'action_needed',
+      description: hasContext ? 'AI знает продукт, аудиторию и ограничения.' : 'Заполните нишу, продукт, географию и офферы.',
+    },
+    {
+      id: 'sync',
+      label: 'Синхронизация',
+      status: hasSync ? 'ready' : canRunSync() ? 'action_needed' : 'blocked',
+      description: hasSync ? 'Есть свежие данные для анализа.' : canRunSync() ? 'Запустите первую синхронизацию.' : 'Нужен клиент и логин Директа.',
+    },
+    {
+      id: 'optimization',
+      label: 'Черновики действий',
+      status: hasOptimizationDrafts ? 'ready' : hasPerformanceData() ? 'action_needed' : 'pending',
+      description: hasOptimizationDrafts ? 'Есть черновики для согласования.' : hasPerformanceData() ? 'Сформируйте план оптимизации.' : 'Появятся после загрузки статистики.',
+    },
   ];
 }
 
 function getNextBestAction() {
-  const item = getReadinessState().find((entry) => entry.status === 'action_needed' || entry.status === 'blocked' || entry.status === 'pending');
-  return item || { status: 'ready', label: 'MVP поток готов', nextAction: 'Откройте AI-аналитик', targetView: 'ai' };
-}
-
-function resetClientDerivedState() {
-  const clientId = selectedClientId || currentClient().id;
-  clientAiRecommendations = clientAiRecommendationsByClientId[clientId] || null;
-  clientAiError = '';
-  const chatState = aiChatStateByClientId[clientId];
-  aiChatMessages = chatState?.messages ? [...chatState.messages] : [{ ...initialAiChatMessage }];
-  aiChatInput = chatState?.input || 'Почему растёт CPA и что проверить в Яндекс.Метрике?';
-  aiChatError = '';
-  aiChatErrorDetails = chatState?.errorDetails || null;
-  aiChatToolTraces = chatState?.toolTraces ? [...chatState.toolTraces] : [];
-  selectedAiCampaignName = chatState?.selectedCampaignName || '';
-}
-
-function saveActiveAiState() {
-  if (!selectedClientId) return;
-  if (clientAiRecommendations) {
-    clientAiRecommendationsByClientId[selectedClientId] = clientAiRecommendations;
+  const readiness = getReadinessState();
+  const blocking = readiness.find((item) => item.status === 'blocked' || item.status === 'action_needed');
+  if (!blocking) {
+    return {
+      label: 'Проект готов',
+      status: 'ready',
+      description: 'Все базовые данные подключены. Можно переходить к оптимизации и AI-рекомендациям.',
+      nextAction: 'Откройте AI-аналитика или план оптимизации.',
+      targetView: 'ai',
+    };
   }
-  aiChatStateByClientId[selectedClientId] = {
-    messages: [...aiChatMessages],
-    input: aiChatInput,
-    toolTraces: [...aiChatToolTraces],
-    selectedCampaignName: selectedAiCampaignName,
-    errorDetails: aiChatErrorDetails,
+  const actions = {
+    client: ['Создайте клиента', 'clients'],
+    yandex: ['Привяжите аккаунт Яндекса', 'integrations'],
+    metrica: ['Заполните цели и счётчик', 'clients'],
+    context: ['Заполните контекст бизнеса', 'business-context'],
+    sync: ['Запустите синхронизацию', 'dashboard'],
+    optimization: ['Сформируйте черновики оптимизации', 'optimization'],
+  };
+  const [nextAction, targetView] = actions[blocking.id] || ['Проверьте настройки', 'dashboard'];
+  return { ...blocking, nextAction, targetView };
+}
+
+function hasPerformanceData() {
+  return Boolean(perfSummary && (perfSummary.campaigns?.length || perfSummary.searchQueryInsights));
+}
+
+function normalizeBusinessContext(payload) {
+  return {
+    companyName: payload?.company_name || '',
+    websiteUrl: payload?.website_url || '',
+    industry: payload?.industry || '',
+    productDescription: payload?.product_description || '',
+    targetAudience: payload?.target_audience || '',
+    geography: payload?.geography || '',
+    mainOffers: payload?.main_offers || '',
+    conversionActions: payload?.conversion_actions || '',
+    averageOrderValue: payload?.average_order_value || '',
+    leadValueNotes: payload?.lead_value_notes || '',
+    businessConstraints: payload?.business_constraints || '',
+    negativeTopics: payload?.negative_topics || '',
+    landingPageNotes: payload?.landing_page_notes || '',
+    competitorNotes: payload?.competitor_notes || '',
+    manualNotes: payload?.manual_notes || '',
+    memoryNotes: payload?.memory_notes || '',
+    sourceNotes: payload?.source_notes || '',
+    updatedAt: payload?.updated_at || '',
   };
 }
 
-function renderBackendApiConfig() {
-  const githubPagesWarning = window.location.hostname === 'maximusb93.github.io' && API_BASE.includes('github.io/api/v1')
-    ? '<div class="authStatus aiError">GitHub Pages не содержит backend. Укажите Vercel backend URL.</div>'
-    : '';
-
-  return `
-    <section class="panel backendApiConfig">
-      <div class="panelHeader">
-        <div>
-          <h3>Backend API URL</h3>
-          <p>Текущий Backend API URL: <code>${escapeHtml(API_BASE)}</code></p>
-        </div>
-      </div>
-      ${githubPagesWarning}
-      <div class="authForm" data-api-base-config>
-        <div class="authField">
-          <label for="backend-api-base">Backend API URL</label>
-          <input id="backend-api-base" type="text" data-api-base-input data-debug-name="backend-api-base" value="${escapeHtml(apiBaseDraft)}" placeholder="https://your-backend.vercel.app/api/v1" autocomplete="url" />
-        </div>
-        <button class="secondaryButton" type="button" data-save-api-base>Сохранить backend URL</button>
-      </div>
-    </section>
-  `;
-}
-
-function priorityLabel(priority) {
+function businessContextPayload(context) {
   return {
-    high: 'Высокий',
-    medium: 'Средний',
-    low: 'Низкий',
-  }[priority];
+    company_name: context.companyName || '',
+    website_url: context.websiteUrl || '',
+    industry: context.industry || '',
+    product_description: context.productDescription || '',
+    target_audience: context.targetAudience || '',
+    geography: context.geography || '',
+    main_offers: context.mainOffers || '',
+    conversion_actions: context.conversionActions || '',
+    average_order_value: context.averageOrderValue || '',
+    lead_value_notes: context.leadValueNotes || '',
+    business_constraints: context.businessConstraints || '',
+    negative_topics: context.negativeTopics || '',
+    landing_page_notes: context.landingPageNotes || '',
+    competitor_notes: context.competitorNotes || '',
+    manual_notes: context.manualNotes || '',
+    memory_notes: context.memoryNotes || '',
+    source_notes: context.sourceNotes || '',
+  };
 }
 
-function metricCard(metric) {
-  return `
-    <article class="metricCard">
-      <span>${metric.label}</span>
-      <strong>${metric.value}</strong>
-      <small>${metric.delta}</small>
-    </article>
-  `;
+function defaultBusinessContext() {
+  const client = currentClient();
+  return normalizeBusinessContext({
+    company_name: client.name || '',
+    website_url: '',
+    industry: client.segment || '',
+  });
 }
 
-function renderLanding() {
-  return `
-    <nav class="nav landingNav">
-      <a class="brand" href="#" data-view="landing" aria-label="DirectPilot AI">
-        <span class="brandIcon">✦</span>
-        DirectPilot AI
-      </a>
-      <div class="navLinks" aria-label="Главная навигация">
-        <a href="#features">Возможности</a>
-        <a href="#workflow">Как работает</a>
-        <a href="#security">Безопасность</a>
-      </div>
-      <a class="navCta" href="login.html">Войти</a>
-    </nav>
-
-    <section id="top" class="hero section">
-      <div class="heroText">
-        <div class="eyebrow">🤖 AI copilot для агентств и PPC-команд</div>
-        <h1>Автоматизируйте аудит, мониторинг и оптимизацию Яндекс.Директа</h1>
-        <p>
-          DirectPilot AI подключается к рекламным кабинетам, находит потери бюджета, объясняет рекомендации и
-          помогает безопасно внедрять изменения с подтверждением специалиста.
-        </p>
-        <div class="heroActions">
-          <a class="primaryButton" href="login.html">Перейти в кабинет <span>→</span></a>
-          <a class="secondaryButton" href="#features">Что умеет сервис</a>
-        </div>
-        <div class="trustRow">
-          <span>✓ Read-only старт</span>
-          <span>✓ Approval workflow</span>
-          <span>✓ Журнал изменений</span>
-        </div>
-      </div>
-
-      <div id="demo" class="dashboardCard" aria-label="Демо дашборда DirectPilot AI">
-        <div class="cardHeader">
-          <div>
-            <span class="muted">Клиент</span>
-            <strong>${currentClient().name}</strong>
-          </div>
-          <span class="status"><span></span> AI анализ завершён</span>
-        </div>
-
-        <div class="kpiGrid">
-          <article class="kpi green"><span>Экономия бюджета</span><strong>18%</strong></article>
-          <article class="kpi orange"><span>Аномалии найдены</span><strong>24</strong></article>
-          <article class="kpi blue"><span>CPA за 7 дней</span><strong>−12%</strong></article>
-        </div>
-
-        <div class="chartPanel">
-          <div class="chartTopline">
-            <div>
-              <span class="muted">CPA / Конверсии</span>
-              <strong>Прогноз после рекомендаций</strong>
-            </div>
-            <span class="chartIcon">↗</span>
-          </div>
-          <div class="chartBars" aria-hidden="true">
-            ${[42, 68, 51, 76, 59, 86, 72].map((height) => `<span style="height: ${height}%"></span>`).join('')}
-          </div>
-        </div>
-
-        <div class="recommendationList">
-          ${recommendations.slice(0, 3).map((item) => `
-            <article class="recommendation">
-              <div>
-                <strong>${item.title}</strong>
-                <p>${item.reason}</p>
-              </div>
-              <span>${item.impact}</span>
-            </article>
-          `).join('')}
-        </div>
-      </div>
-    </section>
-
-    <section id="features" class="section compact">
-      <div class="sectionHeading">
-        <span class="eyebrow">⚙️ Основные модули</span>
-        <h2>Визуальный каркас будущего SaaS-продукта</h2>
-        <p>
-          Первая версия интерфейса сфокусирована на ценности для агентств: быстрый аудит, понятные рекомендации,
-          контроль KPI и безопасное применение изменений.
-        </p>
-      </div>
-      <div class="featureGrid">
-        ${[
-          ['⚡', 'AI-аудит аккаунта', 'Проверка структуры, целей Метрики, UTM, ключей, ставок, объявлений и расходов без конверсий.'],
-          ['🔔', 'Мониторинг аномалий', 'Сервис предупреждает о резком росте CPA, падении конверсий, перерасходе и проблемах модерации.'],
-          ['✨', 'Рекомендации с объяснениями', 'Каждое действие сопровождается причиной, прогнозом эффекта, уровнем риска и списком затронутых объектов.'],
-          ['🛡️', 'Безопасный автопилот', 'Dry-run, согласования, лимиты, журнал изменений и откат — ИИ действует только в рамках политик клиента.'],
-          ['💬', 'Чат по рекламному аккаунту', 'Можно спросить: «где сливается бюджет?», «почему вырос CPA?» или «что сделать на этой неделе?».'],
-          ['📄', 'Отчёты для клиентов', 'Автоматические weekly-отчёты: что изменилось, что сделал специалист и какие гипотезы проверяются.'],
-        ].map(([icon, title, text]) => `
-          <article class="featureCard">
-            <span class="featureIcon">${icon}</span>
-            <h3>${title}</h3>
-            <p>${text}</p>
-          </article>
-        `).join('')}
-      </div>
-    </section>
-
-    <section id="workflow" class="section split">
-      <div>
-        <span class="eyebrow">🖱️ Workflow</span>
-        <h2>От read-only аудита до управляемого автопилота</h2>
-        <p>
-          Продукт можно запускать поэтапно: сначала дать специалисту прозрачную аналитику, затем добавить
-          рекомендации и только после накопления доверия включать автоматические действия в рамках лимитов.
-        </p>
-      </div>
-      <div class="steps">
-        ${['Подключите Яндекс.Директ, Метрику и CRM', 'Получите аудит и список потерь бюджета', 'Согласуйте безопасные рекомендации', 'Включите автопилот для низкорисковых действий'].map((step, index) => `
-          <article class="step">
-            <span>${index + 1}</span>
-            <p>${step}</p>
-            <strong>›</strong>
-          </article>
-        `).join('')}
-      </div>
-    </section>
-
-    <section id="security" class="section security">
-      <div class="securityCard">
-        <span class="securityIcon">🔐</span>
-        <h2>ИИ не меняет рекламу без правил и контроля</h2>
-        <p>
-          Для каждой рекомендации показывается diff, причина, ожидаемый эффект и риск. Автопилот работает только в
-          рамках политики клиента: лимиты бюджета, запрет удаления, подтверждение критичных операций и полный audit log.
-        </p>
-        <div class="policyGrid">
-          <span>🎯 KPI-политики</span>
-          <span>₽ Бюджетные лимиты</span>
-          <span>📊 Измерение эффекта</span>
-        </div>
-      </div>
-    </section>
-  `;
+function hasBusinessContextData(context) {
+  if (!context) return false;
+  const fields = ['industry', 'productDescription', 'targetAudience', 'geography', 'mainOffers', 'conversionActions', 'businessConstraints'];
+  return fields.some((field) => String(context[field] || '').trim().length > 0);
 }
 
-
-function renderLogin() {
-  return `
-    <section class="authPage">
-      <a class="brand authBrand" href="index.html">
-        <span class="brandIcon">✦</span>
-        DirectPilot AI
-      </a>
-      <div class="authCard">
-        <span class="eyebrow">🔐 Вход по email-коду</span>
-        <h1>Войдите в личный кабинет</h1>
-        <p>Мы отправим одноразовый код на почту. После подтверждения откроется отдельная страница кабинета.</p>
-        <form class="authForm" data-auth-form>
-          <div class="authField">
-            <label for="login-email">Email</label>
-            <input id="login-email" type="email" name="email" value="${escapeHtml(authEmail)}" placeholder="you@agency.ru" autocomplete="email" inputmode="email" autofocus required />
-          </div>
-          ${authStep === 'code' ? `
-            <div class="authField">
-              <label for="login-code">Код из письма</label>
-              <input id="login-code" type="text" name="code" value="${escapeHtml(authCode)}" inputmode="numeric" maxlength="6" placeholder="000000" autocomplete="one-time-code" required />
-            </div>
-          ` : ''}
-          <button class="primaryButton" type="submit" ${authLoading ? 'disabled' : ''}>${authLoading ? 'Отправляем...' : (authStep === 'code' ? 'Подтвердить код' : 'Получить код')}</button>
-        </form>
-        ${authStatus ? `<div class="authStatus">${authStatus}</div>` : ''}
-        ${devCode ? `<div class="authStatus dev">Dev code: <strong>${devCode}</strong></div>` : ''}
-        ${renderBackendApiConfig()}
-        <a class="secondaryButton" href="index.html">← На главную</a>
-      </div>
-    </section>
-  `;
+function businessContextCopyText(context = businessContext || businessContextDraft || defaultBusinessContext()) {
+  const rows = [
+    ['Компания', context.companyName],
+    ['Сайт', context.websiteUrl],
+    ['Ниша', context.industry],
+    ['Продукт', context.productDescription],
+    ['ЦА', context.targetAudience],
+    ['География', context.geography],
+    ['Офферы', context.mainOffers],
+    ['Целевые действия', context.conversionActions],
+    ['Средний чек / ценность лида', context.averageOrderValue],
+    ['Качественные лиды', context.leadValueNotes],
+    ['Ограничения бизнеса', context.businessConstraints],
+    ['Нерелевантные темы', context.negativeTopics],
+    ['Посадочные страницы', context.landingPageNotes],
+    ['Конкуренты', context.competitorNotes],
+    ['Заметки специалиста', context.manualNotes],
+    ['Память проекта', context.memoryNotes],
+    ['Источники', context.sourceNotes],
+  ];
+  return rows.map(([label, value]) => `${label}: ${value || '—'}`).join('\n');
 }
 
-async function connectYandexIntegration() {
-  const response = await apiFetch('/auth/yandex/start');
-  const payload = await response.json();
-  if (!response.ok || !payload.auth_url) throw new Error(payload.detail || payload.message || 'OAuth URL не получен');
-  window.location.href = payload.auth_url;
+function setBusinessContextDraftFromForm(form) {
+  const formData = new FormData(form);
+  businessContextDraft = normalizeBusinessContext({
+    company_name: formData.get('companyName'),
+    website_url: formData.get('websiteUrl'),
+    industry: formData.get('industry'),
+    product_description: formData.get('productDescription'),
+    target_audience: formData.get('targetAudience'),
+    geography: formData.get('geography'),
+    main_offers: formData.get('mainOffers'),
+    conversion_actions: formData.get('conversionActions'),
+    average_order_value: formData.get('averageOrderValue'),
+    lead_value_notes: formData.get('leadValueNotes'),
+    business_constraints: formData.get('businessConstraints'),
+    negative_topics: formData.get('negativeTopics'),
+    landing_page_notes: formData.get('landingPageNotes'),
+    competitor_notes: formData.get('competitorNotes'),
+    manual_notes: formData.get('manualNotes'),
+    memory_notes: formData.get('memoryNotes'),
+    source_notes: formData.get('sourceNotes'),
+  });
+  return businessContextDraft;
 }
 
-async function loadAiStatus() {
-  try {
-    const response = await fetch(`${API_BASE}/ai/openrouter/status`);
-    aiStatus = response.ok ? await response.json() : { models: [], configured: false, message: 'Не удалось получить статус OpenRouter.' };
-    const hasSavedSettings = Boolean(window.localStorage.getItem(getAiModelSettingsKey()));
-    if (!hasSavedSettings) {
-      aiPreset = 'balanced';
-      aiModel = 'google/gemma-3-12b-it';
-      saveAiModelSettings();
-    }
-    if (!getConfiguredAiModelIds().includes(aiModel) && aiModel !== CUSTOM_MODEL_VALUE) {
-      aiCustomModel = aiModel;
-      aiModel = CUSTOM_MODEL_VALUE;
-      saveAiModelSettings();
-    }
-    if (activeView === 'ai') render();
-  } catch (error) {
-    aiStatus = { models: [], configured: false, message: 'Backend OpenRouter недоступен.' };
-    if (activeView === 'ai') render();
-  }
+function businessContextForAi() {
+  const context = businessContext || businessContextDraft;
+  if (!hasBusinessContextData(context)) return null;
+  return businessContextPayload(context);
 }
 
-async function requestAiInsight() {
-  aiLoading = true;
-  aiError = '';
-  aiResponse = null;
-  render();
-  try {
-    const response = await apiFetch('/ai/openrouter/generate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...aiRequestOptions(), prompt: aiPrompt }),
-    });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.detail || 'OpenRouter не вернул ответ');
-    aiResponse = payload;
-  } catch (error) {
-    aiError = error.message;
-  } finally {
-    aiLoading = false;
-    render();
-  }
+function contextCompletenessScore(context = businessContext || businessContextDraft) {
+  if (!context) return 0;
+  const important = ['industry', 'productDescription', 'targetAudience', 'geography', 'mainOffers', 'conversionActions', 'businessConstraints', 'negativeTopics'];
+  const filled = important.filter((field) => String(context[field] || '').trim().length > 0).length;
+  return Math.round((filled / important.length) * 100);
 }
 
-async function testSelectedAiModel() {
-  if (!canUseActiveAiModel()) {
-    aiModelTestStatus = 'Введите ID своей OpenRouter-модели или выберите Gemma/Qwen.';
-    render();
-    return;
-  }
-  aiModelTestLoading = true;
-  aiModelTestStatus = 'Проверяем модель коротким запросом...';
-  render();
-  try {
-    const response = await apiFetch('/ai/openrouter/generate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...aiRequestOptions(), prompt: 'Ответь одним словом: OK', inspect_request: true }),
-    });
-    const payload = await response.json();
-    if (!response.ok || payload.error) {
-      if (payload.requestDebug) openrouterRequestDebug = payload.requestDebug;
-      const normalized = normalizeAiErrorPayload(payload, 'Модель не ответила на тестовый запрос.');
-      if (normalized.code === 'openrouter_rate_limited' || response.status === 429) {
-        aiModelTestStatus = `Модель временно ограничена по лимитам: ${normalized.model}. Free/custom модели могут чаще получать rate limit.`;
-      } else if (!aiStatus.configured || response.status === 503) {
-        aiModelTestStatus = 'OpenRouter не настроен или недоступен на backend.';
-      } else {
-        aiModelTestStatus = `${normalized.message} Модель: ${normalized.model}.`;
-      }
-      return;
-    }
-    if (payload.requestDebug) openrouterRequestDebug = payload.requestDebug;
-    aiModelTestStatus = `Модель отвечает. Фактическая модель: ${payload.model || activeAiModel()}.`;
-  } catch (error) {
-    aiModelTestStatus = `Не удалось проверить модель: ${error.message}`;
-  } finally {
-    aiModelTestLoading = false;
-    render();
-  }
+function campaignOptions() {
+  return (perfSummary?.campaigns || []).map((campaign) => campaign.name).filter(Boolean);
 }
 
+function activeAiModel() {
+  return selectedAiModel === CUSTOM_MODEL_VALUE ? customAiModel.trim() || 'openrouter/auto' : selectedAiModel;
+}
+
+function activeAiBudget() {
+  return selectedAiPreset === 'deep'
+    ? { maxTokens: 9000, targetContextTokens: 18000, includeRawToolResults: true }
+    : selectedAiPreset === 'balanced'
+      ? { maxTokens: 5000, targetContextTokens: 9000, includeRawToolResults: aiToolResultsMode === 'raw' }
+      : { maxTokens: 2500, targetContextTokens: 3500, includeRawToolResults: false };
+}
+
+function aiChatRequestPayload(message) {
+  const budget = activeAiBudget();
+  return {
+    client_id: selectedClientId || null,
+    message,
+    model: activeAiModel(),
+    max_tokens: budget.maxTokens,
+    target_context_tokens: aiMaxTokensMode === 'deep' ? 18000 : budget.targetContextTokens,
+    include_raw_tool_results: aiToolResultsMode === 'raw' || budget.includeRawToolResults,
+    compact_context: aiCompactContext,
+    include_business_context: true,
+    business_context: businessContextForAi(),
+    campaign_name: aiChatSelectedCampaignName || null,
+    search_query_limit: Number(aiSearchQueryLimit) || 20,
+    conversation: aiChatMessages.slice(-Number(aiChatHistoryLimit || 3)).map((messageItem) => ({
+      role: messageItem.role,
+      content: messageItem.content,
+    })),
+  };
+}
+
+function aiPromptDebugParams() {
+  const params = new URLSearchParams({
+    preset: selectedAiPreset,
+    max_tokens_mode: aiMaxTokensMode,
+    compact_context: aiCompactContext ? 'true' : 'false',
+    tool_results_mode: aiToolResultsMode,
+    chat_history_limit: String(aiChatHistoryLimit),
+    search_query_limit: aiSearchQueryLimit || '20',
+    include_business_context: 'true',
+  });
+  if (aiChatSelectedCampaignName) params.set('campaign_name', aiChatSelectedCampaignName);
+  return params;
+}
 
 async function loadAiPromptDebug() {
   if (!selectedClientId) {
-    aiPromptDebugStatus = 'Сначала выберите клиента.';
-    aiPromptDebugSnapshot = null;
-    render();
-    return;
-  }
-  if (!canUseActiveAiModel()) {
-    aiPromptDebugStatus = 'Введите ID своей OpenRouter-модели или выберите Gemma/Qwen.';
-    aiPromptDebugSnapshot = null;
+    aiPromptDebugError = 'Сначала выберите клиента.';
     render();
     return;
   }
   aiPromptDebugLoading = true;
-  aiPromptDebugStatus = 'Оцениваем размер AI-контекста...';
+  aiPromptDebugError = '';
   render();
   try {
-    const options = aiRequestOptions();
-    const params = new URLSearchParams({
-      mode: 'chat',
-      model: options.model,
-      ai_preset: options.ai_preset,
-      max_tokens: String(options.max_tokens),
-      compact_context: String(options.compact_context),
-      tool_results_mode: options.tool_results_mode,
-      chat_history_limit: String(options.chat_history_limit),
-      selected_campaign_name: selectedAiCampaignName || '',
-      message: aiChatInput.trim() || 'Проанализируй выбранного клиента DirectPilot AI.',
-    });
-    params.set('search_query_limit', String(options.search_query_limit || 0));
-    params.set('history_json', JSON.stringify(aiChatMessages.slice(-Number(options.chat_history_limit || 3)).map((item) => ({ role: item.role, content: item.content }))));
-    const response = await apiFetch(`/clients/${selectedClientId}/ai/prompt-debug?${params.toString()}`);
+    const response = await apiFetch(`/clients/${selectedClientId}/ai/prompt-debug?${aiPromptDebugParams().toString()}`);
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || 'Не удалось проверить размер AI-контекста');
-    aiPromptDebugSnapshot = payload;
-    openrouterRequestDebug = payload.openrouterRequestPreview || payload.openrouterRequest || openrouterRequestDebug;
-    aiRequestInspectorEnabled = true;
-    aiPromptDebugStatus = payload.size?.isTooLarge
-      ? 'Контекст слишком большой для выбранной модели.'
-      : 'Размер AI-контекста в пределах лимита модели.';
+    aiPromptDebug = payload;
   } catch (error) {
-    aiPromptDebugStatus = `Не удалось проверить AI-контекст: ${error.message}`;
-    aiPromptDebugSnapshot = null;
+    aiPromptDebugError = error.message || 'Не удалось проверить размер AI-контекста';
   } finally {
     aiPromptDebugLoading = false;
     render();
   }
 }
 
-
-
-async function requestAiChatAnswer() {
+async function requestAiRecommendations() {
   if (!selectedClientId) {
-    aiChatError = 'Сначала добавьте клиента: чат анализирует данные в контексте выбранного клиента.';
+    aiRecommendationsError = 'Сначала выберите клиента.';
     render();
     return;
   }
-  if (!canUseActiveAiModel()) {
-    aiChatError = 'Введите ID своей OpenRouter-модели или выберите Gemma/Qwen.';
+  aiRecommendationsLoading = true;
+  aiRecommendationsError = '';
+  render();
+  try {
+    const budget = activeAiBudget();
+    const response = await apiFetch(`/clients/${selectedClientId}/ai/recommendations`, {
+      method: 'POST',
+      body: JSON.stringify({
+        model: activeAiModel(),
+        preset: selectedAiPreset,
+        max_tokens: budget.maxTokens,
+        target_context_tokens: budget.targetContextTokens,
+        include_business_context: true,
+        business_context: businessContextForAi(),
+        compact_context: aiCompactContext,
+        include_raw_tool_results: aiToolResultsMode === 'raw' || budget.includeRawToolResults,
+        search_query_limit: Number(aiSearchQueryLimit) || 20,
+      }),
+    });
+    const payload = await response.json();
+    if (!response.ok || payload.error) {
+      throw new Error(payload.message || payload.detail || 'Не удалось сформировать AI-рекомендации');
+    }
+    clientAiRecommendations = payload;
+    if (payload.business_context_memory_note) {
+      await saveAiMemoryNote(payload.business_context_memory_note);
+    }
+  } catch (error) {
+    aiRecommendationsError = error.message || 'Не удалось сформировать AI-рекомендации';
+  } finally {
+    aiRecommendationsLoading = false;
     render();
-    return;
   }
-  const message = aiChatInput.trim();
-  if (!message) return;
-  const history = aiChatMessages.slice(-8);
-  lastAiAction = { type: 'chat', message };
-  aiChatMessages = [...aiChatMessages, { role: 'user', content: message }];
+}
+
+async function sendAiChatMessage(message) {
+  const text = String(message || aiChatInput || '').trim();
+  if (!text || aiChatLoading) return;
+  aiChatMessages = [...aiChatMessages, { role: 'user', content: text }];
   aiChatInput = '';
   aiChatLoading = true;
   aiChatError = '';
   aiChatErrorDetails = null;
-  aiChatToolTraces = [];
   render();
-  let aiChatErrorPayload = null;
   try {
     const response = await apiFetch('/ai/chat', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ client_id: selectedClientId, ...aiRequestOptions(), message, history, client_context: currentClient(), selected_campaign_name: selectedAiCampaignName || null, inspect_request: aiRequestInspectorEnabled }),
+      body: JSON.stringify(aiChatRequestPayload(text)),
     });
     const payload = await response.json();
-    aiChatErrorPayload = payload;
     if (!response.ok || payload.error) {
-      if (payload.requestDebug) openrouterRequestDebug = payload.requestDebug;
-      const normalized = normalizeAiErrorPayload(payload, 'AI-чат не вернул ответ');
-      aiChatErrorDetails = normalized;
-      throw new Error(normalized.message);
+      const message = payload.message || payload.detail || 'AI-чат не вернул ответ';
+      const error = new Error(message);
+      error.payload = payload;
+      error.status = response.status;
+      throw error;
     }
-    if (payload.requestDebug) openrouterRequestDebug = payload.requestDebug;
-    if (!payload.requestDebug && payload.requestTrace?.openrouterPayload) {
-      openrouterRequestDebug = { mode: 'chat', payload: payload.requestTrace.openrouterPayload, size: payload.requestTrace.prompt || {} };
-    }
-    aiChatMessages = [...aiChatMessages, { role: 'assistant', content: payload.answer, source: payload.source, requestTrace: payload.requestTrace || null, requestDebug: payload.requestDebug || null }];
+    aiChatMessages = [...aiChatMessages, { role: 'assistant', content: payload.answer || 'Нет ответа.' }];
     aiChatToolTraces = payload.tool_traces || [];
-  } catch (error) {
-    if (aiChatErrorPayload?.requestTrace && !aiChatMessages.some((item) => item.requestTrace === aiChatErrorPayload.requestTrace)) {
-      if (!aiChatErrorPayload.requestDebug && aiChatErrorPayload.requestTrace?.openrouterPayload) {
-        openrouterRequestDebug = { mode: 'chat', payload: aiChatErrorPayload.requestTrace.openrouterPayload, size: aiChatErrorPayload.requestTrace.prompt || {} };
-      }
-      aiChatMessages = [...aiChatMessages, { role: 'assistant', content: aiChatErrorPayload.answer || error.message, source: aiChatErrorPayload.source, requestTrace: aiChatErrorPayload.requestTrace, requestDebug: aiChatErrorPayload.requestDebug || null }];
+    if (payload.business_context_memory_note) {
+      await saveAiMemoryNote(payload.business_context_memory_note);
     }
-    aiChatError = error.message;
+  } catch (error) {
+    const payload = error.payload || {};
+    aiChatError = error.message || 'AI-чат не вернул ответ';
+    aiChatErrorDetails = payload;
+    if (payload.retry_suggestion) {
+      aiChatMessages = [...aiChatMessages, { role: 'assistant', content: `Не смог собрать ответ: ${payload.retry_suggestion}` }];
+    }
   } finally {
     aiChatLoading = false;
-    saveActiveAiState();
     render();
   }
 }
 
-async function requestClientAiRecommendations() {
-  if (!selectedClientId) {
-    clientAiError = 'Сначала добавьте клиента и подключите аккаунты Яндекс.Директа/Метрики.';
-    render();
-    return;
-  }
-  if (!canUseActiveAiModel()) {
-    clientAiError = 'Введите ID своей OpenRouter-модели или выберите Gemma/Qwen.';
-    render();
-    return;
-  }
-  clientAiLoading = true;
-  clientAiError = '';
-  clientAiRecommendations = null;
-  lastAiAction = { type: 'recommendations' };
-  render();
+async function saveAiMemoryNote(note) {
+  if (!selectedClientId || !note) return;
+  aiMemoryStatus = 'Сохраняем вывод в память проекта...';
   try {
-    const response = await apiFetch(`/clients/${selectedClientId}/ai/recommendations`, {
+    const response = await apiFetch(`/clients/${selectedClientId}/business-context/memory-note`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...aiRequestOptions(), client_context: currentClient() }),
+      body: JSON.stringify({ note }),
     });
     const payload = await response.json();
-    if (!response.ok || payload.error) {
-      const normalized = normalizeAiErrorPayload(payload, 'Не удалось сформировать AI-рекомендации');
-      clientAiError = `${normalized.message} Модель: ${normalized.model}. Free/custom модели могут часто получать rate limit.`;
-      throw new Error(clientAiError);
-    }
-    clientAiRecommendations = payload;
-    clientAiRecommendationsByClientId[selectedClientId] = payload;
+    if (!response.ok) throw new Error(payload.detail || 'Не удалось сохранить в память проекта');
+    businessContext = normalizeBusinessContext(payload);
+    businessContextDraft = businessContext;
+    aiMemoryStatus = 'AI-вывод сохранён в память проекта.';
   } catch (error) {
-    clientAiError = clientAiError || error.message;
-  } finally {
-    clientAiLoading = false;
-    render();
+    aiMemoryStatus = error.message || 'Не удалось сохранить вывод в память проекта.';
   }
 }
 
-async function loadIntegrationStatus() {
+async function loadAiStatus() {
   try {
-    const response = await apiFetch('/auth/yandex/status');
-    integrationStatus = response.ok ? await response.json() : {};
-    if (activeView === 'integrations') render();
+    const response = await fetch(`${API_BASE}/ai/openrouter/status`);
+    aiStatus = response.ok ? await response.json() : { models: [], configured: false, message: 'Не удалось получить статус OpenRouter.' };
   } catch (error) {
-    if (error.message === 'Authentication required') return;
-    integrationStatus = { message: 'Не удалось получить статус интеграций' };
-    if (activeView === 'integrations') render();
+    aiStatus = { models: [], configured: false, message: 'Backend недоступен, OpenRouter не проверен.' };
   }
+  render();
 }
 
-async function loadClientYandexIntegration(force = false) {
-  if (!selectedClientId || clientYandexLoading) return;
-  if (!force && clientYandexLoadedFor === selectedClientId && clientYandexIntegration) return;
-  clientYandexLoading = true;
-  try {
-    const response = await apiFetch(`/clients/${selectedClientId}/integrations/yandex`);
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.detail || 'Не удалось загрузить привязку Яндекса');
-    clientYandexIntegration = payload;
-    clientYandexLoadedFor = selectedClientId;
-    clientYandexStatus = payload.message || '';
-  } catch (error) {
-    if (error.message === 'Authentication required') return;
-    clientYandexIntegration = null;
-    clientYandexLoadedFor = selectedClientId;
-    clientYandexStatus = error.message;
-  } finally {
-    clientYandexLoading = false;
-    if (['dashboard', 'integrations', 'ai', 'optimization'].includes(activeView)) render();
-  }
-}
-
-async function bindClientYandexAccount(accountId) {
-  if (!selectedClientId || !accountId) return;
-  clientYandexStatus = 'Привязываем Яндекс-аккаунт...';
+async function generateAiInsight(prompt) {
+  aiLoading = true;
+  aiError = '';
+  aiResult = null;
   render();
   try {
-    const response = await apiFetch(`/clients/${selectedClientId}/integrations/yandex`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ yandex_account_id: accountId }),
+    const budget = activeAiBudget();
+    const response = await apiFetch('/ai/openrouter/generate', {
+      method: 'POST',
+      body: JSON.stringify({
+        prompt,
+        model: activeAiModel(),
+        max_tokens: budget.maxTokens,
+        preset: selectedAiPreset,
+        business_context: businessContextForAi(),
+      }),
     });
     const payload = await response.json();
-    if (!response.ok) throw new Error(payload.detail || 'Не удалось привязать аккаунт');
-    clientYandexStatus = 'Яндекс-аккаунт привязан к клиенту.';
-    await loadClientYandexIntegration(true);
-    clientsLoaded = false;
-    await loadClientsFromApi();
+    if (!response.ok) throw new Error(payload.detail || 'OpenRouter не вернул ответ');
+    aiResult = payload;
   } catch (error) {
-    clientYandexStatus = error.message;
+    aiError = error.message || 'Не удалось получить AI-ответ';
   } finally {
+    aiLoading = false;
     render();
   }
 }
 
-async function unbindClientYandexAccount() {
-  if (!selectedClientId) return;
-  clientYandexStatus = 'Отвязываем Яндекс-аккаунт...';
-  render();
-  try {
-    const response = await apiFetch(`/clients/${selectedClientId}/integrations/yandex`, { method: 'DELETE' });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.detail || 'Не удалось отвязать аккаунт');
-    clientYandexStatus = 'Яндекс-аккаунт отвязан от клиента.';
-    await loadClientYandexIntegration(true);
-    clientsLoaded = false;
-    await loadClientsFromApi();
-  } catch (error) {
-    clientYandexStatus = error.message;
-  } finally {
-    render();
-  }
+function pageContextSummary() {
+  const client = currentClient();
+  const dataStatus = hasPerformanceData() ? 'есть статистика' : 'статистика не загружена';
+  const contextStatus = hasBusinessContextData(businessContext) ? 'контекст заполнен' : 'контекст не заполнен';
+  return `Клиент: ${client.name || 'не выбран'}. Direct: ${client.directLogin || 'не подключен'}. Метрика: ${client.metricaCounter || 'не подключена'}. Данные: ${dataStatus}. Бизнес-контекст: ${contextStatus}.`;
 }
 
+function aiPromptFor(type) {
+  const base = pageContextSummary();
+  const prompts = {
+    audit: `Проведи аудит рекламного проекта. ${base} Найди слабые места в структуре, целях, данных и объясни приоритеты действий.`,
+    recommendations: `Сформируй практический план оптимизации Яндекс.Директа. ${base} Раздели рекомендации на быстрые правки, гипотезы и риски.`,
+    report: `Подготовь управленческий отчёт для клиента. ${base} Опиши результаты, проблемы, следующие шаги и вопросы к клиенту.`,
+    questions: `Составь список уточняющих вопросов к клиенту, чтобы улучшить аналитику и рекомендации. ${base}`,
+  };
+  return prompts[type] || prompts.audit;
+}
 
+function normalizeOptimizationPlan(payload) {
+  if (!payload) return null;
+  return {
+    ...payload,
+    dailyBudgetRecommendations: Array.isArray(payload.daily_budget_recommendations) ? payload.daily_budget_recommendations : payload.dailyBudgetRecommendations || [],
+    deviceAdjustments: Array.isArray(payload.device_adjustments) ? payload.device_adjustments : payload.deviceAdjustments || [],
+    generatedAt: payload.generated_at || payload.generatedAt || '',
+  };
+}
 
-async function runClientSync() {
-  if (!selectedClientId) return;
-  syncLoading = true;
-  syncStatusMessage = 'Запускаем синхронизацию...';
-  render();
-  try {
-    const response = await apiFetch(`/clients/${selectedClientId}/sync`, { method: 'POST' });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.detail || 'Ошибка синхронизации');
-    if (payload.rows_loaded === 0 && (payload.status === 'failed' || payload.status === 'no_data' || payload.status === 'success')) {
-      syncStatusMessage = payload.error || 'Данные не загружены: подключите Яндекс.Директ или проверьте выбранный период.';
-    } else {
-      syncStatusMessage = `Синхронизация: ${payload.status}, загружено кампаний: ${payload.rows_loaded}, тип отчёта: ${payload.source_type}`;
-    }
-    clientsLoaded = false;
-    await loadClientsFromApi();
-    await loadPerformanceSummary();
-    await loadSyncJobs();
-    optimizationPlan = null;
-    optimizationPlanByClientId[selectedClientId] = null;
-    await loadOptimizationPlan();
-  } catch (error) {
-    syncStatusMessage = `Ошибка синхронизации: ${error.message}`;
-    await loadSyncJobs();
-  } finally {
-    syncLoading = false;
-    render();
-  }
+function normalizeOptimizationAction(action) {
+  return {
+    ...action,
+    actionType: action.action_type || action.actionType,
+    entityType: action.entity_type || action.entityType,
+    entityId: action.entity_id || action.entityId,
+    entityName: action.entity_name || action.entityName,
+    currentValue: action.current_value ?? action.currentValue,
+    proposedValue: action.proposed_value ?? action.proposedValue,
+    createdAt: action.created_at || action.createdAt,
+    updatedAt: action.updated_at || action.updatedAt,
+  };
+}
+
+function normalizeOptimizationPreview(payload) {
+  return {
+    ...payload,
+    actionId: payload.action_id || payload.actionId,
+    steps: Array.isArray(payload.steps) ? payload.steps : [],
+    warnings: Array.isArray(payload.warnings) ? payload.warnings : [],
+    directPayload: payload.direct_payload || payload.directPayload || null,
+    canApply: Boolean(payload.can_apply ?? payload.canApply),
+  };
+}
+
+function getFilteredOptimizationActions() {
+  return optimizationActions.filter((action) => optimizationActionFilter === 'all' || action.status === optimizationActionFilter);
 }
 
 async function loadPerformanceSummary() {
-  if (!selectedClientId) return;
+  if (!selectedClientId || perfLoading) return;
   perfLoading = true;
-  perfSummary = null;
+  perfStatus = 'Загружаем сводку по кампаниям...';
   render();
   try {
     const response = await apiFetch(`/clients/${selectedClientId}/performance-summary`);
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || 'Не удалось загрузить сводку');
     perfSummary = payload;
+    perfStatus = 'Сводка обновлена.';
   } catch (error) {
-    syncStatusMessage = `Ошибка сводки: ${error.message}`;
+    perfStatus = error.message || 'Не удалось загрузить сводку.';
   } finally {
     perfLoading = false;
     render();
   }
 }
 
-function resetSelectedClientOperationalState() {
-  perfSummary = null;
-  syncJobs = [];
-  syncJobsStatus = '';
-  syncStatusMessage = '';
-  clientYandexIntegration = null;
-  clientYandexLoadedFor = '';
-  clientYandexStatus = '';
-  optimizationPlan = optimizationPlanByClientId[selectedClientId] || null;
-  optimizationPlanStatus = '';
-  optimizationFilter = 'all';
-  optimizationActions = optimizationActionsByClientId[selectedClientId] || [];
-  optimizationActionFilter = optimizationActionFilterByClientId[selectedClientId] || 'all';
-  optimizationActionsStatus = '';
-  optimizationExecutionPreviewStatus = '';
-  optimizationActionsLoadedFor = optimizationActionsByClientId[selectedClientId] ? selectedClientId : '';
-  businessContext = null;
-  businessContextStatus = '';
-  businessContextLoadedFor = '';
-}
-
-async function loadBusinessContext(force = false) {
+async function loadBusinessContext() {
   if (!selectedClientId || businessContextLoading) return;
-  if (!force && businessContextLoadedFor === selectedClientId && businessContext) return;
   businessContextLoading = true;
   businessContextStatus = 'Загружаем контекст бизнеса...';
-  if (['business-context', 'ai', 'dashboard'].includes(activeView)) render();
+  render();
   try {
     const response = await apiFetch(`/clients/${selectedClientId}/business-context`);
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || 'Не удалось загрузить контекст бизнеса');
-    businessContext = payload;
-    businessContextLoadedFor = selectedClientId;
-    businessContextStatus = '';
+    businessContext = normalizeBusinessContext(payload);
+    businessContextDraft = businessContext;
+    businessContextStatus = hasBusinessContextData(businessContext) ? 'Контекст бизнеса загружен.' : 'Контекст пока пустой. Заполните основные поля.';
   } catch (error) {
-    businessContextStatus = `Ошибка контекста бизнеса: ${error.message}`;
-    businessContextLoadedFor = selectedClientId;
+    businessContext = businessContext || defaultBusinessContext();
+    businessContextDraft = businessContext;
+    businessContextStatus = error.message || 'Не удалось загрузить контекст бизнеса.';
   } finally {
     businessContextLoading = false;
-    if (['business-context', 'ai', 'dashboard'].includes(activeView)) render();
+    render();
   }
 }
 
-async function saveBusinessContextFromForm(form) {
-  if (!selectedClientId || !form) return;
-  const formData = new FormData(form);
-  const fieldNames = [
-    'brandName',
-    'businessNiche',
-    'productSummary',
-    'targetAudience',
-    'geography',
-    'seasonality',
-    'mainOffers',
-    'conversionActions',
-    'averageOrderValue',
-    'leadValueNotes',
-    'businessConstraints',
-    'negativeTopics',
-    'landingPageNotes',
-    'competitorNotes',
-    'manualNotes',
-    'memoryNotes',
-    'sourceNotes',
-  ];
-  const payload = {};
-  fieldNames.forEach((name) => {
-    payload[name] = String(formData.get(name) || '').trim() || null;
-  });
-  businessContextLoading = true;
+async function saveBusinessContext(form) {
+  if (!selectedClientId) return;
+  const draft = setBusinessContextDraftFromForm(form);
+  businessContextSaving = true;
   businessContextStatus = 'Сохраняем контекст бизнеса...';
   render();
   try {
     const response = await apiFetch(`/clients/${selectedClientId}/business-context`, {
       method: 'PUT',
-      body: JSON.stringify(payload),
+      body: JSON.stringify(businessContextPayload(draft)),
     });
-    const saved = await response.json();
-    if (!response.ok) throw new Error(saved.detail || 'Не удалось сохранить контекст бизнеса');
-    businessContext = saved;
-    businessContextLoadedFor = selectedClientId;
-    businessContextStatus = 'Контекст бизнеса сохранён.';
-    await loadPerformanceSummary();
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.detail || 'Не удалось сохранить контекст бизнеса');
+    businessContext = normalizeBusinessContext(payload);
+    businessContextDraft = businessContext;
+    businessContextStatus = 'Контекст бизнеса сохранён. AI будет использовать его в рекомендациях.';
   } catch (error) {
-    businessContextStatus = `Ошибка сохранения контекста: ${error.message}`;
+    businessContextStatus = error.message || 'Не удалось сохранить контекст бизнеса.';
   } finally {
-    businessContextLoading = false;
+    businessContextSaving = false;
     render();
   }
 }
 
-async function saveAiMessageToProjectMemory(message) {
-  if (!selectedClientId || !message) return;
-  businessContextStatus = 'Сохраняем в память проекта...';
+async function startSync() {
+  if (!selectedClientId || !canRunSync() || syncLoading) return;
+  syncLoading = true;
+  syncStatusMessage = 'Запускаем синхронизацию с Директом и Метрикой...';
   render();
   try {
-    const response = await apiFetch(`/clients/${selectedClientId}/business-context/memory-note`, {
-      method: 'POST',
-      body: JSON.stringify({ note: message }),
-    });
+    const response = await apiFetch(clientSyncPath(selectedClientId), { method: 'POST' });
     const payload = await response.json();
-    if (!response.ok) throw new Error(payload.detail || 'Не удалось сохранить в память проекта');
-    businessContext = payload;
-    businessContextLoadedFor = selectedClientId;
-    businessContextStatus = 'Ответ сохранён в память проекта.';
+    if (!response.ok) throw new Error(payload.detail || 'Ошибка синхронизации');
+    syncStatusMessage = `Синхронизация запущена. Статус: ${syncJobStatusLabel(payload.status)}.`;
+    await loadSyncJobs();
+    await loadPerformanceSummary();
   } catch (error) {
-    businessContextStatus = `Ошибка памяти проекта: ${error.message}`;
+    syncStatusMessage = error.message || 'Не удалось запустить синхронизацию.';
   } finally {
+    syncLoading = false;
     render();
   }
 }
 
 async function loadSyncJobs() {
-  if (!selectedClientId) return;
+  if (!selectedClientId || syncJobsLoading) return;
   syncJobsLoading = true;
-  syncJobsStatus = 'Загружаем историю синхронизаций...';
-  if (activeView === 'dashboard') render();
+  render();
   try {
     const response = await apiFetch(`/clients/${selectedClientId}/sync/jobs`);
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || 'Не удалось загрузить историю синхронизаций');
     syncJobs = Array.isArray(payload) ? payload : [];
-    syncJobsStatus = syncJobs.length ? `Загружено заданий: ${syncJobs.length}` : 'Синхронизация ещё не запускалась';
   } catch (error) {
-    syncJobsStatus = error.message;
+    if (!syncStatusMessage) syncStatusMessage = error.message || 'История синхронизаций недоступна.';
   } finally {
     syncJobsLoading = false;
-    if (activeView === 'dashboard') render();
+    render();
   }
 }
 
 async function loadOptimizationPlan() {
-  if (!selectedClientId) return;
+  if (!selectedClientId || optimizationPlanLoading) return;
   optimizationPlanLoading = true;
-  optimizationPlanStatus = 'Формируем план оптимизации...';
-  if (activeView === 'optimization') render();
+  optimizationStatus = 'Формируем план оптимизации...';
+  render();
   try {
     const response = await apiFetch(`/clients/${selectedClientId}/optimization-plan`);
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || 'Не удалось загрузить план оптимизации');
-    optimizationPlan = payload;
-    optimizationPlanByClientId[selectedClientId] = payload;
-    optimizationPlanStatus = payload.actions?.length ? `Черновиков действий: ${payload.actions.length}` : 'Критичных действий не найдено.';
+    optimizationPlan = normalizeOptimizationPlan(payload);
+    optimizationStatus = 'План оптимизации обновлён.';
   } catch (error) {
-    optimizationPlanStatus = error.message;
+    optimizationStatus = error.message || 'Не удалось сформировать план оптимизации.';
   } finally {
     optimizationPlanLoading = false;
-    if (activeView === 'optimization') render();
+    render();
   }
 }
 
-async function loadOptimizationActions() {
-  if (!selectedClientId) return;
+async function loadOptimizationActions(force = false) {
+  if (!selectedClientId || optimizationActionsLoading) return;
+  if (!force && optimizationActionsLoadedFor === selectedClientId) return;
   optimizationActionsLoading = true;
   optimizationActionsStatus = 'Загружаем черновики согласования...';
-  if (activeView === 'optimization') render();
+  render();
   try {
-    const query = optimizationActionFilter && optimizationActionFilter !== 'all' ? `?status=${encodeURIComponent(optimizationActionFilter)}` : '';
+    const query = optimizationActionFilter !== 'all' ? `?status=${encodeURIComponent(optimizationActionFilter)}` : '';
     const response = await apiFetch(`/clients/${selectedClientId}/optimization-actions${query}`);
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || 'Не удалось загрузить черновики согласования');
-    optimizationActions = Array.isArray(payload.actions) ? payload.actions : [];
-    optimizationActionsByClientId[selectedClientId] = optimizationActions;
+    optimizationActions = Array.isArray(payload) ? payload.map(normalizeOptimizationAction) : [];
     optimizationActionsLoadedFor = selectedClientId;
-    optimizationActionsStatus = optimizationActions.length ? `Сохранено черновиков: ${optimizationActions.length}` : 'Сохранённых черновиков пока нет.';
+    optimizationActionsStatus = optimizationActions.length ? 'Черновики согласования загружены.' : 'Черновиков пока нет. Сохраните план оптимизации как черновики.';
   } catch (error) {
-    optimizationActionsStatus = error.message;
-  } finally {
-    optimizationActionsLoading = false;
-    if (activeView === 'optimization') render();
-  }
-}
-
-async function saveOptimizationPlanAsDrafts() {
-  if (!selectedClientId) return;
-  optimizationActionsLoading = true;
-  optimizationActionsStatus = 'Сохраняем текущий план как черновики...';
-  render();
-  try {
-    const response = await apiFetch(`/clients/${selectedClientId}/optimization-actions/from-plan`, { method: 'POST' });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.detail || 'Не удалось сохранить черновики');
-    optimizationActions = Array.isArray(payload.actions) ? payload.actions : [];
-    optimizationActionsByClientId[selectedClientId] = optimizationActions;
-    optimizationActionsStatus = optimizationActions.length ? `Черновики сохранены: ${optimizationActions.length}` : 'В плане нет действий для сохранения.';
-    await loadOptimizationActions();
-  } catch (error) {
-    optimizationActionsStatus = error.message;
+    optimizationActionsStatus = error.message || 'Не удалось загрузить черновики согласования.';
   } finally {
     optimizationActionsLoading = false;
     render();
   }
 }
 
-async function updateOptimizationAction(actionId, statusValue, commentValue) {
+async function createOptimizationDraftsFromPlan() {
+  if (!selectedClientId || optimizationActionsLoading) return;
+  optimizationActionsLoading = true;
+  optimizationActionsStatus = 'Сохраняем рекомендации как черновики...';
+  render();
+  try {
+    const response = await apiFetch(`/clients/${selectedClientId}/optimization-actions/from-plan`, { method: 'POST' });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.detail || 'Не удалось сохранить черновики');
+    optimizationActions = Array.isArray(payload) ? payload.map(normalizeOptimizationAction) : [];
+    optimizationActionsLoadedFor = selectedClientId;
+    optimizationActionsStatus = `Сохранено черновиков: ${optimizationActions.length}.`;
+  } catch (error) {
+    optimizationActionsStatus = error.message || 'Не удалось сохранить черновики.';
+  } finally {
+    optimizationActionsLoading = false;
+    render();
+  }
+}
+
+async function updateOptimizationActionStatus(actionId, status, reviewerNote = '') {
   if (!selectedClientId || !actionId) return;
   optimizationActionsStatus = 'Обновляем статус черновика...';
   render();
   try {
     const response = await apiFetch(`/clients/${selectedClientId}/optimization-actions/${actionId}`, {
       method: 'PATCH',
-      body: JSON.stringify({ status: statusValue, user_comment: commentValue || null }),
+      body: JSON.stringify({ status, reviewer_note: reviewerNote }),
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || 'Не удалось обновить черновик');
-    optimizationActions = optimizationActions.map((item) => (item.id === payload.id ? payload : item));
-    optimizationActionsByClientId[selectedClientId] = optimizationActions;
-    optimizationActionsStatus = `Статус обновлён: ${optimizationStatusLabel(payload.status)}.`;
+    const updated = normalizeOptimizationAction(payload);
+    optimizationActions = optimizationActions.map((action) => action.id === actionId ? updated : action);
+    optimizationActionsStatus = 'Статус черновика обновлён.';
   } catch (error) {
-    optimizationActionsStatus = error.message;
+    optimizationActionsStatus = error.message || 'Не удалось обновить черновик.';
   } finally {
     render();
   }
@@ -1515,618 +1129,235 @@ async function updateOptimizationAction(actionId, statusValue, commentValue) {
 
 async function loadOptimizationExecutionPreview(actionId) {
   if (!selectedClientId || !actionId) return;
-  optimizationExecutionPreviewStatus = 'Загружаем безопасный предпросмотр...';
+  optimizationExecutionPreviews = {
+    ...optimizationExecutionPreviews,
+    [actionId]: { loading: true, error: '', data: optimizationExecutionPreviews[actionId]?.data || null },
+  };
   render();
   try {
     const response = await apiFetch(`/clients/${selectedClientId}/optimization-actions/${actionId}/execution-preview`);
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || 'Не удалось загрузить предпросмотр применения');
-    optimizationExecutionPreviewsByActionId[actionId] = payload;
-    optimizationExecutionPreviewStatus = 'Предпросмотр загружен. Изменения в Яндекс.Директ не применялись.';
+    optimizationExecutionPreviews = {
+      ...optimizationExecutionPreviews,
+      [actionId]: { loading: false, error: '', data: normalizeOptimizationPreview(payload) },
+    };
   } catch (error) {
-    optimizationExecutionPreviewStatus = error.message;
-  } finally {
-    render();
+    optimizationExecutionPreviews = {
+      ...optimizationExecutionPreviews,
+      [actionId]: { loading: false, error: error.message || 'Не удалось загрузить предпросмотр применения', data: null },
+    };
   }
+  render();
 }
 
-function renderClientContextStrip() {
-  const client = currentClient();
-  const hasClient = Boolean(client.id);
-  const goals = perfSummary?.selectedGoalIds?.join(', ') || client.conversionGoalIds || client.mainGoalId || '';
-  const yandexStatus = clientYandexLoading
-    ? { status: 'loading', value: 'Загрузка' }
-    : clientYandexIntegration?.connected
-      ? { status: 'ready', value: 'Готово' }
-      : { status: hasClient ? 'action_needed' : 'pending', value: hasClient ? 'Нужно действие' : 'Нет данных' };
-  const syncStatus = syncLoading
-    ? { status: 'loading', value: 'Загрузка' }
-    : client.syncStatus === 'ok'
-      ? { status: 'ready', value: 'Готово' }
-      : client.syncStatus === 'error'
-        ? { status: 'error', value: 'Ошибка' }
-        : { status: hasClient ? 'pending' : 'blocked', value: hasClient ? 'Нет данных' : 'Блокер' };
-  const items = [
-    { label: 'Клиент', value: hasClient ? client.name : 'Не выбран', status: hasClient ? 'ready' : 'action_needed' },
-    { label: 'Direct', value: hasClientValue(client.directLogin) ? client.directLogin : 'Нужно действие', status: hasClientValue(client.directLogin) ? 'ready' : 'action_needed' },
-    { label: 'Метрика', value: hasClientValue(client.metricaCounter) ? client.metricaCounter : 'Нужно действие', status: hasClientValue(client.metricaCounter) ? 'ready' : 'action_needed' },
-    { label: 'Цели', value: goals || 'Нет данных', status: goals ? 'ready' : 'pending' },
-    { label: 'Яндекс', value: yandexStatus.value, status: yandexStatus.status },
-    { label: 'Sync', value: syncStatus.value, status: syncStatus.status },
-  ];
+function renderMetricCards() {
   return `
-    <section class="panel clientSourcePanel">
-      ${items.map((item) => `
-        <div>
-          <span class="muted">${escapeHtml(item.label)}</span>
-          <strong>${escapeHtml(item.value)}</strong>
-          <small>${escapeHtml(compactStatusLabel(item.status))}</small>
-        </div>
-      `).join('')}
-    </section>
-  `;
-}
-
-function renderShell(content) {
-  const client = currentClient();
-  return `
-    <div class="appShell">
-      <aside class="sidebar">
-        <a class="brand appBrand" href="index.html">
-          <span class="brandIcon">✦</span>
-          <span>DirectPilot AI</span>
-        </a>
-        <nav class="sideNav" aria-label="Навигация личного кабинета">
-          ${navItems.map((item) => `
-            <button class="sideNavItem ${activeView === item.id ? 'active' : ''}" data-view="${item.id}">
-              <span>${item.icon}</span>${item.label}
-            </button>
-          `).join('')}
-        </nav>
-        <div class="sidebarNote">
-          <strong>Рабочий кабинет</strong>
-          <p>${escapeHtml(currentEmail || 'Сессия не найдена')}</p>
-          <button class="secondaryButton" type="button" data-logout>Выйти</button>
-        </div>
-      </aside>
-
-      <section class="workspace">
-        <header class="appHeader">
-          <div>
-            <span class="muted">Выбранный клиент</span>
-            <h1>${client.name}</h1>
-          </div>
-          <label class="clientSelect">
-            <span>Клиент</span>
-            <select data-client-select>
-              ${accountClients.length ? accountClients.map((item) => `<option value="${item.id}" ${item.id === selectedClientId ? 'selected' : ''}>${item.name}</option>`).join('') : '<option value="">Добавьте клиента</option>'}
-            </select>
-            <small>Direct: ${client.directLogin} · Метрика: ${client.metricaCounter}</small>
-          </label>
-        </header>
-        ${renderClientContextStrip()}
-        ${content}
-      </section>
+    <div class="metricGrid">
+      <article><span>Расход</span><strong>${formatMoney(spend)}</strong><small>за 30 дней</small></article>
+      <article><span>Лиды</span><strong>${formatNumberSafe(leads)}</strong><small>средний CPL ${formatMoney(avgCpl)}</small></article>
+      <article><span>ROMI</span><strong>${avgRoi}%</strong><small>выручка ${formatMoney(revenue)}</small></article>
+      <article><span>AI-рекомендации</span><strong>${recommendations.length}</strong><small>готовы к проверке</small></article>
     </div>
   `;
 }
 
-function readinessIcon(status) {
-  return { ready: '✅', action_needed: '⚠️', blocked: '⛔', pending: '⏳' }[status] || '⏳';
+function renderAudit() {
+  return renderShell(`
+    <div class="pageIntro"><span class="eyebrow">Аудит</span><h2>Найдено ${auditIssues.length} приоритетных задач</h2><p>AI группирует проблемы по влиянию на бюджет, конверсии и качество трафика.</p></div>
+    <div class="issueList">${auditIssues.map((issue) => `<article class="issue ${issue.level}"><span>${issue.level}</span><h3>${issue.title}</h3><p>${issue.description}</p><strong>${issue.impact}</strong></article>`).join('')}</div>
+  `);
 }
 
-function readinessLabel(status) {
-  return { ready: 'Готово', action_needed: 'Нужно действие', blocked: 'Блокер', pending: 'Ожидает' }[status] || 'Ожидает';
+function renderRecommendations() {
+  return renderShell(`
+    <div class="pageIntro"><span class="eyebrow">Рекомендации</span><h2>План оптимизации на неделю</h2><p>Каждая рекомендация содержит причину, ожидаемый эффект и уровень уверенности AI.</p></div>
+    <div class="recommendationGrid">${recommendations.map((item) => `<article><div class="confidence">${item.confidence}%</div><h3>${item.title}</h3><p>${item.reason}</p><small>${item.effort}</small><button>Согласовать</button></article>`).join('')}</div>
+  `);
 }
 
-function renderReadinessPanel(readiness, nextAction) {
-  const client = getSelectedClient();
-  const readyCount = readiness.filter((item) => item.status === 'ready').length;
-  return `
-    <section class="panel">
-      <div class="panelHeader">
-        <div>
-          <h3>Готовность MVP</h3>
-          <p>${client.id ? escapeHtml(client.name) : 'Создайте клиента, чтобы подключить данные и запустить анализ.'}</p>
-        </div>
-        <span class="aiStatusBadge ${readyCount === readiness.length ? 'ready' : 'pending'}">${formatNumberSafe(readyCount)} из ${formatNumberSafe(readiness.length)}</span>
-      </div>
-      <div class="featureGrid">
-        ${readiness.map((item) => `
-          <article class="featureCard">
-            <span class="featureIcon">${readinessIcon(item.status)}</span>
-            <h3>${escapeHtml(item.label)}</h3>
-            <p>${escapeHtml(item.description)}</p>
-            <small>${readinessLabel(item.status)} · ${escapeHtml(item.nextAction)}</small>
-          </article>
-        `).join('')}
-      </div>
-      <div class="heroActions">
-        <button class="secondaryButton" data-go-view="clients">Клиенты</button>
-        <button class="secondaryButton" data-go-view="integrations">Интеграции</button>
-        <button class="approveButton" data-sync-client ${canRunSync() && !syncLoading ? '' : 'disabled'}>${syncLoading ? 'Синхронизация...' : 'Запустить синхронизацию'}</button>
-        <button class="approveButton" data-go-view="ai">AI-аналитик</button>
-      </div>
-    </section>
-  `;
+function renderReports() {
+  return renderShell(`
+    <div class="pageIntro"><span class="eyebrow">Отчёты</span><h2>Черновик отчёта для клиента</h2><p>AI собирает результаты, выводы и следующий план работ в понятный отчёт.</p></div>
+    <section class="reportPanel"><h3>${currentClientName()} — итоги месяца</h3><ul>${reportBullets.map((item) => `<li>${item}</li>`).join('')}</ul><button>Скачать PDF</button></section>
+  `);
+}
+
+function renderAutopilot() {
+  return renderShell(`
+    <div class="pageIntro"><span class="eyebrow">Автопилот</span><h2>Правила безопасной автоматизации</h2><p>Вы контролируете, какие действия AI может применять автоматически, а какие только предлагать.</p></div>
+    <div class="ruleList">${autopilotRules.map((rule) => `<article><div><h3>${rule.name}</h3><p>${rule.description}</p></div><label class="switch"><input type="checkbox" ${rule.enabled ? 'checked' : ''}/><span></span></label></article>`).join('')}</div>
+  `);
 }
 
 function renderSyncCenter() {
-  const client = getSelectedClient();
-  const lastJob = syncJobs[0];
-  const yandexBound = Boolean(clientYandexIntegration?.connected);
-  const directReady = hasClientValue(client.directLogin);
-  const helper = !yandexBound
-    ? 'Сначала привяжите Яндекс-аккаунт к этому клиенту.'
-    : !directReady
-      ? 'Укажите логин Яндекс.Директа в настройках клиента.'
-      : 'Можно запускать синхронизацию. Backend загрузит сохранённые данные Яндекс.Директа.';
-
   return `
-    <section class="panel">
+    <section class="panel syncPanel">
       <div class="panelHeader">
         <div>
           <h3>Синхронизация данных</h3>
-          <p>${escapeHtml(client.name)} · ${escapeHtml(helper)}</p>
+          <p>Загружаем кампании, расходы, цели и поисковые запросы из Яндекс.Директа и Метрики.</p>
         </div>
-        <span class="aiStatusBadge ${client.syncStatus === 'ok' ? 'ready' : 'pending'}">${escapeHtml(formatSyncStatus(client.syncStatus))}</span>
-      </div>
-      <div class="kpiGrid">
-        <article class="kpi blue"><span>Яндекс</span><strong>${yandexBound ? 'Привязан' : 'Не привязан'}</strong></article>
-        <article class="kpi green"><span>Версия sync</span><strong>${formatNumberSafe(client.syncVersion || 0)}</strong></article>
-        <article class="kpi orange"><span>Последний sync</span><strong>${escapeHtml(formatDateSafe(client.lastSyncedAt))}</strong></article>
-      </div>
-      ${client.syncError ? `<div class="authStatus aiError">${escapeHtml(client.syncError)}</div>` : ''}
-      ${syncStatusMessage ? `<div class="authStatus integrationStatus">${escapeHtml(syncStatusMessage)}</div>` : ''}
-      <div class="heroActions">
         <button class="approveButton" data-sync-client ${canRunSync() && !syncLoading ? '' : 'disabled'}>${syncLoading ? 'Синхронизация...' : 'Запустить синхронизацию'}</button>
-        <button class="secondaryButton" data-load-summary ${perfLoading ? 'disabled' : ''}>${perfLoading ? 'Загружаем...' : 'Обновить сводку'}</button>
-        <button class="secondaryButton" data-load-sync-jobs ${syncJobsLoading ? 'disabled' : ''}>История синхронизаций</button>
       </div>
-      <div class="authStatus integrationStatus">${escapeHtml(syncJobsStatus || (lastJob ? `Последнее задание: ${lastJob.status}, загружено кампаний: ${lastJob.rows_loaded}` : 'Синхронизация ещё не запускалась'))}</div>
-      ${lastJob ? `<p>Последний результат: ${escapeHtml(lastJob.status)} · загружено кампаний: ${formatNumberSafe(lastJob.rows_loaded)} · ${escapeHtml(lastJob.source_type)}${lastJob.error ? ` · ${escapeHtml(lastJob.error)}` : ''}</p>` : ''}
-      ${syncJobs.length ? `
-        <div class="tableWrap">
-          <table>
-            <thead><tr><th>Статус</th><th>Загружено кампаний</th><th>Тип отчёта</th><th>Период</th><th>Завершено</th><th>Ошибка</th></tr></thead>
-            <tbody>${syncJobs.slice(0, 5).map((job) => `
-              <tr>
-                <td><span class="tableStatus">${escapeHtml(job.status)}</span></td>
-                <td>${formatNumberSafe(job.rows_loaded)}</td>
-                <td>${escapeHtml(job.source_type)}</td>
-                <td>${escapeHtml(formatDateSafe(job.period_from))} — ${escapeHtml(formatDateSafe(job.period_to))}</td>
-                <td>${escapeHtml(formatDateSafe(job.finished_at || job.started_at || job.created_at))}</td>
-                <td>${escapeHtml(job.error || '—')}</td>
-              </tr>
-            `).join('')}</tbody>
-          </table>
-        </div>
-      ` : ''}
+      <div class="syncStatusGrid">
+        <article><span>Готовность</span><strong>${canRunSync() ? 'Можно запускать' : 'Нужен Direct login'}</strong></article>
+        <article><span>Последний статус</span><strong>${syncJobs[0] ? syncJobStatusLabel(syncJobs[0].status) : 'Нет запусков'}</strong></article>
+        <article><span>Backend</span><strong>${backendClientsAvailable ? 'Доступен' : 'Fallback'}</strong></article>
+      </div>
+      ${syncStatusMessage ? `<div class="authStatus integrationStatus">${escapeHtml(syncStatusMessage)}</div>` : ''}
+      <div class="syncJobs">
+        ${syncJobsLoading ? '<p>Загружаем историю...</p>' : syncJobs.length ? syncJobs.slice(0, 5).map((job) => `
+          <article>
+            <div><strong>${syncJobStatusLabel(job.status)}</strong><span>${escapeHtml(job.message || 'Без сообщения')}</span></div>
+            <small>${normalizeDate(job.created_at)}</small>
+          </article>
+        `).join('') : '<p>Истории синхронизаций пока нет.</p>'}
+      </div>
     </section>
   `;
 }
 
 function renderSyncDiagnosticsPanel(compact = false) {
-  const client = getSelectedClient();
-  const diagnostics = perfSummary?.syncDiagnostics || {};
-  const warnings = diagnostics.warnings || perfSummary?.goalDataWarnings || [];
-  const goalIds = diagnostics.selectedGoalIds?.length
-    ? diagnostics.selectedGoalIds
-    : (perfSummary?.selectedGoalIds || String(client.conversionGoalIds || client.mainGoalId || '').split(/[,\s]+/).filter(Boolean));
-  const hasDiagnostics = Boolean(perfSummary);
-  const level = diagnostics.dataQualityLevel || (hasDiagnostics ? 'warning' : 'pending');
-  const levelLabel = {
-    ok: 'Готово',
-    warning: 'Нужно действие',
-    critical: 'Блокер',
-    pending: 'Нет данных',
-  }[level] || 'Нет данных';
-  const goalDataMissingMessage = 'Директ не вернул данные по выбранным целям. Проверьте ID целей и запустите синхронизацию повторно.';
-  const message = diagnostics.hasGoalIds && !diagnostics.hasGoalData
-    ? goalDataMissingMessage
-    : (diagnostics.message || (
-      hasDiagnostics
-        ? (perfSummary?.hasGoalData ? 'Данные по выбранным целям Директа загружены.' : 'Проверьте цели, конверсии и синхронизацию.')
-        : 'Сводка ещё не загружена. Запустите синхронизацию или обновите сводку, чтобы увидеть качество данных.'
-    ));
-  const nextAction = !client.id
-    ? { text: 'Создайте клиента', view: 'clients' }
-    : !clientYandexIntegration?.connected
-      ? { text: 'Привяжите Яндекс', view: 'integrations' }
-      : !hasDiagnostics || !diagnostics.directRowsLoaded
-        ? { text: 'Запустите синхронизацию', action: 'sync' }
-        : !goalIds.length
-          ? { text: 'Укажите цели Метрики', view: 'clients' }
-          : diagnostics.hasGoalIds && !diagnostics.hasGoalData
-            ? { text: 'Проверьте цели в отчёте Директа', view: 'clients' }
-            : { text: 'Открыть AI-анализ', view: 'ai' };
+  const client = currentClient();
+  const issues = [];
+  if (!client.id) issues.push(['Клиент', 'Создайте карточку клиента.']);
+  if (!client.directLogin || client.directLogin === 'Не подключен') issues.push(['Direct login', 'Укажите логин Яндекс.Директа в карточке клиента.']);
+  if (!client.metricaCounter || client.metricaCounter === 'Не подключен') issues.push(['Метрика', 'Укажите ID счётчика Метрики.']);
+  if (!client.mainGoalId) issues.push(['Цель', 'Заполните основную цель, чтобы считать CPA.']);
+  if (!clientYandexIntegration?.selected_account && !client.yandexAccountId) issues.push(['Привязка Яндекса', 'Выберите аккаунт из OAuth-доступов во вкладке Интеграции.']);
+  const hasProblems = issues.length > 0;
   return `
-    <section class="panel ${compact ? 'compact' : ''}">
+    <section class="panel diagnosticsPanel">
       <div class="panelHeader">
         <div>
-          <h3>Диагностика синхронизации</h3>
-          <p>${escapeHtml(message)}</p>
+          <h3>${compact ? 'Диагностика готовности' : 'Диагностика синхронизации'}</h3>
+          <p>${hasProblems ? 'Что мешает корректной загрузке и анализу данных.' : 'Базовая конфигурация выглядит готовой.'}</p>
         </div>
-        <span class="aiStatusBadge ${level === 'ok' ? 'ready' : 'pending'}">${escapeHtml(levelLabel)}</span>
+        <span class="aiStatusBadge ${hasProblems ? 'pending' : 'ready'}">${hasProblems ? 'Нужны правки' : 'Готово'}</span>
       </div>
-      <div class="kpiGrid">
-        <article class="kpi blue"><span>Загружено кампаний</span><strong>${formatNumberSafe(diagnostics.directRowsLoaded || 0)}</strong></article>
-        <article class="kpi green"><span>Цели</span><strong>${escapeHtml(goalIds.join(', ') || 'не указаны')}</strong></article>
-        <article class="kpi orange"><span>Конверсии по целям</span><strong>${formatNumberSafe(diagnostics.goalConversionsTotal || perfSummary?.goalConversionsTotal || 0)}</strong></article>
-      </div>
-      ${warnings.length ? `<div class="authStatus aiError">${warnings.map((item) => `<p>${escapeHtml(humanizeDataWarning(item))}</p>`).join('')}</div>` : ''}
-      <div class="heroActions">
-        ${nextAction.action === 'sync'
-          ? `<button class="approveButton" data-sync-client ${canRunSync() && !syncLoading ? '' : 'disabled'}>${escapeHtml(nextAction.text)}</button>`
-          : `<button class="secondaryButton" data-go-view="${escapeHtml(nextAction.view)}">${escapeHtml(nextAction.text)}</button>`}
-        <button class="secondaryButton" data-load-summary ${perfLoading ? 'disabled' : ''}>Обновить сводку</button>
-      </div>
+      ${hasProblems ? `
+        <div class="issueList compactIssues">
+          ${issues.map(([title, description]) => `<article class="issue medium"><span>fix</span><h3>${escapeHtml(title)}</h3><p>${escapeHtml(description)}</p></article>`).join('')}
+        </div>
+      ` : '<div class="authStatus integrationStatus">Можно запускать синхронизацию и строить AI-рекомендации.</div>'}
     </section>
   `;
 }
 
 function renderYesterdaySummaryPanel() {
-  const summary = perfSummary?.yesterdayCampaignSummary || {};
-  const totals = summary.totals || {};
-  const campaigns = summary.campaigns || [];
-  const recommendations = summary.recommendations || [];
-  if (!summary.hasData) {
-    return `
-      <section class="panel emptyStatePanel compact">
-        <div class="panelHeader">
-          <div>
-            <h3>Сводка за вчера</h3>
-            <p>${escapeHtml(summary.message || 'Данные за вчера ещё не загружены. Запустите синхронизацию.')}</p>
-          </div>
-          <span class="aiStatusBadge pending">Нет данных</span>
-        </div>
-        <div class="heroActions">
-          <button class="approveButton" data-sync-client ${canRunSync() && !syncLoading ? '' : 'disabled'}>${syncLoading ? 'Синхронизация...' : 'Запустить синхронизацию'}</button>
-          <button class="secondaryButton" data-load-summary ${perfLoading ? 'disabled' : ''}>Обновить сводку</button>
-        </div>
-      </section>
-    `;
-  }
+  const campaignsCount = perfSummary?.campaigns?.length || 0;
+  const totalSpend = perfSummary?.totalSpend || 0;
+  const totalConversions = perfSummary?.totalConversions || 0;
+  const candidateNegatives = perfSummary?.searchQueryInsights?.candidateNegativeKeywords || 0;
   return `
-    <section class="panel">
+    <section class="panel summaryPanel">
       <div class="panelHeader">
         <div>
           <h3>Сводка за вчера</h3>
-          <p>${escapeHtml(summary.date || '')} · Кампании за один день, без выводов о тренде. Основная метрика — конверсии по выбранным целям.</p>
+          <p>Быстрый статус по данным после последней синхронизации.</p>
         </div>
-        <span class="aiStatusBadge ready">Загружено кампаний: ${formatNumberSafe(campaigns.length)}</span>
+        <button class="secondaryButton" data-load-performance ${selectedClientId && !perfLoading ? '' : 'disabled'}>${perfLoading ? 'Загрузка...' : 'Обновить сводку'}</button>
       </div>
+      ${perfStatus ? `<div class="authStatus integrationStatus">${escapeHtml(perfStatus)}</div>` : ''}
       <div class="kpiGrid">
-        <article class="kpi green"><span>Расход</span><strong>${formatMoneySafe(totals.cost)}</strong></article>
-        <article class="kpi blue"><span>Показы</span><strong>${formatNumberSafe(totals.impressions)}</strong></article>
-        <article class="kpi orange"><span>Клики</span><strong>${formatNumberSafe(totals.clicks)}</strong></article>
-        <article class="kpi green"><span>Конверсии по целям</span><strong>${formatNumberSafe(totals.goalConversions)}</strong></article>
-        <article class="kpi blue"><span>CPA по целям</span><strong>${totals.goalCpa == null ? '—' : formatMoneySafe(totals.goalCpa)}</strong></article>
-        <article class="kpi orange"><span>CR</span><strong>${totals.conversionRate == null ? '—' : formatPercentSafe(totals.conversionRate)}</strong></article>
+        <article class="kpi"><span>Кампаний</span><strong>${formatNumberSafe(campaignsCount)}</strong></article>
+        <article class="kpi"><span>Расход</span><strong>${formatMoney(totalSpend)}</strong></article>
+        <article class="kpi"><span>Конверсий</span><strong>${formatNumberSafe(totalConversions)}</strong></article>
+        <article class="kpi"><span>Минус-слова</span><strong>${formatNumberSafe(candidateNegatives)}</strong></article>
       </div>
-      <p>CTR: ${formatPercentSafe(totals.ctr)} · CPC: ${formatMoneySafe(totals.avgCpc)} · Цели: ${escapeHtml(perfSummary?.selectedGoalIds?.join(', ') || currentClient().conversionGoalIds || currentClient().mainGoalId || '—')}</p>
-      ${campaigns.length ? `
-        <div class="tableWrap">
-          <table>
-            <thead><tr><th>Кампания</th><th>Расход</th><th>Клики</th><th>CTR</th><th>Конверсии по целям</th><th>CPA по целям</th><th>Сигналы</th></tr></thead>
-            <tbody>${campaigns.slice(0, 10).map((campaign) => `
-              <tr>
-                <td>${escapeHtml(campaign.campaignName || '—')}</td>
-                <td>${formatMoneySafe(campaign.cost)}</td>
-                <td>${formatNumberSafe(campaign.clicks)}</td>
-                <td>${formatPercentSafe(campaign.ctr)}</td>
-                <td>${campaign.goalConversions == null ? '—' : formatNumberSafe(campaign.goalConversions)}</td>
-                <td>${campaign.goalCpa == null ? '—' : formatMoneySafe(campaign.goalCpa)}</td>
-                <td>${escapeHtml(renderIssueFlags(campaign.issueFlags || []))}</td>
-              </tr>
-            `).join('')}</tbody>
-          </table>
-        </div>
-      ` : ''}
-      ${recommendations.length ? `
-        <div class="featureGrid">
-          ${recommendations.slice(0, 4).map((item) => `
-            <article class="featureCard">
-              <span class="featureIcon">!</span>
-              <h3>Что посмотреть</h3>
-              <p>${escapeHtml(item)}</p>
-            </article>
-          `).join('')}
-        </div>
-      ` : ''}
-    </section>
-  `;
-}
-
-function renderPerformanceSummaryPanel() {
-  if (!perfSummary) {
-    return `
-      <section class="panel emptyStatePanel compact">
-        <h3>Сводка эффективности не загружена</h3>
-        <p>Нет сохранённых данных Яндекс.Директа. Запустите синхронизацию, чтобы AI увидел кампании, расходы и конверсии.</p>
-        <div class="heroActions">
-          <button class="secondaryButton" data-go-view="integrations">Проверить интеграции</button>
-          <button class="approveButton" data-sync-client ${canRunSync() && !syncLoading ? '' : 'disabled'}>${syncLoading ? 'Синхронизация...' : 'Запустить синхронизацию'}</button>
-        </div>
-        <button class="approveButton" data-load-summary ${perfLoading ? 'disabled' : ''}>${perfLoading ? 'Загружаем...' : 'Показать сводку'}</button>
-      </section>
-    `;
-  }
-
-  const totals = perfSummary.totals || {};
-  const campaigns = perfSummary.campaigns || [];
-  const issueCount = campaigns.reduce((sum, item) => sum + (item.issue_flags?.length || 0), 0);
-  const selectedGoalIds = perfSummary.selectedGoalIds?.length ? perfSummary.selectedGoalIds : [perfSummary.selectedGoalId].filter(Boolean);
-  return `
-    <section class="panel">
-      <div class="panelHeader">
-        <div>
-          <h3>Сводка эффективности</h3>
-          <p>${campaigns.length ? `Кампаний: ${campaigns.length}, флагов: ${issueCount}. ${perfSummary.hasGoalData ? 'Данные по выбранным целям Директа загружены.' : 'Данные по выбранным целям недоступны, проверьте цели и синхронизацию.'}` : 'Нет сохранённых данных Яндекс.Директа. Запустите синхронизацию после подключения Яндекса.'}</p>
-        </div>
-        <span class="aiStatusBadge ${campaigns.length ? 'ready' : 'pending'}">${escapeHtml(perfSummary.message)}</span>
-      </div>
-      <div class="kpiGrid">
-        <article class="kpi green"><span>Расход</span><strong>${formatMoneySafe(totals.cost)}</strong></article>
-        <article class="kpi blue"><span>Показы</span><strong>${formatNumberSafe(totals.impressions)}</strong></article>
-        <article class="kpi orange"><span>Клики</span><strong>${formatNumberSafe(totals.clicks)}</strong></article>
-        <article class="kpi green"><span>Конверсии по целям</span><strong>${perfSummary.goalConversionsTotal == null ? '—' : formatNumberSafe(perfSummary.goalConversionsTotal)}</strong></article>
-        <article class="kpi blue"><span>CPA по целям</span><strong>${totals.cpa == null ? '—' : formatMoneySafe(totals.cpa)}</strong></article>
-      </div>
-      <p>Цели: ${escapeHtml(selectedGoalIds.join(', ') || 'не указаны')} · Данные по выбранным целям Директа · Конверсии по целям: ${perfSummary.goalConversionsTotal == null ? '—' : formatNumberSafe(perfSummary.goalConversionsTotal)}</p>
-      <p>Средний CPC: ${formatMoneySafe(totals.avg_cpc)} · CPA по целям: ${totals.cpa == null ? '—' : formatMoneySafe(totals.cpa)} · CTR: ${formatPercentSafe(totals.clicks && totals.impressions ? (totals.clicks / totals.impressions) * 100 : 0)}</p>
-      ${campaigns.length ? `
-        <div class="tableWrap">
-          <table>
-            <thead><tr><th>Кампания</th><th>Цели</th><th>Расход</th><th>Показы</th><th>Клики</th><th>Конверсии по целям</th><th>CPA по целям</th><th>Флаги</th></tr></thead>
-            <tbody>${campaigns.map((campaign) => `
-              <tr>
-                <td>${escapeHtml(campaign.campaign_name)}</td>
-                <td>${escapeHtml(campaign.goal_ids || selectedGoalIds.join(', ') || '—')}</td>
-                <td>${formatMoneySafe(campaign.cost)}</td>
-                <td>${formatNumberSafe(campaign.impressions)}</td>
-                <td>${formatNumberSafe(campaign.clicks)}</td>
-                <td>${campaign.goal_conversions == null ? '—' : formatNumberSafe(campaign.goal_conversions)}</td>
-                <td>${campaign.cpa_used == null ? '—' : formatMoneySafe(campaign.cpa_used)}</td>
-                <td>${escapeHtml(renderIssueFlags(campaign.issue_flags))}</td>
-              </tr>
-            `).join('')}</tbody>
-          </table>
-        </div>
-      ` : ''}
-    </section>
-  `;
-}
-
-function negativeKeywordDraftsText(insights) {
-  const candidates = (insights?.insights || []).filter((item) => item.recommendedNegativeKeyword);
-  return candidates.map((item) => [
-    `Минус-слово: ${item.recommendedNegativeKeyword}`,
-    `Запрос: ${item.query}`,
-    `Кампания: ${item.campaign || '—'}`,
-    `Группа: ${item.adGroup || '—'}`,
-    `Причина: ${item.reason || 'расход без конверсий'}`,
-    'Статус: черновик, изменения в Яндекс.Директ не применялись.',
-  ].join('\n')).join('\n\n');
-}
-
-function renderSearchQueryInsightsPanel() {
-  const insights = perfSummary?.searchQueryInsights || {};
-  const items = insights.insights || [];
-  const candidates = items.filter((item) => item.recommendedNegativeKeyword);
-  return `
-    <section class="panel">
-      <div class="panelHeader">
-        <div>
-          <span class="eyebrow">Этап 1.5</span>
-          <h3>Поисковые запросы и минус-слова</h3>
-          <p>Read-only анализ запросов. Минус-слова показаны только как черновики для ручной проверки и approval.</p>
-        </div>
-        <span class="aiStatusBadge ${candidates.length ? 'pending' : 'ready'}">${formatNumberSafe(candidates.length)} кандидатов</span>
-      </div>
-      <div class="kpiGrid">
-        <article class="kpi blue"><span>Загружено поисковых запросов</span><strong>${formatNumberSafe(insights.totalQueries || 0)}</strong></article>
-        <article class="kpi orange"><span>Кандидаты в минус-слова</span><strong>${formatNumberSafe(insights.candidateNegativeKeywords || 0)}</strong></article>
-        <article class="kpi green"><span>Расход без конверсий</span><strong>${formatMoneySafe(insights.totalWasteCost || 0)}</strong></article>
-      </div>
-      <div class="heroActions">
-        <button class="secondaryButton" type="button" data-copy-text="${escapeHtml(negativeKeywordDraftsText(insights))}" ${candidates.length ? '' : 'disabled'}>Скопировать все черновики минус-слов</button>
-      </div>
-      ${items.length ? `
-        <div class="tableWrap">
-          <table>
-            <thead><tr><th>Запрос</th><th>Кампания</th><th>Группа</th><th>Расход</th><th>Клики</th><th>Конверсии по целям</th><th>Минус-слово</th><th>Уверенность</th><th>Действие</th></tr></thead>
-            <tbody>${items.slice(0, 12).map((item) => `
-              <tr>
-                <td>${escapeHtml(item.query || '—')}</td>
-                <td>${escapeHtml(item.campaign || '—')}</td>
-                <td>${escapeHtml(item.adGroup || '—')}</td>
-                <td>${formatMoneySafe(item.cost)}</td>
-                <td>${formatNumberSafe(item.clicks)}</td>
-                <td>${item.goalConversions == null ? '—' : formatNumberSafe(item.goalConversions)}</td>
-                <td>${escapeHtml(item.recommendedNegativeKeyword || '—')}</td>
-                <td>${escapeHtml(item.confidence || 'low')}</td>
-                <td><button class="secondaryButton" type="button" data-copy-text="${escapeHtml(`Минус-слово: ${item.recommendedNegativeKeyword || ''}\nЗапрос: ${item.query || ''}\nКампания: ${item.campaign || ''}\nПричина: ${item.reason || ''}\nЧерновик, не применялось в Яндекс.Директ.`)}" ${item.recommendedNegativeKeyword ? '' : 'disabled'}>Скопировать</button></td>
-              </tr>
-            `).join('')}</tbody>
-          </table>
-        </div>
-      ` : `<div class="emptyStatePanel compact"><h3>Нет данных по поисковым запросам</h3><p>Запустите синхронизацию. Если отчёт поисковых запросов недоступен, синхронизация кампаний всё равно останется рабочей.</p><button class="approveButton" data-sync-client ${canRunSync() && !syncLoading ? '' : 'disabled'}>${syncLoading ? 'Синхронизация...' : 'Запустить синхронизацию'}</button></div>`}
-      <p><strong>Важно:</strong> запросы с конверсиями не предлагаются к минусовке. Черновики не применяются автоматически.</p>
+      ${!hasPerformanceData() ? '<div class="authStatus integrationStatus">Данных пока нет. Запустите синхронизацию или проверьте настройки клиента.</div>' : ''}
     </section>
   `;
 }
 
 function renderYandexDirectAuditPanel(compact = false) {
-  const audit = perfSummary?.yandexDirectAudit || {};
-  const categories = audit.categories || [];
-  const criticalIssues = audit.criticalIssues || [];
-  const quickWins = audit.quickWins || [];
-  const limitations = audit.limitations || [];
-  if (!perfSummary || !audit.grade) {
-    return `
-      <section class="panel emptyStatePanel compact">
-        <h3>AI-аудит Яндекс.Директа</h3>
-        <p>Аудит появится после загрузки сводки эффективности. DirectPilot использует только доступные read-only данные и помечает недоступные проверки как «нужны дополнительные данные».</p>
-        <div class="heroActions">
-          <button class="secondaryButton" data-load-summary ${perfLoading ? 'disabled' : ''}>Обновить сводку</button>
-          <button class="approveButton" data-sync-client ${canRunSync() && !syncLoading ? '' : 'disabled'}>${syncLoading ? 'Синхронизация...' : 'Запустить синхронизацию'}</button>
-        </div>
-      </section>
-    `;
+  const client = currentClient();
+  const issues = [];
+  if (!client.directLogin || client.directLogin === 'Не подключен') issues.push(['Нет логина Директа', 'AI не сможет связать клиента с рекламным аккаунтом.']);
+  if (!client.metricaCounter || client.metricaCounter === 'Не подключен') issues.push(['Нет счётчика Метрики', 'Нельзя проверить цели и качество трафика.']);
+  if (!client.mainGoalId) issues.push(['Нет основной цели', 'CPA и рекомендации будут неточными.']);
+  if (perfSummary?.campaigns?.some((campaign) => Number(campaign.conversions || 0) === 0 && Number(campaign.cost || 0) > 0)) {
+    issues.push(['Расход без конверсий', 'Есть кампании с расходом и нулевыми конверсиями.']);
   }
-  const shownCategories = compact ? categories.slice(0, 3) : categories;
+  if ((perfSummary?.searchQueryInsights?.candidateNegativeKeywords || 0) > 0) {
+    issues.push(['Кандидаты в минус-слова', 'AI нашёл поисковые запросы для чистки трафика.']);
+  }
+  const visibleIssues = issues.length ? issues : [['Критичных проблем не найдено', 'После синхронизации AI покажет больше деталей по кампаниям и запросам.']];
   return `
-    <section class="panel ${compact ? 'compact' : ''}">
+    <section class="panel directAuditPanel">
       <div class="panelHeader">
         <div>
-          <h3>AI-аудит Яндекс.Директа</h3>
-          <p>${escapeHtml(audit.summary || 'Профессиональный read-only аудит по чеклисту DirectPilot.')}</p>
-          <p>Методология содержит ${formatNumberSafe(audit.frameworkChecksTotal || 55)} проверок. Сейчас DirectPilot автоматически применяет ${formatNumberSafe(audit.implementedChecks || 0)} проверок, по которым есть данные в кабинете. Остальные пункты помечаются как требующие дополнительных данных.</p>
+          <h3>${compact ? 'Быстрый аудит Директа' : 'Аудит Яндекс.Директа'}</h3>
+          <p>Проверка готовности аккаунта к анализу и оптимизации.</p>
         </div>
-        <span class="aiStatusBadge ${Number(audit.score || 0) >= 75 ? 'ready' : 'pending'}">${formatNumberSafe(audit.score || 0)} / 100 · ${escapeHtml(audit.grade || '—')}</span>
+        <span class="aiStatusBadge ${issues.length ? 'pending' : 'ready'}">${issues.length ? 'Есть задачи' : 'Ок'}</span>
       </div>
-      <div class="kpiGrid">
-        <article class="kpi green"><span>Грейд</span><strong>${escapeHtml(audit.grade || '—')}</strong></article>
-        <article class="kpi blue"><span>Оценка</span><strong>${formatNumberSafe(audit.score || 0)} / 100</strong></article>
-        <article class="kpi orange"><span>Критические проблемы</span><strong>${formatNumberSafe(criticalIssues.length)}</strong></article>
-        <article class="kpi green"><span>Быстрые улучшения</span><strong>${formatNumberSafe(quickWins.length)}</strong></article>
+      <div class="issueList compactIssues">
+        ${visibleIssues.map(([title, description]) => `<article class="issue ${issues.length ? 'medium' : 'low'}"><span>${issues.length ? 'fix' : 'ok'}</span><h3>${escapeHtml(title)}</h3><p>${escapeHtml(description)}</p></article>`).join('')}
       </div>
-      ${shownCategories.length ? `
-        <div class="featureGrid">
-          ${shownCategories.map((category) => `
-            <article class="featureCard">
-              <span class="featureIcon">${category.grade === 'A' || category.grade === 'B' ? '✅' : category.grade === 'N/A' ? '⏳' : '⚠️'}</span>
-              <h3>${escapeHtml(category.title)}</h3>
-              <p>Вес: ${formatNumberSafe(category.weight)} · Балл: ${formatNumberSafe(category.score)} · Грейд: ${escapeHtml(auditGradeLabel(category.grade))}</p>
-              <small>${formatNumberSafe((category.checks || []).filter((item) => item.status === 'fail').length)} ${auditStatusLabel('fail')} · ${formatNumberSafe((category.checks || []).filter((item) => item.status === 'warning').length)} ${auditStatusLabel('warning')} · ${formatNumberSafe((category.checks || []).filter((item) => item.status === 'na').length)} ${auditStatusLabel('na')}</small>
-            </article>
-          `).join('')}
-        </div>
-      ` : ''}
-      ${criticalIssues.length ? `
-        <div class="authStatus aiError">
-          <strong>Критические проблемы</strong>
-          <p>Критические проблемы — то, что может искажать аналитику или сливать бюджет.</p>
-          ${criticalIssues.slice(0, compact ? 3 : 6).map((item) => `<p>${escapeHtml(item.id)} · ${escapeHtml(item.title)}: ${escapeHtml(item.evidence)}</p>`).join('')}
-        </div>
-      ` : ''}
-      ${quickWins.length ? `
-        <div class="authStatus integrationStatus">
-          <strong>Быстрые улучшения</strong>
-          <p>Быстрые улучшения — задачи, которые можно проверить и исправить без глубокой перестройки кампаний.</p>
-          ${quickWins.slice(0, compact ? 3 : 6).map((item) => `<p>${escapeHtml(item.id)} · ${escapeHtml(item.recommendation)}</p>`).join('')}
-        </div>
-      ` : ''}
-      ${!compact && limitations.length ? `
-        <details>
-          <summary class="secondaryButton">Что пока нельзя проверить автоматически</summary>
-          <p>Эти пункты не считаются проваленными: для них нужны дополнительные данные, например посадочные страницы, объявления, расширения, настройки аккаунта или динамика по неделям.</p>
-          ${limitations.map((item) => `<p>${escapeHtml(item.id)} · ${escapeHtml(item.title)}: ${escapeHtml(item.evidence)} (${escapeHtml(item.sourceLabel || auditSourceLabel(item.source))})</p>`).join('')}
-        </details>
-      ` : ''}
-      ${!compact ? `
-        <div class="heroActions">
-          <button class="secondaryButton" type="button" data-ai-quick-action="Разобрать аудит Яндекс.Директа">Разобрать аудит Яндекс.Директа</button>
-          <button class="secondaryButton" type="button" data-ai-quick-action="Покажи быстрые улучшения по аудиту Яндекс.Директа">Показать быстрые улучшения</button>
-        </div>
-      ` : ''}
-      <p><strong>Безопасность:</strong> аудит read-only. Рекомендации являются черновиками; изменения в Яндекс.Директ не применяются.</p>
     </section>
   `;
 }
 
-function businessContextFilledCount(context = businessContext) {
-  const fields = [
-    'brandName',
-    'businessNiche',
-    'productSummary',
-    'targetAudience',
-    'geography',
-    'seasonality',
-    'mainOffers',
-    'conversionActions',
-    'businessConstraints',
-    'negativeTopics',
-    'landingPageNotes',
-    'manualNotes',
-    'memoryNotes',
-  ];
-  return fields.filter((field) => String(context?.[field] || '').trim()).length;
-}
-
-function businessContextCopyText(context = businessContext) {
-  const labels = [
-    ['brandName', 'Бренд'],
-    ['businessNiche', 'Ниша'],
-    ['productSummary', 'Что продаём'],
-    ['targetAudience', 'Целевая аудитория'],
-    ['geography', 'География'],
-    ['seasonality', 'Сезонность'],
-    ['mainOffers', 'Основные офферы'],
-    ['conversionActions', 'Целевые действия'],
-    ['averageOrderValue', 'Средний чек / ценность лида'],
-    ['businessConstraints', 'Ограничения бизнеса'],
-    ['negativeTopics', 'Нерелевантные темы'],
-    ['landingPageNotes', 'Посадочные страницы'],
-    ['competitorNotes', 'Конкуренты'],
-    ['manualNotes', 'Ручные заметки'],
-    ['memoryNotes', 'Память проекта'],
-  ];
-  return labels
-    .map(([key, label]) => `${label}: ${context?.[key] || '—'}`)
-    .join('\n');
+function renderPerformanceSummaryPanel() {
+  const campaignsData = perfSummary?.campaigns || [];
+  const insights = perfSummary?.searchQueryInsights;
+  return `
+    <section class="panel performancePanel">
+      <div class="panelHeader">
+        <div>
+          <h3>Performance summary</h3>
+          <p>Кампании, CPA и поисковые запросы, которые AI использует для рекомендаций.</p>
+        </div>
+        <button class="secondaryButton" data-load-performance ${selectedClientId && !perfLoading ? '' : 'disabled'}>${perfLoading ? 'Загрузка...' : 'Обновить'}</button>
+      </div>
+      ${campaignsData.length ? `
+        <div class="dataTableWrap">
+          <table class="dataTable">
+            <thead><tr><th>Кампания</th><th>Расход</th><th>Конверсии</th><th>CPA</th></tr></thead>
+            <tbody>${campaignsData.slice(0, 8).map((campaign) => `<tr><td>${escapeHtml(campaign.name)}</td><td>${formatMoney(campaign.cost || 0)}</td><td>${formatNumberSafe(campaign.conversions || 0)}</td><td>${formatMoney(campaign.cpa || 0)}</td></tr>`).join('')}</tbody>
+          </table>
+        </div>
+      ` : '<div class="authStatus integrationStatus">Кампаний пока нет. Нужна синхронизация.</div>'}
+      ${insights ? `
+        <div class="insightGrid">
+          <article><span>Запросов</span><strong>${formatNumberSafe(insights.totalQueries || 0)}</strong></article>
+          <article><span>Кандидатов в минус-слова</span><strong>${formatNumberSafe(insights.candidateNegativeKeywords || 0)}</strong></article>
+          <article><span>Расход на нерелевантное</span><strong>${formatMoney(insights.wastedSpend || 0)}</strong></article>
+        </div>
+      ` : ''}
+    </section>
+  `;
 }
 
 function renderBusinessContextPanel(compact = false) {
-  const client = currentClient();
-  const filledCount = businessContextFilledCount();
-  const statusText = filledCount >= 6 ? 'Хорошо заполнен' : filledCount ? 'Заполнен частично' : 'Не заполнен';
-  if (!client.id) {
-    return `<section class="panel emptyStatePanel compact"><h3>Контекст бизнеса</h3><p>Создайте клиента, чтобы сохранить бизнес-контекст и память проекта.</p><button class="approveButton" data-go-view="clients">Создать клиента</button></section>`;
-  }
-  if (compact) {
-    return `
-      <section class="panel compact">
-        <div class="panelHeader">
-          <div>
-            <h3>Контекст бизнеса</h3>
-            <p>${filledCount ? `${escapeHtml(businessContext?.brandName || client.name)} · ${escapeHtml(businessContext?.businessNiche || 'ниша не указана')}` : 'Заполните бренд, нишу, офферы и ограничения, чтобы AI анализировал кампании не только по метрикам.'}</p>
-          </div>
-          <span class="aiStatusBadge ${filledCount ? 'ready' : 'pending'}">${escapeHtml(statusText)}</span>
-        </div>
-        <div class="heroActions">
-          <button class="secondaryButton" data-go-view="business-context">Открыть контекст бизнеса</button>
-        </div>
-      </section>
-    `;
-  }
-  const context = businessContext || {};
+  const context = businessContextDraft || businessContext || defaultBusinessContext();
+  const score = contextCompletenessScore(context);
   const field = (name, label, placeholder = '') => `
-    <label class="authField">
+    <label class="businessContextField">
       <span>${label}</span>
-      <textarea name="${name}" rows="3" placeholder="${escapeHtml(placeholder)}">${escapeHtml(context[name] || '')}</textarea>
+      <textarea name="${name}" placeholder="${escapeHtml(placeholder)}" ${businessContextLoading || businessContextSaving ? 'disabled' : ''}>${escapeHtml(context[name] || '')}</textarea>
     </label>
   `;
   return `
-    <section class="panel">
+    <section class="panel businessContextPanel ${compact ? 'compactBusinessContext' : ''}">
       <div class="panelHeader">
         <div>
-          <span class="eyebrow">Память проекта</span>
-          <h3>Контекст бизнеса</h3>
-          <p>Эти данные попадут в доверенный AI-контекст: бренд, ниша, офферы, ограничения, нерелевантные темы и заметки специалиста.</p>
+          <h3>${compact ? 'Контекст бизнеса для AI' : 'Контекст бизнеса'}</h3>
+          <p>${compact ? 'AI учитывает эти данные при аудите и рекомендациях.' : 'Заполните информацию о бизнесе, чтобы AI не давал generic-рекомендации.'}</p>
         </div>
-        <span class="aiStatusBadge ${filledCount ? 'ready' : 'pending'}">${formatNumberSafe(filledCount)} полей · ${escapeHtml(statusText)}</span>
+        <div class="contextScore"><span>Заполнено</span><strong>${score}%</strong></div>
       </div>
       ${businessContextStatus ? `<div class="authStatus integrationStatus">${escapeHtml(businessContextStatus)}</div>` : ''}
-      <form class="authForm" data-business-context-form>
-        <div class="clientSettingsGrid">
-          <label class="authField"><span>Бренд</span><input name="brandName" value="${escapeHtml(context.brandName || '')}" placeholder="Название бренда или проекта" /></label>
-          <label class="authField"><span>Ниша / категория бизнеса</span><input name="businessNiche" value="${escapeHtml(context.businessNiche || '')}" placeholder="Например: мебель, стоматология, отель" /></label>
-          ${field('productSummary', 'Что продаём', 'Ключевые продукты, услуги, пакеты')}
-          ${field('targetAudience', 'Целевая аудитория', 'Кто покупает, сегменты, боли')}
-          ${field('geography', 'География', 'Города, регионы, ограничения доставки/оказания услуги')}
-          ${field('seasonality', 'Сезонность', 'Пики спроса, низкий сезон, события')}
+      <form class="businessContextForm" data-business-context-form>
+        <div class="businessContextGrid">
+          ${field('companyName', 'Компания', 'Название клиента')}
+          ${field('websiteUrl', 'Сайт', 'https://example.ru')}
+          ${field('industry', 'Ниша', 'Например: медицина, недвижимость, e-commerce')}
+          ${field('productDescription', 'Продукт / услуга', 'Что продаём и чем отличаемся')}
+          ${field('targetAudience', 'Целевая аудитория', 'Кто покупает, сегменты, B2B/B2C')}
+          ${field('geography', 'География', 'Города, регионы, ограничения доставки')}
           ${field('mainOffers', 'Основные офферы', 'Акции, преимущества, УТП')}
           ${field('conversionActions', 'Целевые действия', 'Заявка, звонок, бронь, покупка, квиз')}
           ${field('averageOrderValue', 'Средний чек / ценность лида', 'Средний чек, маржа, LTV или ценность заявки')}
@@ -2136,7 +1367,7 @@ function renderBusinessContextPanel(compact = false) {
           ${field('landingPageNotes', 'Посадочные страницы и заметки', 'URL, структура, важные блоки. Автопроверки страниц пока нет.')}
           ${field('competitorNotes', 'Конкуренты', 'Конкуренты, отличие, ценовое позиционирование')}
           ${field('manualNotes', 'Ручные заметки специалиста', 'Что важно помнить при аудите и оптимизации')}
-          ${field('memoryNotes', 'Память проекта', 'Сохранённые выводы AI и важные решения по проекту')}
+          ${field('memoryNotes', 'Память проекта', 'Сохранённые выводы AI и важные решения')}
           ${field('sourceNotes', 'Источники контекста', 'Откуда взята информация: клиент, бриф, звонок, CRM')}
         </div>
         <div class="authStatus integrationStatus">Автоматический анализ посадочных страниц будет добавлен отдельной итерацией. Сейчас контекст заполняется вручную.</div>
@@ -2167,53 +1398,38 @@ function renderDashboard() {
   const readiness = getReadinessState();
   const nextAction = getNextBestAction();
   const readyCount = readiness.filter((item) => item.status === 'ready').length;
-  const nextTarget = nextAction.targetView || 'dashboard';
-  return renderShell(`
-    <div class="pageIntro">
-      <span class="eyebrow">📊 Обзор</span>
-      <h2>${hasClient ? escapeHtml(client.name) : 'Подготовьте первого клиента к анализу'}</h2>
-      <p>${hasClient ? 'Здесь видно, что уже готово, что мешает синхронизации и какой следующий шаг даст максимум пользы.' : 'Создайте клиента, чтобы подключить данные, запустить синхронизацию и открыть AI-анализ.'}</p>
-    </div>
-    <section class="panel">
-      <div class="panelHeader">
-        <div>
-          <h3>Следующий шаг</h3>
-          <p>${escapeHtml(nextAction.description || nextAction.label || '')}</p>
-        </div>
-        <span class="aiStatusBadge ${badgeClassForStatus(nextAction.status)}">${escapeHtml(compactStatusLabel(nextAction.status))}</span>
-      </div>
-      <div class="authStatus integrationStatus"><strong>${escapeHtml(nextAction.nextAction)}</strong></div>
-      <div class="kpiGrid">
-        <article class="kpi green"><span>Готовность</span><strong>${formatNumberSafe(readyCount)} / ${formatNumberSafe(readiness.length)}</strong></article>
-        <article class="kpi blue"><span>Клиент</span><strong>${hasClient ? 'Готово' : 'Нужно действие'}</strong></article>
-        <article class="kpi orange"><span>Данные</span><strong>${hasPerformanceData() ? 'Готово' : 'Нет данных'}</strong></article>
-        <article class="kpi orange"><span>Кандидаты в минус-слова</span><strong>${formatNumberSafe(perfSummary?.searchQueryInsights?.candidateNegativeKeywords || 0)}</strong></article>
-      </div>
-      <div class="heroActions">
-        ${renderActionButton('Клиенты', 'data-go-view="clients"')}
-        ${renderActionButton('Контекст бизнеса', 'data-go-view="business-context"')}
-        ${renderActionButton('Интеграции', 'data-go-view="integrations"')}
-        ${renderActionButton(syncLoading ? 'Синхронизация...' : 'Запустить синхронизацию', `data-sync-client ${canRunSync() && !syncLoading ? '' : 'disabled'}`, 'primary')}
-        ${renderActionButton('Перейти к шагу', `data-go-view="${escapeHtml(nextTarget)}"`, 'primary')}
-      </div>
-      ${syncStatusMessage ? `<div class="authStatus integrationStatus">${escapeHtml(syncStatusMessage)}</div>` : ''}
-    </section>
-    ${renderReadinessPanel(readiness, nextAction)}
-    ${!hasClient ? `
-      <section class="panel emptyStatePanel">
-        <h3>Нет клиента</h3>
-        <p>Создайте клиента, чтобы подключить данные и запустить анализ. После этого DirectPilot покажет готовность, синхронизацию, сводку и AI-план.</p>
-        <button class="approveButton" data-view="clients">Перейти к клиентам</button>
-      </section>
-    ` : `
-      ${renderSyncCenter()}
-      ${renderBusinessContextPanel(true)}
-      ${renderSyncDiagnosticsPanel(true)}
-      ${renderYesterdaySummaryPanel()}
-      ${renderYandexDirectAuditPanel(true)}
-      ${renderPerformanceSummaryPanel()}
-    `}
-  `);
+  const contentRenderer = resolvePageContentRenderer('dashboard');
+
+  if (typeof contentRenderer !== 'function') {
+    return renderDashboardViaPageModule();
+  }
+
+  return renderShell(contentRenderer({
+    clientName: client.name,
+    hasClient,
+    readiness,
+    nextAction,
+    readyCount,
+    readinessLength: readiness.length,
+    nextTarget: nextAction.targetView || 'dashboard',
+    hasPerformanceData: hasPerformanceData(),
+    candidateNegativeKeywords: perfSummary?.searchQueryInsights?.candidateNegativeKeywords || 0,
+    syncLoading,
+    canRunSync: canRunSync(),
+    syncStatusMessage,
+    renderActionButton,
+    renderReadinessPanel,
+    renderSyncCenter,
+    renderBusinessContextPanel,
+    renderSyncDiagnosticsPanel,
+    renderYesterdaySummaryPanel,
+    renderYandexDirectAuditPanel,
+    renderPerformanceSummaryPanel,
+    formatNumberSafe,
+    badgeClassForStatus,
+    compactStatusLabel,
+    escapeHtml,
+  }));
 }
 
 function renderDashboardViaPageModule() {
@@ -2253,1143 +1469,281 @@ function renderClients() {
           <h3>Настройки клиента «${escapeHtml(selected.name)}»</h3>
           <p>Настройки относятся только к выбранному клиенту. Привязка Яндекса настраивается отдельно во вкладке интеграций.</p>
         </div>
-        <form class="clientConnectForm" data-client-settings-form>
-          <input name="name" value="${escapeHtml(selected.name)}" placeholder="Название клиента" autocomplete="organization" required />
-          <input name="directLogin" value="${escapeHtml(selected.directLogin === 'Не подключен' ? '' : selected.directLogin)}" placeholder="Логин Яндекс.Директа" autocomplete="off" />
-          <input name="metricaCounter" value="${escapeHtml(selected.metricaCounter === 'Не подключен' ? '' : selected.metricaCounter)}" placeholder="ID счётчика Метрики" inputmode="numeric" autocomplete="off" />
-          <input name="targetCpa" value="${escapeHtml(selected.targetCpa ?? '')}" placeholder="Целевой CPA" inputmode="numeric" autocomplete="off" />
-          <input name="conversionGoalIds" value="${escapeHtml(selected.conversionGoalIds ?? selected.mainGoalId ?? '')}" placeholder="ID целей Метрики: например 123456, 789012" autocomplete="off" />
-          <small>Используются для расчёта целевых конверсий, CPA и AI-анализа.</small>
-          <input name="mainGoalId" value="${escapeHtml(selected.mainGoalId ?? '')}" placeholder="Основная цель (backward compatibility)" autocomplete="off" />
-          <textarea name="notes" rows="3" placeholder="Заметки по клиенту">${escapeHtml(selected.notes ?? '')}</textarea>
-          <button class="approveButton" type="submit">Сохранить настройки</button>
-          <button class="secondaryButton" type="button" data-delete-client="${escapeHtml(selected.id)}">Удалить клиента</button>
+        <form class="clientSettingsForm" data-client-settings-form>
+          <div class="settingsGrid">
+            <label>Название<input name="name" value="${escapeHtml(clientSettingsDraft?.name ?? selected.name ?? '')}" required /></label>
+            <label>Логин Директа<input name="directLogin" value="${escapeHtml(clientSettingsDraft?.directLogin ?? selected.directLogin ?? '')}" /></label>
+            <label>ID счётчика Метрики<input name="metricaCounter" value="${escapeHtml(clientSettingsDraft?.metricaCounter ?? selected.metricaCounter ?? '')}" /></label>
+            <label>Целевой CPA<input name="targetCpa" value="${escapeHtml(String(clientSettingsDraft?.targetCpa ?? selected.targetCpa ?? ''))}" inputmode="numeric" /></label>
+            <label>Основная цель<input name="mainGoalId" value="${escapeHtml(clientSettingsDraft?.mainGoalId ?? selected.mainGoalId ?? '')}" /></label>
+            <label>Цели конверсий<input name="conversionGoalIds" value="${escapeHtml(clientSettingsDraft?.conversionGoalIds ?? selected.conversionGoalIds ?? '')}" placeholder="12345,67890" /></label>
+          </div>
+          <label class="fullWidthLabel">Заметки<textarea name="notes" placeholder="Что важно знать AI о клиенте">${escapeHtml(clientSettingsDraft?.notes ?? selected.notes ?? '')}</textarea></label>
+          <div class="heroActions">
+            <button class="approveButton" type="submit" ${clientSettingsSaving ? 'disabled' : ''}>${clientSettingsSaving ? 'Сохраняем...' : 'Сохранить настройки'}</button>
+            <button class="secondaryButton" type="button" data-reset-client-settings>Сбросить</button>
+            <button class="dangerButton" type="button" data-delete-client="${escapeHtml(selected.id)}">Удалить клиента</button>
+          </div>
         </form>
+        ${clientSettingsStatus ? `<div class="authStatus integrationStatus">${escapeHtml(clientSettingsStatus)}</div>` : ''}
       </section>
     ` : ''}
-    ${accountClients.length ? `
-      <div class="clientGrid">
-        ${accountClients.map((client) => `
-          <button class="clientCard ${client.id === selectedClientId ? 'selected' : ''}" data-client-id="${client.id}">
-            <span>${client.segment}</span>
-            <strong>${client.name}</strong>
-            <div class="clientStats"><small>Direct: ${client.directLogin}</small><small>Метрика: ${client.metricaCounter}</small><small>Score ${client.score}/100</small></div>
-            <em>${client.trend}</em>
-          </button>
-        `).join('')}
-      </div>
-    ` : `
-      <section class="panel emptyStatePanel compact">
-        <h3>Клиентов пока нет</h3>
-        <p>Мы убрали все демо-аккаунты из личного кабинета. Добавьте реального клиента и подключите его источники данных.</p>
-      </section>
-    `}
-    ${perfSummary ? `
-      <section class="panel">
-        <h3>Сводка эффективности (${escapeHtml(perfSummary.message)})</h3>
-        <p>Расход: ${perfSummary.totals.cost} ₽ · Показы: ${perfSummary.totals.impressions} · Клики: ${perfSummary.totals.clicks} · Конверсии по целям: ${perfSummary.goalConversionsTotal ?? '—'}</p>
-        <p>Средний CPC: ${perfSummary.totals.avg_cpc} · CPA по целям: ${perfSummary.totals.cpa ?? '—'}</p>
-      </section>
-    ` : ''}
-  `);
-}
-
-function renderAudit() {
-  return renderShell(`
-    <div class="pageIntro"><span class="eyebrow">⚡ AI-аудит</span><h2>Проблемы, которые влияют на эффективность</h2><p>Каждый пункт содержит доказательство, объект в Директе и рекомендуемое действие.</p></div>
-    ${auditIssues.length ? `
-      <div class="auditList">
-        ${auditIssues.map((issue) => `
-          <article class="auditItem ${issue.priority}">
-            <div class="priorityBadge">${priorityLabel(issue.priority)}</div>
-            <div>
-              <h3>${issue.title}</h3>
-              <span>${issue.object}</span>
-              <p>${issue.evidence}</p>
-              <strong>Рекомендация: ${issue.action}</strong>
-            </div>
-          </article>
-        `).join('')}
-      </div>
-    ` : `<section class="panel emptyStatePanel compact"><h3>Аудит пока пуст</h3><p>Подключите клиента к Директу и Метрике, чтобы AI-аудит работал на реальных данных.</p></section>`}
-  `);
-}
-
-function renderClientAiRecommendations() {
-  if (clientAiLoading) {
-    return '<section class="panel aiDraftPanel"><h3>AI анализирует клиента...</h3><p>Собираем контекст клиента, аудит, кампании и guardrails.</p></section>';
-  }
-  if (clientAiError) {
-    return `<section class="panel aiDraftPanel"><h3>AI-рекомендации недоступны</h3><p>${escapeHtml(clientAiError)}</p><p>Free/custom модели могут часто получать rate limit.</p><button class="secondaryButton" type="button" data-ai-economy-fallback="recommendations">Повторить на модели Эконом</button></section>`;
-  }
-  if (!clientAiRecommendations) return '';
-  return `
-    <section class="panel aiDraftPanel">
-      <div class="panelHeader">
-        <div>
-          <h3>AI-черновик по контексту клиента</h3>
-          <p>${escapeHtml(clientAiRecommendations.summary)}</p>
-        </div>
-        <span class="aiStatusBadge ready">AI-план</span>
-      </div>
-      <div class="aiDraftGrid">
-        ${clientAiRecommendations.recommendations.map((item) => `
-          <article>
-            <div class="actionTop"><span>${escapeHtml(item.risk)} риск</span><strong>${item.requires_approval ? 'Нужно согласование' : 'Только чтение'}</strong></div>
-            <h4>${escapeHtml(item.title)}</h4>
-            <ul>${item.evidence.map((fact) => `<li>${escapeHtml(fact)}</li>`).join('')}</ul>
-            <p><strong>Эффект:</strong> ${escapeHtml(item.expected_impact)}</p>
-            <p><strong>Следующий шаг:</strong> ${escapeHtml(item.next_step)}</p>
-          </article>
-        `).join('')}
-      </div>
-    </section>
-  `;
-}
-
-function renderRecommendations() {
-  const campaignsCount = perfSummary?.campaigns?.length || 0;
-  const issueCount = perfSummary?.campaigns?.reduce((sum, item) => sum + (item.issue_flags?.length || 0), 0) || 0;
-  const totals = perfSummary?.totals || {};
-  return renderShell(`
-    <div class="pageIntro"><span class="eyebrow">✨ Рекомендации</span><h2>Действия с объяснениями и контролем риска</h2><p>В production каждая карточка будет иметь dry-run, diff, approval и rollback-данные.</p></div>
-    <section class="panel aiRecommendationCta">
-      <div>
-        <h3>Сформировать AI-рекомендации по клиентскому контексту</h3>
-        <p>${canRunAiAnalysis() ? `AI будет использовать конверсии выбранных целей Директа. ${perfSummary?.hasGoalData ? '' : 'Данные по целям пока недоступны, выводы по CPA ограничены.'}` : 'AI пока не видит статистику кампаний. Сначала запустите синхронизацию.'}</p>
-      </div>
-      <button class="approveButton" data-client-ai-recommendations ${clientAiLoading ? 'disabled' : ''}>${clientAiLoading ? 'Генерируем...' : 'Сгенерировать AI-черновик'}</button>
-    </section>
-    <section class="panel">
-      <div class="panelHeader">
-        <h3>Предпросмотр данных</h3>
-        <span class="aiStatusBadge ${canRunAiAnalysis() ? 'ready' : 'pending'}">${canRunAiAnalysis() ? 'Реальные данные доступны' : 'Нужна статистика'}</span>
-      </div>
-      <div class="kpiGrid">
-        <article class="kpi green"><span>Расход</span><strong>${formatMoneySafe(totals.cost)}</strong></article>
-        <article class="kpi blue"><span>Конверсии по целям</span><strong>${perfSummary?.goalConversionsTotal == null ? '—' : formatNumberSafe(perfSummary.goalConversionsTotal)}</strong></article>
-        <article class="kpi orange"><span>Кампании</span><strong>${formatNumberSafe(campaignsCount)}</strong></article>
-        <article class="kpi green"><span>Флаги</span><strong>${formatNumberSafe(issueCount)}</strong></article>
-      </div>
-      <p>Цели: ${escapeHtml(perfSummary?.selectedGoalIds?.join(', ') || perfSummary?.selectedGoalId || currentClient().mainGoalId || 'не указаны')} · Конверсии по целям: ${formatNumberSafe(perfSummary?.goalConversionsTotal || 0)}</p>
-    </section>
-    ${renderClientAiRecommendations()}
-    ${recommendations.length ? `
-      <div class="recommendationGrid">
-        ${recommendations.map((item) => `
-          <article class="actionCard">
-            <div class="actionTop"><span>${item.risk} риск</span><strong>${item.impact}</strong></div>
-            <h3>${item.title}</h3>
-            <p>${item.reason}</p>
-            <small>${item.objects}</small>
-            <div class="actionButtons"><button>Подробнее</button><button class="approveButton">Сохранить как черновик</button></div>
-          </article>
-        `).join('')}
-      </div>
-    ` : `<section class="panel emptyStatePanel compact"><h3>Рекомендаций пока нет</h3><p>Нажмите «Сгенерировать AI-черновик» после добавления клиента или подключите реальные источники данных.</p></section>`}
-  `);
-}
-
-function campaignMatchesOptimizationFilter(campaign) {
-  const flags = campaign.issue_flags || [];
-  if (optimizationFilter === 'all') return true;
-  if (optimizationFilter === 'critical') return campaign.severity === 'critical';
-  if (optimizationFilter === 'warning') return campaign.severity === 'warning';
-  if (optimizationFilter === 'opportunities') return campaign.severity === 'info' || flags.includes('promising_campaign');
-  if (optimizationFilter === 'no_conversions') return flags.includes('spend_without_conversions');
-  if (optimizationFilter === 'high_cpa') return flags.includes('high_cpa');
-  if (optimizationFilter === 'low_ctr') return flags.includes('low_ctr');
-  if (optimizationFilter === 'goal_unavailable') return ['unavailable', 'fallback_total_when_goal_unavailable', 'metrika_goal_unavailable'].includes(campaign.conversion_source);
-  return true;
-}
-
-function renderExecutionPreview(preview) {
-  if (!preview) return '';
-  const renderList = (items) => (items?.length ? `<ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>` : '<p>—</p>');
-  return `
-    <div class="authStatus integrationStatus">
-      <strong>Это только предпросмотр. Изменения в Яндекс.Директ не применяются.</strong>
-      <p>${escapeHtml(preview.summary || '')}</p>
-      <p>Применение отключено: ${preview.can_apply || preview.apply_enabled ? 'нет' : 'да'}</p>
-      <div class="clientSettingsGrid">
-        <div><strong>Что будет подготовлено</strong>${renderList(preview.would_do || [])}</div>
-        <div><strong>Какие данные нужны</strong>${renderList(preview.required_data || [])}</div>
-        <div><strong>Чего не хватает</strong>${renderList(preview.missing_data || [])}</div>
-        <div><strong>Проверки безопасности</strong>${renderList(preview.safety_checks || [])}</div>
-        <div><strong>Предупреждения</strong>${renderList(preview.warnings || [])}</div>
-      </div>
-      <p><strong>Следующий шаг:</strong> ${escapeHtml(preview.next_step || '')}</p>
-    </div>
-  `;
-}
-
-function renderOptimization() {
-  const client = currentClient();
-  const campaigns = (perfSummary?.campaigns || []).filter(campaignMatchesOptimizationFilter);
-  const actions = optimizationPlan?.actions || [];
-  const savedCounts = getOptimizationActionCounts();
-  const previewReadyCount = (savedCounts.approved || 0) + (savedCounts.reviewed || 0);
-  const savedActionFilters = ['all', 'draft', 'reviewed', 'approved', 'rejected', 'needs_changes'];
-  const filters = [
-    ['all', 'Все'],
-    ['critical', 'Критично'],
-    ['warning', 'Предупреждения'],
-    ['opportunities', 'Возможности'],
-    ['no_conversions', 'Без конверсий'],
-    ['high_cpa', 'Высокий CPA'],
-    ['low_ctr', 'Низкий CTR'],
-    ['goal_unavailable', 'Данные по целям недоступны'],
-  ];
-  return renderShell(`
-    <div class="pageIntro">
-      <span class="eyebrow">🎯 Оптимизация</span>
-      <h2>Оптимизация: диагностика, план, согласование</h2>
-      <p>${escapeHtml(client.name)} · цели: ${escapeHtml(perfSummary?.selectedGoalIds?.join(', ') || client.conversionGoalIds || client.mainGoalId || 'не указаны')} · ${perfSummary?.hasGoalData ? 'Данные по выбранным целям Директа загружены.' : 'Проверьте загрузку конверсий по целям.'}</p>
-      <div class="heroActions">
-        <button class="secondaryButton" data-load-summary ${perfLoading ? 'disabled' : ''}>Обновить сводку</button>
-        <button class="approveButton" data-load-optimization-plan ${optimizationPlanLoading ? 'disabled' : ''}>${optimizationPlanLoading ? 'Формируем...' : 'AI-план'}</button>
-        <button class="secondaryButton" data-copy-optimization-plan ${actions.length ? '' : 'disabled'}>Скопировать план</button>
-      </div>
-      ${optimizationPlanStatus ? `<div class="authStatus integrationStatus">${escapeHtml(optimizationPlanStatus)}</div>` : ''}
-    </div>
-    ${renderSyncDiagnosticsPanel(true)}
-    ${renderYandexDirectAuditPanel()}
-    <section class="panel">
-      <div class="panelHeader">
-        <div>
-          <span class="eyebrow">Этап 1</span>
-          <h3>Диагностика</h3>
-          <p>${perfSummary?.hasGoalData ? 'CPA и диагностика используют конверсии по выбранным целям.' : 'Данные по целям недоступны: выводы по CPA ограничены, проверьте цели и синхронизацию.'}</p>
-        </div>
-        <span class="aiStatusBadge ${perfSummary?.campaigns?.length ? 'ready' : 'pending'}">${formatNumberSafe(perfSummary?.campaigns?.length || 0)} кампаний</span>
-      </div>
-      <div class="heroActions">
-        ${filters.map(([value, label]) => `<button class="${optimizationFilter === value ? 'approveButton' : 'secondaryButton'}" data-optimization-filter="${value}">${label}</button>`).join('')}
-      </div>
-      ${campaigns.length ? `<div class="featureGrid">
-        ${campaigns.map((campaign) => `
-          <article class="featureCard">
-            <span class="featureIcon">${campaign.severity === 'critical' ? '⛔' : campaign.severity === 'warning' ? '⚠️' : campaign.severity === 'info' ? '📈' : '✅'}</span>
-            <h3>${escapeHtml(campaign.campaign_name)}</h3>
-            <p>${escapeHtml(campaign.diagnostic_explanation || '')}</p>
-            <small>Цели ${escapeHtml(campaign.goal_ids || perfSummary?.selectedGoalIds?.join(', ') || '—')} · Расход ${formatMoneySafe(campaign.cost)} · клики ${formatNumberSafe(campaign.clicks)} · показы ${formatNumberSafe(campaign.impressions)} · конверсии по целям ${campaign.goal_conversions == null ? '—' : formatNumberSafe(campaign.goal_conversions)} · CPA по целям ${campaign.cpa_used == null ? '—' : formatMoneySafe(campaign.cpa_used)} · CTR ${formatPercentSafe(campaign.ctr)}</small>
-            <p><strong>Фокус:</strong> ${escapeHtml(campaign.recommended_focus || '')}</p>
-            <p><strong>Флаги:</strong> ${escapeHtml(renderIssueFlags(campaign.issue_flags))}</p>
-          </article>
-        `).join('')}
-      </div>` : `<div class="emptyStatePanel compact"><h3>Нет кампаний для фильтра</h3><p>Обновите сводку или смените фильтр.</p></div>`}
-    </section>
-    ${renderSearchQueryInsightsPanel()}
-    <section class="panel">
-      <div class="panelHeader">
-        <div>
-          <span class="eyebrow">Этап 3</span>
-          <h3>Согласование</h3>
-          <p>Это черновики действий. Изменения в Яндекс.Директ не применяются. Одобрение фиксирует решение, но не запускает изменение в рекламном кабинете.</p>
-        </div>
-        <span class="aiStatusBadge ${savedCounts.total ? 'ready' : 'pending'}">${formatNumberSafe(savedCounts.total)} черновиков</span>
-      </div>
-      <div class="kpiGrid">
-        <article class="kpi blue"><span>Черновики</span><strong>${formatNumberSafe(savedCounts.draft)}</strong></article>
-        <article class="kpi green"><span>Просмотрено</span><strong>${formatNumberSafe(savedCounts.reviewed)}</strong></article>
-        <article class="kpi green"><span>Одобрено</span><strong>${formatNumberSafe(savedCounts.approved)}</strong></article>
-        <article class="kpi orange"><span>Отклонено</span><strong>${formatNumberSafe(savedCounts.rejected)}</strong></article>
-        <article class="kpi blue"><span>Нужны правки</span><strong>${formatNumberSafe(savedCounts.needs_changes)}</strong></article>
-        <article class="kpi orange"><span>Готово к предпросмотру</span><strong>${formatNumberSafe(previewReadyCount)}</strong></article>
-      </div>
-      <div class="heroActions">
-        <button class="approveButton" type="button" data-save-optimization-actions ${optimizationActionsLoading ? 'disabled' : ''}>${optimizationActionsLoading ? 'Сохраняем...' : 'Сохранить текущий план как черновики'}</button>
-        <button class="secondaryButton" type="button" data-load-optimization-actions ${optimizationActionsLoading ? 'disabled' : ''}>Обновить список</button>
-        ${savedActionFilters.map((statusValue) => `<button class="${optimizationActionFilter === statusValue ? 'approveButton' : 'secondaryButton'}" type="button" data-optimization-action-filter="${statusValue}">${statusValue === 'all' ? 'Все' : optimizationStatusLabel(statusValue)}</button>`).join('')}
-      </div>
-      ${optimizationActionsStatus ? `<div class="authStatus integrationStatus">${escapeHtml(optimizationActionsStatus)}</div>` : ''}
-      ${optimizationExecutionPreviewStatus ? `<div class="authStatus integrationStatus">${escapeHtml(optimizationExecutionPreviewStatus)}</div>` : ''}
-      ${optimizationActions.length ? `<div class="featureGrid">
-        ${optimizationActions.map((action) => `
-          <article class="featureCard">
-            <span class="featureIcon">${action.status === 'approved' ? '✅' : action.status === 'rejected' ? '⛔' : action.status === 'needs_changes' ? '⚠️' : '📝'}</span>
-            <h3>${escapeHtml(action.issue)}</h3>
-            <small>${escapeHtml(actionSourceLabel(action.source))} · ${escapeHtml(severityLabel(action.severity || 'info'))} · ${escapeHtml(action.campaignName || 'аккаунт')} · ${escapeHtml(optimizationStatusLabel(action.status))}</small>
-            <p><strong>Обоснование:</strong> ${escapeHtml(action.evidence || '—')}</p>
-            <p><strong>Черновик действия:</strong> ${escapeHtml(action.draftAction)}</p>
-            <p>${escapeHtml(action.safetyNote || 'Черновик действия. Изменения в Яндекс.Директ не применялись.')}</p>
-            <label class="authField">
-              <span>Комментарий</span>
-              <textarea rows="2" data-optimization-action-comment="${escapeHtml(action.id)}">${escapeHtml(action.userComment || '')}</textarea>
-            </label>
-            <div class="heroActions">
-              <button class="secondaryButton" type="button" data-update-optimization-action="${escapeHtml(action.id)}" data-action-status="reviewed">Просмотрено</button>
-              <button class="approveButton" type="button" data-update-optimization-action="${escapeHtml(action.id)}" data-action-status="approved">Одобрить</button>
-              <button class="secondaryButton" type="button" data-update-optimization-action="${escapeHtml(action.id)}" data-action-status="rejected">Отклонить</button>
-              <button class="secondaryButton" type="button" data-update-optimization-action="${escapeHtml(action.id)}" data-action-status="needs_changes">На доработку</button>
-              <button class="secondaryButton" type="button" data-load-execution-preview="${escapeHtml(action.id)}">Этап 4: предпросмотр применения</button>
-            </div>
-            ${renderExecutionPreview(optimizationExecutionPreviewsByActionId[action.id])}
-          </article>
-        `).join('')}
-      </div>` : '<div class="emptyStatePanel compact"><h3>Нет сохранённых черновиков</h3><p>Сохраните план оптимизации как черновики, чтобы согласовать действия и добавить комментарии.</p><button class="approveButton" type="button" data-save-optimization-actions>Сохранить план как черновики</button></div>'}
-    </section>
-    <section class="panel">
-      <div class="panelHeader">
-        <div>
-          <span class="eyebrow">Этап 2</span>
-          <h3>План действий</h3>
-          <p>Это manual review. Изменения в Яндекс.Директ не применяются автоматически.</p>
-        </div>
-        <span class="aiStatusBadge pending">${formatNumberSafe(actions.length)} действий</span>
-      </div>
-      ${actions.length ? `<div class="auditList">
-        ${actions.map((action) => `
-          <article class="auditItem ${action.severity === 'critical' ? 'high' : action.severity === 'warning' ? 'medium' : 'low'}">
-            <div class="priorityBadge">${escapeHtml(action.severity)}</div>
-            <div>
-              <h3>${escapeHtml(action.issue)}</h3>
-              <span>${escapeHtml(action.campaign_name || 'Аккаунт')}</span>
-              <p>${escapeHtml(action.evidence)}</p>
-              <strong>${escapeHtml(action.draft_action)}</strong>
-              <p>${escapeHtml(action.safety_note)}</p>
-              <button class="secondaryButton" data-copy-text="${escapeHtml(`${action.issue}\n${action.evidence}\n${action.draft_action}`)}">Скопировать рекомендацию</button>
-              <button class="secondaryButton" type="button">Отметить как просмотрено</button>
-            </div>
-          </article>
-        `).join('')}
-      </div>` : `<div class="emptyStatePanel compact"><h3>План действий ещё не сформирован</h3><p>Сформируйте AI-план, чтобы увидеть черновики безопасных действий. Изменения в Яндекс.Директ не применяются.</p><button class="approveButton" data-load-optimization-plan ${optimizationPlanLoading ? 'disabled' : ''}>${optimizationPlanLoading ? 'Формируем...' : 'Сформировать AI-план'}</button></div>`}
-    </section>
-  `);
-}
-
-function renderReports() {
-  return renderShell(`
-    <div class="pageIntro"><span class="eyebrow">📄 Отчёт</span><h2>Weekly summary для клиента</h2><p>Готовый текстовый каркас отчёта, который агентство сможет отправлять клиенту каждую неделю.</p></div>
-    <div class="reportGrid">
-      ${Object.entries({ happened: 'Что произошло', done: 'Что сделал специалист', next: 'Что делаем дальше' }).map(([key, title]) => `
-        <article class="panel reportCard"><h3>${title}</h3><ul>${reportBullets[key].map((item) => `<li>${item}</li>`).join('')}</ul></article>
-      `).join('')}
-    </div>
+    <div class="clientGrid">${accountClients.map((client) => `<article class="clientCard ${client.id === selectedClientId ? 'selected' : ''}"><span>${escapeHtml(client.segment || 'Клиент')}</span><h3>${escapeHtml(client.name)}</h3><p>Direct: ${escapeHtml(client.directLogin || 'Не подключен')}</p><p>Метрика: ${escapeHtml(client.metricaCounter || 'Не подключен')}</p><button data-select-client="${escapeHtml(client.id)}">${client.id === selectedClientId ? 'Выбран' : 'Выбрать'}</button></article>`).join('')}</div>
   `);
 }
 
 function renderIntegrations() {
-  const client = currentClient();
-  const accounts = clientYandexIntegration?.available_accounts || integrationStatus.accounts || [];
-  const boundAccount = clientYandexIntegration?.bound_account;
-  const clientConnected = Boolean(boundAccount);
-  const selectedAccountId = boundAccount?.id || accounts[0]?.id || '';
+  const selectedClient = currentClient();
+  const accounts = integrationStatus.accounts || [];
   return renderShell(`
-    <div class="pageIntro"><span class="eyebrow">🔌 Интеграции</span><h2>Подключите рабочие источники данных</h2><p>Яндекс.Директ и Метрика подключаются через OAuth. Один доступ содержит scopes direct:api, metrika:read и login:info.</p></div>
-    ${renderBackendApiConfig()}
-    <section class="panel clientSourcePanel">
-      <div>
-        <h3>${client.id ? `Источники клиента «${client.name}»` : 'Сначала добавьте клиента'}</h3>
-        <p>Direct login: ${client.directLogin} · Метрика: ${client.metricaCounter}. OAuth-доступ хранится на backend, а клиентская карточка связывает этот доступ с конкретным проектом.</p>
-      </div>
-      <button class="approveButton" data-view="clients">${client.id ? 'Изменить карточку клиента' : 'Добавить клиента'}</button>
+    <div class="pageIntro"><span class="eyebrow">Интеграции</span><h2>Подключите Яндекс.Директ и Метрику</h2><p>OAuth-подключение хранится в backend. После подключения выберите аккаунт Яндекса для активного клиента.</p></div>
+    <section class="panel integrationConnectPanel">
+      <div class="panelHeader"><div><h3>Яндекс OAuth</h3><p>Нужен доступ к Директу и Метрике для синхронизации кампаний, расходов, целей и поисковых запросов.</p></div><button class="approveButton" data-integration="yandex-direct">Подключить Яндекс</button></div>
+      <div class="authStatus integrationStatus">${escapeHtml(integrationStatus.message || 'Статус подключения ещё не проверен.')}</div>
+      ${integrationStatus.connected ? `<div class="integrationSuccess">Подключено аккаунтов: ${accounts.length}</div>` : ''}
     </section>
-    <div class="integrationGrid">
-      <article class="integrationCard primaryIntegration">
-        <div class="integrationTop"><span>Яндекс.Директ</span><strong>${clientConnected ? `Привязан: ${escapeHtml(boundAccount.login || boundAccount.display_name || boundAccount.id)}` : 'Не привязан'}</strong></div>
-        <h3>Аккаунт клиента</h3>
-        <p>${client.id ? 'Привяжите один из доступных OAuth-аккаунтов к выбранному клиенту. Новые клиенты остаются чистыми, пока вы явно не выберете аккаунт.' : 'Сначала добавьте клиента.'}</p>
-        ${client.id ? `
-          <form class="authForm" data-yandex-bind-form>
-            <label>
-              <span>Доступные аккаунты</span>
-              <select name="yandexAccountId" ${accounts.length ? '' : 'disabled'}>
-                ${accounts.length ? accounts.map((item) => `<option value="${item.id}" ${item.id === selectedAccountId ? 'selected' : ''}>${escapeHtml(item.login || item.display_name || item.id)}</option>`).join('') : '<option value="">Нет подключённых аккаунтов</option>'}
-              </select>
-            </label>
-            <button class="approveButton" type="submit" ${accounts.length ? '' : 'disabled'}>Привязать аккаунт</button>
-            <button class="secondaryButton" type="button" data-unbind-yandex ${clientConnected ? '' : 'disabled'}>Отвязать</button>
-          </form>
-        ` : ''}
-        <div class="authStatus integrationStatus">${escapeHtml(clientYandexStatus || (clientConnected ? 'Яндекс-аккаунт привязан к этому клиенту.' : 'Сначала привяжите Яндекс-аккаунт к этому клиенту.'))}</div>
-        <code>GET /api/v1/auth/yandex/start</code>
-        <button class="secondaryButton" type="button" data-refresh-yandex-status>Обновить статус Яндекса</button>
-        <button class="approveButton" data-integration="yandex-direct">${accounts.length ? 'Подключить ещё аккаунт' : 'Подключить Яндекс.Директ'}</button>
-      </article>
-      <article class="integrationCard primaryIntegration">
-        <div class="integrationTop"><span>Доступные аккаунты</span><strong>${accounts.length}</strong></div>
-        <h3>Глобальный OAuth-доступ</h3>
-        <p>OAuth остаётся общим списком доступов, но подключённым к клиенту считается только явно привязанный аккаунт.</p>
-        <code>${accounts.map((item) => escapeHtml(item.login || item.display_name || item.id)).join(', ') || 'Нет аккаунтов'}</code>
-        <button class="approveButton" data-integration="yandex-metrica">${accounts.length ? 'Обновить OAuth-доступ' : 'Подключить Яндекс.Метрику'}</button>
-      </article>
-      <article class="integrationCard">
-        <div class="integrationTop"><span>CRM</span><strong>План</strong></div>
-        <h3>Качество лидов и продажи</h3>
-        <p>Позволит оптимизировать рекламу не по заявкам, а по выручке и марже.</p>
-        <button data-integration="crm">Оставить в плане</button>
-      </article>
-    </div>
-    ${integrationStatus.message ? `<div class="authStatus integrationStatus">${integrationStatus.message}</div>` : ''}
+    <section class="panel integrationConnectPanel">
+      <div class="panelHeader"><div><h3>Привязка к клиенту</h3><p>Активный клиент: ${escapeHtml(selectedClient.name || 'не выбран')}. Direct login: ${escapeHtml(selectedClient.directLogin || 'не указан')}.</p></div><button class="secondaryButton" data-refresh-client-yandex ${selectedClient.id ? '' : 'disabled'}>Обновить</button></div>
+      ${clientYandexStatus ? `<div class="authStatus integrationStatus">${escapeHtml(clientYandexStatus)}</div>` : ''}
+      ${clientYandexLoading ? '<div class="authStatus integrationStatus">Загружаем доступные аккаунты...</div>' : ''}
+      ${accounts.length ? `
+        <div class="accountList">
+          ${accounts.map((account) => {
+            const selected = String(account.id) === String(clientYandexIntegration?.selected_account?.id || selectedClient.yandexAccountId || '');
+            return `<article class="accountCard ${selected ? 'selected' : ''}"><div><strong>${escapeHtml(account.login || account.name || account.id)}</strong><span>${escapeHtml(account.id)}</span></div><button class="${selected ? 'secondaryButton' : 'approveButton'}" data-bind-yandex-account="${escapeHtml(account.id)}" ${selected ? 'disabled' : ''}>${selected ? 'Привязан' : 'Привязать'}</button></article>`;
+          }).join('')}
+        </div>
+      ` : '<div class="authStatus integrationStatus">Нет доступных аккаунтов. Сначала подключите Яндекс OAuth.</div>'}
+      ${clientYandexIntegration?.selected_account ? `<button class="dangerButton" data-unbind-yandex ${selectedClient.id ? '' : 'disabled'}>Отвязать аккаунт</button>` : ''}
+    </section>
   `);
 }
 
-function promptDebugSectionLabel(name) {
-  return {
-    'serverContext.summary.searchQueryInsights': 'Поисковые запросы',
-    'serverContext.campaigns': 'Кампании',
-    'chat.history': 'История чата',
-    'chat.message': 'Текущий вопрос',
-    'chat.playbook': 'Инструкции AI-аналитика',
-    'chat.toolResults': 'Результаты MCP-инструментов',
-    'serverContext.optimization': 'Черновики оптимизации',
-    'chat.serverContext': 'Контекст клиента',
-    'serverContext.summary': 'Сводка эффективности',
-    'serverContext.summary.yesterdayCampaignSummary': 'Сводка за вчера',
-    'serverContext.business_context': 'Контекст бизнеса',
-    'serverContext.diagnostics': 'Диагностика',
-    'serverContext.knowledge_snippets': 'Память проекта',
-    'serverContext.warnings': 'Предупреждения',
-    'chat.finalPromptWrapper': 'Системная обвязка чата',
-    'serverContext.other': 'Прочий серверный контекст',
-    other: 'Прочее',
-  }[name] || name;
-}
-
-function promptDebugHintActionLabel(action) {
-  return {
-    enable_tool_summary: 'Включить summary-режим MCP',
-    limit_search_queries: 'Ограничить до top 20',
-    select_campaign: 'Показать выбор кампании',
-    clear_chat_history: 'Очистить историю',
-    enable_compact_context: 'Включить сжатый контекст',
-    limit_optimization: 'Ограничить черновики',
-  }[action] || '';
-}
-
-function renderOpenRouterRequestInspector() {
-  const debug = openrouterRequestDebug || aiPromptDebugSnapshot?.openrouterRequestPreview || aiPromptDebugSnapshot?.openrouterRequest;
-  if (!debug && !aiRequestInspectorEnabled) {
-    return `<button class="secondaryButton" type="button" data-openrouter-inspector="show">Показать полный запрос</button>`;
-  }
-  const payloadJson = debug ? JSON.stringify(debug.payload || {}, null, 2) : '';
-  const systemPrompt = debug?.systemPrompt || debug?.messages?.find?.((item) => item.role === 'system')?.content || '';
-  const userPrompt = debug?.userPrompt || debug?.messages?.find?.((item) => item.role === 'user')?.content || '';
-  const size = debug?.size || {};
-  const modeLabel = debug?.mode === 'model_test'
-    ? 'Проверка модели'
-    : debug?.mode === 'chat'
-      ? 'AI-chat запрос'
-      : debug?.mode || 'OpenRouter запрос';
+function renderAiStatusPanel() {
+  const models = aiStatus.models || [];
+  const selectedModelExists = models.some((model) => model.id === selectedAiModel);
+  const modelOptions = [
+    '<option value="openrouter/auto">openrouter/auto</option>',
+    ...models.map((model) => `<option value="${escapeHtml(model.id)}" ${selectedAiModel === model.id ? 'selected' : ''}>${escapeHtml(model.name || model.id)}</option>`),
+    `<option value="${CUSTOM_MODEL_VALUE}" ${selectedAiModel === CUSTOM_MODEL_VALUE || (!selectedModelExists && selectedAiModel !== 'openrouter/auto') ? 'selected' : ''}>Своя модель OpenRouter</option>`,
+  ].join('');
   return `
-    <section class="panel compact">
+    <section class="panel aiStatusPanel">
       <div class="panelHeader">
-        <div>
-          <h3>OpenRouter request inspector · ${escapeHtml(modeLabel)}</h3>
-          <p>Debug payload may contain business data. Do not share it publicly.</p>
-        </div>
-        <button class="secondaryButton" type="button" data-openrouter-inspector="${debug ? 'hide' : 'show'}">${debug ? 'Скрыть полный запрос' : 'Показать полный запрос'}</button>
+        <div><h3>OpenRouter</h3><p>${escapeHtml(aiStatus.message || 'Статус неизвестен')}</p></div>
+        <span class="aiStatusBadge ${aiStatus.configured ? 'ready' : 'pending'}">${aiStatus.configured ? 'Готов' : 'Нет ключа'}</span>
       </div>
-      ${debug ? `
-        <div class="metricGrid">
-          <article><span>Model</span><strong>${escapeHtml(debug.payload?.model || '')}</strong></article>
-          <article><span>Max tokens</span><strong>${formatNumberSafe(debug.payload?.max_tokens || 0)}</strong></article>
-          <article><span>Temperature</span><strong>${escapeHtml(String(debug.payload?.temperature ?? ''))}</strong></article>
-          <article><span>Mode</span><strong>${escapeHtml(debug.mode || '')}</strong></article>
-          <article><span>Input tokens</span><strong>${formatNumberSafe(size.estimatedInputTokens || 0)}</strong></article>
-          <article><span>Total tokens</span><strong>${formatNumberSafe(size.estimatedTotalTokens || 0)}</strong></article>
-        </div>
-        <p><strong>Compact options:</strong> <code>${escapeHtml(JSON.stringify(debug.compactOptions || {}))}</code></p>
-        <div class="heroActions">
-          <button class="secondaryButton" type="button" data-copy-openrouter-debug="json">Скопировать JSON</button>
-          <button class="secondaryButton" type="button" data-copy-openrouter-debug="system">Скопировать system prompt</button>
-          <button class="secondaryButton" type="button" data-copy-openrouter-debug="user">Скопировать user prompt</button>
-        </div>
-        <details>
-          <summary class="secondaryButton">Full system prompt</summary>
-          <pre>${escapeHtml(systemPrompt)}</pre>
-        </details>
-        <details>
-          <summary class="secondaryButton">Full user prompt</summary>
-          <pre>${escapeHtml(userPrompt)}</pre>
-        </details>
-        <details>
-          <summary class="secondaryButton">Full JSON payload</summary>
-          <pre>${escapeHtml(payloadJson)}</pre>
-        </details>
-      ` : '<p>Сначала запустите проверку размера AI-контекста или AI-запрос с inspector.</p>'}
+      <div class="aiModelSettings">
+        <label>Модель
+          <select data-ai-model>${modelOptions}</select>
+        </label>
+        <label>Своя модель
+          <input data-ai-custom-model value="${escapeHtml(customAiModel)}" placeholder="openai/gpt-4o" ${selectedAiModel === CUSTOM_MODEL_VALUE || !selectedModelExists ? '' : 'disabled'} />
+        </label>
+        <label>Профиль токенов
+          <select data-ai-preset>
+            <option value="economy" ${selectedAiPreset === 'economy' ? 'selected' : ''}>Economy · коротко и дёшево</option>
+            <option value="balanced" ${selectedAiPreset === 'balanced' ? 'selected' : ''}>Balanced · больше контекста</option>
+            <option value="deep" ${selectedAiPreset === 'deep' ? 'selected' : ''}>Deep · максимум деталей</option>
+          </select>
+        </label>
+        <label>AI-context
+          <select data-ai-max-tokens-mode>
+            <option value="compact" ${aiMaxTokensMode === 'compact' ? 'selected' : ''}>Компактный</option>
+            <option value="deep" ${aiMaxTokensMode === 'deep' ? 'selected' : ''}>Расширенный</option>
+          </select>
+        </label>
+        <label>Tool results
+          <select data-ai-tool-results-mode>
+            <option value="summary" ${aiToolResultsMode === 'summary' ? 'selected' : ''}>Сводка</option>
+            <option value="raw" ${aiToolResultsMode === 'raw' ? 'selected' : ''}>Сырые данные</option>
+          </select>
+        </label>
+        <label>История чата
+          <select data-ai-chat-history-limit>
+            <option value="1" ${Number(aiChatHistoryLimit) === 1 ? 'selected' : ''}>1 сообщение</option>
+            <option value="3" ${Number(aiChatHistoryLimit) === 3 ? 'selected' : ''}>3 сообщения</option>
+            <option value="6" ${Number(aiChatHistoryLimit) === 6 ? 'selected' : ''}>6 сообщений</option>
+          </select>
+        </label>
+        <label>Запросов Wordstat / Метрики
+          <input data-ai-search-query-limit value="${escapeHtml(aiSearchQueryLimit)}" inputmode="numeric" />
+        </label>
+        <label class="checkboxLabel"><input type="checkbox" data-ai-compact-context ${aiCompactContext ? 'checked' : ''} /> Сжимать контекст</label>
+      </div>
     </section>
   `;
 }
 
-function renderAiRequestTrace(trace, index) {
-  if (!trace) return '';
-  const prompt = trace.prompt || {};
-  const payload = trace.openrouterPayload || {};
-  const settings = trace.modelSettings || {};
-  const context = trace.contextAssembly || {};
-  const guard = trace.guard || {};
-  const response = trace.response || {};
-  const tools = trace.tools || [];
-  const compaction = context.compaction || [];
-  const userMessage = String(trace.userMessage || '');
-  const userPrompt = String(prompt.user || '');
-  const looksPolluted = [
-    'Trusted server-side client context follows',
-    'DirectPilot analyst playbook',
-    '{',
-    '"client"',
-    '"summary"',
-  ].some((needle) => userMessage.includes(needle));
-  const assemblyWarnings = [];
-  if (userMessage.includes('Trusted server-side client context follows')) {
-    assemblyWarnings.push('server context inside userMessage');
-  }
-  if (userPrompt.includes('searchQueryInsights') && userPrompt.includes('search_query_insights')) {
-    assemblyWarnings.push('search query context may be duplicated');
-  }
-  if (userPrompt.includes('yandexDirectAudit') && userPrompt.includes('yandex_direct_audit')) {
-    assemblyWarnings.push('audit context may be duplicated');
-  }
-  if (userPrompt.includes('"summary"') && userPrompt.includes('"campaigns"') && userPrompt.includes('[')) {
-    assemblyWarnings.push('campaign data may be duplicated');
-  }
-  if (userPrompt.includes('direct_analyst_playbook') && userPrompt.includes('Compact DirectPilot playbook')) {
-    assemblyWarnings.push('playbook may be duplicated');
-  }
-  if (userPrompt.includes('latest_sync_job') && userPrompt.includes('"id"')) {
-    assemblyWarnings.push('technical sync fields are included');
-  }
-  const payloadJson = JSON.stringify(payload, null, 2);
-  const traceJson = JSON.stringify(trace, null, 2);
-  const scrollPre = (text) => `<pre style="max-height: 360px; overflow:auto; white-space:pre-wrap; word-break:break-word;">${escapeHtml(text || '')}</pre>`;
-  const copyButton = (part, label) => `<button class="secondaryButton" type="button" data-copy-ai-trace="${index}" data-copy-ai-trace-part="${part}">${escapeHtml(label)}</button>`;
-  const resultSummary = (summary) => {
-    if (!summary) return 'нет данных';
-    const count = summary.count != null ? ` · ${formatNumberSafe(summary.count)}` : '';
-    const keys = Array.isArray(summary.keys) && summary.keys.length ? ` · ${summary.keys.slice(0, 4).join(', ')}` : '';
-    return `${summary.type || 'result'}${count}${keys}`;
-  };
-  const toolServerContextWarnings = tools
-    .filter((tool) => (tool.resultSummary?.count === 0 || tool.resultSummary?.type === 'list' && tool.resultSummary?.count === 0) && userPrompt.includes('serverContext'))
-    .map((tool) => tool.name);
+function renderAiPromptDebugPanel() {
   return `
-    <details class="aiToolTrace aiRequestTrace" style="margin-top:12px;">
-      <summary>Трассировка AI-запроса</summary>
-      <div class="authStatus">
-        Трассировка показывает цепочку сборки запроса. Prompt и payload могут содержать бизнес-данные клиента, не пересылайте их публично.
-      </div>
-
-      <section class="panel compact">
-        <div class="panelHeader">
-          <div>
-            <h4>Что написал пользователь</h4>
-            <p>Пользовательский вопрос должен быть raw-текстом без JSON, serverContext и playbook.</p>
-          </div>
-          <span class="aiStatusBadge ${looksPolluted ? 'pending' : 'ready'}">${looksPolluted ? 'подозрение на загрязнение контекстом' : 'OK'}</span>
-        </div>
-        ${looksPolluted ? `
-          <div class="authStatus aiError">
-            Похоже, в пользовательский вопрос попал серверный контекст. Вопрос должен быть raw-текстом без JSON/playbook. Это увеличивает prompt и может дублировать данные.
-          </div>
-        ` : ''}
-        ${scrollPre(userMessage)}
-        <div class="heroActions">${copyButton('userMessage', 'Копировать вопрос пользователя')}</div>
-      </section>
-
-      <section class="panel compact">
-        <h4>Настройки запроса</h4>
-        <div class="metricGrid">
-          <article><span>Модель</span><strong>${escapeHtml(settings.model || payload.model || '')}</strong></article>
-          <article><span>max_tokens</span><strong>${formatNumberSafe(settings.max_tokens || payload.max_tokens || 0)}</strong></article>
-          <article><span>temperature</span><strong>${escapeHtml(String(settings.temperature ?? payload.temperature ?? ''))}</strong></article>
-          <article><span>AI preset</span><strong>${escapeHtml(settings.ai_preset || '—')}</strong></article>
-          <article><span>Сжатый контекст</span><strong>${settings.compact_context ? 'да' : 'нет'}</strong></article>
-          <article><span>Режим tools</span><strong>${escapeHtml(settings.tool_results_mode || '—')}</strong></article>
-          <article><span>История чата</span><strong>${formatNumberSafe(settings.chat_history_limit || 0)}</strong></article>
-          <article><span>Поисковые запросы</span><strong>${formatNumberSafe(settings.search_query_limit || 0)}</strong></article>
-          <article><span>Кампания</span><strong>${escapeHtml(trace.selectedCampaignName || 'весь аккаунт')}</strong></article>
-        </div>
-      </section>
-
-      <section class="panel compact">
-        <div class="panelHeader">
-          <div>
-            <h4>Откуда подтянулись данные</h4>
-            <p>Часть данных может приходить не из tool result, а из trusted serverContext.</p>
-          </div>
-          <span class="aiStatusBadge ready">Источники данных</span>
-        </div>
-        ${toolServerContextWarnings.length ? `
-          <div class="authStatus">
-            Tool result пустой, но похожие данные могли попасть через serverContext: ${escapeHtml(toolServerContextWarnings.join(', '))}.
-          </div>
-        ` : ''}
-        <div class="tableWrap">
-          <table>
-            <thead><tr><th>Инструмент</th><th>Зачем выбран</th><th>Источник</th><th>Результат</th><th>В prompt</th><th>~ tokens</th></tr></thead>
-            <tbody>
-              ${tools.map((tool) => `
-                <tr>
-                  <td><strong>${escapeHtml(tool.name || '')}</strong></td>
-                  <td>${escapeHtml(tool.reason || '')}</td>
-                  <td>${escapeHtml(tool.source || '')}</td>
-                  <td>${escapeHtml(resultSummary(tool.resultSummary))}</td>
-                  <td>${escapeHtml(tool.includedInPrompt || '')}</td>
-                  <td>${formatNumberSafe(tool.estimatedTokens || 0)}</td>
-                </tr>
-              `).join('') || '<tr><td colspan="6">Инструменты не указаны в trace.</td></tr>'}
-            </tbody>
-          </table>
-        </div>
-        <p><strong>Trusted serverContext:</strong> ${escapeHtml(context.source || 'server-side context')} · клиент ${escapeHtml(context.client?.name || context.client?.id || trace.clientId || '—')}</p>
-      </section>
-
-      <section class="panel compact">
-        <h4>Что было сжато</h4>
-        <div class="tableWrap">
-          <table>
-            <thead><tr><th>Секция</th><th>До</th><th>После</th><th>Правило</th></tr></thead>
-            <tbody>
-              ${compaction.map((item) => `
-                <tr>
-                  <td><strong>${escapeHtml(item.section || '')}</strong></td>
-                  <td>${escapeHtml(String(item.before ?? ''))}</td>
-                  <td>${escapeHtml(String(item.after ?? ''))}</td>
-                  <td>${escapeHtml(item.rule || item.reason || '')}</td>
-                </tr>
-              `).join('') || '<tr><td colspan="4">Сжатие контекста не описано.</td></tr>'}
-            </tbody>
-          </table>
-        </div>
-      </section>
-
-      <section class="panel compact">
-        <div class="panelHeader">
-          <div>
-            <h4>Что вошло в prompt</h4>
-            <p>Финальный prompt и OpenRouter payload ниже свернуты и прокручиваются внутри блока.</p>
-          </div>
-          <span class="aiStatusBadge ${guard.blocked || prompt.isTooLarge ? 'pending' : 'ready'}">${guard.blocked ? 'заблокирован guard' : prompt.isTooLarge ? 'слишком большой' : 'в пределах лимита'}</span>
-        </div>
-        <div class="metricGrid">
-          <article><span>Input tokens</span><strong>${formatNumberSafe(prompt.estimatedInputTokens || 0)}</strong></article>
-          <article><span>Total tokens</span><strong>${formatNumberSafe(prompt.estimatedTotalTokens || 0)}</strong></article>
-          <article><span>Context limit</span><strong>${formatNumberSafe(prompt.contextLimit || 0)}</strong></article>
-          <article><span>isTooLarge</span><strong>${prompt.isTooLarge ? 'да' : 'нет'}</strong></article>
-          <article><span>Guard</span><strong>${guard.blocked ? 'заблокировал' : 'не блокировал'}</strong></article>
-          <article><span>Причина</span><strong>${escapeHtml(guard.reason || '—')}</strong></article>
-          <article><span>Ответ</span><strong>${escapeHtml(response.status || 'success')}</strong></article>
-        </div>
-        ${guard.blocked ? `<div class="authStatus aiError">Запрос не отправлялся в OpenRouter: ${escapeHtml(guard.reason || 'prompt guard')}</div>` : ''}
-        <div class="heroActions">
-          ${copyButton('json', 'Копировать trace JSON')}
-          ${copyButton('system', 'Копировать system prompt')}
-          ${copyButton('user', 'Копировать user prompt')}
-          ${copyButton('payload', 'Копировать OpenRouter payload')}
-        </div>
-        <details>
-          <summary class="secondaryButton">System prompt</summary>
-          <div class="heroActions">${copyButton('system', 'Копировать system prompt')}</div>
-          ${scrollPre(prompt.system || '')}
-        </details>
-        <details>
-          <summary class="secondaryButton">User prompt</summary>
-          <div class="heroActions">${copyButton('user', 'Копировать user prompt')}</div>
-          ${scrollPre(userPrompt)}
-        </details>
-        <details>
-          <summary class="secondaryButton">OpenRouter payload</summary>
-          <div class="heroActions">${copyButton('payload', 'Копировать OpenRouter payload')}</div>
-          ${scrollPre(payloadJson)}
-        </details>
-        <details>
-          <summary class="secondaryButton">Trace JSON</summary>
-          <div class="heroActions">${copyButton('json', 'Копировать trace JSON')}</div>
-          ${scrollPre(traceJson)}
-        </details>
-      </section>
-
-      <section class="panel compact">
-        <div class="panelHeader">
-          <div>
-            <h4>Предупреждения по сборке prompt</h4>
-            <p>Это frontend-диагностика подозрительных дублей, не backend-ошибка.</p>
-          </div>
-          <span class="aiStatusBadge ${assemblyWarnings.length ? 'pending' : 'ready'}">${assemblyWarnings.length ? 'есть предупреждения' : 'дублей не видно'}</span>
-        </div>
-        ${assemblyWarnings.length ? `
-          <div class="actionList">
-            ${assemblyWarnings.map((warning) => `<article class="actionCard"><strong>${escapeHtml(warning)}</strong></article>`).join('')}
-          </div>
-        ` : '<p>Подозрительных дублей в prompt не найдено.</p>'}
-      </section>
-    </details>
-  `;
-  return `
-    <details class="aiToolTrace aiRequestTrace">
-      <summary>AI request trace: что было отправлено в OpenRouter</summary>
-      <div class="authStatus">
-        Debug-данные могут содержать бизнес-контекст клиента. Не пересылайте их публично.
-      </div>
-      <div class="metricGrid">
-        <article><span>Модель</span><strong>${escapeHtml(settings.model || payload.model || '')}</strong></article>
-        <article><span>Max tokens</span><strong>${formatNumberSafe(settings.max_tokens || payload.max_tokens || 0)}</strong></article>
-        <article><span>Input tokens</span><strong>${formatNumberSafe(prompt.estimatedInputTokens || 0)}</strong></article>
-        <article><span>Total tokens</span><strong>${formatNumberSafe(prompt.estimatedTotalTokens || 0)}</strong></article>
-        <article><span>Guard</span><strong>${guard.blocked ? 'заблокирован' : 'пропущен'}</strong></article>
-        <article><span>Ответ</span><strong>${escapeHtml(response.status || 'success')}</strong></article>
-      </div>
-      <p><strong>Сообщение пользователя:</strong> ${escapeHtml(trace.userMessage || '')}</p>
-      <p><strong>Клиент:</strong> ${escapeHtml(context.client?.name || context.client?.id || trace.clientId || '')}</p>
-      <p><strong>Кампания:</strong> ${escapeHtml(trace.selectedCampaignName || 'весь аккаунт')}</p>
-      ${guard.blocked ? `<div class="authStatus aiError">Запрос не отправлялся в OpenRouter: ${escapeHtml(guard.reason || 'prompt guard')}</div>` : ''}
-      <h4>Инструменты и источники</h4>
-      <div class="tableWrap">
-        <table>
-          <thead><tr><th>Инструмент</th><th>Почему выбран</th><th>Источник</th><th>Результат</th><th>~ tokens</th></tr></thead>
-          <tbody>
-            ${tools.map((tool) => `
-              <tr>
-                <td><strong>${escapeHtml(tool.name || '')}</strong></td>
-                <td>${escapeHtml(tool.reason || '')}</td>
-                <td>${escapeHtml(tool.source || '')}</td>
-                <td>${escapeHtml(tool.resultSummary?.type || '')}${tool.resultSummary?.count != null ? ` · ${formatNumberSafe(tool.resultSummary.count)}` : ''}</td>
-                <td>${formatNumberSafe(tool.estimatedTokens || 0)}</td>
-              </tr>
-            `).join('')}
-          </tbody>
-        </table>
-      </div>
-      <h4>Сборка и сжатие контекста</h4>
-      <div class="tableWrap">
-        <table>
-          <thead><tr><th>Секция</th><th>До</th><th>После</th><th>Правило</th></tr></thead>
-          <tbody>
-            ${compaction.map((item) => `
-              <tr>
-                <td>${escapeHtml(item.section || '')}</td>
-                <td>${escapeHtml(String(item.before ?? ''))}</td>
-                <td>${escapeHtml(String(item.after ?? ''))}</td>
-                <td>${escapeHtml(item.rule || '')}</td>
-              </tr>
-            `).join('')}
-          </tbody>
-        </table>
-      </div>
-      <div class="heroActions">
-        <button class="secondaryButton" type="button" data-copy-ai-trace="${index}" data-copy-ai-trace-part="json">Скопировать trace JSON</button>
-        <button class="secondaryButton" type="button" data-copy-ai-trace="${index}" data-copy-ai-trace-part="system">Скопировать system prompt</button>
-        <button class="secondaryButton" type="button" data-copy-ai-trace="${index}" data-copy-ai-trace-part="user">Скопировать user prompt</button>
-        <button class="secondaryButton" type="button" data-copy-ai-trace="${index}" data-copy-ai-trace-part="payload">Скопировать OpenRouter payload</button>
-      </div>
-      <details>
-        <summary class="secondaryButton">System prompt</summary>
-        <pre>${escapeHtml(prompt.system || '')}</pre>
-      </details>
-      <details>
-        <summary class="secondaryButton">User prompt</summary>
-        <pre>${escapeHtml(prompt.user || '')}</pre>
-      </details>
-      <details>
-        <summary class="secondaryButton">OpenRouter payload</summary>
-        <pre>${escapeHtml(payloadJson)}</pre>
-      </details>
-      <details>
-        <summary class="secondaryButton">Trace JSON</summary>
-        <pre>${escapeHtml(traceJson)}</pre>
-      </details>
-    </details>
-  `;
-}
-
-function renderAiModelSettings() {
-  {
-  const model = activeAiModelInfo();
-  const modelOptions = getAiModelOptions();
-  const selectedModelValue = isCustomAiModel() ? CUSTOM_MODEL_VALUE : activeAiModel();
-  const customModelActive = selectedModelValue === CUSTOM_MODEL_VALUE;
-  const resolvedModel = activeAiModel();
-  const resolvedMaxTokens = activeAiMaxTokens();
-  const costLabel = { low: 'низкая стоимость', medium: 'средняя стоимость', high: 'дороже', unknown: 'стоимость неизвестна' }[model.cost_tier || 'unknown'] || 'стоимость неизвестна';
-  const freeModelWarning = resolvedModel.includes(':free')
-    ? 'Free-модели часто получают rate limit у провайдера. Для стабильной работы выберите Gemma или Qwen из списка.'
-    : '';
-  const customModelWarning = customModelActive
-    ? 'Своя/free модель может быть нестабильной: возможны лимиты, 429 и временная недоступность.'
-    : '';
-  const promptDebug = aiPromptDebugSnapshot;
-  const customModelMissing = customModelActive && !resolvedModel;
-  const promptDebugSize = promptDebug?.size || null;
-  const promptDebugSections = (promptDebug?.sections || []).slice(0, 8);
-  const promptDebugHints = promptDebug?.reductionHints || [];
-  const promptDebugMode = promptDebug?.mode === 'chat' ? 'AI-chat prompt' : promptDebug?.mode || '';
-  const promptDebugModelMismatch = promptDebugSize?.model && promptDebugSize.model !== resolvedModel
-    ? `Debug проверил модель ${promptDebugSize.model}, а в чате выбрана ${resolvedModel}.`
-    : '';
-  return `
-    <section class="panel">
+    <section class="panel aiPromptPanel">
       <div class="panelHeader">
-        <div>
-          <h3>AI-модель</h3>
-          <p>${escapeHtml(resolvedModel)} · лимит ответа ${formatNumberSafe(resolvedMaxTokens)} tokens · ${escapeHtml(costLabel)}</p>
-        </div>
-        <span class="aiStatusBadge ${aiStatus.configured ? 'ready' : 'pending'}">${aiStatus.configured ? 'OpenRouter подключён' : 'OpenRouter не настроен'}</span>
+        <div><h3>Prompt inspector</h3><p>Проверка размера контекста перед запросом к модели.</p></div>
+        <button class="secondaryButton" data-ai-prompt-debug ${selectedClientId && !aiPromptDebugLoading ? '' : 'disabled'}>${aiPromptDebugLoading ? 'Проверяем...' : 'Проверить контекст'}</button>
       </div>
-      <p>${escapeHtml(aiStatus.message || '')}</p>
-      <details>
-        <summary class="secondaryButton">Настройки модели</summary>
-        <p>DirectPilot отправляет в OpenRouter конкретную модель и лимит ответа. Сейчас в интерфейсе оставлены два понятных варианта и своя модель для ручной проверки.</p>
-        <p><a href="https://openrouter.ai/models" target="_blank" rel="noopener noreferrer">Каталог моделей OpenRouter</a></p>
-        <div class="clientSettingsGrid">
-          <label class="authField">
-            <span>Модель</span>
-            <select data-ai-model>
-              ${modelOptions.map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === selectedModelValue ? 'selected' : ''}>${escapeHtml(item.label || item.name || item.id)} · ${escapeHtml(item.cost_tier || 'unknown')}</option>`).join('')}
-              <option value="${CUSTOM_MODEL_VALUE}" ${selectedModelValue === CUSTOM_MODEL_VALUE ? 'selected' : ''}>Своя модель OpenRouter</option>
-            </select>
-          </label>
-          ${customModelActive ? `
-            <label class="authField">
-              <span>Своя модель OpenRouter</span>
-              <input data-ai-custom-model value="${escapeHtml(aiCustomModel)}" placeholder="Например: openai/gpt-4o-mini" />
-            </label>
-          ` : ''}
+      ${aiPromptDebugError ? `<div class="authStatus integrationStatus">${escapeHtml(aiPromptDebugError)}</div>` : ''}
+      ${aiPromptDebug ? `
+        <div class="insightGrid">
+          <article><span>Оценка токенов</span><strong>${formatNumberSafe(aiPromptDebug.estimated_tokens || 0)}</strong></article>
+          <article><span>Лимит</span><strong>${formatNumberSafe(aiPromptDebug.target_context_tokens || 0)}</strong></article>
+          <article><span>Tool calls</span><strong>${formatNumberSafe(aiPromptDebug.tool_calls || 0)}</strong></article>
         </div>
-        <p><strong>Фактически будет использована модель:</strong> ${escapeHtml(resolvedModel)}</p>
-        <p><strong>Лимит ответа:</strong> ${formatNumberSafe(resolvedMaxTokens)} tokens</p>
-        ${customModelWarning ? `<div class="authStatus">${escapeHtml(customModelWarning)}</div>` : ''}
-        ${customModelMissing ? `<div class="authStatus aiError">Введите ID своей OpenRouter-модели, чтобы отправлять запросы.</div>` : ''}
-        ${freeModelWarning ? `<div class="authStatus aiError">${escapeHtml(freeModelWarning)}</div>` : ''}
-      </details>
-      <details open>
-        <summary class="secondaryButton">Сжатие AI-контекста</summary>
-        <div class="clientSettingsGrid">
-          <label class="authField">
-            <span>Сжатый AI-контекст</span>
-            <select data-ai-compact-context>
-              <option value="true" ${aiCompactContext ? 'selected' : ''}>включён</option>
-              <option value="false" ${!aiCompactContext ? 'selected' : ''}>выключен</option>
-            </select>
-          </label>
-          <label class="authField">
-            <span>MCP-инструменты</span>
-            <select data-ai-tool-results-mode>
-              <option value="summary" ${aiToolResultsMode === 'summary' ? 'selected' : ''}>summary вместо полного JSON</option>
-              <option value="full" ${aiToolResultsMode === 'full' ? 'selected' : ''}>полный JSON</option>
-            </select>
-          </label>
-          <label class="authField">
-            <span>История чата</span>
-            <select data-ai-chat-history-limit>
-              <option value="3" ${Number(aiChatHistoryLimit) === 3 ? 'selected' : ''}>последние 3 сообщения</option>
-              <option value="8" ${Number(aiChatHistoryLimit) === 8 ? 'selected' : ''}>последние 8 сообщений</option>
-              <option value="0" ${Number(aiChatHistoryLimit) === 0 ? 'selected' : ''}>без истории</option>
-            </select>
-          </label>
-          <label class="authField">
-            <span>Лимит поисковых запросов</span>
-            <select data-ai-search-query-limit>
-              <option value="10" ${aiSearchQueryLimit === '10' ? 'selected' : ''}>10</option>
-              <option value="20" ${aiSearchQueryLimit === '20' ? 'selected' : ''}>20</option>
-              <option value="50" ${aiSearchQueryLimit === '50' ? 'selected' : ''}>50</option>
-              <option value="all" ${aiSearchQueryLimit === 'all' ? 'selected' : ''}>все</option>
-            </select>
-          </label>
-        </div>
-        ${!selectedAiCampaignName ? '<div class="authStatus">Если контекст всё ещё большой, выберите конкретную кампанию в AI-чате.</div>' : ''}
-      </details>
-      <div class="heroActions">
-        <button class="secondaryButton" type="button" data-test-ai-model ${aiModelTestLoading ? 'disabled' : ''}>${aiModelTestLoading ? 'Проверяем...' : 'Проверить модель'}</button>
-        <button class="secondaryButton" type="button" data-check-ai-prompt-size ${aiPromptDebugLoading ? 'disabled' : ''}>${aiPromptDebugLoading ? 'Проверяем...' : 'Проверить размер AI-контекста'}</button>
-      </div>
-      ${aiModelTestStatus ? `<div class="authStatus integrationStatus">${escapeHtml(aiModelTestStatus)}</div>` : ''}
-      ${aiPromptDebugStatus ? `<div class="authStatus integrationStatus">${escapeHtml(aiPromptDebugStatus)}</div>` : ''}
-      ${promptDebugSize ? `
-        <p><strong>Проверяется:</strong> ${escapeHtml(promptDebugMode || 'AI prompt')}</p>
-        ${promptDebugModelMismatch ? `<div class="authStatus aiError">${escapeHtml(promptDebugModelMismatch)}</div>` : ''}
-        <div class="metricGrid">
-          <article><span>Input tokens</span><strong>${formatNumberSafe(promptDebugSize.estimatedInputTokens)}</strong></article>
-          <article><span>Total tokens</span><strong>${formatNumberSafe(promptDebugSize.estimatedTotalTokens)}</strong></article>
-          <article><span>Лимит модели</span><strong>${formatNumberSafe(promptDebugSize.contextLimit)}</strong></article>
-          <article><span>Статус</span><strong>${promptDebugSize.isTooLarge ? 'слишком большой' : 'OK'}</strong></article>
-        </div>
-        ${promptDebugSize.warning ? `<div class="authStatus aiError">${escapeHtml(promptDebugSize.warning)}</div>` : ''}
-        <h4>Что раздувает контекст</h4>
-        <div class="tableWrap">
-          <table>
-            <thead><tr><th>Секция</th><th>Символы</th><th>~ tokens</th></tr></thead>
-            <tbody>
-              ${promptDebugSections.map((item) => `
-                <tr>
-                  <td><strong>${escapeHtml(promptDebugSectionLabel(item.name))}</strong><br><small>${escapeHtml(item.name)}</small></td>
-                  <td>${formatNumberSafe(item.chars)}</td>
-                  <td>${formatNumberSafe(item.estimatedTokens)}</td>
-                </tr>
-              `).join('')}
-            </tbody>
-          </table>
-        </div>
-        ${promptDebugHints.length ? `
-          <h4>Как уменьшить контекст</h4>
-          <div class="actionList">
-            ${promptDebugHints.map((hint) => {
-              const message = typeof hint === 'string' ? hint : hint.message;
-              const action = typeof hint === 'string' ? '' : hint.action;
-              const label = promptDebugHintActionLabel(action);
-              return `
-                <article class="actionCard">
-                  <p>${escapeHtml(message || '')}</p>
-                  ${label ? `<button class="secondaryButton" type="button" data-ai-reduction-action="${escapeHtml(action)}">${escapeHtml(label)}</button>` : ''}
-                </article>
-              `;
-            }).join('')}
-          </div>
-        ` : ''}
-      ` : ''}
-      ${renderOpenRouterRequestInspector()}
-    </section>
-  `;
-  }
-  const preset = activeAiPresetInfo();
-  const model = activeAiModelInfo();
-  const modelOptions = getAiModelOptions();
-  const presetOptions = getAiPresetOptions();
-  const selectedModelValue = isCustomAiModel() ? CUSTOM_MODEL_VALUE : activeAiModel();
-  const customModelActive = selectedModelValue === CUSTOM_MODEL_VALUE || aiPreset === 'custom';
-  const resolvedModel = activeAiModel();
-  const resolvedMaxTokens = activeAiMaxTokens();
-  const costLabel = { low: 'низкая стоимость', medium: 'средняя стоимость', high: 'дороже', unknown: 'стоимость неизвестна' }[model.cost_tier || 'unknown'] || 'стоимость неизвестна';
-  const freeModelWarning = resolvedModel.includes(':free')
-    ? 'Free-модели часто получают rate limit у провайдера. Для стабильной работы выберите модель из списка.'
-    : '';
-  const customModelWarning = customModelActive
-    ? 'Своя/free модель может быть нестабильной: возможны лимиты, 429 и временная недоступность.'
-    : '';
-  const promptDebug = aiPromptDebugSnapshot;
-  const promptDebugSize = promptDebug?.size || null;
-  const promptDebugSections = (promptDebug?.sections || []).slice(0, 5);
-  const promptDebugMode = promptDebug?.mode === 'chat' ? 'AI-chat prompt' : promptDebug?.mode || '';
-  const promptDebugModelMismatch = promptDebugSize?.model && promptDebugSize.model !== resolvedModel
-    ? `Debug проверил модель ${promptDebugSize.model}, а в чате выбрана ${resolvedModel}.`
-    : '';
-  return `
-    <section class="panel">
-      <div class="panelHeader">
-        <div>
-          <h3>AI-модель</h3>
-          <p>${escapeHtml(aiPresetLabel(preset))} · ${escapeHtml(resolvedModel)} · лимит ${formatNumberSafe(resolvedMaxTokens)} tokens</p>
-        </div>
-        <span class="aiStatusBadge ${aiStatus.configured ? 'ready' : 'pending'}">${aiStatus.configured ? 'OpenRouter подключён' : 'OpenRouter не настроен'}</span>
-      </div>
-      <p>${escapeHtml(aiStatus.message || '')}</p>
-      ${customModelWarning ? `<div class="authStatus">${escapeHtml(customModelWarning)}</div>` : ''}
-      ${freeModelWarning ? `<div class="authStatus aiError">${escapeHtml(freeModelWarning)}</div>` : ''}
-      <details>
-        <summary class="secondaryButton">Настройки модели</summary>
-        <p>Режимы Эконом/Баланс/Максимум — это настройки DirectPilot AI. OpenRouter получает конкретную модель и лимит токенов.</p>
-        <p>Режим влияет на модель по умолчанию, лимит ответа и подробность ответа. Дорогие модели могут быстрее расходовать баланс OpenRouter.</p>
-        <p>Эконом — быстрые и дешёвые регулярные проверки. Баланс — основной режим для анализа кампаний и запросов. Максимум — сложные аудиты, спорные выводы, глубокий разбор.</p>
-        <p><a href="https://openrouter.ai/models" target="_blank" rel="noopener noreferrer">Каталог моделей OpenRouter</a></p>
-        <div class="clientSettingsGrid">
-          <label class="authField">
-            <span>Режим</span>
-            <select data-ai-preset>
-              ${presetOptions.map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === aiPreset ? 'selected' : ''}>${escapeHtml(aiPresetLabel(item))} · ${escapeHtml(item.cost_tier || 'unknown')}</option>`).join('')}
-              <option value="custom" ${aiPreset === 'custom' ? 'selected' : ''}>Своя модель</option>
-            </select>
-          </label>
-          <label class="authField">
-            <span>Модель</span>
-            <select data-ai-model>
-              ${modelOptions.map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === selectedModelValue ? 'selected' : ''}>${escapeHtml(item.label || item.name || item.id)} · ${escapeHtml(item.cost_tier || 'unknown')}</option>`).join('')}
-              <option value="${CUSTOM_MODEL_VALUE}" ${selectedModelValue === CUSTOM_MODEL_VALUE ? 'selected' : ''}>Своя модель OpenRouter</option>
-            </select>
-          </label>
-          <label class="authField">
-            <span>Детализация</span>
-            <select data-ai-max-tokens-mode>
-              <option value="compact" ${aiMaxTokensMode === 'compact' ? 'selected' : ''}>compact</option>
-              <option value="normal" ${aiMaxTokensMode === 'normal' ? 'selected' : ''}>normal</option>
-              <option value="detailed" ${aiMaxTokensMode === 'detailed' ? 'selected' : ''}>detailed</option>
-            </select>
-          </label>
-          ${customModelActive ? `
-            <label class="authField">
-              <span>Своя модель OpenRouter</span>
-              <input data-ai-custom-model value="${escapeHtml(aiCustomModel)}" placeholder="Например: openai/gpt-4o-mini" />
-            </label>
-          ` : `
-            <div class="authStatus">Своя модель не используется, пока не выбран режим/модель "Своя модель".</div>
-          `}
-        </div>
-        <p><strong>Фактически будет использована модель:</strong> ${escapeHtml(resolvedModel)}</p>
-        <p><strong>Лимит ответа:</strong> ${formatNumberSafe(resolvedMaxTokens)} tokens · <strong>режим:</strong> ${escapeHtml(aiPresetLabel(preset))} · <strong>${escapeHtml(costLabel)}</strong></p>
-        <p>${escapeHtml(aiPresetGuidance(aiPreset) || preset?.purpose || 'Своя модель OpenRouter. Проверьте стоимость в кабинете OpenRouter.')}${preset?.warning ? ` ${escapeHtml(preset.warning)}` : ''}</p>
-        ${isCustomAiModel() ? '<div class="authStatus">Своя модель разрешена backend-настройками только если OPENROUTER_ALLOW_CUSTOM_MODELS=true. Проверьте стоимость вручную.</div>' : ''}
-      </details>
-      <div class="heroActions">
-        <button class="secondaryButton" type="button" data-test-ai-model ${aiModelTestLoading ? 'disabled' : ''}>${aiModelTestLoading ? 'Проверяем...' : 'Проверить модель'}</button>
-        <button class="secondaryButton" type="button" data-check-ai-prompt-size ${aiPromptDebugLoading ? 'disabled' : ''}>${aiPromptDebugLoading ? 'Проверяем...' : 'Проверить размер AI-контекста'}</button>
-      </div>
-      ${aiModelTestStatus ? `<div class="authStatus integrationStatus">${escapeHtml(aiModelTestStatus)}</div>` : ''}
-      ${aiPromptDebugStatus ? `<div class="authStatus integrationStatus">${escapeHtml(aiPromptDebugStatus)}</div>` : ''}
-      ${promptDebugSize ? `
-        <p><strong>Проверяется:</strong> ${escapeHtml(promptDebugMode || 'AI prompt')}</p>
-        ${promptDebugModelMismatch ? `<div class="authStatus aiError">${escapeHtml(promptDebugModelMismatch)}</div>` : ''}
-        <div class="metricGrid">
-          <article><span>Input tokens</span><strong>${formatNumberSafe(promptDebugSize.estimatedInputTokens)}</strong></article>
-          <article><span>Total tokens</span><strong>${formatNumberSafe(promptDebugSize.estimatedTotalTokens)}</strong></article>
-          <article><span>Лимит модели</span><strong>${formatNumberSafe(promptDebugSize.contextLimit)}</strong></article>
-          <article><span>Статус</span><strong>${promptDebugSize.isTooLarge ? 'слишком большой' : 'OK'}</strong></article>
-        </div>
-        ${promptDebugSize.warning ? `<div class="authStatus aiError">${escapeHtml(promptDebugSize.warning)}</div>` : ''}
-        <p class="mutedText">Слишком большой контекст: чаще всего виноваты поисковые запросы, список кампаний или подробный summary.</p>
-        <div class="tableWrap">
-          <table>
-            <thead><tr><th>Секция</th><th>Символы</th><th>~ tokens</th></tr></thead>
-            <tbody>
-              ${promptDebugSections.map((item) => `
-                <tr>
-                  <td>${escapeHtml(item.name)}</td>
-                  <td>${formatNumberSafe(item.chars)}</td>
-                  <td>${formatNumberSafe(item.estimatedTokens)}</td>
-                </tr>
-              `).join('')}
-            </tbody>
-          </table>
-        </div>
-      ` : ''}
+        <pre class="promptPreview">${escapeHtml(aiPromptDebug.prompt_preview || '')}</pre>
+      ` : '<div class="authStatus integrationStatus">Пока нет данных. Нажмите «Проверить контекст».</div>'}
     </section>
   `;
 }
 
 function renderAiChat() {
-  const campaigns = perfSummary?.campaigns || [];
-  const quickActions = [
-    'Проведи аудит Яндекс.Директа по чеклисту',
-    'Найди критичные проблемы',
-    'Проанализируй поисковые запросы',
-    'Предложи минус-слова с рисками',
-    'Разбери вчерашний день',
-  ];
+  const campaignSelect = campaignOptions();
   return `
     <section class="panel aiChatPanel">
       <div class="panelHeader">
-        <div>
-          <h3>Единый AI-чат по клиенту</h3>
-          <p>AI получает серверный контекст клиента, кампаний, выбранных целей Директа, сводки эффективности и плана оптимизации. Все действия — только черновики.</p>
-        </div>
-        <span class="aiStatusBadge ${campaigns.length ? 'ready' : 'pending'}">${campaigns.length ? 'Кампании в контексте' : 'Нет данных sync'}</span>
+        <div><h3>AI-чат с MCP-инструментами</h3><p>Задавайте вопросы по Директу, Метрике, контексту и оптимизации. AI сам выберет нужные инструменты.</p></div>
+        <span class="aiStatusBadge ${aiChatLoading ? 'pending' : 'ready'}">${aiChatLoading ? 'Думает' : 'Готов'}</span>
       </div>
-      <div class="kpiGrid">
-        <article class="kpi blue"><span>Цели</span><strong>${escapeHtml(perfSummary?.selectedGoalIds?.join(', ') || currentClient().conversionGoalIds || currentClient().mainGoalId || '—')}</strong></article>
-        <article class="kpi green"><span>Конверсии по целям</span><strong>${perfSummary?.goalConversionsTotal == null ? '—' : formatNumberSafe(perfSummary.goalConversionsTotal)}</strong></article>
-        <article class="kpi orange"><span>Кампании</span><strong>${formatNumberSafe(campaigns.length)}</strong></article>
+      <div class="aiChatToolbar">
+        <label>Кампания
+          <select data-ai-chat-campaign>
+            <option value="">Все кампании</option>
+            ${campaignSelect.map((name) => `<option value="${escapeHtml(name)}" ${aiChatSelectedCampaignName === name ? 'selected' : ''}>${escapeHtml(name)}</option>`).join('')}
+          </select>
+        </label>
+        <button class="secondaryButton" data-ai-chat-sample="Почему вырос CPA за последние 7 дней?">CPA</button>
+        <button class="secondaryButton" data-ai-chat-sample="Какие поисковые запросы нужно добавить в минус-слова?">Минус-слова</button>
+        <button class="secondaryButton" data-ai-chat-sample="Что в первую очередь проверить в Метрике и целях?">Метрика</button>
       </div>
-      <div class="heroActions">${quickActions.map((text) => `<button class="secondaryButton" type="button" data-ai-quick-action="${escapeHtml(text)}">${escapeHtml(text)}</button>`).join('')}</div>
-      <label class="clientSelect">
-        <span>Контекст кампании</span>
-        <select data-ai-campaign-select>
-          <option value="">Весь аккаунт</option>
-          ${campaigns.map((campaign) => `<option value="${escapeHtml(campaign.campaign_name)}" ${campaign.campaign_name === selectedAiCampaignName ? 'selected' : ''}>${escapeHtml(campaign.campaign_name)}</option>`).join('')}
-        </select>
-      </label>
-      <div class="aiChatMessages" style="min-height:620px; max-height:75vh; overflow-y:auto; padding-right:6px;">
-        ${aiChatMessages.map((item, index) => `
-          <article class="aiChatMessage ${item.role}">
-            <strong>${item.role === 'user' ? 'Вы' : 'DirectPilot AI'}</strong>
-            <pre>${escapeHtml(item.content)}</pre>
-            ${item.source ? `<small>${escapeHtml(item.source)}</small>` : ''}
-            ${item.requestTrace ? renderAiRequestTrace(item.requestTrace, index) : ''}
-            ${item.role === 'assistant' ? `<button class="secondaryButton" type="button" data-save-ai-memory="${index}">Сохранить в память проекта</button>` : ''}
-          </article>
-        `).join('')}
-        ${aiChatLoading ? '<article class="aiChatMessage assistant"><strong>DirectPilot AI</strong><pre>Собираю контекст через MCP tools...</pre></article>' : ''}
+      <div class="aiChatMessages">
+        ${aiChatMessages.map((message) => `<article class="aiChatMessage ${message.role}"><span>${message.role === 'user' ? 'Вы' : 'AI'}</span><p>${escapeHtml(message.content)}</p></article>`).join('')}
       </div>
-      ${aiChatError ? `<div class="authStatus aiError"><p>${escapeHtml(aiChatError)}</p>${aiChatErrorDetails?.model ? `<p>Модель: ${escapeHtml(aiChatErrorDetails.model)}.${aiChatErrorDetails?.code === 'openrouter_rate_limited' ? ' Free/custom модели могут часто получать rate limit.' : ''}</p>` : ''}${aiChatErrorDetails?.retryable ? '<button class="secondaryButton" type="button" data-ai-economy-fallback="chat">Повторить на модели Эконом</button>' : ''}</div>` : ''}
-      <form class="aiChatForm" data-ai-chat-form style="position:sticky; bottom:0; z-index:2; background:var(--surface, #fff); padding-top:12px;">
-        <textarea name="message" rows="3" data-ai-chat-input placeholder="Например: какие кампании дают расход без конверсий и какие цели Метрики проверить?">${escapeHtml(aiChatInput)}</textarea>
-        <button class="approveButton" type="submit" ${aiChatLoading ? 'disabled' : ''}>${aiChatLoading ? 'Думаю...' : 'Отправить в AI-чат'}</button>
-        <button class="secondaryButton" type="button" data-clear-ai-chat>Очистить чат</button>
+      ${aiChatError ? `<div class="authStatus integrationStatus">${escapeHtml(aiChatError)}${aiChatErrorDetails?.retry_suggestion ? `<br>${escapeHtml(aiChatErrorDetails.retry_suggestion)}` : ''}</div>` : ''}
+      <form class="aiChatForm" data-ai-chat-form>
+        <textarea name="message" placeholder="Например: почему CPA вырос и какие кампании проверить?">${escapeHtml(aiChatInput)}</textarea>
+        <button class="approveButton" type="submit" ${aiChatLoading ? 'disabled' : ''}>${aiChatLoading ? 'Отправляем...' : 'Спросить AI'}</button>
       </form>
       ${aiChatToolTraces.length ? `
-        <details class="aiToolTrace">
-          <summary>Какие MCP-инструменты использовались (${aiChatToolTraces.length})</summary>
-          <div>${aiChatToolTraces.map((trace) => `<code>${escapeHtml(trace.name)} ${escapeHtml(JSON.stringify(trace.arguments))}</code>`).join('')}</div>
+        <details class="toolTraceDetails"><summary>Использованные инструменты</summary>
+          <div class="toolTraceList">${aiChatToolTraces.map((trace) => `<article><strong>${escapeHtml(trace.tool || 'tool')}</strong><pre>${escapeHtml(JSON.stringify(trace, null, 2))}</pre></article>`).join('')}</div>
         </details>
       ` : ''}
     </section>
   `;
 }
 
-function renderAiAssistant() {
-  const client = currentClient();
-  const actionCounts = getOptimizationActionCounts(optimizationActionsByClientId[selectedClientId] || optimizationActions);
-  const aiEmptyState = !client.id
-    ? { text: 'Сначала создайте клиента.', button: 'Создать клиента', view: 'clients' }
-    : !clientYandexIntegration?.connected
-      ? { text: 'Привяжите Яндекс-аккаунт к этому клиенту, чтобы AI видел реальные данные.', button: 'Открыть интеграции', view: 'integrations' }
-      : !hasPerformanceData()
-        ? { text: 'Запустите синхронизацию, чтобы AI увидел кампании.', button: 'Открыть обзор', view: 'dashboard' }
-        : !client.conversionGoalIds && !client.mainGoalId
-          ? { text: 'Укажите ID целей Метрики для расчёта CPA.', button: 'Открыть клиента', view: 'clients' }
-          : null;
-  return renderShell(`
-    <div class="pageIntro">
-      <span class="eyebrow">🧠 AI-аналитик</span>
-      <h2>Единое AI workspace по клиенту</h2>
-      <p>${client.id ? `Клиент: ${escapeHtml(client.name)}. ${perfSummary?.hasGoalData ? 'AI видит конверсии по выбранным целям Директа.' : 'Загрузите summary и проверьте цели, чтобы AI видел целевые конверсии.'}` : 'Сначала создайте клиента.'}</p>
-    </div>
-    <section class="panel">
-      <div class="panelHeader">
-        <div>
-          <h3>Как DirectPilot проверяет рекламу</h3>
-          <p>Методика идёт от бизнес-контекста к данным, кампаниям, запросам и черновикам действий. Если данных нет, AI должен пометить пункт как «нужны дополнительные данные», а не как ошибку.</p>
+function renderClientAiRecommendations() {
+  return `
+    <section class="panel aiRecommendationsPanel">
+      <div class="panelHeader"><div><h3>AI-рекомендации по клиенту</h3><p>Генерируются с учётом синхронизации, бизнес-контекста и настроек токенов.</p></div><button class="approveButton" data-client-ai-recommendations ${selectedClientId && !aiRecommendationsLoading ? '' : 'disabled'}>${aiRecommendationsLoading ? 'Генерируем...' : 'Сформировать'}</button></div>
+      ${aiRecommendationsError ? `<div class="authStatus integrationStatus">${escapeHtml(aiRecommendationsError)}</div>` : ''}
+      ${clientAiRecommendations?.recommendations?.length ? `
+        <div class="aiDraftGrid">
+          ${clientAiRecommendations.recommendations.map((item) => `<article><span>${escapeHtml(item.priority || 'medium')}</span><h3>${escapeHtml(item.title || 'Рекомендация')}</h3><p>${escapeHtml(item.description || item.reason || '')}</p><small>${escapeHtml(item.expected_effect || item.effort || '')}</small></article>`).join('')}
         </div>
-        <span class="aiStatusBadge ready">Методика включена</span>
-      </div>
-      <details>
-        <summary class="secondaryButton">Методика DirectPilot</summary>
-        <ol>
-          <li>Контекст бизнеса — ниша, бренд, продукт, гео, целевое действие.</li>
-          <li>Посадочные страницы — лендинги, релевантность, путь к конверсии.</li>
-          <li>Аналитика — цели, Метрика, выбранные цели Директа.</li>
-          <li>Аккаунт Директа — структура, кампании, настройки.</li>
-          <li>Кампании — показы, клики, CTR, расход, конверсии по целям, CPA, CR.</li>
-          <li>Динамика — сравнение по дням/неделям, поиск ухудшений.</li>
-          <li>Поисковые запросы — интент, нерелевантные запросы, минус-слова.</li>
-          <li>План действий — критические проблемы, быстрые улучшения, черновики.</li>
-        </ol>
-        <p>Бизнес-контекст, лендинги, объявления, расширения, настройки аккаунта и недельная динамика пока требуют дополнительных данных.</p>
-      </details>
+      ` : '<div class="authStatus integrationStatus">AI-рекомендаций пока нет.</div>'}
     </section>
-    <section class="panel">
-      <div class="panelHeader">
-        <h3>Контекст анализа</h3>
-        <span class="aiStatusBadge ${canRunAiAnalysis() ? 'ready' : 'pending'}">${canRunAiAnalysis() ? 'Данные готовы' : 'Нужна синхронизация'}</span>
-      </div>
-      <p>Direct: ${escapeHtml(client.directLogin)} · Метрика: ${escapeHtml(client.metricaCounter)} · Цели: ${escapeHtml(perfSummary?.selectedGoalIds?.join(', ') || client.conversionGoalIds || client.mainGoalId || 'не указаны')}</p>
-      <p>Бизнес-контекст: ${businessContextFilledCount() ? `${escapeHtml(businessContext?.brandName || client.name)} · ${escapeHtml(businessContext?.businessNiche || 'ниша не указана')} · заполнено ${formatNumberSafe(businessContextFilledCount())} полей` : 'не заполнен — AI не будет выдумывать нишу, сезонность и посадочные.'}</p>
-      <p>Согласование: ${formatNumberSafe(actionCounts.total)} черновиков · одобрено ${formatNumberSafe(actionCounts.approved)} · отклонено ${formatNumberSafe(actionCounts.rejected)} · нужны правки ${formatNumberSafe(actionCounts.needs_changes)}.</p>
-      <p>${!client.id ? 'Сначала создайте клиента.' : !clientYandexIntegration?.connected ? 'AI сможет анализировать настройки, но для данных нужна привязка Яндекса.' : !hasPerformanceData() ? 'Сначала запустите синхронизацию, чтобы AI увидел кампании.' : !client.conversionGoalIds && !client.mainGoalId ? 'Укажите ID целей Метрики для анализа целевых конверсий.' : 'AI использует сводку, диагностику кампаний и план оптимизации.'}</p>
-      ${aiEmptyState ? `<div class="authStatus integrationStatus"><strong>${escapeHtml(aiEmptyState.text)}</strong><div class="heroActions"><button class="approveButton" data-go-view="${escapeHtml(aiEmptyState.view)}">${escapeHtml(aiEmptyState.button)}</button></div></div>` : ''}
-    </section>
-    ${renderYandexDirectAuditPanel(true)}
-    ${renderSyncDiagnosticsPanel(true)}
-    ${renderAiModelSettings()}
+  `;
+}
+
+function renderAiAssistant() {
+  return renderShell(`
+    <div class="pageIntro"><span class="eyebrow">AI-аналитик</span><h2>AI workspace для Директа и Метрики</h2><p>Настраивайте модель, проверяйте контекст, задавайте вопросы и генерируйте рекомендации по клиенту.</p></div>
+    <div class="aiGrid">
+      ${renderAiStatusPanel()}
+      ${renderAiPromptDebugPanel()}
+    </div>
     ${renderAiChat()}
     ${renderClientAiRecommendations()}
+    <section class="panel aiQuickActions"><h3>Быстрые промпты</h3><div class="heroActions">
+      <button class="secondaryButton" data-ai-prompt="audit" ${aiLoading ? 'disabled' : ''}>Аудит</button>
+      <button class="secondaryButton" data-ai-prompt="recommendations" ${aiLoading ? 'disabled' : ''}>Рекомендации</button>
+      <button class="secondaryButton" data-ai-prompt="report" ${aiLoading ? 'disabled' : ''}>Отчёт</button>
+      <button class="secondaryButton" data-ai-prompt="questions" ${aiLoading ? 'disabled' : ''}>Вопросы клиенту</button>
+    </div>${aiError ? `<div class="authStatus integrationStatus">${escapeHtml(aiError)}</div>` : ''}${aiResult ? `<pre class="aiResult">${escapeHtml(aiResult.text || aiResult.answer || JSON.stringify(aiResult, null, 2))}</pre>` : ''}</section>
   `);
 }
 
-function renderAutopilot() {
-  return renderShell(`
-    <div class="pageIntro"><span class="eyebrow">🛡️ Автопилот</span><h2>Политики безопасной автоматизации</h2><p>ИИ может действовать только в рамках лимитов клиента и после подтверждения критичных изменений.</p></div>
-    <section class="panel autopilotPanel">
-      <div class="modeCards">
-        <article>Только аудит</article><article>Рекомендации</article><article class="selected">После подтверждения</article><article>Автопилот</article>
-      </div>
-      <div class="rulesGrid">
-        ${autopilotRules.map((rule) => `<div class="rule ${rule.enabled ? 'enabled' : 'disabled'}"><span>${rule.enabled ? '✓' : '×'}</span>${rule.label}</div>`).join('')}
-      </div>
-      <div class="limitsBox">
-        <h3>Лимиты клиента</h3>
-        <p>Максимальное изменение ставки: 20% · Изменение дневного бюджета: до 10% · Минимальный период анализа: 14 дней</p>
-      </div>
+function renderOptimizationPlanPanel() {
+  const plan = optimizationPlan;
+  return `
+    <section class="panel optimizationPlanPanel">
+      <div class="panelHeader"><div><h3>План оптимизации</h3><p>AI и backend формируют план на основе кампаний, CPA, целей и поисковых запросов.</p></div><div class="heroActions"><button class="secondaryButton" data-load-optimization-plan ${selectedClientId && !optimizationPlanLoading ? '' : 'disabled'}>${optimizationPlanLoading ? 'Формируем...' : 'Обновить план'}</button><button class="approveButton" data-create-optimization-drafts ${selectedClientId && plan && !optimizationActionsLoading ? '' : 'disabled'}>Сохранить как черновики</button></div></div>
+      ${optimizationStatus ? `<div class="authStatus integrationStatus">${escapeHtml(optimizationStatus)}</div>` : ''}
+      ${plan ? `
+        <div class="optimizationGrid">
+          <article><span>Сгенерировано</span><strong>${normalizeDate(plan.generatedAt)}</strong></article>
+          <article><span>Рекомендации бюджета</span><strong>${formatNumberSafe(plan.dailyBudgetRecommendations.length)}</strong></article>
+          <article><span>Корректировки устройств</span><strong>${formatNumberSafe(plan.deviceAdjustments.length)}</strong></article>
+        </div>
+        <div class="recommendationGrid">
+          ${plan.dailyBudgetRecommendations.slice(0, 6).map((item) => `<article><div class="confidence">${formatPercent((item.confidence || 0) * 100)}</div><h3>${escapeHtml(item.campaign_name || item.campaignName || 'Кампания')}</h3><p>Бюджет: ${formatMoney(item.current_budget || item.currentBudget || 0)} → ${formatMoney(item.recommended_budget || item.recommendedBudget || 0)}</p><small>${escapeHtml(item.reason || '')}</small></article>`).join('')}
+          ${plan.deviceAdjustments.slice(0, 6).map((item) => `<article><div class="confidence">${formatPercent((item.confidence || 0) * 100)}</div><h3>${escapeHtml(item.device || 'Устройство')}</h3><p>Корректировка: ${item.current_modifier ?? item.currentModifier ?? 0}% → ${item.recommended_modifier ?? item.recommendedModifier ?? 0}%</p><small>${escapeHtml(item.reason || '')}</small></article>`).join('')}
+        </div>
+      ` : '<div class="authStatus integrationStatus">План пока не сформирован. Нужна статистика по клиенту.</div>'}
     </section>
+  `;
+}
+
+function renderOptimizationActionsPanel() {
+  const actions = getFilteredOptimizationActions();
+  return `
+    <section class="panel optimizationActionsPanel">
+      <div class="panelHeader"><div><h3>Черновики согласования</h3><p>Перед применением каждое действие проходит ревью специалиста.</p></div><div class="heroActions"><select data-optimization-action-filter><option value="all" ${optimizationActionFilter === 'all' ? 'selected' : ''}>Все</option><option value="draft" ${optimizationActionFilter === 'draft' ? 'selected' : ''}>Черновики</option><option value="approved" ${optimizationActionFilter === 'approved' ? 'selected' : ''}>Одобрено</option><option value="rejected" ${optimizationActionFilter === 'rejected' ? 'selected' : ''}>Отклонено</option></select><button class="secondaryButton" data-load-optimization-actions ${selectedClientId && !optimizationActionsLoading ? '' : 'disabled'}>${optimizationActionsLoading ? 'Загрузка...' : 'Обновить'}</button></div></div>
+      ${optimizationActionsStatus ? `<div class="authStatus integrationStatus">${escapeHtml(optimizationActionsStatus)}</div>` : ''}
+      ${actions.length ? `<div class="actionList">${actions.map((action) => {
+        const preview = optimizationExecutionPreviews[action.id];
+        return `<article class="optimizationAction ${action.status || 'draft'}"><div><span>${escapeHtml(compactStatusLabel(action.status || 'draft'))}</span><h3>${escapeHtml(action.title || action.entityName || action.actionType || 'Действие')}</h3><p>${escapeHtml(action.description || action.reason || '')}</p><small>${escapeHtml(action.entityType || '')} · ${escapeHtml(action.actionType || '')}</small></div><div class="actionButtons"><button class="secondaryButton" data-preview-optimization-action="${escapeHtml(action.id)}">Предпросмотр</button><button class="approveButton" data-update-optimization-action="${escapeHtml(action.id)}" data-status="approved">Одобрить</button><button class="dangerButton" data-update-optimization-action="${escapeHtml(action.id)}" data-status="rejected">Отклонить</button></div>${preview?.loading ? '<div class="authStatus integrationStatus">Загружаем предпросмотр...</div>' : ''}${preview?.error ? `<div class="authStatus integrationStatus">${escapeHtml(preview.error)}</div>` : ''}${preview?.data ? `<details class="toolTraceDetails" open><summary>Что будет применено</summary><pre>${escapeHtml(JSON.stringify(preview.data, null, 2))}</pre></details>` : ''}</article>`;
+      }).join('')}</div>` : '<div class="authStatus integrationStatus">Черновиков пока нет.</div>'}
+    </section>
+  `;
+}
+
+function renderOptimization() {
+  return renderShell(`
+    <div class="pageIntro"><span class="eyebrow">Оптимизация</span><h2>Безопасное применение рекомендаций</h2><p>DirectPilot формирует черновики действий, показывает предпросмотр и ждёт согласования специалиста.</p></div>
+    ${renderOptimizationPlanPanel()}
+    ${renderOptimizationActionsPanel()}
   `);
+}
+
+function renderDashboard() {
+  const client = currentClient();
+  const hasClient = Boolean(client.id);
+  const readiness = getReadinessState();
+  const nextAction = getNextBestAction();
+  const readyCount = readiness.filter((item) => item.status === 'ready').length;
+  const contentRenderer = resolvePageContentRenderer('dashboard');
+
+  if (typeof contentRenderer !== 'function') {
+    return renderDashboardViaPageModule();
+  }
+
+  return renderShell(contentRenderer({
+    clientName: client.name,
+    hasClient,
+    readiness,
+    nextAction,
+    readyCount,
+    readinessLength: readiness.length,
+    nextTarget: nextAction.targetView || 'dashboard',
+    hasPerformanceData: hasPerformanceData(),
+    candidateNegativeKeywords: perfSummary?.searchQueryInsights?.candidateNegativeKeywords || 0,
+    syncLoading,
+    canRunSync: canRunSync(),
+    syncStatusMessage,
+    renderActionButton,
+    renderReadinessPanel,
+    renderSyncCenter,
+    renderBusinessContextPanel,
+    renderSyncDiagnosticsPanel,
+    renderYesterdaySummaryPanel,
+    renderYandexDirectAuditPanel,
+    renderPerformanceSummaryPanel,
+    formatNumberSafe,
+    badgeClassForStatus,
+    compactStatusLabel,
+    escapeHtml,
+  }));
 }
 
 function render() {
@@ -3464,405 +1818,122 @@ function render() {
   }, true);
 });
 
-['pointerup', 'mouseup', 'click'].forEach((eventName) => {
-  app.addEventListener(eventName, (event) => {
-    if (isInteractiveActionTarget(event.target)) return;
-    const field = getEditableFieldTarget(event.target) || pendingEditableFocusTarget;
-    if (!field) return;
-    setTimeout(() => {
-      if (document.body.contains(field)) {
-        field.focus({ preventScroll: true });
-      }
-    }, 0);
-  }, true);
+app.addEventListener('focusin', (event) => {
+  const target = getEditableFieldTarget(event.target);
+  if (target) pendingEditableFocusTarget = target;
 });
 
-app.addEventListener('click', async (event) => {
-  const saveApiBaseButton = event.target.closest('[data-save-api-base]');
-  if (saveApiBaseButton) {
-    event.preventDefault();
-    const apiBaseConfig = saveApiBaseButton.closest('[data-api-base-config]');
-    const apiBaseInput = apiBaseConfig?.querySelector('[data-api-base-input]');
-    const apiBase = String(apiBaseInput?.value || apiBaseDraft).trim().replace(/\/$/, '');
-    saveApiBase(apiBase);
-    window.location.reload();
-    return;
+app.addEventListener('input', (event) => {
+  const target = getEditableFieldTarget(event.target);
+  if (target) pendingEditableFocusTarget = target;
+  const authInput = event.target.closest('input[name="email"], input[name="code"]');
+  if (authInput?.name === 'email') authEmail = authInput.value;
+  if (authInput?.name === 'code') authCode = authInput.value;
+  if (event.target.matches('[data-ai-custom-model]')) customAiModel = event.target.value;
+  if (event.target.matches('[data-ai-search-query-limit]')) aiSearchQueryLimit = event.target.value;
+  if (event.target.matches('[data-business-context-form] textarea')) {
+    const form = event.target.closest('[data-business-context-form]');
+    if (form) setBusinessContextDraftFromForm(form);
   }
-
-  if (isPlainTextInputTarget(event.target) && !isInteractiveActionTarget(event.target)) {
-    return;
-  }
-
-  const viewButton = getViewActionTarget(event.target);
-  const clientButton = event.target.closest('[data-client-id]');
-  const integrationButton = event.target.closest('[data-integration]');
-  const clientAiButton = event.target.closest('[data-client-ai-recommendations]');
-  const syncButton = event.target.closest('[data-sync-client]');
-  const summaryButton = event.target.closest('[data-load-summary]');
-  const deleteClientButton = event.target.closest('[data-delete-client]');
-  const unbindYandexButton = event.target.closest('[data-unbind-yandex]');
-  const logoutButton = event.target.closest('[data-logout]');
-  const refreshYandexButton = event.target.closest('[data-refresh-yandex-status]');
-  const goViewButton = event.target.closest('[data-go-view]');
-  const syncJobsButton = event.target.closest('[data-load-sync-jobs]');
-  const optimizationPlanButton = event.target.closest('[data-load-optimization-plan]');
-  const loadOptimizationActionsButton = event.target.closest('[data-load-optimization-actions]');
-  const saveOptimizationActionsButton = event.target.closest('[data-save-optimization-actions]');
-  const updateOptimizationActionButton = event.target.closest('[data-update-optimization-action]');
-  const executionPreviewButton = event.target.closest('[data-load-execution-preview]');
-  const optimizationFilterButton = event.target.closest('[data-optimization-filter]');
-  const optimizationActionFilterButton = event.target.closest('[data-optimization-action-filter]');
-  const copyOptimizationPlanButton = event.target.closest('[data-copy-optimization-plan]');
-  const copyTextButton = event.target.closest('[data-copy-text]');
-  const aiQuickActionButton = event.target.closest('[data-ai-quick-action]');
-  const aiFallbackButton = event.target.closest('[data-ai-economy-fallback]');
-  const aiReductionActionButton = event.target.closest('[data-ai-reduction-action]');
-  const openrouterInspectorButton = event.target.closest('[data-openrouter-inspector]');
-  const copyOpenrouterDebugButton = event.target.closest('[data-copy-openrouter-debug]');
-  const copyAiTraceButton = event.target.closest('[data-copy-ai-trace]');
-  const testAiModelButton = event.target.closest('[data-test-ai-model]');
-  const checkAiPromptSizeButton = event.target.closest('[data-check-ai-prompt-size]');
-  const clearAiChatButton = event.target.closest('[data-clear-ai-chat]');
-  const resetBusinessContextButton = event.target.closest('[data-reset-business-context]');
-  const saveAiMemoryButton = event.target.closest('[data-save-ai-memory]');
-
-  if (logoutButton) {
-    clearSession();
-    window.location.href = 'login.html';
-    return;
-  }
-
-  if (refreshYandexButton) {
-    integrationStatus = {};
-    clientYandexIntegration = null;
-    clientYandexLoadedFor = '';
-    clientYandexStatus = 'Обновляем статус Яндекса...';
-    render();
-    await loadIntegrationStatus();
-    await loadClientYandexIntegration(true);
-    render();
-    return;
-  }
-
-  if (goViewButton) {
-    activeView = normalizeAppView(goViewButton.dataset.goView);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-    render();
-    return;
-  }
-
-  if (syncJobsButton) {
-    await loadSyncJobs();
-    return;
-  }
-
-  if (optimizationPlanButton) {
-    await loadOptimizationPlan();
-    return;
-  }
-
-  if (loadOptimizationActionsButton) {
-    await loadOptimizationActions();
-    return;
-  }
-
-  if (saveOptimizationActionsButton) {
-    await saveOptimizationPlanAsDrafts();
-    return;
-  }
-
-  if (updateOptimizationActionButton) {
-    const actionId = updateOptimizationActionButton.dataset.updateOptimizationAction;
-    const nextStatus = updateOptimizationActionButton.dataset.actionStatus;
-    const comment = app.querySelector(`[data-optimization-action-comment="${CSS.escape(actionId)}"]`)?.value || '';
-    await updateOptimizationAction(actionId, nextStatus, comment);
-    return;
-  }
-
-  if (executionPreviewButton) {
-    await loadOptimizationExecutionPreview(executionPreviewButton.dataset.loadExecutionPreview);
-    return;
-  }
-
-  if (optimizationFilterButton) {
-    optimizationFilter = optimizationFilterButton.dataset.optimizationFilter;
-    render();
-    return;
-  }
-
-  if (optimizationActionFilterButton) {
-    optimizationActionFilter = optimizationActionFilterButton.dataset.optimizationActionFilter || 'all';
-    optimizationActionFilterByClientId[selectedClientId] = optimizationActionFilter;
-    await loadOptimizationActions();
-    return;
-  }
-
-  if (copyOptimizationPlanButton) {
-    const text = JSON.stringify(optimizationPlan || {}, null, 2);
-    await navigator.clipboard?.writeText(text);
-    optimizationPlanStatus = 'План скопирован.';
-    render();
-    return;
-  }
-
-  if (copyTextButton) {
-    await navigator.clipboard?.writeText(copyTextButton.dataset.copyText || '');
-    optimizationPlanStatus = 'Рекомендация скопирована.';
-    render();
-    return;
-  }
-
-  if (aiQuickActionButton) {
-    aiChatInput = aiQuickActionButton.dataset.aiQuickAction || '';
-    await requestAiChatAnswer();
-    return;
-  }
-
-  if (aiFallbackButton) {
-    const fallbackType = aiFallbackButton.dataset.aiEconomyFallback || lastAiAction?.type;
-    applyEconomyFallback();
-    aiChatError = '';
-    aiChatErrorDetails = null;
-    clientAiError = '';
-    if (fallbackType === 'recommendations') {
-      await requestClientAiRecommendations();
-    } else if (lastAiAction?.message) {
-      aiChatInput = lastAiAction.message;
-      await requestAiChatAnswer();
-    } else {
-      render();
-    }
-    return;
-  }
-
-  if (aiReductionActionButton) {
-    const action = aiReductionActionButton.dataset.aiReductionAction;
-    if (action === 'enable_tool_summary') {
-      aiToolResultsMode = 'summary';
-    } else if (action === 'limit_search_queries') {
-      aiSearchQueryLimit = '20';
-    } else if (action === 'clear_chat_history') {
-      aiChatMessages = [{ ...initialAiChatMessage }];
-      aiChatToolTraces = [];
-      aiChatInput = '';
-      saveActiveAiState();
-    } else if (action === 'enable_compact_context') {
-      aiCompactContext = true;
-      aiToolResultsMode = 'summary';
-      aiChatHistoryLimit = 3;
-    } else if (action === 'select_campaign') {
-      aiPromptDebugStatus = 'Выберите кампанию в поле «Контекст кампании» ниже и повторите проверку.';
-      saveAiModelSettings();
-      render();
-      return;
-    }
-    saveAiModelSettings();
-    await loadAiPromptDebug();
-    return;
-  }
-
-  if (openrouterInspectorButton) {
-    aiRequestInspectorEnabled = openrouterInspectorButton.dataset.openrouterInspector !== 'hide';
-    if (aiRequestInspectorEnabled && !openrouterRequestDebug && aiPromptDebugSnapshot?.openrouterRequestPreview) {
-      openrouterRequestDebug = aiPromptDebugSnapshot.openrouterRequestPreview;
-    }
-    render();
-    return;
-  }
-
-  if (copyOpenrouterDebugButton) {
-    const debug = openrouterRequestDebug || aiPromptDebugSnapshot?.openrouterRequestPreview || {};
-    const kind = copyOpenrouterDebugButton.dataset.copyOpenrouterDebug;
-    const text = kind === 'system'
-      ? (debug.systemPrompt || '')
-      : kind === 'user'
-        ? (debug.userPrompt || '')
-        : JSON.stringify(debug.payload || debug, null, 2);
-    await navigator.clipboard?.writeText(text);
-    aiPromptDebugStatus = 'OpenRouter debug скопирован.';
-    render();
-    return;
-  }
-
-  if (copyAiTraceButton) {
-    const index = Number(copyAiTraceButton.dataset.copyAiTrace);
-    const part = copyAiTraceButton.dataset.copyAiTracePart || 'json';
-    const trace = aiChatMessages[index]?.requestTrace || {};
-    const text = part === 'system'
-      ? (trace.prompt?.system || '')
-      : part === 'user'
-        ? (trace.prompt?.user || '')
-        : part === 'userMessage'
-          ? (trace.userMessage || '')
-        : part === 'payload'
-          ? JSON.stringify(trace.openrouterPayload || {}, null, 2)
-          : JSON.stringify(trace, null, 2);
-    await navigator.clipboard?.writeText(text);
-    aiPromptDebugStatus = 'AI request trace скопирован.';
-    render();
-    return;
-  }
-
-  if (testAiModelButton) {
-    await testSelectedAiModel();
-    return;
-  }
-
-  if (checkAiPromptSizeButton) {
-    await loadAiPromptDebug();
-    return;
-  }
-
-  if (clearAiChatButton) {
-    aiChatMessages = [{ ...initialAiChatMessage }];
-    aiChatInput = '';
-    aiChatToolTraces = [];
-    aiChatError = '';
-    aiChatErrorDetails = null;
-    saveActiveAiState();
-    render();
-    return;
-  }
-
-  if (resetBusinessContextButton) {
-    render();
-    return;
-  }
-
-  if (saveAiMemoryButton) {
-    const index = Number(saveAiMemoryButton.dataset.saveAiMemory);
-    await saveAiMessageToProjectMemory(aiChatMessages[index]?.content || '');
-    return;
-  }
-
-  if (deleteClientButton) {
-    const clientId = deleteClientButton.dataset.deleteClient;
-    if (!clientId || !confirm('Удалить клиента? История синхронизаций по нему будет удалена.')) return;
-    try {
-      if (backendClientsAvailable) {
-        await deleteClientOnApi(clientId);
-      } else {
-        accountClients = accountClients.filter((item) => item.id !== clientId);
-        saveAccountClients();
-      }
-      selectedClientId = accountClients.find((item) => item.id !== clientId)?.id || '';
-      saveSelectedClientId();
-      resetClientDerivedState();
-      resetSelectedClientOperationalState();
-      clientsLoaded = false;
-      clientFormStatus = 'Клиент удалён.';
-      await loadClientsFromApi();
-      render();
-    } catch (error) {
-      clientFormStatus = `Ошибка удаления клиента: ${error.message}`;
-      render();
-    }
-    return;
-  }
-
-  if (unbindYandexButton) {
-    await unbindClientYandexAccount();
-    return;
-  }
-
-  if (syncButton) {
-    await runClientSync();
-    return;
-  }
-
-  if (summaryButton) {
-    await loadPerformanceSummary();
-    return;
-  }
-
-  if (clientAiButton) {
-    await requestClientAiRecommendations();
-    return;
-  }
-
-  if (integrationButton) {
-    const integration = integrationButton.dataset.integration;
-    if (integration === 'yandex-direct' || integration === 'yandex-metrica') {
-      integrationButton.disabled = true;
-      integrationButton.textContent = 'Открываем OAuth...';
-      try {
-        await connectYandexIntegration();
-      } catch (error) {
-        integrationStatus = { message: error.message };
-        render();
-      }
-    } else {
-      integrationStatus = { message: 'CRM-интеграция добавлена в план разработки.' };
-      render();
-    }
-    return;
-  }
-
-  if (viewButton) {
-    activeView = normalizeAppView(viewButton.dataset.view);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-    render();
-  }
-
-  if (clientButton) {
-    saveActiveAiState();
-    selectedClientId = clientButton.dataset.clientId;
-    saveSelectedClientId();
-    clientAiRecommendations = null;
-    resetClientDerivedState();
-    resetSelectedClientOperationalState();
-    clientFormStatus = '';
-    activeView = 'dashboard';
-    render();
+  if (event.target.matches('[data-client-settings-form] input, [data-client-settings-form] textarea')) {
+    const form = event.target.closest('[data-client-settings-form]');
+    if (form) setClientSettingsDraftFromForm(form);
   }
 });
+
+app.addEventListener('change', (event) => {
+  if (event.target.matches('[data-ai-model]')) {
+    selectedAiModel = event.target.value;
+    if (selectedAiModel !== CUSTOM_MODEL_VALUE) customAiModel = event.target.value;
+    render();
+  }
+  if (event.target.matches('[data-ai-preset]')) {
+    selectedAiPreset = event.target.value;
+    render();
+  }
+  if (event.target.matches('[data-ai-max-tokens-mode]')) {
+    aiMaxTokensMode = event.target.value;
+    render();
+  }
+  if (event.target.matches('[data-ai-tool-results-mode]')) {
+    aiToolResultsMode = event.target.value;
+    render();
+  }
+  if (event.target.matches('[data-ai-chat-history-limit]')) {
+    aiChatHistoryLimit = Number(event.target.value) || 3;
+    render();
+  }
+  if (event.target.matches('[data-ai-compact-context]')) {
+    aiCompactContext = event.target.checked;
+    render();
+  }
+  if (event.target.matches('[data-ai-chat-campaign]')) {
+    aiChatSelectedCampaignName = event.target.value;
+  }
+  if (event.target.matches('[data-optimization-action-filter]')) {
+    optimizationActionFilter = event.target.value;
+    optimizationActionsLoadedFor = '';
+    loadOptimizationActions(true);
+  }
+});
+
+function getEditableFieldTarget(target) {
+  return target?.closest?.('input, textarea, select, [contenteditable="true"]');
+}
+
+function isPlainTextInputTarget(target) {
+  const field = getEditableFieldTarget(target);
+  if (!field) return false;
+  return !field.closest('[data-client-menu], .clientMenu, .heroActions, .headerActions');
+}
+
+function isInteractiveActionTarget(target) {
+  return Boolean(target?.closest?.('button, a, label, select, option, [data-client-menu], .clientMenu, .heroActions, .headerActions'));
+}
+
+function restorePendingEditableFocus() {
+  if (!pendingEditableFocusTarget || !document.body.contains(pendingEditableFocusTarget)) return;
+  if (document.activeElement === pendingEditableFocusTarget) return;
+  pendingEditableFocusTarget.focus({ preventScroll: true });
+}
 
 app.addEventListener('submit', async (event) => {
-  const businessContextForm = event.target.closest('[data-business-context-form]');
-  if (businessContextForm) {
+  const authForm = event.target.closest('[data-auth-form]');
+  if (authForm) {
     event.preventDefault();
-    await saveBusinessContextFromForm(businessContextForm);
-    return;
-  }
-
-  const settingsForm = event.target.closest('[data-client-settings-form]');
-  if (settingsForm) {
-    event.preventDefault();
-    if (!selectedClientId) return;
-    const formData = new FormData(settingsForm);
-    const targetCpaValue = String(formData.get('targetCpa') || '').trim();
-    const conversionGoalIdsValue = String(formData.get('conversionGoalIds') || '').trim();
-    const fallbackMainGoalId = conversionGoalIdsValue.split(/[,\s]+/).filter(Boolean)[0] || '';
-    const payload = {
-      name: String(formData.get('name') || '').trim(),
-      direct_login: String(formData.get('directLogin') || '').trim() || null,
-      metrica_counter: String(formData.get('metricaCounter') || '').trim() || null,
-      yandex_account_id: currentClient().yandexAccountId || null,
-      target_cpa: targetCpaValue ? Number(targetCpaValue) : null,
-      main_goal_id: String(formData.get('mainGoalId') || '').trim() || fallbackMainGoalId || null,
-      conversion_goal_ids: conversionGoalIdsValue || String(formData.get('mainGoalId') || '').trim() || null,
-      notes: String(formData.get('notes') || '').trim() || null,
-      segment: currentClient().segment || 'Клиент',
-    };
-    try {
-      const savedClient = await updateClientOnApi(selectedClientId, payload);
-      accountClients = accountClients.map((item) => (item.id === savedClient.id ? savedClient : item));
-      saveAccountClients();
-      optimizationPlanByClientId[selectedClientId] = null;
-      resetSelectedClientOperationalState();
-      clientFormStatus = 'Настройки клиента сохранены.';
-    } catch (error) {
-      clientFormStatus = `Ошибка сохранения настроек: ${error.message}`;
-    }
+    authLoading = true;
+    authStatus = '';
     render();
+    try {
+      if (authStep === 'email') {
+        const email = new FormData(authForm).get('email');
+        authEmail = email;
+        await requestEmailCode(email);
+        window.localStorage.setItem('directpilot_auth_email', email);
+        authStep = 'code';
+        authStatus = 'Код отправлен на email.';
+      } else {
+        const code = new FormData(authForm).get('code');
+        const data = await verifyEmailCode(authEmail, code);
+        saveSession(authEmail, data.access_token);
+        window.location.href = 'app.html';
+      }
+    } catch (error) {
+      authStatus = error.message;
+    } finally {
+      authLoading = false;
+      render();
+    }
     return;
   }
 
-  const yandexBindForm = event.target.closest('[data-yandex-bind-form]');
-  if (yandexBindForm) {
+  const apiForm = event.target.closest('[data-api-base-form]');
+  if (apiForm) {
     event.preventDefault();
-    const formData = new FormData(yandexBindForm);
-    await bindClientYandexAccount(String(formData.get('yandexAccountId') || ''));
+    const value = new FormData(apiForm).get('apiBase')?.toString().trim();
+    apiBaseDraft = value || API_BASE;
+    saveApiBase(apiBaseDraft);
+    render();
     return;
   }
 
@@ -3870,240 +1941,407 @@ app.addEventListener('submit', async (event) => {
   if (clientForm) {
     event.preventDefault();
     const formData = new FormData(clientForm);
-    const name = String(formData.get('name') || clientDraftName).trim();
+    const name = formData.get('name')?.toString().trim();
+    const directLogin = formData.get('directLogin')?.toString().trim();
+    const metricaCounter = formData.get('metricaCounter')?.toString().trim();
     if (!name) return;
-    const directLogin = String(formData.get('directLogin') || clientDraftDirectLogin).trim() || 'Не подключен';
-    const metricaCounter = String(formData.get('metricaCounter') || clientDraftMetricaCounter).trim() || 'Не подключен';
-    const client = {
-      id: makeClientId(name),
-      name,
-      segment: 'Клиент',
-      spend: '—',
-      leads: 0,
-      cpa: '—',
-      roas: '—',
-      trend: 'Ожидает синхронизации',
-      score: 0,
-      status: 'Ожидает подключения данных',
-      directLogin,
-      metricaCounter,
-      yandexAccountId: null,
-      targetCpa: null,
-      mainGoalId: null,
-      conversionGoalIds: null,
-      notes: null,
-    };
+    const newClient = clientPayloadFromForm(name, directLogin, metricaCounter);
+    clientFormStatus = 'Сохраняем клиента...';
+    render();
     try {
       if (backendClientsAvailable) {
-        const savedClient = await createClientOnApi(client);
-        accountClients = [savedClient, ...accountClients.filter((item) => item.id !== savedClient.id)];
-        selectedClientId = savedClient.id;
-        saveSelectedClientId();
-        saveAccountClients();
-        resetClientDerivedState();
-        resetSelectedClientOperationalState();
-        clientFormStatus = 'Клиент сохранён в backend.';
-        clientDraftName = '';
-        clientDraftDirectLogin = '';
-        clientDraftMetricaCounter = '';
-        clientForm.reset();
+        const response = await apiFetch('/clients', {
+          method: 'POST',
+          body: JSON.stringify({
+            id: newClient.id,
+            name: newClient.name,
+            direct_login: newClient.directLogin === 'Не подключен' ? null : newClient.directLogin,
+            metrica_counter: newClient.metricaCounter === 'Не подключен' ? null : newClient.metricaCounter,
+            segment: newClient.segment,
+          }),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.detail || 'Не удалось сохранить клиента в базе данных');
+        accountClients = [...accountClients, normalizeBackendClient(payload)];
+        clientFormStatus = 'Клиент сохранён в базе данных.';
       } else {
-        accountClients = [client, ...accountClients.filter((item) => item.id !== client.id)];
-        selectedClientId = client.id;
-        saveSelectedClientId();
-        saveAccountClients();
-        resetClientDerivedState();
-        resetSelectedClientOperationalState();
-        clientFormStatus = 'Backend недоступен: клиент сохранён локально (локальный режим).';
-        clientDraftName = '';
-        clientDraftDirectLogin = '';
-        clientDraftMetricaCounter = '';
-        clientForm.reset();
+        accountClients = [...accountClients, newClient];
+        clientFormStatus = 'Backend недоступен, клиент временно сохранён локально.';
       }
+      selectedClientId = newClient.id;
+      saveSelectedClientId(selectedClientId);
+      saveStoredClients();
+      clientDraftName = '';
+      clientDraftDirectLogin = '';
+      clientDraftMetricaCounter = '';
     } catch (error) {
-      clientFormStatus = `Ошибка сохранения в backend: ${error.message}`;
+      accountClients = [...accountClients, newClient];
+      selectedClientId = newClient.id;
+      saveSelectedClientId(selectedClientId);
+      saveStoredClients();
+      clientFormStatus = `${error.message}. Клиент сохранён локально.`;
     }
     render();
+    return;
+  }
+
+  const clientSettingsForm = event.target.closest('[data-client-settings-form]');
+  if (clientSettingsForm) {
+    event.preventDefault();
+    await saveClientSettings(clientSettingsForm);
+    return;
+  }
+
+  const businessForm = event.target.closest('[data-business-context-form]');
+  if (businessForm) {
+    event.preventDefault();
+    await saveBusinessContext(businessForm);
     return;
   }
 
   const aiChatForm = event.target.closest('[data-ai-chat-form]');
   if (aiChatForm) {
     event.preventDefault();
-    const formData = new FormData(aiChatForm);
-    aiChatInput = String(formData.get('message') || '').trim();
-    await requestAiChatAnswer();
+    const message = new FormData(aiChatForm).get('message')?.toString();
+    await sendAiChatMessage(message);
+  }
+});
+
+app.addEventListener('click', async (event) => {
+  const viewButton = event.target.closest('[data-view]');
+  if (viewButton) {
+    activeView = normalizeAppView(viewButton.dataset.view);
+    render();
     return;
   }
-
-  const aiForm = event.target.closest('[data-ai-form]');
-  if (aiForm) {
-    event.preventDefault();
-    const formData = new FormData(aiForm);
-    const modelMode = String(formData.get('modelMode') || aiModel);
-    if (modelMode === CUSTOM_MODEL_VALUE) {
-      aiCustomModel = String(formData.get('customModel') || aiCustomModel).trim();
-      aiModel = aiCustomModel;
-    } else {
-      aiModel = modelMode;
+  const goViewButton = event.target.closest('[data-go-view]');
+  if (goViewButton) {
+    activeView = normalizeAppView(goViewButton.dataset.goView);
+    render();
+    return;
+  }
+  if (event.target.closest('[data-logout]')) {
+    clearSession();
+    window.location.href = 'login.html';
+    return;
+  }
+  if (event.target.closest('[data-auth-back]')) {
+    authStep = 'email';
+    authStatus = '';
+    authCode = '';
+    render();
+    return;
+  }
+  if (event.target.closest('[data-open-settings]')) {
+    const panel = app.querySelector('[data-settings-panel]');
+    if (panel) panel.hidden = !panel.hidden;
+    return;
+  }
+  if (event.target.closest('[data-client-menu-toggle]')) {
+    const menu = app.querySelector('[data-client-menu]');
+    if (menu) menu.hidden = !menu.hidden;
+    return;
+  }
+  const clientButton = event.target.closest('[data-client-id], [data-select-client]');
+  if (clientButton) {
+    selectedClientId = clientButton.dataset.clientId || clientButton.dataset.selectClient;
+    saveSelectedClientId(selectedClientId);
+    businessContext = null;
+    businessContextDraft = null;
+    clientYandexIntegration = null;
+    syncJobs = [];
+    perfSummary = null;
+    optimizationPlan = null;
+    optimizationActions = [];
+    optimizationActionsLoadedFor = '';
+    clientAiRecommendations = null;
+    activeView = 'dashboard';
+    render();
+    return;
+  }
+  if (event.target.closest('[data-sync-client]')) {
+    await startSync();
+    return;
+  }
+  if (event.target.closest('[data-load-performance]')) {
+    await loadPerformanceSummary();
+    return;
+  }
+  if (event.target.closest('[data-load-optimization-plan]')) {
+    await loadOptimizationPlan();
+    return;
+  }
+  if (event.target.closest('[data-load-optimization-actions]')) {
+    await loadOptimizationActions(true);
+    return;
+  }
+  if (event.target.closest('[data-create-optimization-drafts]')) {
+    await createOptimizationDraftsFromPlan();
+    return;
+  }
+  const updateActionButton = event.target.closest('[data-update-optimization-action]');
+  if (updateActionButton) {
+    await updateOptimizationActionStatus(updateActionButton.dataset.updateOptimizationAction, updateActionButton.dataset.status);
+    return;
+  }
+  const previewActionButton = event.target.closest('[data-preview-optimization-action]');
+  if (previewActionButton) {
+    await loadOptimizationExecutionPreview(previewActionButton.dataset.previewOptimizationAction);
+    return;
+  }
+  if (event.target.closest('[data-refresh-client-yandex]')) {
+    await loadClientYandexIntegration(true);
+    return;
+  }
+  const bindYandexButton = event.target.closest('[data-bind-yandex-account]');
+  if (bindYandexButton) {
+    await bindClientYandexAccount(bindYandexButton.dataset.bindYandexAccount);
+    return;
+  }
+  if (event.target.closest('[data-unbind-yandex]')) {
+    await unbindClientYandexAccount();
+    return;
+  }
+  if (event.target.closest('[data-reset-business-context]')) {
+    businessContextDraft = businessContext || defaultBusinessContext();
+    render();
+    return;
+  }
+  const copyButton = event.target.closest('[data-copy-text]');
+  if (copyButton) {
+    await navigator.clipboard?.writeText(copyButton.dataset.copyText || '');
+    return;
+  }
+  if (event.target.closest('[data-reset-client-settings]')) {
+    clientSettingsDraft = null;
+    render();
+    return;
+  }
+  const deleteButton = event.target.closest('[data-delete-client]');
+  if (deleteButton) {
+    await deleteClient(deleteButton.dataset.deleteClient);
+    return;
+  }
+  if (event.target.closest('[data-ai-prompt-debug]')) {
+    await loadAiPromptDebug();
+    return;
+  }
+  if (event.target.closest('[data-client-ai-recommendations]')) {
+    await requestAiRecommendations();
+    return;
+  }
+  const sampleButton = event.target.closest('[data-ai-chat-sample]');
+  if (sampleButton) {
+    aiChatInput = sampleButton.dataset.aiChatSample || '';
+    render();
+    return;
+  }
+  const promptButton = event.target.closest('[data-ai-prompt]');
+  if (promptButton) {
+    await generateAiInsight(aiPromptFor(promptButton.dataset.aiPrompt));
+    return;
+  }
+  const integrationButton = event.target.closest('[data-integration="yandex-direct"]');
+  if (integrationButton) {
+    integrationStatus.message = 'Запрашиваем OAuth URL...';
+    render();
+    try {
+      const response = await apiFetch('/auth/yandex/start');
+      const payload = await response.json();
+      if (!response.ok || !payload.auth_url) throw new Error(payload.detail || payload.message || 'OAuth URL не получен');
+      window.location.href = payload.auth_url;
+    } catch (error) {
+      integrationStatus = { ...integrationStatus, message: error.message || 'Не удалось начать подключение Яндекса.' };
+      render();
     }
-    aiPrompt = String(formData.get('prompt') || '').trim();
-    await requestAiInsight();
-    return;
   }
+});
 
-  const form = event.target.closest('[data-auth-form]');
-  if (!form) return;
-  event.preventDefault();
-  const formData = new FormData(form);
-  const email = String(formData.get('email') || '').trim();
-  const code = String(formData.get('code') || '').trim();
-  authEmail = email;
-  authCode = code;
-  authLoading = true;
-  authStatus = 'Отправляем запрос...';
+async function loadIntegrationStatus() {
+  try {
+    const response = await apiFetch('/auth/yandex/status');
+    const payload = response.ok ? await response.json() : {};
+    integrationStatus = {
+      connected: Boolean(payload.connected),
+      accounts: Array.isArray(payload.accounts) ? payload.accounts : [],
+      message: payload.connected ? 'Яндекс подключён. Можно привязать аккаунт к клиенту.' : 'Яндекс ещё не подключён.',
+    };
+  } catch (error) {
+    integrationStatus = { connected: false, accounts: [], message: 'Backend недоступен, статус Яндекса не проверен.' };
+  }
+  render();
+}
+
+async function loadClientYandexIntegration(force = false) {
+  if (!selectedClientId || clientYandexLoading || (clientYandexIntegration && !force)) return;
+  clientYandexLoading = true;
+  clientYandexStatus = 'Загружаем привязку клиента к Яндексу...';
   render();
   try {
-    if (authStep === 'email') {
-      const result = await requestEmailCode(email);
-      authStep = 'code';
-      devCode = result.dev_code;
-      authStatus = 'Код отправлен на почту. Проверьте входящие и спам.' + (result.dev_code ? ' Dev code доступен ниже.' : '');
-    } else {
-      const result = await verifyEmailCode(email, code);
-      saveSession(result.session_token, result.email);
-      window.location.href = 'app.html';
-      return;
+    const response = await apiFetch(`/clients/${selectedClientId}/integrations/yandex`);
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.detail || 'Не удалось загрузить привязку Яндекса');
+    clientYandexIntegration = payload;
+    clientYandexStatus = payload.selected_account ? 'Аккаунт Яндекса привязан к клиенту.' : 'Выберите аккаунт Яндекса для клиента.';
+    if (payload.selected_account?.id) {
+      accountClients = accountClients.map((client) => client.id === selectedClientId ? { ...client, yandexAccountId: payload.selected_account.id } : client);
+      saveStoredClients();
     }
   } catch (error) {
-    authStatus = `${error.message}. Проверьте DATABASE_URL и EMAIL_AUTH_DEV_MODE=true для MVP-режима.`;
+    clientYandexStatus = error.message || 'Не удалось загрузить привязку Яндекса.';
   } finally {
-    authLoading = false;
+    clientYandexLoading = false;
+    render();
   }
+}
+
+async function bindClientYandexAccount(accountId) {
+  if (!selectedClientId || !accountId) return;
+  clientYandexLoading = true;
+  clientYandexStatus = 'Привязываем аккаунт Яндекса к клиенту...';
   render();
-});
+  try {
+    const response = await apiFetch(`/clients/${selectedClientId}/integrations/yandex`, {
+      method: 'PUT',
+      body: JSON.stringify({ yandex_account_id: accountId }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.detail || 'Не удалось привязать аккаунт');
+    clientYandexIntegration = payload;
+    accountClients = accountClients.map((client) => client.id === selectedClientId ? { ...client, yandexAccountId: accountId } : client);
+    saveStoredClients();
+    clientYandexStatus = 'Аккаунт Яндекса привязан к клиенту.';
+  } catch (error) {
+    clientYandexStatus = error.message || 'Не удалось привязать аккаунт.';
+  } finally {
+    clientYandexLoading = false;
+    render();
+  }
+}
 
-app.addEventListener('input', (event) => {
-  if (event.target.matches('[data-api-base-input]')) {
-    apiBaseDraft = event.target.value;
+async function unbindClientYandexAccount() {
+  if (!selectedClientId) return;
+  clientYandexLoading = true;
+  clientYandexStatus = 'Отвязываем аккаунт Яндекса...';
+  render();
+  try {
+    const response = await apiFetch(`/clients/${selectedClientId}/integrations/yandex`, { method: 'DELETE' });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.detail || 'Не удалось отвязать аккаунт');
+    clientYandexIntegration = payload;
+    accountClients = accountClients.map((client) => client.id === selectedClientId ? { ...client, yandexAccountId: '' } : client);
+    saveStoredClients();
+    clientYandexStatus = 'Аккаунт отвязан от клиента.';
+  } catch (error) {
+    clientYandexStatus = error.message || 'Не удалось отвязать аккаунт.';
+  } finally {
+    clientYandexLoading = false;
+    render();
   }
-  if (event.target.matches('input[name="email"]')) {
-    authEmail = event.target.value;
-  }
-  if (event.target.matches('input[name="code"]')) {
-    authCode = event.target.value;
-  }
-  if (event.target.matches('[data-ai-prompt]')) {
-    aiPrompt = event.target.value;
-  }
-  if (event.target.matches('[data-ai-custom-model]')) {
-    aiCustomModel = event.target.value;
-    aiModel = CUSTOM_MODEL_VALUE;
-    aiPromptDebugSnapshot = null;
-    aiPromptDebugStatus = '';
-    saveAiModelSettings();
-  }
-  if (event.target.matches('[data-ai-chat-input]')) {
-    aiChatInput = event.target.value;
-  }
-  if (event.target.matches('[data-client-form] input[name="name"]')) {
-    clientDraftName = event.target.value;
-  }
-  if (event.target.matches('[data-client-form] input[name="directLogin"]')) {
-    clientDraftDirectLogin = event.target.value;
-  }
-  if (event.target.matches('[data-client-form] input[name="metricaCounter"]')) {
-    clientDraftMetricaCounter = event.target.value;
-  }
-});
+}
 
-app.addEventListener('change', (event) => {
-  if (event.target.matches('[data-client-select]')) {
-    saveActiveAiState();
-    selectedClientId = event.target.value;
-    saveSelectedClientId();
-    resetClientDerivedState();
-    resetSelectedClientOperationalState();
-    clientFormStatus = '';
-    render();
-  }
-  if (event.target.matches('[data-ai-campaign-select]')) {
-    selectedAiCampaignName = event.target.value;
-    saveActiveAiState();
-    render();
-  }
-  if (event.target.matches('[data-ai-model]')) {
-    if (event.target.value === CUSTOM_MODEL_VALUE) {
-      aiModel = CUSTOM_MODEL_VALUE;
+function setClientSettingsDraftFromForm(form) {
+  const formData = new FormData(form);
+  clientSettingsDraft = {
+    name: formData.get('name')?.toString().trim() || '',
+    directLogin: formData.get('directLogin')?.toString().trim() || '',
+    metricaCounter: formData.get('metricaCounter')?.toString().trim() || '',
+    targetCpa: formData.get('targetCpa')?.toString().trim() || '',
+    mainGoalId: formData.get('mainGoalId')?.toString().trim() || '',
+    conversionGoalIds: formData.get('conversionGoalIds')?.toString().trim() || '',
+    notes: formData.get('notes')?.toString().trim() || '',
+  };
+  return clientSettingsDraft;
+}
+
+async function saveClientSettings(form) {
+  if (!selectedClientId) return;
+  const draft = setClientSettingsDraftFromForm(form);
+  clientSettingsSaving = true;
+  clientSettingsStatus = 'Сохраняем настройки клиента...';
+  render();
+  const localUpdate = {
+    name: draft.name,
+    directLogin: draft.directLogin || 'Не подключен',
+    metricaCounter: draft.metricaCounter || 'Не подключен',
+    targetCpa: draft.targetCpa,
+    mainGoalId: draft.mainGoalId,
+    conversionGoalIds: draft.conversionGoalIds,
+    notes: draft.notes,
+  };
+  try {
+    if (backendClientsAvailable) {
+      const response = await apiFetch(`/clients/${selectedClientId}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          name: draft.name,
+          direct_login: draft.directLogin || null,
+          metrica_counter: draft.metricaCounter || null,
+          target_cpa: draft.targetCpa ? Number(draft.targetCpa) : null,
+          main_goal_id: draft.mainGoalId || null,
+          conversion_goal_ids: draft.conversionGoalIds || null,
+          notes: draft.notes || null,
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.detail || 'Не удалось сохранить настройки клиента');
+      accountClients = accountClients.map((client) => client.id === selectedClientId ? normalizeBackendClient(payload) : client);
+      clientSettingsStatus = 'Настройки клиента сохранены в базе.';
     } else {
-      aiModel = event.target.value;
+      accountClients = accountClients.map((client) => client.id === selectedClientId ? { ...client, ...localUpdate } : client);
+      clientSettingsStatus = 'Backend недоступен, настройки сохранены локально.';
     }
-    aiPreset = 'balanced';
-    aiPromptDebugSnapshot = null;
-    aiPromptDebugStatus = '';
-    saveAiModelSettings();
+    saveStoredClients();
+    clientSettingsDraft = null;
+    businessContext = null;
+    perfSummary = null;
+    optimizationPlan = null;
+  } catch (error) {
+    accountClients = accountClients.map((client) => client.id === selectedClientId ? { ...client, ...localUpdate } : client);
+    saveStoredClients();
+    clientSettingsStatus = `${error.message}. Локальная копия обновлена.`;
+  } finally {
+    clientSettingsSaving = false;
     render();
   }
-  if (event.target.matches('[data-ai-compact-context]')) {
-    aiCompactContext = event.target.value === 'true';
-    if (aiCompactContext && aiToolResultsMode !== 'summary') aiToolResultsMode = 'summary';
-    aiPromptDebugSnapshot = null;
-    aiPromptDebugStatus = '';
-    saveAiModelSettings();
-    render();
-  }
-  if (event.target.matches('[data-ai-tool-results-mode]')) {
-    aiToolResultsMode = event.target.value === 'full' ? 'full' : 'summary';
-    aiPromptDebugSnapshot = null;
-    aiPromptDebugStatus = '';
-    saveAiModelSettings();
-    render();
-  }
-  if (event.target.matches('[data-ai-chat-history-limit]')) {
-    aiChatHistoryLimit = Number(event.target.value);
-    aiPromptDebugSnapshot = null;
-    aiPromptDebugStatus = '';
-    saveAiModelSettings();
-    render();
-  }
-  if (event.target.matches('[data-ai-search-query-limit]')) {
-    aiSearchQueryLimit = event.target.value;
-    aiPromptDebugSnapshot = null;
-    aiPromptDebugStatus = '';
-    saveAiModelSettings();
-    render();
-  }
-  if (event.target.matches('[data-ai-preset]')) {
-    aiPreset = event.target.value;
-    if (aiPreset === 'custom') {
-      aiModel = aiCustomModel;
-    } else {
-      const preset = activeAiPresetInfo();
-      aiModel = preset.default_model || aiStatus.recommended_default_model || aiStatus.default_model || aiModel;
+}
+
+async function deleteClient(clientId) {
+  if (!clientId) return;
+  if (!window.confirm('Удалить клиента? Это действие нельзя отменить.')) return;
+  clientSettingsStatus = 'Удаляем клиента...';
+  render();
+  try {
+    if (backendClientsAvailable) {
+      const response = await apiFetch(`/clients/${clientId}`, { method: 'DELETE' });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.detail || 'Не удалось удалить клиента');
     }
-    aiPromptDebugSnapshot = null;
-    aiPromptDebugStatus = '';
-    saveAiModelSettings();
+    accountClients = accountClients.filter((client) => client.id !== clientId);
+    selectedClientId = accountClients[0]?.id || '';
+    if (selectedClientId) saveSelectedClientId(selectedClientId);
+    saveStoredClients();
+    clientSettingsStatus = accountClients.length ? 'Клиент удалён.' : 'Клиент удалён. Создайте нового клиента.';
+    activeView = 'clients';
+  } catch (error) {
+    clientSettingsStatus = error.message || 'Не удалось удалить клиента.';
+  } finally {
     render();
   }
-  if (event.target.matches('[data-ai-max-tokens-mode]')) {
-    aiMaxTokensMode = event.target.value;
-    aiPromptDebugSnapshot = null;
-    aiPromptDebugStatus = '';
-    saveAiModelSettings();
-    render();
-  }
-});
+}
+
+if (oauthReturnStatus === 'connected') {
+  integrationStatus = { ...integrationStatus, message: 'Яндекс подключён. Проверяем доступные аккаунты...' };
+  activeView = 'integrations';
+}
+if (oauthReturnStatus === 'error') {
+  integrationStatus = { ...integrationStatus, message: 'Яндекс не подключён. Попробуйте повторить OAuth.' };
+  activeView = 'integrations';
+}
 
 render();
-
-if (page === 'app' && (oauthReturnStatus || appQueryParams.get('view'))) {
-  window.history.replaceState({}, document.title, window.location.pathname);
-  if (activeView === 'integrations' && oauthReturnStatus) {
-    integrationStatus = {};
-    clientYandexIntegration = null;
-    clientYandexLoadedFor = '';
-    loadIntegrationStatus();
-    loadClientYandexIntegration(true);
-  }
+if (page === 'app') {
+  loadClientsFromApi(true);
+  loadAiStatus();
+  if (oauthReturnStatus) loadIntegrationStatus();
 }
