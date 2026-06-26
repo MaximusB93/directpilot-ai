@@ -5,13 +5,28 @@ import {
   renderDashboardContent,
   renderDashboardPage,
 } from './dashboard.js';
+import { CLIENTS_PAGE_ID, clientsPage, clientsPageContract } from './clients.js';
+import { BUSINESS_CONTEXT_PAGE_ID, businessContextPage, businessContextPageContract } from './business-context.js';
+import { INTEGRATIONS_PAGE_ID, integrationsPage, integrationsPageContract } from './integrations.js';
+import { AI_ASSISTANT_PAGE_ID, aiAssistantPage, aiAssistantPageContract } from './ai-assistant.js';
+import { OPTIMIZATION_PAGE_ID, optimizationPage, optimizationPageContract } from './optimization.js';
 
 export const APP_PAGES = {
   [DASHBOARD_PAGE_ID]: dashboardPage,
+  [CLIENTS_PAGE_ID]: clientsPage,
+  [BUSINESS_CONTEXT_PAGE_ID]: businessContextPage,
+  [INTEGRATIONS_PAGE_ID]: integrationsPage,
+  [AI_ASSISTANT_PAGE_ID]: aiAssistantPage,
+  [OPTIMIZATION_PAGE_ID]: optimizationPage,
 };
 
 export const PAGE_CONTRACTS = {
   [DASHBOARD_PAGE_ID]: dashboardPageContract(),
+  [CLIENTS_PAGE_ID]: clientsPageContract(),
+  [BUSINESS_CONTEXT_PAGE_ID]: businessContextPageContract(),
+  [INTEGRATIONS_PAGE_ID]: integrationsPageContract(),
+  [AI_ASSISTANT_PAGE_ID]: aiAssistantPageContract(),
+  [OPTIMIZATION_PAGE_ID]: optimizationPageContract(),
 };
 
 export const PAGE_RENDERERS = {
