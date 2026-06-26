@@ -19,6 +19,7 @@ src/app/
   hash-route-bridge.js
 
 src/pages/
+  index.js
   dashboard.js
   clients.js
   integrations.js
@@ -61,7 +62,8 @@ This keeps the app static-hosting friendly and makes page state shareable/reload
 
 ## Page modules
 
-`src/pages/dashboard.js` currently defines the dashboard page contract only. The legacy implementation still lives in `renderDashboard` inside `src/main.js`.
+- `src/pages/index.js` is the registry for page metadata and page contracts.
+- `src/pages/dashboard.js` currently defines the dashboard page contract only. The legacy implementation still lives in `renderDashboard` inside `src/main.js`.
 
 The contract records:
 
@@ -82,11 +84,12 @@ Preferred sequence:
 1. Add router/state foundation.
 2. Add hash route bridge.
 3. Add dashboard page contract.
-4. Move dashboard renderer behind the page module.
-5. Extract clients page.
-6. Extract integrations page.
-7. Extract AI assistant page.
-8. Extract Wordstat last, because it is the most sensitive and stateful area.
+4. Add pages registry.
+5. Move dashboard renderer behind the page module.
+6. Extract clients page.
+7. Extract integrations page.
+8. Extract AI assistant page.
+9. Extract Wordstat last, because it is the most sensitive and stateful area.
 
 ## What not to do
 
