@@ -58,7 +58,7 @@ This keeps the app static-hosting friendly and makes page state shareable/reload
 
 - `src/app/routes.js` stores route metadata and normalization helpers.
 - `src/app/router.js` owns hash navigation helpers.
-- `src/app/page-router.js` connects normalized route ids with registered page modules and contracts.
+- `src/app/page-router.js` connects normalized route ids with registered page modules, contracts and renderer adapters.
 - `src/app/state.js` stores shared app state and dispatches typed browser events.
 - `src/app/hash-route-bridge.js` temporarily synchronizes hash routes with legacy `?view=` routing in `src/main.js`.
 
@@ -74,8 +74,8 @@ This is a temporary debugging and migration aid while `src/main.js` still owns m
 
 ## Page modules
 
-- `src/pages/index.js` is the registry for page metadata and page contracts.
-- `src/pages/dashboard.js` currently defines the dashboard page contract only. The legacy implementation still lives in `renderDashboard` inside `src/main.js`.
+- `src/pages/index.js` is the registry for page metadata, page contracts and renderer adapters.
+- `src/pages/dashboard.js` currently exposes `renderDashboardPage({ legacyRenderDashboard })`. The legacy markup still lives in `renderDashboard` inside `src/main.js`, but the module boundary is ready.
 
 The contract records:
 
@@ -98,11 +98,13 @@ Preferred sequence:
 3. Add dashboard page contract.
 4. Add pages registry.
 5. Connect pages registry to the app routing layer.
-6. Move dashboard renderer behind the page module.
-7. Extract clients page.
-8. Extract integrations page.
-9. Extract AI assistant page.
-10. Extract Wordstat last, because it is the most sensitive and stateful area.
+6. Add dashboard renderer adapter.
+7. Wire `src/main.js` dashboard route to `renderDashboardPage`.
+8. Move dashboard markup behind the page module in smaller slices.
+9. Extract clients page.
+10. Extract integrations page.
+11. Extract AI assistant page.
+12. Extract Wordstat last, because it is the most sensitive and stateful area.
 
 ## What not to do
 
