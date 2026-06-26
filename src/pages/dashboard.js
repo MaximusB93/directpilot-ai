@@ -22,9 +22,68 @@ export function dashboardPageContract() {
       'yandexIntegration',
     ],
     legacyRenderer: 'renderDashboard',
-    extractionStatus: 'adapter-ready',
-    nextStep: 'Wire src/main.js dashboard route to renderDashboardPage, then move markup in smaller slices.',
+    extractionStatus: 'partial-builders-ready',
+    extractedBuilders: [
+      'renderDashboardIntro',
+      'renderDashboardNextStepPanel',
+    ],
+    nextStep: 'Wire src/main.js renderDashboard to the extracted dashboard builders, then move the remaining panels in smaller slices.',
   };
+}
+
+export function renderDashboardIntro({ clientName, hasClient, escapeHtml }) {
+  return `
+    <div class="pageIntro">
+      <span class="eyebrow">📊 Обзор</span>
+      <h2>${hasClient ? escapeHtml(clientName) : 'Подготовьте первого клиента к анализу'}</h2>
+      <p>${hasClient ? 'Здесь видно, что уже готово, что мешает синхронизации и какой следующий шаг даст максимум пользы.' : 'Создайте клиента, чтобы подключить данные, запустить синхронизацию и открыть AI-анализ.'}</p>
+    </div>
+  `;
+}
+
+export function renderDashboardNextStepPanel({
+  nextAction,
+  readyCount,
+  readinessLength,
+  hasClient,
+  hasPerformanceData,
+  candidateNegativeKeywords,
+  syncLoading,
+  canRunSync,
+  nextTarget,
+  syncStatusMessage,
+  renderActionButton,
+  formatNumberSafe,
+  badgeClassForStatus,
+  compactStatusLabel,
+  escapeHtml,
+}) {
+  return `
+    <section class="panel">
+      <div class="panelHeader">
+        <div>
+          <h3>Следующий шаг</h3>
+          <p>${escapeHtml(nextAction.description || nextAction.label || '')}</p>
+        </div>
+        <span class="aiStatusBadge ${badgeClassForStatus(nextAction.status)}">${escapeHtml(compactStatusLabel(nextAction.status))}</span>
+      </div>
+      <div class="authStatus integrationStatus"><strong>${escapeHtml(nextAction.nextAction)}</strong></div>
+      <div class="kpiGrid">
+        <article class="kpi green"><span>Готовность</span><strong>${formatNumberSafe(readyCount)} / ${formatNumberSafe(readinessLength)}</strong></article>
+        <article class="kpi blue"><span>Клиент</span><strong>${hasClient ? 'Готово' : 'Нужно действие'}</strong></article>
+        <article class="kpi orange"><span>Данные</span><strong>${hasPerformanceData ? 'Готово' : 'Нет данных'}</strong></article>
+        <article class="kpi orange"><span>Кандидаты в минус-слова</span><strong>${formatNumberSafe(candidateNegativeKeywords || 0)}</strong></article>
+      </div>
+      <div class="heroActions">
+        ${renderActionButton('Клиенты', 'data-go-view="clients"')}
+        ${renderActionButton('Контекст бизнеса', 'data-go-view="business-context"')}
+        ${renderActionButton('Интеграции', 'data-go-view="integrations"')}
+        ${renderActionButton(syncLoading ? 'Синхронизация...' : 'Запустить синхронизацию', `data-sync-client ${canRunSync && !syncLoading ? '' : 'disabled'}`, 'primary')}
+        ${renderActionButton('Перейти к шагу', `data-go-view="${escapeHtml(nextTarget)}"`, 'primary')}
+      </div>
+      ${syncStatusMessage ? `<div class="authStatus integrationStatus">${escapeHtml(syncStatusMessage)}</div>` : ''}
+    </section>
+  `;
 }
 
 export function renderDashboardPage({ legacyRenderDashboard } = {}) {
