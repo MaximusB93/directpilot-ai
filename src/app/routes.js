@@ -9,6 +9,11 @@ export const APP_ROUTES = Object.freeze({
     hash: '#clients',
     label: 'Клиенты',
   },
+  'business-context': {
+    id: 'business-context',
+    hash: '#business-context',
+    label: 'Контекст бизнеса',
+  },
   integrations: {
     id: 'integrations',
     hash: '#integrations',
