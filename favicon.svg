@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="DirectPilot AI">
+  <rect width="64" height="64" rx="16" fill="#111827"/>
+  <path d="M16 18h15c9.5 0 16 5.7 16 14s-6.5 14-16 14H16V18Zm10 9v10h5c3.8 0 6.4-1.9 6.4-5S34.8 27 31 27h-5Z" fill="#ffffff"/>
+  <path d="M45 17h4v30h-4z" fill="#ffd84d"/>
+  <circle cx="47" cy="12" r="4" fill="#ffd84d"/>
+</svg>
