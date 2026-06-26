@@ -1,0 +1,377 @@
+/* Product polish layer for DirectPilot AI cabinet.
+   Final app-only overrides: denser, calmer, more professional B2B SaaS UI. */
+
+:root {
+  --dp-polish-bg: #f3f6fb;
+  --dp-polish-surface: #ffffff;
+  --dp-polish-surface-soft: #f8fafc;
+  --dp-polish-border: #d9e2ef;
+  --dp-polish-border-soft: #e8eef6;
+  --dp-polish-text: #0f172a;
+  --dp-polish-muted: #64748b;
+  --dp-polish-brand: #2557e8;
+  --dp-polish-brand-soft: #edf3ff;
+  --dp-polish-shadow: 0 10px 26px rgba(15, 23, 42, 0.07);
+  --dp-polish-shadow-sm: 0 2px 8px rgba(15, 23, 42, 0.04);
+}
+
+body[data-page="app"] main {
+  color: var(--dp-polish-text);
+  background:
+    radial-gradient(circle at 0% 0%, rgba(37, 87, 232, 0.08), transparent 34rem),
+    linear-gradient(180deg, #f8fbff 0%, var(--dp-polish-bg) 42%, #eef3fa 100%);
+}
+
+body[data-page="app"] .appShell {
+  grid-template-columns: 248px minmax(0, 1fr);
+}
+
+body[data-page="app"] .sidebar {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  align-self: start;
+  gap: 18px;
+  padding: 18px 16px;
+  border-right: 1px solid var(--dp-polish-border-soft);
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: none;
+}
+
+body[data-page="app"] .appBrand {
+  padding: 4px 6px 12px;
+  border-bottom: 1px solid var(--dp-polish-border-soft);
+}
+
+body[data-page="app"] .appBrand strong {
+  letter-spacing: -0.03em;
+}
+
+body[data-page="app"] .sideNav {
+  gap: 4px;
+}
+
+body[data-page="app"] .sideNavItem {
+  min-height: 40px;
+  padding: 9px 11px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  color: #334155;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+body[data-page="app"] .sideNavItem:hover {
+  color: var(--dp-polish-text);
+  background: var(--dp-polish-surface-soft);
+}
+
+body[data-page="app"] .sideNavItem.active {
+  color: var(--dp-polish-brand);
+  border-color: rgba(37, 87, 232, 0.14);
+  background: var(--dp-polish-brand-soft);
+  box-shadow: none;
+}
+
+body[data-page="app"] .sidebarNote {
+  padding: 14px;
+  border: 1px solid var(--dp-polish-border-soft);
+  border-radius: 16px;
+  color: #475569;
+  background: #f8fafc;
+  box-shadow: none;
+}
+
+body[data-page="app"] .workspace {
+  width: min(100%, 1640px);
+  max-width: calc(100vw - 248px);
+  padding: 20px 24px 48px;
+}
+
+body[data-page="app"] .appHeader {
+  top: 12px;
+  margin-bottom: 16px;
+  padding: 14px 16px;
+  border: 1px solid rgba(217, 226, 239, 0.9);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: var(--dp-polish-shadow-sm);
+  backdrop-filter: blur(14px);
+}
+
+body[data-page="app"] .appHeader h1 {
+  color: var(--dp-polish-text);
+  font-size: clamp(22px, 1.8vw, 28px);
+  letter-spacing: -0.04em;
+}
+
+body[data-page="app"] .clientSelect {
+  min-width: min(340px, 38vw);
+  border-color: var(--dp-polish-border-soft);
+  background: var(--dp-polish-surface-soft);
+  box-shadow: none;
+}
+
+body[data-page="app"] .pageIntro {
+  display: block;
+  margin: 0 0 16px;
+  padding: 22px 24px;
+  border: 1px solid var(--dp-polish-border-soft);
+  border-radius: 20px;
+  background: linear-gradient(180deg, #ffffff 0%, #f9fbff 100%);
+  box-shadow: var(--dp-polish-shadow-sm);
+}
+
+body[data-page="app"] .pageIntro .eyebrow {
+  margin-bottom: 10px;
+  color: var(--dp-polish-brand);
+}
+
+body[data-page="app"] .pageIntro h2 {
+  max-width: 980px;
+  font-size: clamp(28px, 2.5vw, 42px);
+  line-height: 1.05;
+  letter-spacing: -0.055em;
+}
+
+body[data-page="app"] .pageIntro p {
+  max-width: 820px;
+  color: var(--dp-polish-muted);
+  font-size: 15px;
+  line-height: 1.6;
+}
+
+body[data-page="app"] .panel,
+body[data-page="app"] .metricCard,
+body[data-page="app"] .clientCard,
+body[data-page="app"] .auditItem,
+body[data-page="app"] .actionCard,
+body[data-page="app"] .integrationCard,
+body[data-page="app"] .featureCard,
+body[data-page="app"] .kpi {
+  border: 1px solid var(--dp-polish-border-soft);
+  background: var(--dp-polish-surface);
+  box-shadow: var(--dp-polish-shadow-sm);
+}
+
+body[data-page="app"] .panel {
+  padding: 18px;
+  border-radius: 18px;
+}
+
+body[data-page="app"] .panelHeader {
+  gap: 16px;
+  margin-bottom: 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--dp-polish-border-soft);
+}
+
+body[data-page="app"] .panelHeader h3 {
+  color: var(--dp-polish-text);
+  font-size: 18px;
+  letter-spacing: -0.03em;
+}
+
+body[data-page="app"] .metricGrid,
+body[data-page="app"] .kpiGrid {
+  grid-template-columns: repeat(auto-fit, minmax(188px, 1fr));
+  gap: 12px;
+}
+
+body[data-page="app"] .metricCard,
+body[data-page="app"] .kpi {
+  min-height: 104px;
+  padding: 15px;
+  border-radius: 16px;
+}
+
+body[data-page="app"] .metricCard span,
+body[data-page="app"] .kpi span,
+body[data-page="app"] .muted {
+  color: var(--dp-polish-muted);
+}
+
+body[data-page="app"] .metricCard strong,
+body[data-page="app"] .kpi strong {
+  color: var(--dp-polish-text);
+  font-size: clamp(22px, 1.8vw, 28px);
+  letter-spacing: -0.045em;
+}
+
+body[data-page="app"] .primaryButton,
+body[data-page="app"] .approveButton {
+  min-height: 40px;
+  border-radius: 11px;
+  background: linear-gradient(180deg, #3267ff 0%, var(--dp-polish-brand) 100%);
+  box-shadow: 0 8px 18px rgba(37, 87, 232, 0.2);
+}
+
+body[data-page="app"] .secondaryButton {
+  min-height: 40px;
+  border: 1px solid var(--dp-polish-border);
+  border-radius: 11px;
+  color: #1e293b;
+  background: #ffffff;
+  box-shadow: none;
+}
+
+body[data-page="app"] .secondaryButton:hover {
+  border-color: #b9c7dc;
+  background: #f8fafc;
+}
+
+body[data-page="app"] .clientSourcePanel {
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  padding: 12px;
+  border-radius: 18px;
+  background: #ffffff;
+}
+
+body[data-page="app"] .clientSourcePanel > div {
+  padding: 11px 12px;
+  border: 1px solid var(--dp-polish-border-soft);
+  border-radius: 14px;
+  background: var(--dp-polish-surface-soft);
+}
+
+body[data-page="app"] .clientSourcePanel strong {
+  color: var(--dp-polish-text);
+  font-size: 14px;
+}
+
+body[data-page="app"] .clientSourcePanel small {
+  color: var(--dp-polish-muted);
+  font-weight: 700;
+}
+
+body[data-page="app"] .tableWrap {
+  border: 1px solid var(--dp-polish-border-soft);
+  border-radius: 16px;
+  background: #ffffff;
+  box-shadow: var(--dp-polish-shadow-sm);
+}
+
+body[data-page="app"] table {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+body[data-page="app"] th {
+  color: #475569;
+  background: #f8fafc;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+}
+
+body[data-page="app"] td {
+  border-color: #edf2f7;
+}
+
+body[data-page="app"] tbody tr:hover td {
+  background: #f9fbff;
+}
+
+body[data-page="app"] .authField input,
+body[data-page="app"] .authField textarea,
+body[data-page="app"] .authField select,
+body[data-page="login"] .authField input {
+  border-color: var(--dp-polish-border);
+  border-radius: 12px;
+  background: #ffffff;
+}
+
+body[data-page="app"] .authField input:focus,
+body[data-page="app"] .authField textarea:focus,
+body[data-page="app"] .authField select:focus {
+  border-color: rgba(37, 87, 232, 0.55);
+  box-shadow: 0 0 0 3px rgba(37, 87, 232, 0.12);
+}
+
+body[data-page="app"] .dashboardLayout {
+  grid-template-columns: minmax(340px, 0.82fr) minmax(520px, 1.18fr);
+  gap: 16px;
+}
+
+body[data-page="app"] .aiGrid {
+  grid-template-columns: minmax(560px, 1.3fr) minmax(340px, 0.7fr);
+}
+
+body[data-page="app"] .aiChatMessages {
+  border-color: var(--dp-polish-border-soft);
+  border-radius: 16px;
+  background: #f8fafc;
+}
+
+body[data-page="app"] .wordstatChartPanel {
+  background: #ffffff;
+}
+
+body[data-page="app"] .wordstatChartPanel > div[style*="overflow"] {
+  border-color: var(--dp-polish-border-soft);
+  border-radius: 18px;
+  background: linear-gradient(180deg, #fbfdff, #ffffff);
+}
+
+body[data-page="app"] .wordstatChartPanel svg {
+  height: clamp(340px, 30vw, 480px) !important;
+  border-radius: 18px !important;
+}
+
+.wordstatChartTooltip {
+  border-color: rgba(15, 23, 42, 0.12);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 16px 38px rgba(15, 23, 42, 0.18);
+}
+
+@media (max-width: 1180px) {
+  body[data-page="app"] .appShell {
+    grid-template-columns: 1fr;
+  }
+
+  body[data-page="app"] .sidebar {
+    position: static;
+    height: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--dp-polish-border-soft);
+  }
+
+  body[data-page="app"] .workspace {
+    width: 100%;
+    max-width: none;
+    padding: 14px;
+  }
+
+  body[data-page="app"] .dashboardLayout,
+  body[data-page="app"] .aiGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  body[data-page="app"] .workspace {
+    padding: 10px;
+  }
+
+  body[data-page="app"] .appHeader,
+  body[data-page="app"] .pageIntro,
+  body[data-page="app"] .panel {
+    border-radius: 16px;
+  }
+
+  body[data-page="app"] .appHeader,
+  body[data-page="app"] .pageIntro {
+    grid-template-columns: 1fr;
+  }
+
+  body[data-page="app"] .sideNav {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  body[data-page="app"] .clientSourcePanel,
+  body[data-page="app"] .metricGrid,
+  body[data-page="app"] .kpiGrid {
+    grid-template-columns: 1fr;
+  }
+}
