@@ -8,6 +8,7 @@ const requiredFiles = [
   'src/main.js',
   'src/login.js',
   'src/data.js',
+  'src/business_context_autofill.js',
   'src/core/api.js',
   'src/core/date.js',
   'src/core/format.js',
@@ -26,6 +27,7 @@ const css = await readFile('src/styles.css', 'utf8');
 const js = await readFile('src/main.js', 'utf8');
 const loginJs = await readFile('src/login.js', 'utf8');
 const data = await readFile('src/data.js', 'utf8');
+const businessAutofill = await readFile('src/business_context_autofill.js', 'utf8');
 const coreApi = await readFile('src/core/api.js', 'utf8');
 const coreIds = await readFile('src/core/ids.js', 'utf8');
 const coreSessionApi = await readFile('src/core/session-api.js', 'utf8');
@@ -44,6 +46,7 @@ const checks = [
   ['shared session api module', coreSessionApi.includes('requestEmailCode') && coreSessionApi.includes('verifyEmailCode')],
   ['shared storage module', coreStorage.includes('export function scopedStorageKey') && coreStorage.includes('export function saveSession')],
   ['shared format module', coreFormat.includes('export function formatNumber') && coreFormat.includes('export function formatMoney')],
+  ['business autofill core import', businessAutofill.includes("from './core/api.js'") && businessAutofill.includes('apiFetch')],
   ['standalone login auth', loginJs.includes("from './core/api.js'") && loginJs.includes("from './core/storage.js'")],
   ['email auth view', js.includes('renderLogin') && js.includes('/auth/email/request-code')],
   ['cabinet view', js.includes('renderDashboard')],
