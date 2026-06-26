@@ -120,7 +120,7 @@ let businessContextLoading = false;
 let businessContextStatus = '';
 let businessContextSaving = false;
 let businessContextDraft = null;
-const CUSTOM_MODEL_VALUE = '__custom_openrouter_model__';
+const CUSTOM_MODEL_VALUE = aiStore.CUSTOM_MODEL_VALUE;
 let aiStatus = { models: [], configured: false, message: 'Статус OpenRouter ещё не загружен.' };
 let selectedAiModel = 'openrouter/auto';
 let customAiModel = 'openai/gpt-4o';
@@ -159,11 +159,11 @@ function storageKey(key) {
 }
 
 function loadSelectedClientId() {
-  return window.localStorage.getItem(storageKey('directpilot_selected_client_id')) || accountClients[0]?.id || '';
+  return clientStore.loadSelectedClientId(storageKey, accountClients[0]?.id || '');
 }
 
 function saveSelectedClientId(clientId) {
-  window.localStorage.setItem(storageKey('directpilot_selected_client_id'), clientId);
+  clientStore.saveSelectedClientId(storageKey, clientId);
 }
 
 function loadStoredClients() {
@@ -213,14 +213,12 @@ function clientPayloadFromForm(name, directLogin, metricaCounter) {
   };
 }
 
-async function loadClientsFromApi(force = false) {
+async async function loadClientsFromApi(force = false) {
   if (page !== 'app') return;
   if (backendClientsLoading || (backendClientsLoaded && !force)) return;
   backendClientsLoading = true;
   try {
-    const response = await apiFetch('/clients');
-    const payload = await response.json();
-    if (!response.ok || !Array.isArray(payload)) throw new Error(payload.detail || `Backend responded with ${response.status}`);
+    const payload = await clientsService.fetchClients();
     accountClients = payload.map(normalizeBackendClient);
     backendClientsLoaded = true;
     backendClientsAvailable = true;
@@ -245,6 +243,7 @@ async function loadClientsFromApi(force = false) {
     render();
   }
 }
+
 
 const localClients = loadStoredClients();
 if (localClients.length) {
@@ -727,7 +726,7 @@ function aiPromptDebugParams() {
   return params;
 }
 
-async function loadAiPromptDebug() {
+async async function loadAiPromptDebug() {
   if (!selectedClientId) {
     aiPromptDebugError = 'Сначала выберите клиента.';
     render();
@@ -737,10 +736,7 @@ async function loadAiPromptDebug() {
   aiPromptDebugError = '';
   render();
   try {
-    const response = await apiFetch(`/clients/${selectedClientId}/ai/prompt-debug?${aiPromptDebugParams().toString()}`);
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.detail || 'Не удалось проверить размер AI-контекста');
-    aiPromptDebug = payload;
+    aiPromptDebug = await aiService.fetchAiPromptDebug(selectedClientId, aiPromptDebugParams());
   } catch (error) {
     aiPromptDebugError = error.message || 'Не удалось проверить размер AI-контекста';
   } finally {
@@ -749,7 +745,8 @@ async function loadAiPromptDebug() {
   }
 }
 
-async function requestAiRecommendations() {
+
+async async function requestAiRecommendations() {
   if (!selectedClientId) {
     aiRecommendationsError = 'Сначала выберите клиента.';
     render();
@@ -760,24 +757,17 @@ async function requestAiRecommendations() {
   render();
   try {
     const budget = activeAiBudget();
-    const response = await apiFetch(`/clients/${selectedClientId}/ai/recommendations`, {
-      method: 'POST',
-      body: JSON.stringify({
-        model: activeAiModel(),
-        preset: selectedAiPreset,
-        max_tokens: budget.maxTokens,
-        target_context_tokens: budget.targetContextTokens,
-        include_business_context: true,
-        business_context: businessContextForAi(),
-        compact_context: aiCompactContext,
-        include_raw_tool_results: aiToolResultsMode === 'raw' || budget.includeRawToolResults,
-        search_query_limit: Number(aiSearchQueryLimit) || 20,
-      }),
+    const payload = await aiService.fetchClientAiRecommendations(selectedClientId, {
+      model: activeAiModel(),
+      preset: selectedAiPreset,
+      max_tokens: budget.maxTokens,
+      target_context_tokens: budget.targetContextTokens,
+      include_business_context: true,
+      business_context: businessContextForAi(),
+      compact_context: aiCompactContext,
+      include_raw_tool_results: aiToolResultsMode === 'raw' || budget.includeRawToolResults,
+      search_query_limit: Number(aiSearchQueryLimit) || 20,
     });
-    const payload = await response.json();
-    if (!response.ok || payload.error) {
-      throw new Error(payload.message || payload.detail || 'Не удалось сформировать AI-рекомендации');
-    }
     clientAiRecommendations = payload;
     if (payload.business_context_memory_note) {
       await saveAiMemoryNote(payload.business_context_memory_note);
@@ -790,7 +780,8 @@ async function requestAiRecommendations() {
   }
 }
 
-async function sendAiChatMessage(message) {
+
+async async function sendAiChatMessage(message) {
   const text = String(message || aiChatInput || '').trim();
   if (!text || aiChatLoading) return;
   aiChatMessages = [...aiChatMessages, { role: 'user', content: text }];
@@ -800,18 +791,7 @@ async function sendAiChatMessage(message) {
   aiChatErrorDetails = null;
   render();
   try {
-    const response = await apiFetch('/ai/chat', {
-      method: 'POST',
-      body: JSON.stringify(aiChatRequestPayload(text)),
-    });
-    const payload = await response.json();
-    if (!response.ok || payload.error) {
-      const message = payload.message || payload.detail || 'AI-чат не вернул ответ';
-      const error = new Error(message);
-      error.payload = payload;
-      error.status = response.status;
-      throw error;
-    }
+    const payload = await aiService.requestAiChat(aiChatRequestPayload(text));
     aiChatMessages = [...aiChatMessages, { role: 'assistant', content: payload.answer || 'Нет ответа.' }];
     aiChatToolTraces = payload.tool_traces || [];
     if (payload.business_context_memory_note) {
@@ -830,16 +810,12 @@ async function sendAiChatMessage(message) {
   }
 }
 
-async function saveAiMemoryNote(note) {
+
+async async function saveAiMemoryNote(note) {
   if (!selectedClientId || !note) return;
   aiMemoryStatus = 'Сохраняем вывод в память проекта...';
   try {
-    const response = await apiFetch(`/clients/${selectedClientId}/business-context/memory-note`, {
-      method: 'POST',
-      body: JSON.stringify({ note }),
-    });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.detail || 'Не удалось сохранить в память проекта');
+    const payload = await businessContextService.saveBusinessContextMemoryNote(selectedClientId, note);
     businessContext = normalizeBusinessContext(payload);
     businessContextDraft = businessContext;
     aiMemoryStatus = 'AI-вывод сохранён в память проекта.';
@@ -848,36 +824,31 @@ async function saveAiMemoryNote(note) {
   }
 }
 
-async function loadAiStatus() {
+
+async async function loadAiStatus() {
   try {
-    const response = await fetch(`${API_BASE}/ai/openrouter/status`);
-    aiStatus = response.ok ? await response.json() : { models: [], configured: false, message: 'Не удалось получить статус OpenRouter.' };
+    aiStatus = await aiService.fetchOpenRouterStatus();
   } catch (error) {
     aiStatus = { models: [], configured: false, message: 'Backend недоступен, OpenRouter не проверен.' };
   }
   render();
 }
 
-async function generateAiInsight(prompt) {
+
+async async function generateAiInsight(prompt) {
   aiLoading = true;
   aiError = '';
   aiResult = null;
   render();
   try {
     const budget = activeAiBudget();
-    const response = await apiFetch('/ai/openrouter/generate', {
-      method: 'POST',
-      body: JSON.stringify({
-        prompt,
-        model: activeAiModel(),
-        max_tokens: budget.maxTokens,
-        preset: selectedAiPreset,
-        business_context: businessContextForAi(),
-      }),
+    aiResult = await aiService.generateAiInsight({
+      prompt,
+      model: activeAiModel(),
+      max_tokens: budget.maxTokens,
+      preset: selectedAiPreset,
+      business_context: businessContextForAi(),
     });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.detail || 'OpenRouter не вернул ответ');
-    aiResult = payload;
   } catch (error) {
     aiError = error.message || 'Не удалось получить AI-ответ';
   } finally {
@@ -885,6 +856,7 @@ async function generateAiInsight(prompt) {
     render();
   }
 }
+
 
 function pageContextSummary() {
   const client = currentClient();
@@ -943,16 +915,13 @@ function getFilteredOptimizationActions() {
   return optimizationActions.filter((action) => optimizationActionFilter === 'all' || action.status === optimizationActionFilter);
 }
 
-async function loadPerformanceSummary() {
+async async function loadPerformanceSummary() {
   if (!selectedClientId || perfLoading) return;
   perfLoading = true;
   perfStatus = 'Загружаем сводку по кампаниям...';
   render();
   try {
-    const response = await apiFetch(`/clients/${selectedClientId}/performance-summary`);
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.detail || 'Не удалось загрузить сводку');
-    perfSummary = payload;
+    perfSummary = await performanceService.fetchPerformanceSummary(selectedClientId);
     perfStatus = 'Сводка обновлена.';
   } catch (error) {
     perfStatus = error.message || 'Не удалось загрузить сводку.';
@@ -962,15 +931,14 @@ async function loadPerformanceSummary() {
   }
 }
 
-async function loadBusinessContext() {
+
+async async function loadBusinessContext() {
   if (!selectedClientId || businessContextLoading) return;
   businessContextLoading = true;
   businessContextStatus = 'Загружаем контекст бизнеса...';
   render();
   try {
-    const response = await apiFetch(`/clients/${selectedClientId}/business-context`);
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.detail || 'Не удалось загрузить контекст бизнеса');
+    const payload = await businessContextService.fetchBusinessContext(selectedClientId);
     businessContext = normalizeBusinessContext(payload);
     businessContextDraft = businessContext;
     businessContextStatus = hasBusinessContextData(businessContext) ? 'Контекст бизнеса загружен.' : 'Контекст пока пустой. Заполните основные поля.';
@@ -984,19 +952,15 @@ async function loadBusinessContext() {
   }
 }
 
-async function saveBusinessContext(form) {
+
+async async function saveBusinessContext(form) {
   if (!selectedClientId) return;
   const draft = setBusinessContextDraftFromForm(form);
   businessContextSaving = true;
   businessContextStatus = 'Сохраняем контекст бизнеса...';
   render();
   try {
-    const response = await apiFetch(`/clients/${selectedClientId}/business-context`, {
-      method: 'PUT',
-      body: JSON.stringify(businessContextPayload(draft)),
-    });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.detail || 'Не удалось сохранить контекст бизнеса');
+    const payload = await businessContextService.saveBusinessContext(selectedClientId, businessContextPayload(draft));
     businessContext = normalizeBusinessContext(payload);
     businessContextDraft = businessContext;
     businessContextStatus = 'Контекст бизнеса сохранён. AI будет использовать его в рекомендациях.';
@@ -1008,15 +972,14 @@ async function saveBusinessContext(form) {
   }
 }
 
-async function startSync() {
+
+async async function startSync() {
   if (!selectedClientId || !canRunSync() || syncLoading) return;
   syncLoading = true;
   syncStatusMessage = 'Запускаем синхронизацию с Директом и Метрикой...';
   render();
   try {
-    const response = await apiFetch(clientSyncPath(selectedClientId), { method: 'POST' });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.detail || 'Ошибка синхронизации');
+    const payload = await syncService.runClientSync(selectedClientId);
     syncStatusMessage = `Синхронизация запущена. Статус: ${syncJobStatusLabel(payload.status)}.`;
     await loadSyncJobs();
     await loadPerformanceSummary();
@@ -1028,15 +991,13 @@ async function startSync() {
   }
 }
 
-async function loadSyncJobs() {
+
+async async function loadSyncJobs() {
   if (!selectedClientId || syncJobsLoading) return;
   syncJobsLoading = true;
   render();
   try {
-    const response = await apiFetch(`/clients/${selectedClientId}/sync/jobs`);
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.detail || 'Не удалось загрузить историю синхронизаций');
-    syncJobs = Array.isArray(payload) ? payload : [];
+    syncJobs = await syncService.fetchSyncJobs(selectedClientId);
   } catch (error) {
     if (!syncStatusMessage) syncStatusMessage = error.message || 'История синхронизаций недоступна.';
   } finally {
@@ -1045,15 +1006,14 @@ async function loadSyncJobs() {
   }
 }
 
-async function loadOptimizationPlan() {
+
+async async function loadOptimizationPlan() {
   if (!selectedClientId || optimizationPlanLoading) return;
   optimizationPlanLoading = true;
   optimizationStatus = 'Формируем план оптимизации...';
   render();
   try {
-    const response = await apiFetch(`/clients/${selectedClientId}/optimization-plan`);
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.detail || 'Не удалось загрузить план оптимизации');
+    const payload = await optimizationService.fetchOptimizationPlan(selectedClientId);
     optimizationPlan = normalizeOptimizationPlan(payload);
     optimizationStatus = 'План оптимизации обновлён.';
   } catch (error) {
@@ -1064,17 +1024,15 @@ async function loadOptimizationPlan() {
   }
 }
 
-async function loadOptimizationActions(force = false) {
+
+async async function loadOptimizationActions(force = false) {
   if (!selectedClientId || optimizationActionsLoading) return;
   if (!force && optimizationActionsLoadedFor === selectedClientId) return;
   optimizationActionsLoading = true;
   optimizationActionsStatus = 'Загружаем черновики согласования...';
   render();
   try {
-    const query = optimizationActionFilter !== 'all' ? `?status=${encodeURIComponent(optimizationActionFilter)}` : '';
-    const response = await apiFetch(`/clients/${selectedClientId}/optimization-actions${query}`);
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.detail || 'Не удалось загрузить черновики согласования');
+    const payload = await optimizationService.fetchOptimizationActions(selectedClientId, optimizationActionFilter);
     optimizationActions = Array.isArray(payload) ? payload.map(normalizeOptimizationAction) : [];
     optimizationActionsLoadedFor = selectedClientId;
     optimizationActionsStatus = optimizationActions.length ? 'Черновики согласования загружены.' : 'Черновиков пока нет. Сохраните план оптимизации как черновики.';
@@ -1086,15 +1044,14 @@ async function loadOptimizationActions(force = false) {
   }
 }
 
-async function createOptimizationDraftsFromPlan() {
+
+async async function createOptimizationDraftsFromPlan() {
   if (!selectedClientId || optimizationActionsLoading) return;
   optimizationActionsLoading = true;
   optimizationActionsStatus = 'Сохраняем рекомендации как черновики...';
   render();
   try {
-    const response = await apiFetch(`/clients/${selectedClientId}/optimization-actions/from-plan`, { method: 'POST' });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.detail || 'Не удалось сохранить черновики');
+    const payload = await optimizationService.saveOptimizationPlanAsDrafts(selectedClientId);
     optimizationActions = Array.isArray(payload) ? payload.map(normalizeOptimizationAction) : [];
     optimizationActionsLoadedFor = selectedClientId;
     optimizationActionsStatus = `Сохранено черновиков: ${optimizationActions.length}.`;
@@ -1106,17 +1063,16 @@ async function createOptimizationDraftsFromPlan() {
   }
 }
 
-async function updateOptimizationActionStatus(actionId, status, reviewerNote = '') {
+
+async async function updateOptimizationActionStatus(actionId, status, reviewerNote = '') {
   if (!selectedClientId || !actionId) return;
   optimizationActionsStatus = 'Обновляем статус черновика...';
   render();
   try {
-    const response = await apiFetch(`/clients/${selectedClientId}/optimization-actions/${actionId}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ status, reviewer_note: reviewerNote }),
+    const payload = await optimizationService.updateOptimizationAction(selectedClientId, actionId, {
+      status,
+      reviewer_note: reviewerNote,
     });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.detail || 'Не удалось обновить черновик');
     const updated = normalizeOptimizationAction(payload);
     optimizationActions = optimizationActions.map((action) => action.id === actionId ? updated : action);
     optimizationActionsStatus = 'Статус черновика обновлён.';
@@ -1127,7 +1083,8 @@ async function updateOptimizationActionStatus(actionId, status, reviewerNote = '
   }
 }
 
-async function loadOptimizationExecutionPreview(actionId) {
+
+async async function loadOptimizationExecutionPreview(actionId) {
   if (!selectedClientId || !actionId) return;
   optimizationExecutionPreviews = {
     ...optimizationExecutionPreviews,
@@ -1135,9 +1092,7 @@ async function loadOptimizationExecutionPreview(actionId) {
   };
   render();
   try {
-    const response = await apiFetch(`/clients/${selectedClientId}/optimization-actions/${actionId}/execution-preview`);
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.detail || 'Не удалось загрузить предпросмотр применения');
+    const payload = await optimizationService.fetchOptimizationExecutionPreview(selectedClientId, actionId);
     optimizationExecutionPreviews = {
       ...optimizationExecutionPreviews,
       [actionId]: { loading: false, error: '', data: normalizeOptimizationPreview(payload) },
@@ -1150,6 +1105,7 @@ async function loadOptimizationExecutionPreview(actionId) {
   }
   render();
 }
+
 
 function renderMetricCards() {
   return `
@@ -1706,46 +1662,6 @@ function renderOptimization() {
   `);
 }
 
-function renderDashboard() {
-  const client = currentClient();
-  const hasClient = Boolean(client.id);
-  const readiness = getReadinessState();
-  const nextAction = getNextBestAction();
-  const readyCount = readiness.filter((item) => item.status === 'ready').length;
-  const contentRenderer = resolvePageContentRenderer('dashboard');
-
-  if (typeof contentRenderer !== 'function') {
-    return renderDashboardViaPageModule();
-  }
-
-  return renderShell(contentRenderer({
-    clientName: client.name,
-    hasClient,
-    readiness,
-    nextAction,
-    readyCount,
-    readinessLength: readiness.length,
-    nextTarget: nextAction.targetView || 'dashboard',
-    hasPerformanceData: hasPerformanceData(),
-    candidateNegativeKeywords: perfSummary?.searchQueryInsights?.candidateNegativeKeywords || 0,
-    syncLoading,
-    canRunSync: canRunSync(),
-    syncStatusMessage,
-    renderActionButton,
-    renderReadinessPanel,
-    renderSyncCenter,
-    renderBusinessContextPanel,
-    renderSyncDiagnosticsPanel,
-    renderYesterdaySummaryPanel,
-    renderYandexDirectAuditPanel,
-    renderPerformanceSummaryPanel,
-    formatNumberSafe,
-    badgeClassForStatus,
-    compactStatusLabel,
-    escapeHtml,
-  }));
-}
-
 function render() {
   activeView = normalizeAppView(activeView);
   const views = {
@@ -1950,18 +1866,13 @@ app.addEventListener('submit', async (event) => {
     render();
     try {
       if (backendClientsAvailable) {
-        const response = await apiFetch('/clients', {
-          method: 'POST',
-          body: JSON.stringify({
-            id: newClient.id,
-            name: newClient.name,
-            direct_login: newClient.directLogin === 'Не подключен' ? null : newClient.directLogin,
-            metrica_counter: newClient.metricaCounter === 'Не подключен' ? null : newClient.metricaCounter,
-            segment: newClient.segment,
-          }),
+        const payload = await clientsService.createClient({
+          id: newClient.id,
+          name: newClient.name,
+          directLogin: newClient.directLogin,
+          metricaCounter: newClient.metricaCounter,
+          segment: newClient.segment,
         });
-        const payload = await response.json();
-        if (!response.ok) throw new Error(payload.detail || 'Не удалось сохранить клиента в базе данных');
         accountClients = [...accountClients, normalizeBackendClient(payload)];
         clientFormStatus = 'Клиент сохранён в базе данных.';
       } else {
@@ -2146,9 +2057,7 @@ app.addEventListener('click', async (event) => {
     integrationStatus.message = 'Запрашиваем OAuth URL...';
     render();
     try {
-      const response = await apiFetch('/auth/yandex/start');
-      const payload = await response.json();
-      if (!response.ok || !payload.auth_url) throw new Error(payload.detail || payload.message || 'OAuth URL не получен');
+      const payload = await integrationsService.startYandexOAuth();
       window.location.href = payload.auth_url;
     } catch (error) {
       integrationStatus = { ...integrationStatus, message: error.message || 'Не удалось начать подключение Яндекса.' };
@@ -2157,10 +2066,9 @@ app.addEventListener('click', async (event) => {
   }
 });
 
-async function loadIntegrationStatus() {
+async async function loadIntegrationStatus() {
   try {
-    const response = await apiFetch('/auth/yandex/status');
-    const payload = response.ok ? await response.json() : {};
+    const payload = await integrationsService.fetchYandexStatus();
     integrationStatus = {
       connected: Boolean(payload.connected),
       accounts: Array.isArray(payload.accounts) ? payload.accounts : [],
@@ -2172,15 +2080,14 @@ async function loadIntegrationStatus() {
   render();
 }
 
-async function loadClientYandexIntegration(force = false) {
+
+async async function loadClientYandexIntegration(force = false) {
   if (!selectedClientId || clientYandexLoading || (clientYandexIntegration && !force)) return;
   clientYandexLoading = true;
   clientYandexStatus = 'Загружаем привязку клиента к Яндексу...';
   render();
   try {
-    const response = await apiFetch(`/clients/${selectedClientId}/integrations/yandex`);
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.detail || 'Не удалось загрузить привязку Яндекса');
+    const payload = await integrationsService.fetchClientYandexIntegration(selectedClientId);
     clientYandexIntegration = payload;
     clientYandexStatus = payload.selected_account ? 'Аккаунт Яндекса привязан к клиенту.' : 'Выберите аккаунт Яндекса для клиента.';
     if (payload.selected_account?.id) {
@@ -2195,18 +2102,14 @@ async function loadClientYandexIntegration(force = false) {
   }
 }
 
-async function bindClientYandexAccount(accountId) {
+
+async async function bindClientYandexAccount(accountId) {
   if (!selectedClientId || !accountId) return;
   clientYandexLoading = true;
   clientYandexStatus = 'Привязываем аккаунт Яндекса к клиенту...';
   render();
   try {
-    const response = await apiFetch(`/clients/${selectedClientId}/integrations/yandex`, {
-      method: 'PUT',
-      body: JSON.stringify({ yandex_account_id: accountId }),
-    });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.detail || 'Не удалось привязать аккаунт');
+    const payload = await integrationsService.bindClientYandexIntegration(selectedClientId, accountId);
     clientYandexIntegration = payload;
     accountClients = accountClients.map((client) => client.id === selectedClientId ? { ...client, yandexAccountId: accountId } : client);
     saveStoredClients();
@@ -2219,15 +2122,14 @@ async function bindClientYandexAccount(accountId) {
   }
 }
 
-async function unbindClientYandexAccount() {
+
+async async function unbindClientYandexAccount() {
   if (!selectedClientId) return;
   clientYandexLoading = true;
   clientYandexStatus = 'Отвязываем аккаунт Яндекса...';
   render();
   try {
-    const response = await apiFetch(`/clients/${selectedClientId}/integrations/yandex`, { method: 'DELETE' });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.detail || 'Не удалось отвязать аккаунт');
+    const payload = await integrationsService.unbindClientYandexIntegration(selectedClientId);
     clientYandexIntegration = payload;
     accountClients = accountClients.map((client) => client.id === selectedClientId ? { ...client, yandexAccountId: '' } : client);
     saveStoredClients();
@@ -2239,6 +2141,7 @@ async function unbindClientYandexAccount() {
     render();
   }
 }
+
 
 function setClientSettingsDraftFromForm(form) {
   const formData = new FormData(form);
@@ -2254,7 +2157,7 @@ function setClientSettingsDraftFromForm(form) {
   return clientSettingsDraft;
 }
 
-async function saveClientSettings(form) {
+async async function saveClientSettings(form) {
   if (!selectedClientId) return;
   const draft = setClientSettingsDraftFromForm(form);
   clientSettingsSaving = true;
@@ -2271,20 +2174,15 @@ async function saveClientSettings(form) {
   };
   try {
     if (backendClientsAvailable) {
-      const response = await apiFetch(`/clients/${selectedClientId}`, {
-        method: 'PUT',
-        body: JSON.stringify({
-          name: draft.name,
-          direct_login: draft.directLogin || null,
-          metrica_counter: draft.metricaCounter || null,
-          target_cpa: draft.targetCpa ? Number(draft.targetCpa) : null,
-          main_goal_id: draft.mainGoalId || null,
-          conversion_goal_ids: draft.conversionGoalIds || null,
-          notes: draft.notes || null,
-        }),
+      const payload = await clientsService.updateClient(selectedClientId, {
+        name: draft.name,
+        direct_login: draft.directLogin || null,
+        metrica_counter: draft.metricaCounter || null,
+        target_cpa: draft.targetCpa ? Number(draft.targetCpa) : null,
+        main_goal_id: draft.mainGoalId || null,
+        conversion_goal_ids: draft.conversionGoalIds || null,
+        notes: draft.notes || null,
       });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.detail || 'Не удалось сохранить настройки клиента');
       accountClients = accountClients.map((client) => client.id === selectedClientId ? normalizeBackendClient(payload) : client);
       clientSettingsStatus = 'Настройки клиента сохранены в базе.';
     } else {
@@ -2306,16 +2204,15 @@ async function saveClientSettings(form) {
   }
 }
 
-async function deleteClient(clientId) {
+
+async async function deleteClient(clientId) {
   if (!clientId) return;
   if (!window.confirm('Удалить клиента? Это действие нельзя отменить.')) return;
   clientSettingsStatus = 'Удаляем клиента...';
   render();
   try {
     if (backendClientsAvailable) {
-      const response = await apiFetch(`/clients/${clientId}`, { method: 'DELETE' });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.detail || 'Не удалось удалить клиента');
+      await clientsService.deleteClient(clientId);
     }
     accountClients = accountClients.filter((client) => client.id !== clientId);
     selectedClientId = accountClients[0]?.id || '';
@@ -2329,6 +2226,7 @@ async function deleteClient(clientId) {
     render();
   }
 }
+
 
 if (oauthReturnStatus === 'connected') {
   integrationStatus = { ...integrationStatus, message: 'Яндекс подключён. Проверяем доступные аккаунты...' };
