@@ -1,0 +1,174 @@
+/* Hotfix for cabinet layout after product polish layer.
+   Keeps the app compact and fixes unreadable disabled buttons. */
+
+body[data-page="app"] .appHeader {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 340px);
+  gap: 18px;
+  align-items: center;
+  min-height: auto;
+  margin-bottom: 12px;
+  padding: 16px;
+  border-radius: 16px;
+}
+
+body[data-page="app"] .appHeader > div:first-child {
+  min-width: 0;
+}
+
+body[data-page="app"] .appHeader .muted {
+  display: block;
+  margin-bottom: 6px;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+body[data-page="app"] .appHeader h1 {
+  margin: 0;
+  font-size: clamp(24px, 1.8vw, 30px);
+  line-height: 1.12;
+}
+
+body[data-page="app"] .clientSelect {
+  justify-self: end;
+  width: min(100%, 320px);
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+body[data-page="app"] .clientSelect span,
+body[data-page="app"] .clientSelect small {
+  display: block;
+  margin: 0 0 6px;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+body[data-page="app"] .clientSelect select {
+  height: 40px;
+  min-height: 40px;
+  border: 1px solid #d9e2ef;
+  border-radius: 12px;
+  background-color: #ffffff;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+body[data-page="app"] .workspace > .panel:first-of-type {
+  margin-top: 0;
+}
+
+body[data-page="app"] .panel {
+  margin-bottom: 14px;
+}
+
+body[data-page="app"] .clientSourcePanel {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(160px, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+body[data-page="app"] .clientSourcePanel > div {
+  min-height: 72px;
+  padding: 14px;
+  border: 1px solid #dfe7f2;
+  border-radius: 14px;
+  background: #ffffff;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
+}
+
+body[data-page="app"] .clientSourcePanel .muted,
+body[data-page="app"] .clientSourcePanel span {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+body[data-page="app"] .clientSourcePanel strong {
+  margin-top: 8px;
+  color: #020617;
+  font-size: 24px;
+  line-height: 1.1;
+  letter-spacing: -0.04em;
+}
+
+body[data-page="app"] .heroActions,
+body[data-page="app"] .panelActions,
+body[data-page="app"] .actionRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+body[data-page="app"] .primaryButton,
+body[data-page="app"] .secondaryButton,
+body[data-page="app"] .approveButton {
+  min-height: 40px;
+  padding: 0 14px;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+body[data-page="app"] .primaryButton:disabled,
+body[data-page="app"] .secondaryButton:disabled,
+body[data-page="app"] .approveButton:disabled,
+body[data-page="app"] button:disabled {
+  color: #94a3b8 !important;
+  border-color: #e2e8f0 !important;
+  background: #f1f5f9 !important;
+  box-shadow: none !important;
+  cursor: not-allowed;
+  opacity: 1;
+}
+
+body[data-page="app"] .secondaryButton:not(:disabled) {
+  color: #0f172a;
+  border-color: #d9e2ef;
+  background: #ffffff;
+}
+
+body[data-page="app"] .secondaryButton:not(:disabled):hover {
+  border-color: #cbd5e1;
+  background: #f8fafc;
+}
+
+body[data-page="app"] hr,
+body[data-page="app"] .divider {
+  border-color: #e5edf6;
+}
+
+@media (max-width: 1180px) {
+  body[data-page="app"] .appHeader {
+    grid-template-columns: 1fr;
+  }
+
+  body[data-page="app"] .clientSelect {
+    justify-self: stretch;
+    width: 100%;
+  }
+
+  body[data-page="app"] .clientSourcePanel {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  body[data-page="app"] .appHeader {
+    padding: 14px;
+  }
+
+  body[data-page="app"] .clientSourcePanel {
+    grid-template-columns: 1fr;
+  }
+}
