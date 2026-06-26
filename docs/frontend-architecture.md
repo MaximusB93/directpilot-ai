@@ -15,6 +15,7 @@ Move new code toward:
 src/app/
   routes.js
   router.js
+  page-router.js
   state.js
   hash-route-bridge.js
 
@@ -57,8 +58,19 @@ This keeps the app static-hosting friendly and makes page state shareable/reload
 
 - `src/app/routes.js` stores route metadata and normalization helpers.
 - `src/app/router.js` owns hash navigation helpers.
+- `src/app/page-router.js` connects normalized route ids with registered page modules and contracts.
 - `src/app/state.js` stores shared app state and dispatches typed browser events.
 - `src/app/hash-route-bridge.js` temporarily synchronizes hash routes with legacy `?view=` routing in `src/main.js`.
+
+The bridge marks route resolution on `document.body`:
+
+```text
+data-route-id="dashboard"
+data-route-mode="module|legacy"
+data-page-module="dashboard"
+```
+
+This is a temporary debugging and migration aid while `src/main.js` still owns most renderers.
 
 ## Page modules
 
@@ -85,11 +97,12 @@ Preferred sequence:
 2. Add hash route bridge.
 3. Add dashboard page contract.
 4. Add pages registry.
-5. Move dashboard renderer behind the page module.
-6. Extract clients page.
-7. Extract integrations page.
-8. Extract AI assistant page.
-9. Extract Wordstat last, because it is the most sensitive and stateful area.
+5. Connect pages registry to the app routing layer.
+6. Move dashboard renderer behind the page module.
+7. Extract clients page.
+8. Extract integrations page.
+9. Extract AI assistant page.
+10. Extract Wordstat last, because it is the most sensitive and stateful area.
 
 ## What not to do
 
