@@ -11,6 +11,7 @@ const requiredFiles = [
   'src/app/routes.js',
   'src/app/router.js',
   'src/app/state.js',
+  'src/app/hash-route-bridge.js',
   'src/main.js',
   'src/login.js',
   'src/data.js',
@@ -39,6 +40,7 @@ const layoutHotfixCss = await readFile('src/app-layout-hotfix.css', 'utf8');
 const appRoutes = await readFile('src/app/routes.js', 'utf8');
 const appRouter = await readFile('src/app/router.js', 'utf8');
 const appState = await readFile('src/app/state.js', 'utf8');
+const hashRouteBridge = await readFile('src/app/hash-route-bridge.js', 'utf8');
 const js = await readFile('src/main.js', 'utf8');
 const loginJs = await readFile('src/login.js', 'utf8');
 const data = await readFile('src/data.js', 'utf8');
@@ -51,6 +53,9 @@ const coreStorage = await readFile('src/core/storage.js', 'utf8');
 const coreFormat = await readFile('src/core/format.js', 'utf8');
 const frontendArchitecture = await readFile('docs/frontend-architecture.md', 'utf8');
 const wordstatRefactor = await readFile('docs/wordstat-refactor.md', 'utf8');
+
+const bridgeIndex = cabinet.indexOf('src/app/hash-route-bridge.js');
+const mainIndex = cabinet.indexOf('src/main.js');
 
 const checks = [
   ['root mount point', html.includes('id="app"')],
@@ -65,6 +70,8 @@ const checks = [
   ['app routes registry', appRoutes.includes('APP_ROUTES') && appRoutes.includes('DEFAULT_ROUTE_ID') && appRoutes.includes('normalizeRouteId')],
   ['app router foundation', appRouter.includes('currentHashRoute') && appRouter.includes('navigateToRoute') && appRouter.includes('onRouteChange')],
   ['app state foundation', appState.includes('getAppState') && appState.includes('setSelectedClientId') && appState.includes('directpilot:state-change')],
+  ['hash route bridge', hashRouteBridge.includes('hash-route') || (hashRouteBridge.includes('navigateLegacyAppToRoute') && hashRouteBridge.includes('setRouteId'))],
+  ['hash route bridge before main', bridgeIndex !== -1 && mainIndex !== -1 && bridgeIndex < mainIndex],
   ['frontend architecture docs', frontendArchitecture.includes('page-module architecture') && frontendArchitecture.includes('Do not rewrite `src/main.js` in one large commit')],
   ['landing module script', html.includes('type="module"') && html.includes('src/main.js')],
   ['login module script', login.includes('type="module"') && login.includes('src/login.js')],
