@@ -22,6 +22,9 @@ class BusinessContextAutofillSource(BaseModel):
     statusCode: int | None = None
     title: str | None = None
     textLength: int = 0
+    contentLength: int = 0
+    contentSample: str | None = None
+    extractionMethod: str | None = None
     error: str | None = None
 
 
