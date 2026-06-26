@@ -26,7 +26,12 @@ export function getSessionToken() {
 }
 
 export function getCurrentEmail() {
-  return readStorage(STORAGE_KEYS.email);
+  return readStorage(STORAGE_KEYS.email).trim().toLowerCase();
+}
+
+export function scopedStorageKey(key, email = getCurrentEmail()) {
+  const normalizedEmail = String(email || '').trim().toLowerCase();
+  return normalizedEmail ? `${key}_${normalizedEmail}` : key;
 }
 
 export function saveSession(sessionToken, email) {
