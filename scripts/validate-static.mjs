@@ -6,6 +6,7 @@ const requiredFiles = [
   'app.html',
   'src/styles.css',
   'src/app-product-polish.css',
+  'src/app-layout-hotfix.css',
   'src/main.js',
   'src/login.js',
   'src/data.js',
@@ -28,6 +29,7 @@ const login = await readFile('login.html', 'utf8');
 const cabinet = await readFile('app.html', 'utf8');
 const css = await readFile('src/styles.css', 'utf8');
 const productPolishCss = await readFile('src/app-product-polish.css', 'utf8');
+const layoutHotfixCss = await readFile('src/app-layout-hotfix.css', 'utf8');
 const js = await readFile('src/main.js', 'utf8');
 const loginJs = await readFile('src/login.js', 'utf8');
 const data = await readFile('src/data.js', 'utf8');
@@ -46,6 +48,7 @@ const checks = [
   ['cabinet page', cabinet.includes('data-page="app"')],
   ['stylesheet link', html.includes('src/styles.css')],
   ['product polish stylesheet', cabinet.includes('src/app-product-polish.css') && productPolishCss.includes('Product polish layer')],
+  ['layout hotfix stylesheet', cabinet.includes('src/app-layout-hotfix.css') && layoutHotfixCss.includes('Hotfix for cabinet layout')],
   ['landing module script', html.includes('type="module"') && html.includes('src/main.js')],
   ['login module script', login.includes('type="module"') && login.includes('src/login.js')],
   ['cabinet module scripts', cabinet.includes('type="module"') && cabinet.includes('src/main.js') && cabinet.includes('src/business_context_autofill.js')],
@@ -71,7 +74,7 @@ const checks = [
   ['cabinet view', js.includes('renderDashboard')],
   ['audit view', js.includes('renderAudit')],
   ['recommendations view', js.includes('renderRecommendations')],
-  ['responsive styles', css.includes('@media') && productPolishCss.includes('@media')],
+  ['responsive styles', css.includes('@media') && productPolishCss.includes('@media') && layoutHotfixCss.includes('@media')],
   ['no seeded account data', data.includes('export const clients = []') && !data.includes('fgrf.ru') && !data.includes('Интернет-магазин мебели')],
   ['client add form', js.includes('data-client-form') && js.includes('directpilot_clients')],
   ['autopilot rules', data.includes('autopilotRules')],
