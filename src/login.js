@@ -5,6 +5,7 @@ import {
   postJson,
   saveApiBase,
 } from './core/api.js';
+import { saveSession } from './core/storage.js';
 
 const app = document.querySelector('#app');
 
@@ -151,8 +152,7 @@ app.querySelector('[data-auth-form]').addEventListener('submit', async (event) =
     }
 
     const result = await verifyEmailCode(email, code);
-    localStorage.setItem('directpilot_session', result.session_token);
-    localStorage.setItem('directpilot_email', result.email);
+    saveSession(result.session_token, result.email);
     window.location.href = 'app.html';
   } catch (error) {
     setStatus(error.message, true);
