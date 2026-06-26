@@ -12,6 +12,7 @@ const requiredFiles = [
   'src/app/router.js',
   'src/app/state.js',
   'src/app/hash-route-bridge.js',
+  'src/pages/index.js',
   'src/pages/dashboard.js',
   'src/main.js',
   'src/login.js',
@@ -42,6 +43,7 @@ const appRoutes = await readFile('src/app/routes.js', 'utf8');
 const appRouter = await readFile('src/app/router.js', 'utf8');
 const appState = await readFile('src/app/state.js', 'utf8');
 const hashRouteBridge = await readFile('src/app/hash-route-bridge.js', 'utf8');
+const pagesRegistry = await readFile('src/pages/index.js', 'utf8');
 const dashboardPage = await readFile('src/pages/dashboard.js', 'utf8');
 const js = await readFile('src/main.js', 'utf8');
 const loginJs = await readFile('src/login.js', 'utf8');
@@ -74,8 +76,9 @@ const checks = [
   ['app state foundation', appState.includes('getAppState') && appState.includes('setSelectedClientId') && appState.includes('directpilot:state-change')],
   ['hash route bridge', hashRouteBridge.includes('navigateLegacyAppToRoute') && hashRouteBridge.includes('setRouteId')],
   ['hash route bridge before main', bridgeIndex !== -1 && mainIndex !== -1 && bridgeIndex < mainIndex],
+  ['pages registry', pagesRegistry.includes('APP_PAGES') && pagesRegistry.includes('PAGE_CONTRACTS') && pagesRegistry.includes('getPageByRouteId')],
   ['dashboard page contract', dashboardPage.includes('DASHBOARD_PAGE_ID') && dashboardPage.includes('dashboardPageContract') && dashboardPage.includes('renderDashboard')],
-  ['frontend architecture docs', frontendArchitecture.includes('page-module architecture') && frontendArchitecture.includes('dashboard page contract')],
+  ['frontend architecture docs', frontendArchitecture.includes('page-module architecture') && frontendArchitecture.includes('pages registry')],
   ['landing module script', html.includes('type="module"') && html.includes('src/main.js')],
   ['login module script', login.includes('type="module"') && login.includes('src/login.js')],
   ['cabinet module scripts', cabinet.includes('type="module"') && cabinet.includes('src/main.js') && cabinet.includes('src/business_context_autofill.js')],
