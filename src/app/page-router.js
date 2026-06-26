@@ -1,15 +1,17 @@
 import { normalizeRouteId } from './routes.js';
-import { getPageByRouteId, getPageContract } from '../pages/index.js';
+import { getPageByRouteId, getPageContract, getPageRenderer } from '../pages/index.js';
 
 export function resolveAppPage(routeId) {
   const normalizedRouteId = normalizeRouteId(routeId);
   const page = getPageByRouteId(normalizedRouteId);
   const contract = getPageContract(normalizedRouteId);
+  const renderer = getPageRenderer(normalizedRouteId);
 
   return {
     routeId: normalizedRouteId,
     page,
     contract,
+    renderer,
     isRegistered: Boolean(page),
     isLegacy: !page,
     legacyRenderer: contract?.legacyRenderer || null,
@@ -22,4 +24,8 @@ export function routeHasPageModule(routeId) {
 
 export function routeUsesLegacyRenderer(routeId) {
   return resolveAppPage(routeId).isLegacy;
+}
+
+export function resolvePageRenderer(routeId) {
+  return resolveAppPage(routeId).renderer;
 }
