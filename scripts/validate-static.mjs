@@ -4,6 +4,7 @@ const requiredFiles = [
   'index.html',
   'login.html',
   'app.html',
+  'favicon.svg',
   'src/styles.css',
   'src/app-product-polish.css',
   'src/app-layout-hotfix.css',
@@ -27,6 +28,7 @@ await Promise.all(requiredFiles.map((file) => access(file)));
 const html = await readFile('index.html', 'utf8');
 const login = await readFile('login.html', 'utf8');
 const cabinet = await readFile('app.html', 'utf8');
+const favicon = await readFile('favicon.svg', 'utf8');
 const css = await readFile('src/styles.css', 'utf8');
 const productPolishCss = await readFile('src/app-product-polish.css', 'utf8');
 const layoutHotfixCss = await readFile('src/app-layout-hotfix.css', 'utf8');
@@ -46,6 +48,9 @@ const checks = [
   ['root mount point', html.includes('id="app"')],
   ['login page', login.includes('data-page="login"')],
   ['cabinet page', cabinet.includes('data-page="app"')],
+  ['favicon asset', favicon.includes('<svg') && favicon.includes('DirectPilot AI')],
+  ['favicon links', html.includes('/favicon.svg') && login.includes('/favicon.svg') && cabinet.includes('/favicon.svg')],
+  ['theme color meta', html.includes('theme-color') && login.includes('theme-color') && cabinet.includes('theme-color')],
   ['stylesheet link', html.includes('src/styles.css')],
   ['product polish stylesheet', cabinet.includes('src/app-product-polish.css') && productPolishCss.includes('Product polish layer')],
   ['layout hotfix stylesheet', cabinet.includes('src/app-layout-hotfix.css') && layoutHotfixCss.includes('Hotfix for cabinet layout')],
