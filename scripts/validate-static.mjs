@@ -10,6 +10,7 @@ const requiredFiles = [
   'src/app-layout-hotfix.css',
   'src/app/routes.js',
   'src/app/router.js',
+  'src/app/page-router.js',
   'src/app/state.js',
   'src/app/hash-route-bridge.js',
   'src/pages/index.js',
@@ -41,6 +42,7 @@ const productPolishCss = await readFile('src/app-product-polish.css', 'utf8');
 const layoutHotfixCss = await readFile('src/app-layout-hotfix.css', 'utf8');
 const appRoutes = await readFile('src/app/routes.js', 'utf8');
 const appRouter = await readFile('src/app/router.js', 'utf8');
+const appPageRouter = await readFile('src/app/page-router.js', 'utf8');
 const appState = await readFile('src/app/state.js', 'utf8');
 const hashRouteBridge = await readFile('src/app/hash-route-bridge.js', 'utf8');
 const pagesRegistry = await readFile('src/pages/index.js', 'utf8');
@@ -73,12 +75,13 @@ const checks = [
   ['layout hotfix stylesheet', cabinet.includes('src/app-layout-hotfix.css') && layoutHotfixCss.includes('Hotfix for cabinet layout')],
   ['app routes registry', appRoutes.includes('APP_ROUTES') && appRoutes.includes('DEFAULT_ROUTE_ID') && appRoutes.includes('normalizeRouteId')],
   ['app router foundation', appRouter.includes('currentHashRoute') && appRouter.includes('navigateToRoute') && appRouter.includes('onRouteChange')],
+  ['app page router', appPageRouter.includes('resolveAppPage') && appPageRouter.includes('getPageByRouteId') && appPageRouter.includes('routeUsesLegacyRenderer')],
   ['app state foundation', appState.includes('getAppState') && appState.includes('setSelectedClientId') && appState.includes('directpilot:state-change')],
-  ['hash route bridge', hashRouteBridge.includes('navigateLegacyAppToRoute') && hashRouteBridge.includes('setRouteId')],
+  ['hash route bridge', hashRouteBridge.includes('resolveAppPage') && hashRouteBridge.includes('markRouteResolution') && hashRouteBridge.includes('data-page-module')],
   ['hash route bridge before main', bridgeIndex !== -1 && mainIndex !== -1 && bridgeIndex < mainIndex],
   ['pages registry', pagesRegistry.includes('APP_PAGES') && pagesRegistry.includes('PAGE_CONTRACTS') && pagesRegistry.includes('getPageByRouteId')],
   ['dashboard page contract', dashboardPage.includes('DASHBOARD_PAGE_ID') && dashboardPage.includes('dashboardPageContract') && dashboardPage.includes('renderDashboard')],
-  ['frontend architecture docs', frontendArchitecture.includes('page-module architecture') && frontendArchitecture.includes('pages registry')],
+  ['frontend architecture docs', frontendArchitecture.includes('page-router.js') && frontendArchitecture.includes('data-route-mode')],
   ['landing module script', html.includes('type="module"') && html.includes('src/main.js')],
   ['login module script', login.includes('type="module"') && login.includes('src/login.js')],
   ['cabinet module scripts', cabinet.includes('type="module"') && cabinet.includes('src/main.js') && cabinet.includes('src/business_context_autofill.js')],
