@@ -1,3 +1,6 @@
+import { apiFetch, escapeHtml } from './core/api.js';
+import { getCurrentEmail } from './core/storage.js';
+
 const WORDSTAT_AI_QUICK_QUESTIONS = [
   'Сделай краткий вывод по спросу: что растёт, что падает и что важно проверить?',
   'Какие фразы лучше использовать для рекламы, а какие для SEO?',
@@ -11,25 +14,8 @@ const CUSTOM_MODEL_VALUE = '__custom_openrouter_model__';
 
 const wordstatAiState = { messages: [], loading: false };
 
-function resolveApiBase() {
-  const custom = window.localStorage.getItem('directpilot_api_base')?.trim();
-  if (custom) return custom.replace(/\/$/, '');
-  const { hostname, origin } = window.location;
-  if (hostname === 'localhost' || hostname === '127.0.0.1') return 'http://localhost:8000/api/v1';
-  if (hostname === 'maximusb93.github.io') return 'https://directpilot-ai.vercel.app/api/v1';
-  return `${origin}/api/v1`;
-}
-
-function getSessionToken() {
-  return window.localStorage.getItem('directpilot_session') || '';
-}
-
-function getCurrentEmail() {
-  return (window.localStorage.getItem('directpilot_email') || '').trim().toLowerCase();
-}
-
 function scopedStorageKey(key) {
-  const email = getCurrentEmail();
+  const email = getCurrentEmail().trim().toLowerCase();
   return email ? `${key}_${email}` : key;
 }
 
@@ -43,30 +29,6 @@ function getSelectedAiSettings() {
   } catch {
     return { model: null, ai_preset: null, max_tokens: 2500 };
   }
-}
-
-async function apiFetch(path, options = {}) {
-  const headers = new Headers(options.headers || {});
-  const token = getSessionToken();
-  if (token) headers.set('Authorization', `Bearer ${token}`);
-  if (options.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
-  const response = await fetch(`${resolveApiBase()}${path}`, { ...options, headers });
-  if (response.status === 401) {
-    localStorage.removeItem('directpilot_session');
-    localStorage.removeItem('directpilot_email');
-    window.location.href = 'login.html';
-    throw new Error('Authentication required');
-  }
-  return response;
-}
-
-function escapeHtml(value) {
-  return String(value ?? '')
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#039;');
 }
 
 function readStoredWordstatPayload() {
