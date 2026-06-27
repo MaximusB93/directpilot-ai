@@ -119,37 +119,36 @@ let businessContextStatus = '';
 let businessContextSaving = false;
 let businessContextDraft = null;
 const CUSTOM_MODEL_VALUE = aiStore.CUSTOM_MODEL_VALUE;
-let aiStatus = { models: [], configured: false, message: 'Статус OpenRouter ещё не загружен.' };
-let selectedAiModel = 'openrouter/auto';
-let customAiModel = 'openai/gpt-4o';
-let selectedAiPreset = 'economy';
-let aiMaxTokensMode = 'compact';
-let aiCompactContext = true;
-let aiToolResultsMode = 'summary';
-let aiChatHistoryLimit = 3;
-let aiSearchQueryLimit = '20';
-let aiLoading = false;
-let aiResult = null;
-let aiError = '';
-let aiPromptDebug = null;
-let aiPromptDebugLoading = false;
-let aiPromptDebugError = '';
-let aiRecommendationsLoading = false;
-let aiRecommendationsError = '';
-let clientAiRecommendations = null;
-let aiMemoryStatus = '';
-let aiChatMessages = [
-  {
-    role: 'assistant',
-    content: 'Здравствуйте! Я AI-аналитик DirectPilot. Спросите про Директ, Метрику, CPA, цели или рекомендации — я соберу данные через MCP-инструменты и отвечу по контексту.',
-  },
-];
-let aiChatInput = 'Почему растёт CPA и что проверить в Яндекс.Метрике?';
-let aiChatLoading = false;
-let aiChatError = '';
-let aiChatErrorDetails = null;
-let aiChatToolTraces = [];
-let aiChatSelectedCampaignName = '';
+const initialAiModelState = aiStore.createInitialAiModelState();
+const initialAiChatState = aiStore.createInitialAiChatState();
+const initialAiGenerationState = aiStore.createInitialAiGenerationState();
+
+let aiStatus = initialAiModelState.status;
+let selectedAiModel = initialAiModelState.model;
+let customAiModel = initialAiModelState.customModel;
+let selectedAiPreset = initialAiModelState.preset;
+let aiMaxTokensMode = initialAiModelState.maxTokensMode;
+let aiCompactContext = initialAiModelState.compactContext;
+let aiToolResultsMode = initialAiModelState.toolResultsMode;
+let aiChatHistoryLimit = initialAiModelState.chatHistoryLimit;
+let aiSearchQueryLimit = initialAiModelState.searchQueryLimit;
+let aiLoading = initialAiGenerationState.loading;
+let aiResult = initialAiGenerationState.result;
+let aiError = initialAiGenerationState.error;
+let aiPromptDebug = initialAiGenerationState.promptDebug;
+let aiPromptDebugLoading = initialAiGenerationState.promptDebugLoading;
+let aiPromptDebugError = initialAiGenerationState.promptDebugError;
+let aiRecommendationsLoading = initialAiGenerationState.recommendationsLoading;
+let aiRecommendationsError = initialAiGenerationState.recommendationsError;
+let clientAiRecommendations = initialAiGenerationState.clientRecommendations;
+let aiMemoryStatus = initialAiGenerationState.memoryStatus;
+let aiChatMessages = initialAiChatState.messages.map((message) => ({ ...message }));
+let aiChatInput = initialAiChatState.input;
+let aiChatLoading = initialAiChatState.loading;
+let aiChatError = initialAiChatState.error;
+let aiChatErrorDetails = initialAiChatState.errorDetails;
+let aiChatToolTraces = initialAiChatState.toolTraces;
+let aiChatSelectedCampaignName = initialAiChatState.selectedCampaignName;
 let pendingEditableFocusTarget = null;
 
 function storageKey(key) {
@@ -629,52 +628,54 @@ function campaignOptions() {
   return (perfSummary?.campaigns || []).map((campaign) => campaign.name).filter(Boolean);
 }
 
-function activeAiModel() {
-  return selectedAiModel === CUSTOM_MODEL_VALUE ? customAiModel.trim() || 'openrouter/auto' : selectedAiModel;
-}
-
-function activeAiBudget() {
-  return selectedAiPreset === 'deep'
-    ? { maxTokens: 9000, targetContextTokens: 18000, includeRawToolResults: true }
-    : selectedAiPreset === 'balanced'
-      ? { maxTokens: 5000, targetContextTokens: 9000, includeRawToolResults: aiToolResultsMode === 'raw' }
-      : { maxTokens: 2500, targetContextTokens: 3500, includeRawToolResults: false };
-}
-
-function aiChatRequestPayload(message) {
-  const budget = activeAiBudget();
+function currentAiModelState() {
   return {
-    client_id: selectedClientId || null,
-    message,
-    model: activeAiModel(),
-    max_tokens: budget.maxTokens,
-    target_context_tokens: aiMaxTokensMode === 'deep' ? 18000 : budget.targetContextTokens,
-    include_raw_tool_results: aiToolResultsMode === 'raw' || budget.includeRawToolResults,
-    compact_context: aiCompactContext,
-    include_business_context: true,
-    business_context: businessContextForAi(),
-    campaign_name: aiChatSelectedCampaignName || null,
-    search_query_limit: Number(aiSearchQueryLimit) || 20,
-    conversation: aiChatMessages.slice(-Number(aiChatHistoryLimit || 3)).map((messageItem) => ({
-      role: messageItem.role,
-      content: messageItem.content,
-    })),
+    status: aiStatus,
+    model: selectedAiModel,
+    customModel: customAiModel,
+    preset: selectedAiPreset,
+    maxTokensMode: aiMaxTokensMode,
+    compactContext: aiCompactContext,
+    toolResultsMode: aiToolResultsMode,
+    chatHistoryLimit: aiChatHistoryLimit,
+    searchQueryLimit: aiSearchQueryLimit,
   };
 }
 
-function aiPromptDebugParams() {
-  const params = new URLSearchParams({
-    preset: selectedAiPreset,
-    max_tokens_mode: aiMaxTokensMode,
-    compact_context: aiCompactContext ? 'true' : 'false',
-    tool_results_mode: aiToolResultsMode,
-    chat_history_limit: String(aiChatHistoryLimit),
-    search_query_limit: aiSearchQueryLimit || '20',
-    include_business_context: 'true',
-  });
-  if (aiChatSelectedCampaignName) params.set('campaign_name', aiChatSelectedCampaignName);
-  return params;
+function currentAiChatState() {
+  return {
+    messages: aiChatMessages,
+    input: aiChatInput,
+    loading: aiChatLoading,
+    error: aiChatError,
+    errorDetails: aiChatErrorDetails,
+    toolTraces: aiChatToolTraces,
+    selectedCampaignName: aiChatSelectedCampaignName,
+  };
 }
+
+function activeAiModel() {
+  return aiStore.activeAiModel(currentAiModelState());
+}
+
+function activeAiBudget() {
+  return aiStore.activeAiBudget(currentAiModelState());
+}
+
+function aiChatRequestPayload(message) {
+  return aiStore.createAiChatRequestPayload({
+    clientId: selectedClientId,
+    message,
+    modelState: currentAiModelState(),
+    chatState: currentAiChatState(),
+    businessContext: businessContextForAi(),
+  });
+}
+
+function aiPromptDebugParams() {
+  return aiStore.createAiPromptDebugParams(currentAiModelState(), aiChatSelectedCampaignName);
+}
+
 
 async function loadAiPromptDebug() {
   if (!selectedClientId) {
@@ -734,7 +735,7 @@ async function requestAiRecommendations() {
 async function sendAiChatMessage(message) {
   const text = String(message || aiChatInput || '').trim();
   if (!text || aiChatLoading) return;
-  aiChatMessages = [...aiChatMessages, { role: 'user', content: text }];
+  aiChatMessages = aiStore.addAiChatMessage(currentAiChatState(), { role: 'user', content: text }).messages;
   aiChatInput = '';
   aiChatLoading = true;
   aiChatError = '';
@@ -742,7 +743,7 @@ async function sendAiChatMessage(message) {
   render();
   try {
     const payload = await aiService.requestAiChat(aiChatRequestPayload(text));
-    aiChatMessages = [...aiChatMessages, { role: 'assistant', content: payload.answer || 'Нет ответа.' }];
+    aiChatMessages = aiStore.addAiChatMessage(currentAiChatState(), { role: 'assistant', content: payload.answer || 'Нет ответа.' }).messages;
     aiChatToolTraces = payload.tool_traces || [];
     if (payload.business_context_memory_note) {
       await saveAiMemoryNote(payload.business_context_memory_note);
@@ -752,7 +753,7 @@ async function sendAiChatMessage(message) {
     aiChatError = error.message || 'AI-чат не вернул ответ';
     aiChatErrorDetails = payload;
     if (payload.retry_suggestion) {
-      aiChatMessages = [...aiChatMessages, { role: 'assistant', content: `Не смог собрать ответ: ${payload.retry_suggestion}` }];
+      aiChatMessages = aiStore.addAiChatMessage(currentAiChatState(), { role: 'assistant', content: `Не смог собрать ответ: ${payload.retry_suggestion}` }).messages;
     }
   } finally {
     aiChatLoading = false;
@@ -777,9 +778,13 @@ async function saveAiMemoryNote(note) {
 
 async function loadAiStatus() {
   try {
-    aiStatus = await aiService.fetchOpenRouterStatus();
+    aiStatus = aiStore.normalizeAiStatus(await aiService.fetchOpenRouterStatus());
   } catch (error) {
-    aiStatus = { models: [], configured: false, message: 'Backend недоступен, OpenRouter не проверен.' };
+    aiStatus = aiStore.normalizeAiStatus({
+      configured: false,
+      models: [],
+      message: 'Backend недоступен, OpenRouter не проверен.',
+    });
   }
   render();
 }
@@ -993,7 +998,6 @@ async function loadOptimizationActions(force = false) {
     render();
   }
 }
-
 
 async function createOptimizationDraftsFromPlan() {
   if (!selectedClientId || optimizationActionsLoading) return;
@@ -1993,7 +1997,6 @@ app.addEventListener('click', async (event) => {
     }
   }
 });
-
 async function loadIntegrationStatus() {
   try {
     const payload = await integrationsService.fetchYandexStatus();
