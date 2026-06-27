@@ -141,21 +141,30 @@ renderBusinessContextContent
 
 The business context content composer is registered in `PAGE_CONTENT_RENDERERS`, and `src/main.js` now routes `renderBusinessContext()` through `renderBusinessContextContent(context)`. The dashboard still uses `renderBusinessContextPanel(compact)` as an injected legacy-compatible panel wrapper.
 
+`src/pages/integrations.js` now exposes `renderIntegrationsContent(context)` and these pure HTML builder slices:
+
+```text
+renderIntegrationsIntro
+renderYandexConnectPanel
+renderClientYandexAccountPanel
+renderIntegrationsContent
+```
+
+The integrations content composer is registered in `PAGE_CONTENT_RENDERERS`, and `src/main.js` now routes `renderIntegrations()` through `renderIntegrationsContent(context)`. The event handlers still live in `src/main.js`, so existing `data-integration`, `data-refresh-client-yandex`, `data-bind-yandex-account` and `data-unbind-yandex` actions keep working.
+
 Other page modules are currently contract-only. They document required context and legacy renderer names before we move their markup.
 
 Current contract-only modules:
 
 ```text
-integrations
 ai
 optimization
 ```
 
 Recommended extraction order:
 
-1. `integrations` — medium risk, includes OAuth/account binding panels.
-2. `optimization` — higher risk, contains filters, previews and action state.
-3. `ai` — highest state density: chat, model settings, prompt inspector, tool traces and recommendations.
+1. `optimization` — higher risk, contains filters, previews and action state.
+2. `ai` — highest state density: chat, model settings, prompt inspector, tool traces and recommendations.
 
 ## Service layer
 
@@ -209,8 +218,11 @@ main ai chat store delegation
 main clients content wiring
 main campaign store wiring
 main business context content wiring
+main integrations content wiring
 business context content composer
 business context content registry
+integrations content composer
+integrations content registry
 ```
 
 When a new extraction is wired, add a static check in the same or next commit. The validator is intentionally simple string matching. Primitive, yes. Effective enough to keep accidental regressions from crawling into production like raccoons in a ventilation shaft.
@@ -254,11 +266,12 @@ campaign store scaffolded and wired
 Dashboard content composer wired
 Clients content composer wired
 Business Context content composer wired
+Integrations content composer wired
 static validator guards service/store/page wiring
 ```
 
 Next iteration:
 
 ```text
-Extract `integrations` into `src/pages/integrations.js` content composer and leave `src/main.js` as a thin wrapper.
+Extract `optimization` into `src/pages/optimization.js` content composer and leave `src/main.js` as a thin wrapper.
 ```
