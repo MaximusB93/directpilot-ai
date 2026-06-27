@@ -44,6 +44,7 @@ src/stores/
   index.js
   client-store.js
   ai-store.js
+  campaign-store.js
 
 src/components/
   button.js
@@ -128,9 +129,25 @@ renderClientGrid
 renderClientsContent
 ```
 
-The clients page content composer is registered in `PAGE_CONTENT_RENDERERS`, but `src/main.js` still needs one controlled patch to route `renderClients()` through it.
+The clients page content composer is registered in `PAGE_CONTENT_RENDERERS`, and `src/main.js` now routes `renderClients()` through `renderClientsContent(context)`.
 
 Other page modules are currently contract-only. They document required context and legacy renderer names before we move their markup.
+
+Current contract-only modules:
+
+```text
+business-context
+integrations
+ai
+optimization
+```
+
+Recommended extraction order:
+
+1. `business-context` — low risk, mostly pure form markup and copy helpers.
+2. `integrations` — medium risk, includes OAuth/account binding panels.
+3. `optimization` — higher risk, contains filters, previews and action state.
+4. `ai` — highest state density: chat, model settings, prompt inspector, tool traces and recommendations.
 
 ## Service layer
 
@@ -153,11 +170,39 @@ ai-service.js                 OpenRouter status, generation, chat, recommendatio
 Store scaffolds now exist for:
 
 ```text
-client-store.js   selected client id, selected client resolution, localStorage key helpers
-ai-store.js       initial AI chat/model state constants
+client-store.js     selected client id, selected client resolution, localStorage key helpers
+ai-store.js         initial AI chat/model/generation state, AI budget helpers, chat payload builders
+campaign-store.js   campaign names, campaign ids, performance summary campaign options and filtering helpers
 ```
 
 They are intentionally small until `main.js` stops owning all mutable state.
+
+Current wiring:
+
+```text
+client-store.js     wired into selected client loading/saving and client normalization
+ai-store.js         wired into initial AI state, AI helper delegation, chat payloads and AI status normalization
+campaign-store.js   wired into `campaignOptions()` through `campaignsStore.getCampaignOptions(perfSummary)`
+```
+
+## Static validation
+
+`scripts/validate-static.mjs` protects the migration from quiet regressions.
+
+Important checks:
+
+```text
+main no inline apiFetch calls
+main no duplicated async
+main ai store import
+main ai store initial state wiring
+main ai store helper delegation
+main ai chat store delegation
+main clients content wiring
+main campaign store wiring
+```
+
+When a new extraction is wired, add a static check in the same or next commit. The validator is intentionally simple string matching. Primitive, yes. Effective enough to keep accidental regressions from crawling into production like raccoons in a ventilation shaft.
 
 ## Migration rule
 
@@ -178,19 +223,30 @@ Preferred sequence:
 11. Add service and store scaffolds.
 12. Wire `src/main.js` `renderDashboard` to `renderDashboardContent` in one controlled patch.
 13. Replace inline API functions in `src/main.js` with service imports.
-14. Update static validation to guard service-layer wiring.
-15. Add clients page content composer.
-16. Wire `src/main.js` `renderClients` to `renderClientsContent` in one controlled patch.
-17. Move remaining dashboard panels behind the page module in smaller slices.
-18. Extract integrations page.
-19. Extract business context page.
-20. Extract AI assistant page.
-21. Extract optimization page.
-22. Extract Wordstat last, because it is the most sensitive and stateful area.
+14. Wire `client-store.js`, `ai-store.js` and `campaign-store.js` into `src/main.js` in small controlled patches.
+15. Wire `renderClients()` to `renderClientsContent(context)`.
+16. Add validator checks after each migration step.
+17. Move `business-context` page markup into its page content composer.
+18. Move `integrations` page markup into its page content composer.
+19. Move `optimization` page markup after action filters/previews are stable.
+20. Move `ai` page last because it has the densest state and request flow.
 
-## What not to do
+## Current progress snapshot
 
-- Do not create separate HTML files for every cabinet tab.
-- Do not add React/Vite until the static MVP structure is stable.
-- Do not add new CSS hotfix files for routine styling; move new reusable styles into a planned `src/styles/` structure.
-- Do not mix API calls, render functions, localStorage and event listeners inside the same new module unless it is temporary legacy code.
+Completed:
+
+```text
+service layer wired
+client store wired
+ai store wired
+campaign store scaffolded and wired
+Dashboard content composer wired
+Clients content composer wired
+static validator guards service/store/page wiring
+```
+
+Next iteration:
+
+```text
+Extract `business-context` into `src/pages/business-context.js` content composer and leave `src/main.js` as a thin wrapper.
+```
