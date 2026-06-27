@@ -1,6 +1,5 @@
 import {
   API_BASE,
-  apiFetch,
   escapeHtml,
   saveApiBase,
 } from './core/api.js';
@@ -11,7 +10,6 @@ import {
   saveSession,
   scopedStorageKey,
 } from './core/storage.js';
-import { createClientId } from './core/ids.js';
 import { requestEmailCode, verifyEmailCode } from './core/session-api.js';
 import { resolvePageContentRenderer, resolvePageRenderer } from './app/page-router.js';
 import * as aiService from './services/ai-service.js';
@@ -158,6 +156,8 @@ function storageKey(key) {
   return scopedStorageKey(key);
 }
 
+const clientsStore = clientStore.createClientStore(storageKey);
+
 function loadSelectedClientId() {
   return clientStore.loadSelectedClientId(storageKey, accountClients[0]?.id || '');
 }
@@ -166,71 +166,24 @@ function saveSelectedClientId(clientId) {
   clientStore.saveSelectedClientId(storageKey, clientId);
 }
 
-function loadStoredClients() {
-  try {
-    const raw = window.localStorage.getItem(storageKey('directpilot_clients'));
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch (error) {
-    return [];
-  }
-}
-
-function saveStoredClients() {
-  try {
-    window.localStorage.setItem(storageKey('directpilot_clients'), JSON.stringify(accountClients));
-  } catch (error) {
-    console.warn('Failed to persist clients locally', error);
-  }
-}
-
-function normalizeBackendClient(client) {
-  return {
-    id: client.id,
-    name: client.name,
-    segment: client.segment || 'Клиент',
-    directLogin: client.direct_login || 'Не подключен',
-    metricaCounter: client.metrica_counter || 'Не подключен',
-    yandexAccountId: client.yandex_account_id || '',
-    targetCpa: client.target_cpa ?? '',
-    mainGoalId: client.main_goal_id || '',
-    conversionGoalIds: client.conversion_goal_ids || client.main_goal_id || '',
-    notes: client.notes || '',
-    lastSync: client.last_sync || '—',
-    backend: true,
-  };
-}
-
-function clientPayloadFromForm(name, directLogin, metricaCounter) {
-  return {
-    id: createClientId(name || 'client'),
-    name,
-    directLogin: directLogin || 'Не подключен',
-    metricaCounter: metricaCounter || 'Не подключен',
-    lastSync: '—',
-    segment: 'Новый клиент',
-  };
-}
-
 async function loadClientsFromApi(force = false) {
   if (page !== 'app') return;
   if (backendClientsLoading || (backendClientsLoaded && !force)) return;
   backendClientsLoading = true;
   try {
     const payload = await clientsService.fetchClients();
-    accountClients = payload.map(normalizeBackendClient);
+    accountClients = payload.map(clientsStore.normalizeBackendClient);
     backendClientsLoaded = true;
     backendClientsAvailable = true;
     backendClientsStatus = accountClients.length ? 'Клиенты загружены из базы данных.' : 'В базе пока нет клиентов. Создайте первого клиента.';
     const storedSelected = loadSelectedClientId();
     selectedClientId = accountClients.find((client) => client.id === storedSelected)?.id || accountClients[0]?.id || '';
     if (selectedClientId) saveSelectedClientId(selectedClientId);
-    saveStoredClients();
+    clientsStore.saveStoredClients(accountClients);
     if (!businessContextLoading) businessContext = null;
   } catch (error) {
     if (!backendClientsLoaded) {
-      const storedClients = loadStoredClients();
+      const storedClients = clientsStore.loadStoredClients();
       if (storedClients.length) {
         accountClients = storedClients;
         selectedClientId = accountClients.find((client) => client.id === loadSelectedClientId())?.id || accountClients[0]?.id || '';
@@ -245,7 +198,7 @@ async function loadClientsFromApi(force = false) {
 }
 
 
-const localClients = loadStoredClients();
+const localClients = clientsStore.loadStoredClients();
 if (localClients.length) {
   accountClients = localClients;
 }
@@ -256,7 +209,7 @@ if (!accountClients.find((client) => client.id === selectedClientId)) {
 if (selectedClientId) saveSelectedClientId(selectedClientId);
 
 function currentClient() {
-  return accountClients.find((client) => client.id === selectedClientId) || accountClients[0] || {};
+  return clientsStore.getCurrentClient(accountClients, selectedClientId);
 }
 
 function currentClientName() {
@@ -276,9 +229,6 @@ function formatPercent(value) {
   return `${value.toFixed(1).replace('.', ',')}%`;
 }
 
-function clientSyncPath(clientId) {
-  return `/clients/${clientId}/sync`;
-}
 
 function canRunSync() {
   const client = currentClient();
@@ -1401,51 +1351,29 @@ function renderDashboardViaPageModule() {
 }
 
 function renderClients() {
-  const selected = currentClient();
-  const hasSelectedClient = Boolean(selected.id);
-  return renderShell(`
-    <div class="pageIntro"><span class="eyebrow">👥 Клиенты</span><h2>Клиенты как отдельные сущности</h2><p>Создайте отдельную карточку клиента для каждого аккаунта/проекта и укажите логин Яндекс.Директа и счётчик Метрики.</p></div>
-    <section class="panel clientConnectPanel">
-      <div>
-        <h3>Добавить клиента</h3>
-        <p>При доступном backend клиенты сохраняются в API и загружаются оттуда при каждом обновлении страницы. Если backend недоступен — включается fallback режим c localStorage.</p>
-      </div>
-      <form class="clientConnectForm" data-client-form>
-        <input name="name" value="${escapeHtml(clientDraftName)}" placeholder="Название клиента" autocomplete="organization" required />
-        <input name="directLogin" value="${escapeHtml(clientDraftDirectLogin)}" placeholder="Логин Яндекс.Директа" autocomplete="off" />
-        <input name="metricaCounter" value="${escapeHtml(clientDraftMetricaCounter)}" placeholder="ID счётчика Метрики" inputmode="numeric" autocomplete="off" />
-        <button class="approveButton" type="submit">Добавить клиента</button>
-      </form>
-      <div class="authStatus integrationStatus">${escapeHtml(backendClientsStatus)}</div>
-      ${clientFormStatus ? `<div class="authStatus integrationStatus">${escapeHtml(clientFormStatus)}</div>` : ''}
-    </section>
-    ${hasSelectedClient ? `
-      <section class="panel clientConnectPanel">
-        <div>
-          <h3>Настройки клиента «${escapeHtml(selected.name)}»</h3>
-          <p>Настройки относятся только к выбранному клиенту. Привязка Яндекса настраивается отдельно во вкладке интеграций.</p>
-        </div>
-        <form class="clientSettingsForm" data-client-settings-form>
-          <div class="settingsGrid">
-            <label>Название<input name="name" value="${escapeHtml(clientSettingsDraft?.name ?? selected.name ?? '')}" required /></label>
-            <label>Логин Директа<input name="directLogin" value="${escapeHtml(clientSettingsDraft?.directLogin ?? selected.directLogin ?? '')}" /></label>
-            <label>ID счётчика Метрики<input name="metricaCounter" value="${escapeHtml(clientSettingsDraft?.metricaCounter ?? selected.metricaCounter ?? '')}" /></label>
-            <label>Целевой CPA<input name="targetCpa" value="${escapeHtml(String(clientSettingsDraft?.targetCpa ?? selected.targetCpa ?? ''))}" inputmode="numeric" /></label>
-            <label>Основная цель<input name="mainGoalId" value="${escapeHtml(clientSettingsDraft?.mainGoalId ?? selected.mainGoalId ?? '')}" /></label>
-            <label>Цели конверсий<input name="conversionGoalIds" value="${escapeHtml(clientSettingsDraft?.conversionGoalIds ?? selected.conversionGoalIds ?? '')}" placeholder="12345,67890" /></label>
-          </div>
-          <label class="fullWidthLabel">Заметки<textarea name="notes" placeholder="Что важно знать AI о клиенте">${escapeHtml(clientSettingsDraft?.notes ?? selected.notes ?? '')}</textarea></label>
-          <div class="heroActions">
-            <button class="approveButton" type="submit" ${clientSettingsSaving ? 'disabled' : ''}>${clientSettingsSaving ? 'Сохраняем...' : 'Сохранить настройки'}</button>
-            <button class="secondaryButton" type="button" data-reset-client-settings>Сбросить</button>
-            <button class="dangerButton" type="button" data-delete-client="${escapeHtml(selected.id)}">Удалить клиента</button>
-          </div>
-        </form>
-        ${clientSettingsStatus ? `<div class="authStatus integrationStatus">${escapeHtml(clientSettingsStatus)}</div>` : ''}
-      </section>
-    ` : ''}
-    <div class="clientGrid">${accountClients.map((client) => `<article class="clientCard ${client.id === selectedClientId ? 'selected' : ''}"><span>${escapeHtml(client.segment || 'Клиент')}</span><h3>${escapeHtml(client.name)}</h3><p>Direct: ${escapeHtml(client.directLogin || 'Не подключен')}</p><p>Метрика: ${escapeHtml(client.metricaCounter || 'Не подключен')}</p><button data-select-client="${escapeHtml(client.id)}">${client.id === selectedClientId ? 'Выбран' : 'Выбрать'}</button></article>`).join('')}</div>
-  `);
+  const contentRenderer = resolvePageContentRenderer('clients');
+
+  if (typeof contentRenderer !== 'function') {
+    return renderShell(`
+      <div class="pageIntro"><span class="eyebrow">👥 Клиенты</span><h2>Клиенты временно недоступны</h2><p>Модуль клиентов не зарегистрирован. Проверьте src/pages/index.js.</p></div>
+    `);
+  }
+
+  return renderShell(contentRenderer({
+    selectedClientId,
+    accountClients,
+    backendClientsAvailable,
+    backendClientsStatus,
+    clientFormStatus,
+    clientDraftName,
+    clientDraftDirectLogin,
+    clientDraftMetricaCounter,
+    selectedClient: currentClient(),
+    clientSettingsDraft,
+    clientSettingsSaving,
+    clientSettingsStatus,
+    escapeHtml,
+  }));
 }
 
 function renderIntegrations() {
@@ -1861,7 +1789,7 @@ app.addEventListener('submit', async (event) => {
     const directLogin = formData.get('directLogin')?.toString().trim();
     const metricaCounter = formData.get('metricaCounter')?.toString().trim();
     if (!name) return;
-    const newClient = clientPayloadFromForm(name, directLogin, metricaCounter);
+    const newClient = clientsStore.createClientFromForm(name, directLogin, metricaCounter);
     clientFormStatus = 'Сохраняем клиента...';
     render();
     try {
@@ -1873,7 +1801,7 @@ app.addEventListener('submit', async (event) => {
           metricaCounter: newClient.metricaCounter,
           segment: newClient.segment,
         });
-        accountClients = [...accountClients, normalizeBackendClient(payload)];
+        accountClients = [...accountClients, clientsStore.normalizeBackendClient(payload)];
         clientFormStatus = 'Клиент сохранён в базе данных.';
       } else {
         accountClients = [...accountClients, newClient];
@@ -1881,7 +1809,7 @@ app.addEventListener('submit', async (event) => {
       }
       selectedClientId = newClient.id;
       saveSelectedClientId(selectedClientId);
-      saveStoredClients();
+      clientsStore.saveStoredClients(accountClients);
       clientDraftName = '';
       clientDraftDirectLogin = '';
       clientDraftMetricaCounter = '';
@@ -1889,7 +1817,7 @@ app.addEventListener('submit', async (event) => {
       accountClients = [...accountClients, newClient];
       selectedClientId = newClient.id;
       saveSelectedClientId(selectedClientId);
-      saveStoredClients();
+      clientsStore.saveStoredClients(accountClients);
       clientFormStatus = `${error.message}. Клиент сохранён локально.`;
     }
     render();
@@ -2092,7 +2020,7 @@ async function loadClientYandexIntegration(force = false) {
     clientYandexStatus = payload.selected_account ? 'Аккаунт Яндекса привязан к клиенту.' : 'Выберите аккаунт Яндекса для клиента.';
     if (payload.selected_account?.id) {
       accountClients = accountClients.map((client) => client.id === selectedClientId ? { ...client, yandexAccountId: payload.selected_account.id } : client);
-      saveStoredClients();
+      clientsStore.saveStoredClients(accountClients);
     }
   } catch (error) {
     clientYandexStatus = error.message || 'Не удалось загрузить привязку Яндекса.';
@@ -2112,7 +2040,7 @@ async function bindClientYandexAccount(accountId) {
     const payload = await integrationsService.bindClientYandexIntegration(selectedClientId, accountId);
     clientYandexIntegration = payload;
     accountClients = accountClients.map((client) => client.id === selectedClientId ? { ...client, yandexAccountId: accountId } : client);
-    saveStoredClients();
+    clientsStore.saveStoredClients(accountClients);
     clientYandexStatus = 'Аккаунт Яндекса привязан к клиенту.';
   } catch (error) {
     clientYandexStatus = error.message || 'Не удалось привязать аккаунт.';
@@ -2132,7 +2060,7 @@ async function unbindClientYandexAccount() {
     const payload = await integrationsService.unbindClientYandexIntegration(selectedClientId);
     clientYandexIntegration = payload;
     accountClients = accountClients.map((client) => client.id === selectedClientId ? { ...client, yandexAccountId: '' } : client);
-    saveStoredClients();
+    clientsStore.saveStoredClients(accountClients);
     clientYandexStatus = 'Аккаунт отвязан от клиента.';
   } catch (error) {
     clientYandexStatus = error.message || 'Не удалось отвязать аккаунт.';
@@ -2183,20 +2111,20 @@ async function saveClientSettings(form) {
         conversion_goal_ids: draft.conversionGoalIds || null,
         notes: draft.notes || null,
       });
-      accountClients = accountClients.map((client) => client.id === selectedClientId ? normalizeBackendClient(payload) : client);
+      accountClients = accountClients.map((client) => client.id === selectedClientId ? clientsStore.normalizeBackendClient(payload) : client);
       clientSettingsStatus = 'Настройки клиента сохранены в базе.';
     } else {
       accountClients = accountClients.map((client) => client.id === selectedClientId ? { ...client, ...localUpdate } : client);
       clientSettingsStatus = 'Backend недоступен, настройки сохранены локально.';
     }
-    saveStoredClients();
+    clientsStore.saveStoredClients(accountClients);
     clientSettingsDraft = null;
     businessContext = null;
     perfSummary = null;
     optimizationPlan = null;
   } catch (error) {
     accountClients = accountClients.map((client) => client.id === selectedClientId ? { ...client, ...localUpdate } : client);
-    saveStoredClients();
+    clientsStore.saveStoredClients(accountClients);
     clientSettingsStatus = `${error.message}. Локальная копия обновлена.`;
   } finally {
     clientSettingsSaving = false;
@@ -2217,7 +2145,7 @@ async function deleteClient(clientId) {
     accountClients = accountClients.filter((client) => client.id !== clientId);
     selectedClientId = accountClients[0]?.id || '';
     if (selectedClientId) saveSelectedClientId(selectedClientId);
-    saveStoredClients();
+    clientsStore.saveStoredClients(accountClients);
     clientSettingsStatus = accountClients.length ? 'Клиент удалён.' : 'Клиент удалён. Создайте нового клиента.';
     activeView = 'clients';
   } catch (error) {
