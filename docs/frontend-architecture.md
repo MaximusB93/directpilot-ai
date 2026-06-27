@@ -131,12 +131,21 @@ renderClientsContent
 
 The clients page content composer is registered in `PAGE_CONTENT_RENDERERS`, and `src/main.js` now routes `renderClients()` through `renderClientsContent(context)`.
 
+`src/pages/business-context.js` now exposes `renderBusinessContextContent(context)` and these pure HTML builder slices:
+
+```text
+renderBusinessContextIntro
+renderBusinessContextPanel
+renderBusinessContextContent
+```
+
+The business context content composer is registered in `PAGE_CONTENT_RENDERERS`, and `src/main.js` now routes `renderBusinessContext()` through `renderBusinessContextContent(context)`. The dashboard still uses `renderBusinessContextPanel(compact)` as an injected legacy-compatible panel wrapper.
+
 Other page modules are currently contract-only. They document required context and legacy renderer names before we move their markup.
 
 Current contract-only modules:
 
 ```text
-business-context
 integrations
 ai
 optimization
@@ -144,10 +153,9 @@ optimization
 
 Recommended extraction order:
 
-1. `business-context` — low risk, mostly pure form markup and copy helpers.
-2. `integrations` — medium risk, includes OAuth/account binding panels.
-3. `optimization` — higher risk, contains filters, previews and action state.
-4. `ai` — highest state density: chat, model settings, prompt inspector, tool traces and recommendations.
+1. `integrations` — medium risk, includes OAuth/account binding panels.
+2. `optimization` — higher risk, contains filters, previews and action state.
+3. `ai` — highest state density: chat, model settings, prompt inspector, tool traces and recommendations.
 
 ## Service layer
 
@@ -200,6 +208,9 @@ main ai store helper delegation
 main ai chat store delegation
 main clients content wiring
 main campaign store wiring
+main business context content wiring
+business context content composer
+business context content registry
 ```
 
 When a new extraction is wired, add a static check in the same or next commit. The validator is intentionally simple string matching. Primitive, yes. Effective enough to keep accidental regressions from crawling into production like raccoons in a ventilation shaft.
@@ -242,11 +253,12 @@ ai store wired
 campaign store scaffolded and wired
 Dashboard content composer wired
 Clients content composer wired
+Business Context content composer wired
 static validator guards service/store/page wiring
 ```
 
 Next iteration:
 
 ```text
-Extract `business-context` into `src/pages/business-context.js` content composer and leave `src/main.js` as a thin wrapper.
+Extract `integrations` into `src/pages/integrations.js` content composer and leave `src/main.js` as a thin wrapper.
 ```
