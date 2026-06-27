@@ -23,7 +23,12 @@ import {
   integrationsPageContract,
   renderIntegrationsContent,
 } from './integrations.js';
-import { AI_ASSISTANT_PAGE_ID, aiAssistantPage, aiAssistantPageContract } from './ai-assistant.js';
+import {
+  AI_ASSISTANT_PAGE_ID,
+  aiAssistantPage,
+  aiAssistantPageContract,
+  renderAiAssistantContent,
+} from './ai-assistant.js';
 import {
   OPTIMIZATION_PAGE_ID,
   optimizationPage,
@@ -58,6 +63,7 @@ export const PAGE_CONTENT_RENDERERS = {
   [CLIENTS_PAGE_ID]: renderClientsContent,
   [BUSINESS_CONTEXT_PAGE_ID]: renderBusinessContextContent,
   [INTEGRATIONS_PAGE_ID]: renderIntegrationsContent,
+  [AI_ASSISTANT_PAGE_ID]: renderAiAssistantContent,
   [OPTIMIZATION_PAGE_ID]: renderOptimizationContent,
 };
 
