@@ -17,7 +17,12 @@ import {
   businessContextPageContract,
   renderBusinessContextContent,
 } from './business-context.js';
-import { INTEGRATIONS_PAGE_ID, integrationsPage, integrationsPageContract } from './integrations.js';
+import {
+  INTEGRATIONS_PAGE_ID,
+  integrationsPage,
+  integrationsPageContract,
+  renderIntegrationsContent,
+} from './integrations.js';
 import { AI_ASSISTANT_PAGE_ID, aiAssistantPage, aiAssistantPageContract } from './ai-assistant.js';
 import { OPTIMIZATION_PAGE_ID, optimizationPage, optimizationPageContract } from './optimization.js';
 
@@ -47,6 +52,7 @@ export const PAGE_CONTENT_RENDERERS = {
   [DASHBOARD_PAGE_ID]: renderDashboardContent,
   [CLIENTS_PAGE_ID]: renderClientsContent,
   [BUSINESS_CONTEXT_PAGE_ID]: renderBusinessContextContent,
+  [INTEGRATIONS_PAGE_ID]: renderIntegrationsContent,
 };
 
 export function getPageByRouteId(routeId) {
