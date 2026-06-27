@@ -27,3 +27,68 @@ export function ensureSelectedClientId(clients, selectedClientId) {
   }
   return clients[0]?.id || '';
 }
+
+// Extended client store (migration layer)
+
+import { createClientId } from '../core/ids.js';
+
+export function createClientStore(storageKey) {
+  function loadStoredClients() {
+    try {
+      const raw = window.localStorage.getItem(storageKey('directpilot_clients'));
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function saveStoredClients(clients) {
+    try {
+      window.localStorage.setItem(storageKey('directpilot_clients'), JSON.stringify(clients));
+    } catch (e) {
+      console.warn('Failed to save clients', e);
+    }
+  }
+
+  function normalizeBackendClient(client) {
+    return {
+      id: client.id,
+      name: client.name,
+      segment: client.segment || 'Клиент',
+      directLogin: client.direct_login || 'Не подключен',
+      metricaCounter: client.metrica_counter || 'Не подключен',
+      yandexAccountId: client.yandex_account_id || '',
+      targetCpa: client.target_cpa ?? '',
+      mainGoalId: client.main_goal_id || '',
+      conversionGoalIds: client.conversion_goal_ids || client.main_goal_id || '',
+      notes: client.notes || '',
+      lastSync: client.last_sync || '—',
+      backend: true,
+    };
+  }
+
+  function createClientFromForm(name, directLogin, metricaCounter) {
+    return {
+      id: createClientId(name || 'client'),
+      name,
+      directLogin: directLogin || 'Не подключен',
+      metricaCounter: metricaCounter || 'Не подключен',
+      lastSync: '—',
+      segment: 'Новый клиент',
+    };
+  }
+
+  function getCurrentClient(clients, selectedClientId) {
+    return clients.find(c => c.id === selectedClientId) || clients[0] || {};
+  }
+
+  return {
+    loadStoredClients,
+    saveStoredClients,
+    normalizeBackendClient,
+    createClientFromForm,
+    getCurrentClient,
+  };
+}
