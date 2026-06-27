@@ -1354,31 +1354,29 @@ function renderClients() {
   }));
 }
 
+function integrationsPageContext() {
+  return {
+    selectedClientId,
+    selectedClient: currentClient(),
+    integrationStatus,
+    clientYandexIntegration,
+    clientYandexStatus,
+    clientYandexLoading,
+    apiBaseDraft,
+    escapeHtml,
+  };
+}
+
 function renderIntegrations() {
-  const selectedClient = currentClient();
-  const accounts = integrationStatus.accounts || [];
-  return renderShell(`
-    <div class="pageIntro"><span class="eyebrow">Интеграции</span><h2>Подключите Яндекс.Директ и Метрику</h2><p>OAuth-подключение хранится в backend. После подключения выберите аккаунт Яндекса для активного клиента.</p></div>
-    <section class="panel integrationConnectPanel">
-      <div class="panelHeader"><div><h3>Яндекс OAuth</h3><p>Нужен доступ к Директу и Метрике для синхронизации кампаний, расходов, целей и поисковых запросов.</p></div><button class="approveButton" data-integration="yandex-direct">Подключить Яндекс</button></div>
-      <div class="authStatus integrationStatus">${escapeHtml(integrationStatus.message || 'Статус подключения ещё не проверен.')}</div>
-      ${integrationStatus.connected ? `<div class="integrationSuccess">Подключено аккаунтов: ${accounts.length}</div>` : ''}
-    </section>
-    <section class="panel integrationConnectPanel">
-      <div class="panelHeader"><div><h3>Привязка к клиенту</h3><p>Активный клиент: ${escapeHtml(selectedClient.name || 'не выбран')}. Direct login: ${escapeHtml(selectedClient.directLogin || 'не указан')}.</p></div><button class="secondaryButton" data-refresh-client-yandex ${selectedClient.id ? '' : 'disabled'}>Обновить</button></div>
-      ${clientYandexStatus ? `<div class="authStatus integrationStatus">${escapeHtml(clientYandexStatus)}</div>` : ''}
-      ${clientYandexLoading ? '<div class="authStatus integrationStatus">Загружаем доступные аккаунты...</div>' : ''}
-      ${accounts.length ? `
-        <div class="accountList">
-          ${accounts.map((account) => {
-            const selected = String(account.id) === String(clientYandexIntegration?.selected_account?.id || selectedClient.yandexAccountId || '');
-            return `<article class="accountCard ${selected ? 'selected' : ''}"><div><strong>${escapeHtml(account.login || account.name || account.id)}</strong><span>${escapeHtml(account.id)}</span></div><button class="${selected ? 'secondaryButton' : 'approveButton'}" data-bind-yandex-account="${escapeHtml(account.id)}" ${selected ? 'disabled' : ''}>${selected ? 'Привязан' : 'Привязать'}</button></article>`;
-          }).join('')}
-        </div>
-      ` : '<div class="authStatus integrationStatus">Нет доступных аккаунтов. Сначала подключите Яндекс OAuth.</div>'}
-      ${clientYandexIntegration?.selected_account ? `<button class="dangerButton" data-unbind-yandex ${selectedClient.id ? '' : 'disabled'}>Отвязать аккаунт</button>` : ''}
-    </section>
-  `);
+  const contentRenderer = resolvePageContentRenderer('integrations');
+
+  if (typeof contentRenderer !== 'function') {
+    return renderShell(`
+      <div class="pageIntro"><span class="eyebrow">Интеграции</span><h2>Интеграции временно недоступны</h2><p>Модуль интеграций не зарегистрирован. Проверьте src/pages/index.js.</p></div>
+    `);
+  }
+
+  return renderShell(contentRenderer(integrationsPageContext()));
 }
 
 function renderAiStatusPanel() {
