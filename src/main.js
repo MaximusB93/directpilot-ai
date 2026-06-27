@@ -20,6 +20,7 @@ import * as optimizationService from './services/optimization-service.js';
 import * as performanceService from './services/performance-service.js';
 import * as syncService from './services/sync-service.js';
 import * as aiStore from './stores/ai-store.js';
+import * as campaignStore from './stores/campaign-store.js';
 import * as clientStore from './stores/client-store.js';
 import {
   agencyMetrics,
@@ -156,6 +157,7 @@ function storageKey(key) {
 }
 
 const clientsStore = clientStore.createClientStore(storageKey);
+const campaignsStore = campaignStore.createCampaignStore();
 
 function loadSelectedClientId() {
   return clientStore.loadSelectedClientId(storageKey, accountClients[0]?.id || '');
@@ -625,7 +627,7 @@ function contextCompletenessScore(context = businessContext || businessContextDr
 }
 
 function campaignOptions() {
-  return (perfSummary?.campaigns || []).map((campaign) => campaign.name).filter(Boolean);
+  return campaignsStore.getCampaignOptions(perfSummary);
 }
 
 function currentAiModelState() {
