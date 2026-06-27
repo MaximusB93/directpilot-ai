@@ -152,19 +152,28 @@ renderIntegrationsContent
 
 The integrations content composer is registered in `PAGE_CONTENT_RENDERERS`, and `src/main.js` now routes `renderIntegrations()` through `renderIntegrationsContent(context)`. The event handlers still live in `src/main.js`, so existing `data-integration`, `data-refresh-client-yandex`, `data-bind-yandex-account` and `data-unbind-yandex` actions keep working.
 
+`src/pages/optimization.js` now exposes `renderOptimizationContent(context)` and these pure HTML builder slices:
+
+```text
+renderOptimizationIntro
+renderOptimizationPlanPanel
+renderOptimizationActionsPanel
+renderOptimizationContent
+```
+
+The optimization content composer is registered in `PAGE_CONTENT_RENDERERS`, and `src/main.js` now routes `renderOptimization()` through `renderOptimizationContent(context)`. The event handlers still live in `src/main.js`, so existing `data-load-optimization-plan`, `data-load-optimization-actions`, `data-create-optimization-drafts`, `data-update-optimization-action` and `data-preview-optimization-action` actions keep working.
+
 Other page modules are currently contract-only. They document required context and legacy renderer names before we move their markup.
 
 Current contract-only modules:
 
 ```text
 ai
-optimization
 ```
 
 Recommended extraction order:
 
-1. `optimization` — higher risk, contains filters, previews and action state.
-2. `ai` — highest state density: chat, model settings, prompt inspector, tool traces and recommendations.
+1. `ai` — highest state density: chat, model settings, prompt inspector, tool traces and recommendations.
 
 ## Service layer
 
@@ -219,10 +228,13 @@ main clients content wiring
 main campaign store wiring
 main business context content wiring
 main integrations content wiring
+main optimization content wiring
 business context content composer
 business context content registry
 integrations content composer
 integrations content registry
+optimization content composer
+optimization content registry
 ```
 
 When a new extraction is wired, add a static check in the same or next commit. The validator is intentionally simple string matching. Primitive, yes. Effective enough to keep accidental regressions from crawling into production like raccoons in a ventilation shaft.
@@ -251,7 +263,7 @@ Preferred sequence:
 16. Add validator checks after each migration step.
 17. Move `business-context` page markup into its page content composer.
 18. Move `integrations` page markup into its page content composer.
-19. Move `optimization` page markup after action filters/previews are stable.
+19. Move `optimization` page markup into its page content composer.
 20. Move `ai` page last because it has the densest state and request flow.
 
 ## Current progress snapshot
@@ -267,11 +279,12 @@ Dashboard content composer wired
 Clients content composer wired
 Business Context content composer wired
 Integrations content composer wired
+Optimization content composer wired
 static validator guards service/store/page wiring
 ```
 
 Next iteration:
 
 ```text
-Extract `optimization` into `src/pages/optimization.js` content composer and leave `src/main.js` as a thin wrapper.
+Extract `ai` into `src/pages/ai-assistant.js` content composer and leave `src/main.js` as a thin wrapper.
 ```
