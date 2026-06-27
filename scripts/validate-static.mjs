@@ -31,6 +31,7 @@ const requiredFiles = [
   'src/stores/index.js',
   'src/stores/client-store.js',
   'src/stores/ai-store.js',
+  'src/stores/campaign-store.js',
   'src/main.js',
   'src/login.js',
   'src/data.js',
@@ -79,6 +80,7 @@ const aiService = await readFile('src/services/ai-service.js', 'utf8');
 const storesIndex = await readFile('src/stores/index.js', 'utf8');
 const clientStore = await readFile('src/stores/client-store.js', 'utf8');
 const aiStore = await readFile('src/stores/ai-store.js', 'utf8');
+const campaignStore = await readFile('src/stores/campaign-store.js', 'utf8');
 const js = await readFile('src/main.js', 'utf8');
 const loginJs = await readFile('src/login.js', 'utf8');
 const data = await readFile('src/data.js', 'utf8');
@@ -129,12 +131,14 @@ const checks = [
   ['performance service layer', performanceService.includes('fetchPerformanceSummary')],
   ['optimization service layer', optimizationService.includes('fetchOptimizationPlan') && optimizationService.includes('fetchOptimizationActions') && optimizationService.includes('fetchOptimizationExecutionPreview')],
   ['ai service layer', aiService.includes('fetchOpenRouterStatus') && aiService.includes('requestAiChat') && aiService.includes('fetchClientAiRecommendations')],
-  ['stores exports', storesIndex.includes('client-store') && storesIndex.includes('ai-store')],
+  ['stores exports', storesIndex.includes('client-store') && storesIndex.includes('ai-store') && storesIndex.includes('campaign-store')],
   ['client store scaffold', clientStore.includes('loadSelectedClientId') && clientStore.includes('saveSelectedClientId') && clientStore.includes('ensureSelectedClientId')],
   ['ai store scaffold', aiStore.includes('createInitialAiChatState') && aiStore.includes('createInitialAiModelState') && aiStore.includes('CUSTOM_MODEL_VALUE')],
   ['ai store expanded state', aiStore.includes('createInitialAiGenerationState') && aiStore.includes('DEFAULT_AI_STATUS') && aiStore.includes('AI_PRESETS')],
   ['ai store helpers', aiStore.includes('normalizeAiStatus') && aiStore.includes('activeAiModel') && aiStore.includes('activeAiBudget') && aiStore.includes('aiConversationForRequest') && aiStore.includes('addAiChatMessage')],
   ['ai store request builders', aiStore.includes('createAiChatRequestPayload') && aiStore.includes('createAiPromptDebugParams') && aiStore.includes('business_context') && aiStore.includes('conversation')],
+  ['campaign store scaffold', campaignStore.includes('DEFAULT_CAMPAIGN_FILTER') && campaignStore.includes('createCampaignStore') && campaignStore.includes('getCampaignName') && campaignStore.includes('getCampaignOptions') && campaignStore.includes('normalizeCampaignFilter')],
+  ['campaign store performance helpers', campaignStore.includes('getCampaignsFromPerformanceSummary') && campaignStore.includes('filterCampaignsBySelectedName') && campaignStore.includes('isCampaignSelected')],
   ['dashboard page contract', dashboardPage.includes('DASHBOARD_PAGE_ID') && dashboardPage.includes('dashboardPageContract') && dashboardPage.includes('renderDashboard')],
   ['frontend architecture docs', frontendArchitecture.includes('service layer') && frontendArchitecture.includes('renderDashboardContent')],
   ['landing module script', html.includes('type="module"') && html.includes('src/main.js')],
