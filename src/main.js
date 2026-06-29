@@ -20,6 +20,9 @@ import {
   createAiChatStateSnapshot,
   createAiModelStateSnapshot,
   createAiPromptDebugParams,
+  generateAiInsightFlow,
+  loadAiPromptDebugFlow,
+  loadAiStatusFlow,
 } from './controllers/ai-controller.js';
 import { renderBusinessContextPanel as renderBusinessContextPanelContent } from './pages/business-context.js';
 import * as aiService from './services/ai-service.js';
@@ -690,22 +693,30 @@ function aiPromptDebugParams() {
 
 
 async function loadAiPromptDebug() {
-  if (!selectedClientId) {
-    aiPromptDebugError = 'Сначала выберите клиента.';
-    render();
-    return;
-  }
-  aiPromptDebugLoading = true;
-  aiPromptDebugError = '';
-  render();
-  try {
-    aiPromptDebug = await aiService.fetchAiPromptDebug(selectedClientId, aiPromptDebugParams());
-  } catch (error) {
-    aiPromptDebugError = error.message || 'Не удалось проверить размер AI-контекста';
-  } finally {
-    aiPromptDebugLoading = false;
-    render();
-  }
+  await loadAiPromptDebugFlow({
+    selectedClientId,
+    params: aiPromptDebugParams(),
+    aiService,
+    onMissingClient: (message) => {
+      aiPromptDebugError = message;
+      render();
+    },
+    onStart: () => {
+      aiPromptDebugLoading = true;
+      aiPromptDebugError = '';
+      render();
+    },
+    onSuccess: (promptDebug) => {
+      aiPromptDebug = promptDebug;
+    },
+    onError: (message) => {
+      aiPromptDebugError = message;
+    },
+    onFinally: () => {
+      aiPromptDebugLoading = false;
+      render();
+    },
+  });
 }
 
 
@@ -789,39 +800,42 @@ async function saveAiMemoryNote(note) {
 
 
 async function loadAiStatus() {
-  try {
-    aiStatus = aiStore.normalizeAiStatus(await aiService.fetchOpenRouterStatus());
-  } catch (error) {
-    aiStatus = aiStore.normalizeAiStatus({
-      configured: false,
-      models: [],
-      message: 'Backend недоступен, OpenRouter не проверен.',
-    });
-  }
-  render();
+  await loadAiStatusFlow({
+    aiService,
+    onStatus: (status) => {
+      aiStatus = status;
+    },
+    onFinally: render,
+  });
 }
 
 
 async function generateAiInsight(prompt) {
-  aiLoading = true;
-  aiError = '';
-  aiResult = null;
-  render();
-  try {
-    const budget = activeAiBudget();
-    aiResult = await aiService.generateAiInsight({
-      prompt,
-      model: activeAiModel(),
-      max_tokens: budget.maxTokens,
-      preset: selectedAiPreset,
-      business_context: businessContextForAi(),
-    });
-  } catch (error) {
-    aiError = error.message || 'Не удалось получить AI-ответ';
-  } finally {
-    aiLoading = false;
-    render();
-  }
+  const budget = activeAiBudget();
+  await generateAiInsightFlow({
+    prompt,
+    aiService,
+    model: activeAiModel(),
+    maxTokens: budget.maxTokens,
+    preset: selectedAiPreset,
+    businessContext: businessContextForAi(),
+    onStart: () => {
+      aiLoading = true;
+      aiError = '';
+      aiResult = null;
+      render();
+    },
+    onSuccess: (result) => {
+      aiResult = result;
+    },
+    onError: (message) => {
+      aiError = message;
+    },
+    onFinally: () => {
+      aiLoading = false;
+      render();
+    },
+  });
 }
 
 
