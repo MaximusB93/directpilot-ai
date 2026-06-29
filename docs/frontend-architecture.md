@@ -231,7 +231,7 @@ Controllers are the next migration layer between `src/main.js`, stores and servi
 Current controller modules:
 
 ```text
-ai-controller.js   AI state snapshots, AI page context assembly, thin delegates to AI store request builders, and first async AI flows
+ai-controller.js   AI state snapshots, AI page context assembly, thin delegates to AI store request builders, and AI async flows
 ```
 
 Current AI controller wiring:
@@ -245,14 +245,14 @@ aiAssistantPageContext() delegates to createAiAssistantPageContext(...)
 loadAiStatus() delegates to loadAiStatusFlow(...)
 loadAiPromptDebug() delegates to loadAiPromptDebugFlow(...)
 generateAiInsight() delegates to generateAiInsightFlow(...)
+requestAiRecommendations() delegates to requestAiRecommendationsFlow(...)
+sendAiChatMessage() delegates to sendAiChatMessageFlow(...)
+saveAiMemoryNote() delegates to saveAiMemoryNoteFlow(...)
 ```
 
 Still in `src/main.js` after this controller step:
 
 ```text
-requestAiRecommendations
-sendAiChatMessage
-saveAiMemoryNote
 AI event-handler bindings
 AI mutable variables until a fuller feature state object replaces them
 ```
@@ -274,6 +274,7 @@ main ai current state adapters
 main ai controller helper delegation
 main ai page context delegation
 main ai controller flow delegation
+main ai remaining flow delegation
 main ai chat store delegation
 main clients content wiring
 main campaign store wiring
@@ -285,6 +286,8 @@ ai controller state helpers
 ai controller store delegation
 ai controller flow helpers
 ai controller flow services
+ai controller remaining flow helpers
+ai controller remaining flow services
 business context content composer
 business context content registry
 integrations content composer
@@ -325,6 +328,7 @@ Preferred sequence:
 20. Move `ai` page markup into its page content composer.
 21. Add AI controller state/context helpers.
 22. Move first AI async flows into `ai-controller.js`: OpenRouter status, prompt debug and quick prompt generation.
+23. Move remaining AI async flows into `ai-controller.js`: recommendations, chat and memory note.
 
 ## Current progress snapshot
 
@@ -343,11 +347,12 @@ Optimization content composer wired
 AI Assistant content composer wired
 AI controller state/context helpers wired
 AI controller status/prompt flows wired
+AI controller remaining async flows wired
 static validator guards service/store/controller/page wiring
 ```
 
 Next iteration:
 
 ```text
-Move the remaining AI async flows from `src/main.js` into `src/controllers/ai-controller.js`: requestAiRecommendations, sendAiChatMessage and saveAiMemoryNote.
+Move AI event-handler bindings out of `src/main.js` into a dedicated controller/bindings module.
 ```
