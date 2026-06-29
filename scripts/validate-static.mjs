@@ -73,7 +73,10 @@ const aiEventBindings = files['src/controllers/ai-event-bindings.js'];
 const checks = [
   ['app shell files', files['index.html'].includes('id="app"') && files['login.html'].includes('data-page="login"') && files['app.html'].includes('data-page="app"')],
   ['app routing modules', routes.includes('APP_ROUTES') && routes.includes('LEGACY_ROUTE_REDIRECTS') && routes.includes('normalizeAppRouteId') && routes.includes('getRouteMode')],
-  ['route mode metadata', routes.includes("mode: 'legacy'") && routes.includes("mode: 'reserved'") && routes.includes("wordstat") && routes.includes("journal")],
+  ['route mode metadata', routes.includes("mode: 'legacy'") && routes.includes("mode: 'reserved'") && routes.includes('wordstat') && routes.includes('journal')],
+  ['main route normalization import', js.includes("import { normalizeAppRouteId } from './app/routes.js'")],
+  ['main route normalization delegation', js.includes('return page === \'app\' ? normalizeAppRouteId(view) : view;')],
+  ['main legacy route block removed', !js.includes('const primaryAppViews') && !js.includes('const legacyViewRedirects') && !js.includes('primaryAppViews.has(view)')],
   ['page content composers', files['src/pages/dashboard.js'].includes('renderDashboardContent') && files['src/pages/clients.js'].includes('renderClientsContent') && files['src/pages/integrations.js'].includes('renderIntegrationsContent') && files['src/pages/business-context.js'].includes('renderBusinessContextContent') && files['src/pages/ai-assistant.js'].includes('renderAiAssistantContent') && files['src/pages/optimization.js'].includes('renderOptimizationContent')],
   ['component scaffold', files['src/components/index.js'].includes('status-badge') && files['src/components/status-badge.js'].includes('renderStatusBadge') && files['src/components/panel.js'].includes('renderPanel') && files['src/components/empty-state.js'].includes('renderEmptyState')],
   ['client store scaffold', files['src/stores/client-store.js'].includes('loadSelectedClientId') && files['src/stores/client-store.js'].includes('saveSelectedClientId') && files['src/stores/client-store.js'].includes('normalizeBackendClient')],
@@ -86,7 +89,7 @@ const checks = [
   ['main no direct api helper calls', !js.includes('apiFetch(')],
   ['main clients inline flow removed', !js.includes('const payload = await clientsService.fetchClients()') && !js.includes('await clientsService.deleteClient(clientId)') && !js.includes('const formData = new FormData(clientForm);')],
   ['legacy pages decision', legacyPagesDecision.includes('wordstat') && legacyPagesDecision.includes('legacy') && legacyPagesDecision.includes('journal') && legacyPagesDecision.includes('reserved')],
-  ['frontend architecture docs', frontendArchitecture.includes('Router legacy metadata wired') && frontendArchitecture.includes('Components scaffold wired') && frontendArchitecture.includes('Wordstat/Journal decision documented')],
+  ['frontend architecture docs', frontendArchitecture.includes('Main route normalization wired') && frontendArchitecture.includes('Extract selected client side-effect reset helper')],
   ['wordstat refactor guard', files['src/wordstat.js'].includes("from './core/api.js'") && files['docs/wordstat-refactor.md'].includes('src/wordstat.js')],
   ['no seeded account data', files['src/data.js'].includes('export const clients = []')],
 ];
