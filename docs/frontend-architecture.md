@@ -21,6 +21,7 @@ src/app/
 
 src/controllers/
   ai-controller.js
+  ai-event-bindings.js
 
 src/pages/
   index.js
@@ -178,7 +179,7 @@ renderAiQuickActions
 renderAiAssistantContent
 ```
 
-The AI assistant content composer is registered in `PAGE_CONTENT_RENDERERS`, and `src/main.js` now routes `renderAiAssistant()` through `renderAiAssistantContent(context)`. The event handlers still live in `src/main.js`, so existing model settings, prompt debug, chat, sample prompts, client recommendations and quick prompt actions keep working.
+The AI assistant content composer is registered in `PAGE_CONTENT_RENDERERS`, and `src/main.js` now routes `renderAiAssistant()` through `renderAiAssistantContent(context)`. Model settings, prompt debug, chat, sample prompts, client recommendations and quick prompt actions now route through `src/controllers/ai-event-bindings.js` while state mutation still happens in `src/main.js` callbacks.
 
 Current contract-only modules:
 
@@ -231,7 +232,8 @@ Controllers are the next migration layer between `src/main.js`, stores and servi
 Current controller modules:
 
 ```text
-ai-controller.js   AI state snapshots, AI page context assembly, thin delegates to AI store request builders, and AI async flows
+ai-controller.js        AI state snapshots, AI page context assembly, thin delegates to AI store request builders, and AI async flows
+ai-event-bindings.js   AI submit/input/change/click event routing for model settings, prompt debug, chat, recommendations and quick prompts
 ```
 
 Current AI controller wiring:
@@ -248,13 +250,14 @@ generateAiInsight() delegates to generateAiInsightFlow(...)
 requestAiRecommendations() delegates to requestAiRecommendationsFlow(...)
 sendAiChatMessage() delegates to sendAiChatMessageFlow(...)
 saveAiMemoryNote() delegates to saveAiMemoryNoteFlow(...)
+AI input/change/submit/click event branches delegate to ai-event-bindings.js
 ```
 
 Still in `src/main.js` after this controller step:
 
 ```text
-AI event-handler bindings
 AI mutable variables until a fuller feature state object replaces them
+callback wiring for AI bindings and flows
 ```
 
 ## Static validation
@@ -275,6 +278,8 @@ main ai controller helper delegation
 main ai page context delegation
 main ai controller flow delegation
 main ai remaining flow delegation
+main ai event bindings import
+main ai event bindings delegation
 main ai chat store delegation
 main clients content wiring
 main campaign store wiring
@@ -288,6 +293,8 @@ ai controller flow helpers
 ai controller flow services
 ai controller remaining flow helpers
 ai controller remaining flow services
+ai event bindings helpers
+ai event bindings selectors
 business context content composer
 business context content registry
 integrations content composer
@@ -329,6 +336,7 @@ Preferred sequence:
 21. Add AI controller state/context helpers.
 22. Move first AI async flows into `ai-controller.js`: OpenRouter status, prompt debug and quick prompt generation.
 23. Move remaining AI async flows into `ai-controller.js`: recommendations, chat and memory note.
+24. Move AI event-handler branches into `ai-event-bindings.js`: submit, input, change and click.
 
 ## Current progress snapshot
 
@@ -348,11 +356,12 @@ AI Assistant content composer wired
 AI controller state/context helpers wired
 AI controller status/prompt flows wired
 AI controller remaining async flows wired
+AI event bindings wired
 static validator guards service/store/controller/page wiring
 ```
 
 Next iteration:
 
 ```text
-Move AI event-handler bindings out of `src/main.js` into a dedicated controller/bindings module.
+Create an AI mutable state object/store facade so `src/main.js` stops owning separate AI globals directly.
 ```
