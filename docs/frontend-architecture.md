@@ -22,6 +22,7 @@ src/app/
 src/controllers/
   ai-controller.js
   ai-event-bindings.js
+  integrations-controller.js
   optimization-controller.js
 
 src/pages/
@@ -120,6 +121,8 @@ AI Assistant
 
 `src/pages/optimization.js` owns Optimization markup composition. Optimization normalization/filtering helpers now live in `src/stores/optimization-store.js`, and async orchestration now routes through `src/controllers/optimization-controller.js`, while `src/main.js` still owns mutable state and render callbacks.
 
+`src/pages/integrations.js` owns Integrations markup composition. Yandex OAuth/status/client-binding orchestration now routes through `src/controllers/integrations-controller.js`, while `src/main.js` still owns mutable state, client list patches and render callbacks.
+
 Current contract-only modules:
 
 ```text
@@ -175,6 +178,7 @@ Current controller modules:
 ```text
 ai-controller.js             AI state snapshots, AI page context assembly, thin delegates to AI store request builders, and AI async flows
 ai-event-bindings.js        AI submit/input/change/click event routing for model settings, prompt debug, chat, recommendations and quick prompts
+integrations-controller.js  Integrations async flows for Yandex status, OAuth start, client account refresh, bind and unbind
 optimization-controller.js  Optimization async flows for plan loading, action loading, draft creation, status updates and execution preview
 ```
 
@@ -189,6 +193,11 @@ loadOptimizationActions() delegates to loadOptimizationActionsFlow(...)
 createOptimizationDraftsFromPlan() delegates to createOptimizationDraftsFromPlanFlow(...)
 updateOptimizationActionStatus() delegates to updateOptimizationActionStatusFlow(...)
 loadOptimizationExecutionPreview() delegates to loadOptimizationExecutionPreviewFlow(...)
+Yandex OAuth click delegates to startYandexOAuthFlow(...)
+loadIntegrationStatus() delegates to loadIntegrationStatusFlow(...)
+loadClientYandexIntegration() delegates to loadClientYandexIntegrationFlow(...)
+bindClientYandexAccount() delegates to bindClientYandexAccountFlow(...)
+unbindClientYandexAccount() delegates to unbindClientYandexAccountFlow(...)
 ```
 
 Still in `src/main.js` after this controller/store step:
@@ -197,7 +206,7 @@ Still in `src/main.js` after this controller/store step:
 callback wiring for AI bindings and flows
 business context mutable variables and service flows
 optimization mutable variables and render callbacks
-integrations mutable variables and service flows
+integrations mutable variables and client list patch callbacks
 clients mutable variables and service flows
 ```
 
@@ -212,13 +221,12 @@ main no inline apiFetch calls
 main no duplicated async
 main ai feature state wiring
 main business context store delegation
-main optimization store import
-main optimization store delegation
-main optimization controller import
 main optimization controller delegation
-optimization store helpers
-optimization controller flows
-Optimization controller/store wired
+main integrations controller import
+main integrations controller delegation
+integrations controller flows
+integrations controller services
+Integrations controller wired
 ```
 
 When a new extraction is wired, add a static check in the same or next commit. The validator is intentionally simple string matching. Primitive, yes. Effective enough to keep accidental regressions from crawling into production like raccoons in a ventilation shaft.
@@ -247,11 +255,12 @@ AI event bindings wired
 AI feature state facade wired
 Business Context store helpers wired
 Optimization controller/store wired
+Integrations controller wired
 static validator guards service/store/controller/page wiring
 ```
 
 Next iteration:
 
 ```text
-Move Integrations controller helpers out of `src/main.js`: Yandex status, OAuth start, client account refresh/bind/unbind flows and related state callbacks.
+Move Clients controller + app state sync out of `src/main.js`: backend client loading, local fallback, selected client side effects and client settings flows.
 ```
