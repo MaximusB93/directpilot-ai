@@ -12,6 +12,7 @@ import {
 } from './core/storage.js';
 import { requestEmailCode, verifyEmailCode } from './core/session-api.js';
 import { resolvePageContentRenderer, resolvePageRenderer } from './app/page-router.js';
+import { normalizeAppRouteId } from './app/routes.js';
 import {
   activeAiBudget as selectActiveAiBudget,
   activeAiModel as selectActiveAiModel,
@@ -95,22 +96,8 @@ const navItems = [
   { id: 'ai', label: 'AI-аналитик', icon: '🧠' },
   { id: 'optimization', label: 'Оптимизация', icon: '🎯' },
 ];
-const primaryAppViews = new Set(navItems.map((item) => item.id));
-const legacyViewRedirects = {
-  audit: 'ai',
-  recommendations: 'ai',
-  reports: 'dashboard',
-  autopilot: 'optimization',
-  context: 'business-context',
-  memory: 'business-context',
-  'ai-models': 'ai',
-  models: 'ai',
-};
-
 function normalizeAppView(view) {
-  if (page !== 'app') return view;
-  if (primaryAppViews.has(view)) return view;
-  return legacyViewRedirects[view] || 'dashboard';
+  return page === 'app' ? normalizeAppRouteId(view) : view;
 }
 
 const appQueryParams = new URLSearchParams(window.location.search);
