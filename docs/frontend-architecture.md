@@ -52,6 +52,8 @@ wordstat: legacy
 journal: reserved
 ```
 
+`src/main.js` now imports `normalizeAppRouteId` from `src/app/routes.js`; the old local `primaryAppViews` and `legacyViewRedirects` block has been removed.
+
 The Wordstat and Journal decision is documented in `docs/legacy-pages-decision.md`.
 
 ## Page composers
@@ -70,7 +72,6 @@ business context mutable variables and service flows
 optimization mutable variables and render callbacks
 integrations mutable variables and client list patch callbacks
 clients mutable variables and storage/render callbacks
-legacy routing glue duplicated until main can import normalizeAppRouteId safely
 ```
 
 ## Completed migration sequence
@@ -96,6 +97,7 @@ Optimization controller/store wired
 Integrations controller wired
 Clients controller wired
 Router legacy metadata wired
+Main route normalization wired
 Wordstat/Journal decision documented
 Components scaffold wired
 static validator guards service/store/controller/page wiring
@@ -104,7 +106,7 @@ static validator guards service/store/controller/page wiring
 ## Next safe refactors
 
 ```text
-1. Import normalizeAppRouteId from src/app/routes.js into src/main.js and remove duplicated legacyViewRedirects.
+1. Extract selected client side-effect reset helper.
 2. Define Wordstat page/service/state contract before wiring it into PAGE_CONTENT_RENDERERS.
 3. Define Journal domain model before creating src/pages/journal.js.
 4. Use renderPanel/renderEmptyState/renderStatusBadge in one page at a time.
