@@ -42,6 +42,7 @@ import * as optimizationService from './services/optimization-service.js';
 import * as performanceService from './services/performance-service.js';
 import * as syncService from './services/sync-service.js';
 import * as aiStore from './stores/ai-store.js';
+import { createAiFeatureState, resetAiClientScopedState } from './stores/ai-feature-state.js';
 import * as campaignStore from './stores/campaign-store.js';
 import * as clientStore from './stores/client-store.js';
 import {
@@ -142,36 +143,7 @@ let businessContextStatus = '';
 let businessContextSaving = false;
 let businessContextDraft = null;
 const CUSTOM_MODEL_VALUE = aiStore.CUSTOM_MODEL_VALUE;
-const initialAiModelState = aiStore.createInitialAiModelState();
-const initialAiChatState = aiStore.createInitialAiChatState();
-const initialAiGenerationState = aiStore.createInitialAiGenerationState();
-
-let aiStatus = initialAiModelState.status;
-let selectedAiModel = initialAiModelState.model;
-let customAiModel = initialAiModelState.customModel;
-let selectedAiPreset = initialAiModelState.preset;
-let aiMaxTokensMode = initialAiModelState.maxTokensMode;
-let aiCompactContext = initialAiModelState.compactContext;
-let aiToolResultsMode = initialAiModelState.toolResultsMode;
-let aiChatHistoryLimit = initialAiModelState.chatHistoryLimit;
-let aiSearchQueryLimit = initialAiModelState.searchQueryLimit;
-let aiLoading = initialAiGenerationState.loading;
-let aiResult = initialAiGenerationState.result;
-let aiError = initialAiGenerationState.error;
-let aiPromptDebug = initialAiGenerationState.promptDebug;
-let aiPromptDebugLoading = initialAiGenerationState.promptDebugLoading;
-let aiPromptDebugError = initialAiGenerationState.promptDebugError;
-let aiRecommendationsLoading = initialAiGenerationState.recommendationsLoading;
-let aiRecommendationsError = initialAiGenerationState.recommendationsError;
-let clientAiRecommendations = initialAiGenerationState.clientRecommendations;
-let aiMemoryStatus = initialAiGenerationState.memoryStatus;
-let aiChatMessages = initialAiChatState.messages.map((message) => ({ ...message }));
-let aiChatInput = initialAiChatState.input;
-let aiChatLoading = initialAiChatState.loading;
-let aiChatError = initialAiChatState.error;
-let aiChatErrorDetails = initialAiChatState.errorDetails;
-let aiChatToolTraces = initialAiChatState.toolTraces;
-let aiChatSelectedCampaignName = initialAiChatState.selectedCampaignName;
+const aiFeatureState = createAiFeatureState();
 let pendingEditableFocusTarget = null;
 
 function storageKey(key) {
@@ -654,27 +626,27 @@ function campaignOptions() {
 
 function currentAiModelState() {
   return createAiModelStateSnapshot({
-    aiStatus,
-    selectedAiModel,
-    customAiModel,
-    selectedAiPreset,
-    aiMaxTokensMode,
-    aiCompactContext,
-    aiToolResultsMode,
-    aiChatHistoryLimit,
-    aiSearchQueryLimit,
+    aiStatus: aiFeatureState.model.status,
+    selectedAiModel: aiFeatureState.model.selectedModel,
+    customAiModel: aiFeatureState.model.customModel,
+    selectedAiPreset: aiFeatureState.model.selectedPreset,
+    aiMaxTokensMode: aiFeatureState.model.maxTokensMode,
+    aiCompactContext: aiFeatureState.model.compactContext,
+    aiToolResultsMode: aiFeatureState.model.toolResultsMode,
+    aiChatHistoryLimit: aiFeatureState.model.chatHistoryLimit,
+    aiSearchQueryLimit: aiFeatureState.model.searchQueryLimit,
   });
 }
 
 function currentAiChatState() {
   return createAiChatStateSnapshot({
-    aiChatMessages,
-    aiChatInput,
-    aiChatLoading,
-    aiChatError,
-    aiChatErrorDetails,
-    aiChatToolTraces,
-    aiChatSelectedCampaignName,
+    aiChatMessages: aiFeatureState.chat.messages,
+    aiChatInput: aiFeatureState.chat.input,
+    aiChatLoading: aiFeatureState.chat.loading,
+    aiChatError: aiFeatureState.chat.error,
+    aiChatErrorDetails: aiFeatureState.chat.errorDetails,
+    aiChatToolTraces: aiFeatureState.chat.toolTraces,
+    aiChatSelectedCampaignName: aiFeatureState.chat.selectedCampaignName,
   });
 }
 
@@ -697,7 +669,7 @@ function aiChatRequestPayload(message) {
 }
 
 function aiPromptDebugParams() {
-  return createAiPromptDebugParams(currentAiModelState(), aiChatSelectedCampaignName);
+  return createAiPromptDebugParams(currentAiModelState(), aiFeatureState.chat.selectedCampaignName);
 }
 
 
@@ -707,22 +679,22 @@ async function loadAiPromptDebug() {
     params: aiPromptDebugParams(),
     aiService,
     onMissingClient: (message) => {
-      aiPromptDebugError = message;
+      aiFeatureState.generation.promptDebugError = message;
       render();
     },
     onStart: () => {
-      aiPromptDebugLoading = true;
-      aiPromptDebugError = '';
+      aiFeatureState.generation.promptDebugLoading = true;
+      aiFeatureState.generation.promptDebugError = '';
       render();
     },
     onSuccess: (promptDebug) => {
-      aiPromptDebug = promptDebug;
+      aiFeatureState.generation.promptDebug = promptDebug;
     },
     onError: (message) => {
-      aiPromptDebugError = message;
+      aiFeatureState.generation.promptDebugError = message;
     },
     onFinally: () => {
-      aiPromptDebugLoading = false;
+      aiFeatureState.generation.promptDebugLoading = false;
       render();
     },
   });
@@ -736,34 +708,34 @@ async function requestAiRecommendations() {
     selectedClientId,
     params: {
       model: activeAiModel(),
-      preset: selectedAiPreset,
+      preset: aiFeatureState.model.selectedPreset,
       max_tokens: budget.maxTokens,
       target_context_tokens: budget.targetContextTokens,
       include_business_context: true,
       business_context: businessContextForAi(),
-      compact_context: aiCompactContext,
-      include_raw_tool_results: aiToolResultsMode === 'raw' || budget.includeRawToolResults,
-      search_query_limit: Number(aiSearchQueryLimit) || 20,
+      compact_context: aiFeatureState.model.compactContext,
+      include_raw_tool_results: aiFeatureState.model.toolResultsMode === 'raw' || budget.includeRawToolResults,
+      search_query_limit: Number(aiFeatureState.model.searchQueryLimit) || 20,
     },
     aiService,
     saveMemoryNote: saveAiMemoryNote,
     onMissingClient: (message) => {
-      aiRecommendationsError = message;
+      aiFeatureState.generation.recommendationsError = message;
       render();
     },
     onStart: () => {
-      aiRecommendationsLoading = true;
-      aiRecommendationsError = '';
+      aiFeatureState.generation.recommendationsLoading = true;
+      aiFeatureState.generation.recommendationsError = '';
       render();
     },
     onSuccess: (payload) => {
-      clientAiRecommendations = payload;
+      aiFeatureState.generation.clientRecommendations = payload;
     },
     onError: (message) => {
-      aiRecommendationsError = message;
+      aiFeatureState.generation.recommendationsError = message;
     },
     onFinally: () => {
-      aiRecommendationsLoading = false;
+      aiFeatureState.generation.recommendationsLoading = false;
       render();
     },
   });
@@ -772,34 +744,34 @@ async function requestAiRecommendations() {
 
 async function sendAiChatMessage(message) {
   await sendAiChatMessageFlow({
-    message: message || aiChatInput,
-    loading: aiChatLoading,
+    message: message || aiFeatureState.chat.input,
+    loading: aiFeatureState.chat.loading,
     currentChatState: currentAiChatState,
     createRequestPayload: aiChatRequestPayload,
     addChatMessage: aiStore.addAiChatMessage,
     aiService,
     saveMemoryNote: saveAiMemoryNote,
     onStart: ({ messages }) => {
-      aiChatMessages = messages;
-      aiChatInput = '';
-      aiChatLoading = true;
-      aiChatError = '';
-      aiChatErrorDetails = null;
+      aiFeatureState.chat.messages = messages;
+      aiFeatureState.chat.input = '';
+      aiFeatureState.chat.loading = true;
+      aiFeatureState.chat.error = '';
+      aiFeatureState.chat.errorDetails = null;
       render();
     },
     onSuccess: ({ messages, toolTraces }) => {
-      aiChatMessages = messages;
-      aiChatToolTraces = toolTraces;
+      aiFeatureState.chat.messages = messages;
+      aiFeatureState.chat.toolTraces = toolTraces;
     },
     onError: ({ message: errorMessage, payload, messages }) => {
-      aiChatError = errorMessage;
-      aiChatErrorDetails = payload;
+      aiFeatureState.chat.error = errorMessage;
+      aiFeatureState.chat.errorDetails = payload;
       if (messages) {
-        aiChatMessages = messages;
+        aiFeatureState.chat.messages = messages;
       }
     },
     onFinally: () => {
-      aiChatLoading = false;
+      aiFeatureState.chat.loading = false;
       render();
     },
   });
@@ -812,15 +784,15 @@ async function saveAiMemoryNote(note) {
     note,
     businessContextService,
     onStart: (message) => {
-      aiMemoryStatus = message;
+      aiFeatureState.generation.memoryStatus = message;
     },
     onSuccess: (payload, message) => {
       businessContext = normalizeBusinessContext(payload);
       businessContextDraft = businessContext;
-      aiMemoryStatus = message;
+      aiFeatureState.generation.memoryStatus = message;
     },
     onError: (message) => {
-      aiMemoryStatus = message;
+      aiFeatureState.generation.memoryStatus = message;
     },
   });
 }
@@ -830,7 +802,7 @@ async function loadAiStatus() {
   await loadAiStatusFlow({
     aiService,
     onStatus: (status) => {
-      aiStatus = status;
+      aiFeatureState.model.status = status;
     },
     onFinally: render,
   });
@@ -844,22 +816,22 @@ async function generateAiInsight(prompt) {
     aiService,
     model: activeAiModel(),
     maxTokens: budget.maxTokens,
-    preset: selectedAiPreset,
+    preset: aiFeatureState.model.selectedPreset,
     businessContext: businessContextForAi(),
     onStart: () => {
-      aiLoading = true;
-      aiError = '';
-      aiResult = null;
+      aiFeatureState.generation.loading = true;
+      aiFeatureState.generation.error = '';
+      aiFeatureState.generation.result = null;
       render();
     },
     onSuccess: (result) => {
-      aiResult = result;
+      aiFeatureState.generation.result = result;
     },
     onError: (message) => {
-      aiError = message;
+      aiFeatureState.generation.error = message;
     },
     onFinally: () => {
-      aiLoading = false;
+      aiFeatureState.generation.loading = false;
       render();
     },
   });
@@ -998,6 +970,7 @@ async function startSync() {
     render();
   }
 }
+
 
 async function loadSyncJobs() {
   if (!selectedClientId || syncJobsLoading) return;
@@ -1432,33 +1405,33 @@ function aiAssistantPageContext() {
   return createAiAssistantPageContext({
     selectedClientId,
     selectedClient: currentClient(),
-    aiStatus,
-    selectedAiModel,
-    customAiModel,
+    aiStatus: aiFeatureState.model.status,
+    selectedAiModel: aiFeatureState.model.selectedModel,
+    customAiModel: aiFeatureState.model.customModel,
     customModelValue: CUSTOM_MODEL_VALUE,
-    selectedAiPreset,
-    aiMaxTokensMode,
-    aiToolResultsMode,
-    aiChatHistoryLimit,
-    aiSearchQueryLimit,
-    aiCompactContext,
-    aiPromptDebugLoading,
-    aiPromptDebugError,
-    aiPromptDebug,
+    selectedAiPreset: aiFeatureState.model.selectedPreset,
+    aiMaxTokensMode: aiFeatureState.model.maxTokensMode,
+    aiToolResultsMode: aiFeatureState.model.toolResultsMode,
+    aiChatHistoryLimit: aiFeatureState.model.chatHistoryLimit,
+    aiSearchQueryLimit: aiFeatureState.model.searchQueryLimit,
+    aiCompactContext: aiFeatureState.model.compactContext,
+    aiPromptDebugLoading: aiFeatureState.generation.promptDebugLoading,
+    aiPromptDebugError: aiFeatureState.generation.promptDebugError,
+    aiPromptDebug: aiFeatureState.generation.promptDebug,
     campaignOptions: campaignOptions(),
-    aiChatSelectedCampaignName,
-    aiChatMessages,
-    aiChatInput,
-    aiChatLoading,
-    aiChatError,
-    aiChatErrorDetails,
-    aiChatToolTraces,
-    aiRecommendationsLoading,
-    aiRecommendationsError,
-    clientAiRecommendations,
-    aiLoading,
-    aiError,
-    aiResult,
+    aiChatSelectedCampaignName: aiFeatureState.chat.selectedCampaignName,
+    aiChatMessages: aiFeatureState.chat.messages,
+    aiChatInput: aiFeatureState.chat.input,
+    aiChatLoading: aiFeatureState.chat.loading,
+    aiChatError: aiFeatureState.chat.error,
+    aiChatErrorDetails: aiFeatureState.chat.errorDetails,
+    aiChatToolTraces: aiFeatureState.chat.toolTraces,
+    aiRecommendationsLoading: aiFeatureState.generation.recommendationsLoading,
+    aiRecommendationsError: aiFeatureState.generation.recommendationsError,
+    clientAiRecommendations: aiFeatureState.generation.clientRecommendations,
+    aiLoading: aiFeatureState.generation.loading,
+    aiError: aiFeatureState.generation.error,
+    aiResult: aiFeatureState.generation.result,
     performanceSummary: perfSummary,
     businessContext,
     optimizationActions,
@@ -1560,7 +1533,7 @@ function render() {
     if (!optimizationPlan && !optimizationPlanLoading) loadOptimizationPlan();
     if (optimizationActionsLoadedFor !== selectedClientId && !optimizationActionsLoading) loadOptimizationActions();
   }
-  if (activeView === 'ai' && aiStatus.message === 'Статус OpenRouter ещё не загружен.') {
+  if (activeView === 'ai' && aiFeatureState.model.status.message === 'Статус OpenRouter ещё не загружен.') {
     loadAiStatus();
   }
   if (activeView === 'ai' && selectedClientId && !businessContextLoading) {
@@ -1599,10 +1572,10 @@ app.addEventListener('input', (event) => {
   if (authInput?.name === 'code') authCode = authInput.value;
   handleAiInputEvent(event, {
     setCustomModel: (value) => {
-      customAiModel = value;
+      aiFeatureState.model.customModel = value;
     },
     setSearchQueryLimit: (value) => {
-      aiSearchQueryLimit = value;
+      aiFeatureState.model.searchQueryLimit = value;
     },
   });
   if (event.target.matches('[data-business-context-form] textarea')) {
@@ -1619,26 +1592,26 @@ app.addEventListener('change', (event) => {
   if (handleAiChangeEvent(event, {
     customModelValue: CUSTOM_MODEL_VALUE,
     setModel: (value, customValue) => {
-      selectedAiModel = value;
-      if (customValue !== undefined) customAiModel = customValue;
+      aiFeatureState.model.selectedModel = value;
+      if (customValue !== undefined) aiFeatureState.model.customModel = customValue;
     },
     setPreset: (value) => {
-      selectedAiPreset = value;
+      aiFeatureState.model.selectedPreset = value;
     },
     setMaxTokensMode: (value) => {
-      aiMaxTokensMode = value;
+      aiFeatureState.model.maxTokensMode = value;
     },
     setToolResultsMode: (value) => {
-      aiToolResultsMode = value;
+      aiFeatureState.model.toolResultsMode = value;
     },
     setChatHistoryLimit: (value) => {
-      aiChatHistoryLimit = value;
+      aiFeatureState.model.chatHistoryLimit = value;
     },
     setCompactContext: (value) => {
-      aiCompactContext = value;
+      aiFeatureState.model.compactContext = value;
     },
     setChatCampaign: (value) => {
-      aiChatSelectedCampaignName = value;
+      aiFeatureState.chat.selectedCampaignName = value;
     },
     render,
   })) return;
@@ -1818,7 +1791,7 @@ app.addEventListener('click', async (event) => {
     optimizationPlan = null;
     optimizationActions = [];
     optimizationActionsLoadedFor = '';
-    clientAiRecommendations = null;
+    resetAiClientScopedState(aiFeatureState);
     activeView = 'dashboard';
     render();
     return;
@@ -1890,7 +1863,7 @@ app.addEventListener('click', async (event) => {
     loadPromptDebug: loadAiPromptDebug,
     requestRecommendations: requestAiRecommendations,
     setChatInput: (value) => {
-      aiChatInput = value;
+      aiFeatureState.chat.input = value;
     },
     generateInsight: generateAiInsight,
     promptFor: aiPromptFor,
