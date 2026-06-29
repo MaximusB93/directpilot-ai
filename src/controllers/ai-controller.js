@@ -72,6 +72,93 @@ export function createAiPromptDebugParams(modelState, selectedCampaignName = '')
   return aiStore.createAiPromptDebugParams(modelState, selectedCampaignName);
 }
 
+export async function loadAiStatusFlow({
+  aiService,
+  onStatus,
+  onFinally,
+}) {
+  let status;
+
+  try {
+    status = aiStore.normalizeAiStatus(await aiService.fetchOpenRouterStatus());
+  } catch (error) {
+    status = aiStore.normalizeAiStatus({
+      configured: false,
+      models: [],
+      message: 'Backend недоступен, OpenRouter не проверен.',
+    });
+  } finally {
+    onStatus?.(status);
+    onFinally?.();
+  }
+
+  return status;
+}
+
+export async function loadAiPromptDebugFlow({
+  selectedClientId,
+  params,
+  aiService,
+  onMissingClient,
+  onStart,
+  onSuccess,
+  onError,
+  onFinally,
+}) {
+  if (!selectedClientId) {
+    const message = 'Сначала выберите клиента.';
+    onMissingClient?.(message);
+    return { status: 'missing-client', error: message };
+  }
+
+  onStart?.();
+
+  try {
+    const promptDebug = await aiService.fetchAiPromptDebug(selectedClientId, params);
+    onSuccess?.(promptDebug);
+    return { status: 'success', promptDebug };
+  } catch (error) {
+    const message = error.message || 'Не удалось проверить размер AI-контекста';
+    onError?.(message, error);
+    return { status: 'error', error: message };
+  } finally {
+    onFinally?.();
+  }
+}
+
+export async function generateAiInsightFlow({
+  prompt,
+  aiService,
+  model,
+  maxTokens,
+  preset,
+  businessContext,
+  onStart,
+  onSuccess,
+  onError,
+  onFinally,
+}) {
+  onStart?.();
+
+  try {
+    const result = await aiService.generateAiInsight({
+      prompt,
+      model,
+      max_tokens: maxTokens,
+      preset,
+      business_context: businessContext,
+    });
+    onSuccess?.(result);
+    return { status: 'success', result };
+  } catch (error) {
+    const message = error.message || 'Не удалось получить AI-ответ';
+    onError?.(message, error);
+    return { status: 'error', error: message };
+  } finally {
+    onFinally?.();
+  }
+}
+
 export function createAiAssistantPageContext({
   selectedClientId,
   selectedClient,
