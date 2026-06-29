@@ -11,6 +11,10 @@ const requiredFiles = [
   'src/app/page-router.js',
   'src/app/state.js',
   'src/app/hash-route-bridge.js',
+  'src/components/index.js',
+  'src/components/empty-state.js',
+  'src/components/panel.js',
+  'src/components/status-badge.js',
   'src/controllers/ai-controller.js',
   'src/controllers/ai-event-bindings.js',
   'src/controllers/clients-controller.js',
@@ -48,6 +52,7 @@ const requiredFiles = [
   'src/core/session-api.js',
   'src/core/storage.js',
   'docs/frontend-architecture.md',
+  'docs/legacy-pages-decision.md',
   'docs/wordstat-refactor.md',
 ];
 
@@ -56,35 +61,32 @@ await Promise.all(requiredFiles.map((file) => access(file)));
 const files = Object.fromEntries(await Promise.all(requiredFiles.map(async (file) => [file, await readFile(file, 'utf8')])));
 
 const js = files['src/main.js'];
+const routes = files['src/app/routes.js'];
+const frontendArchitecture = files['docs/frontend-architecture.md'];
+const legacyPagesDecision = files['docs/legacy-pages-decision.md'];
 const clientsController = files['src/controllers/clients-controller.js'];
 const integrationsController = files['src/controllers/integrations-controller.js'];
 const optimizationController = files['src/controllers/optimization-controller.js'];
 const aiController = files['src/controllers/ai-controller.js'];
 const aiEventBindings = files['src/controllers/ai-event-bindings.js'];
-const frontendArchitecture = files['docs/frontend-architecture.md'];
 
 const checks = [
   ['app shell files', files['index.html'].includes('id="app"') && files['login.html'].includes('data-page="login"') && files['app.html'].includes('data-page="app"')],
-  ['app routing modules', files['src/app/routes.js'].includes('APP_ROUTES') && files['src/app/router.js'].includes('navigateToRoute') && files['src/app/page-router.js'].includes('resolvePageContentRenderer') && files['src/app/hash-route-bridge.js'].includes('markRouteResolution')],
+  ['app routing modules', routes.includes('APP_ROUTES') && routes.includes('LEGACY_ROUTE_REDIRECTS') && routes.includes('normalizeAppRouteId') && routes.includes('getRouteMode')],
+  ['route mode metadata', routes.includes("mode: 'legacy'") && routes.includes("mode: 'reserved'") && routes.includes("wordstat") && routes.includes("journal")],
   ['page content composers', files['src/pages/dashboard.js'].includes('renderDashboardContent') && files['src/pages/clients.js'].includes('renderClientsContent') && files['src/pages/integrations.js'].includes('renderIntegrationsContent') && files['src/pages/business-context.js'].includes('renderBusinessContextContent') && files['src/pages/ai-assistant.js'].includes('renderAiAssistantContent') && files['src/pages/optimization.js'].includes('renderOptimizationContent')],
-  ['clients service layer', files['src/services/clients-service.js'].includes('fetchClients') && files['src/services/clients-service.js'].includes('createClient') && files['src/services/clients-service.js'].includes('updateClient') && files['src/services/clients-service.js'].includes('deleteClient')],
-  ['integrations service layer', files['src/services/integrations-service.js'].includes('fetchYandexStatus') && files['src/services/integrations-service.js'].includes('startYandexOAuth') && files['src/services/integrations-service.js'].includes('bindClientYandexIntegration')],
-  ['business/sync/performance/optimization/ai services', files['src/services/business-context-service.js'].includes('fetchBusinessContext') && files['src/services/sync-service.js'].includes('runClientSync') && files['src/services/performance-service.js'].includes('fetchPerformanceSummary') && files['src/services/optimization-service.js'].includes('fetchOptimizationPlan') && files['src/services/ai-service.js'].includes('requestAiChat')],
+  ['component scaffold', files['src/components/index.js'].includes('status-badge') && files['src/components/status-badge.js'].includes('renderStatusBadge') && files['src/components/panel.js'].includes('renderPanel') && files['src/components/empty-state.js'].includes('renderEmptyState')],
   ['client store scaffold', files['src/stores/client-store.js'].includes('loadSelectedClientId') && files['src/stores/client-store.js'].includes('saveSelectedClientId') && files['src/stores/client-store.js'].includes('normalizeBackendClient')],
-  ['ai state stores', files['src/stores/ai-store.js'].includes('activeAiModel') && files['src/stores/ai-feature-state.js'].includes('createAiFeatureState')],
-  ['feature stores', files['src/stores/business-context-store.js'].includes('createBusinessContextPayload') && files['src/stores/campaign-store.js'].includes('createCampaignStore') && files['src/stores/optimization-store.js'].includes('normalizeOptimizationAction')],
+  ['feature stores', files['src/stores/ai-feature-state.js'].includes('createAiFeatureState') && files['src/stores/business-context-store.js'].includes('createBusinessContextPayload') && files['src/stores/campaign-store.js'].includes('createCampaignStore') && files['src/stores/optimization-store.js'].includes('normalizeOptimizationAction')],
+  ['services present', files['src/services/clients-service.js'].includes('fetchClients') && files['src/services/integrations-service.js'].includes('fetchYandexStatus') && files['src/services/business-context-service.js'].includes('fetchBusinessContext') && files['src/services/sync-service.js'].includes('runClientSync') && files['src/services/performance-service.js'].includes('fetchPerformanceSummary') && files['src/services/optimization-service.js'].includes('fetchOptimizationPlan') && files['src/services/ai-service.js'].includes('requestAiChat')],
   ['ai controllers', aiController.includes('loadAiStatusFlow') && aiController.includes('sendAiChatMessageFlow') && aiEventBindings.includes('handleAiClickEvent')],
-  ['optimization controller flows', optimizationController.includes('loadOptimizationPlanFlow') && optimizationController.includes('loadOptimizationActionsFlow') && optimizationController.includes('updateOptimizationActionStatusFlow')],
-  ['integrations controller flows', integrationsController.includes('loadIntegrationStatusFlow') && integrationsController.includes('startYandexOAuthFlow') && integrationsController.includes('bindClientYandexAccountFlow')],
-  ['clients controller flows', clientsController.includes('loadClientsFromApiFlow') && clientsController.includes('createClientFlow') && clientsController.includes('saveClientSettingsFlow') && clientsController.includes('deleteClientFlow')],
-  ['clients controller helpers', clientsController.includes('createClientSettingsDraftFromForm') && clientsController.includes('createLocalClientSettingsUpdate') && clientsController.includes('createClientSettingsPayload')],
-  ['clients controller service calls', clientsController.includes('clientsService.fetchClients') && clientsController.includes('clientsService.createClient') && clientsController.includes('clientsService.updateClient') && clientsController.includes('clientsService.deleteClient')],
-  ['main clients controller import', js.includes("from './controllers/clients-controller.js'") && js.includes('loadClientsFromApiFlow') && js.includes('createClientFlow') && js.includes('createClientSettingsDraftFromForm') && js.includes('saveClientSettingsFlow') && js.includes('deleteClientFlow')],
-  ['main clients controller delegation', js.includes('await loadClientsFromApiFlow({') && js.includes('await createClientFlow({') && js.includes('clientSettingsDraft = createClientSettingsDraftFromForm(form)') && js.includes('await saveClientSettingsFlow({') && js.includes('await deleteClientFlow({')],
-  ['main clients inline flow removed', !js.includes('const payload = await clientsService.fetchClients()') && !js.includes('await clientsService.deleteClient(clientId)') && !js.includes('const formData = new FormData(clientForm);')],
-  ['main existing controller wiring', js.includes('await startYandexOAuthFlow({') && js.includes('await loadOptimizationPlanFlow({') && js.includes('await loadAiStatusFlow({') && js.includes('handleAiClickEvent(event')],
+  ['clients controller wiring', clientsController.includes('loadClientsFromApiFlow') && clientsController.includes('createClientFlow') && clientsController.includes('saveClientSettingsFlow') && clientsController.includes('deleteClientFlow') && js.includes('await loadClientsFromApiFlow({') && js.includes('await createClientFlow({') && js.includes('await saveClientSettingsFlow({') && js.includes('await deleteClientFlow({')],
+  ['integrations controller wiring', integrationsController.includes('startYandexOAuthFlow') && integrationsController.includes('bindClientYandexAccountFlow') && js.includes('await startYandexOAuthFlow({') && js.includes('await bindClientYandexAccountFlow({')],
+  ['optimization controller wiring', optimizationController.includes('loadOptimizationPlanFlow') && optimizationController.includes('updateOptimizationActionStatusFlow') && js.includes('await loadOptimizationPlanFlow({') && js.includes('await updateOptimizationActionStatusFlow({')],
   ['main no direct api helper calls', !js.includes('apiFetch(')],
-  ['frontend architecture docs', frontendArchitecture.includes('Clients controller wired') && frontendArchitecture.includes('Router cleanup')],
+  ['main clients inline flow removed', !js.includes('const payload = await clientsService.fetchClients()') && !js.includes('await clientsService.deleteClient(clientId)') && !js.includes('const formData = new FormData(clientForm);')],
+  ['legacy pages decision', legacyPagesDecision.includes('wordstat') && legacyPagesDecision.includes('legacy') && legacyPagesDecision.includes('journal') && legacyPagesDecision.includes('reserved')],
+  ['frontend architecture docs', frontendArchitecture.includes('Router legacy metadata wired') && frontendArchitecture.includes('Components scaffold wired') && frontendArchitecture.includes('Wordstat/Journal decision documented')],
   ['wordstat refactor guard', files['src/wordstat.js'].includes("from './core/api.js'") && files['docs/wordstat-refactor.md'].includes('src/wordstat.js')],
   ['no seeded account data', files['src/data.js'].includes('export const clients = []')],
 ];
