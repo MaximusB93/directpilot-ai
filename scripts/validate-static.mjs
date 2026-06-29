@@ -13,6 +13,7 @@ const requiredFiles = [
   'src/app/page-router.js',
   'src/app/state.js',
   'src/app/hash-route-bridge.js',
+  'src/controllers/ai-controller.js',
   'src/pages/index.js',
   'src/pages/dashboard.js',
   'src/pages/clients.js',
@@ -62,6 +63,7 @@ const appRouter = await readFile('src/app/router.js', 'utf8');
 const appPageRouter = await readFile('src/app/page-router.js', 'utf8');
 const appState = await readFile('src/app/state.js', 'utf8');
 const hashRouteBridge = await readFile('src/app/hash-route-bridge.js', 'utf8');
+const aiController = await readFile('src/controllers/ai-controller.js', 'utf8');
 const pagesRegistry = await readFile('src/pages/index.js', 'utf8');
 const dashboardPage = await readFile('src/pages/dashboard.js', 'utf8');
 const clientsPage = await readFile('src/pages/clients.js', 'utf8');
@@ -113,6 +115,8 @@ const checks = [
   ['app state foundation', appState.includes('getAppState') && appState.includes('setSelectedClientId') && appState.includes('directpilot:state-change')],
   ['hash route bridge', hashRouteBridge.includes('resolveAppPage') && hashRouteBridge.includes('markRouteResolution') && hashRouteBridge.includes('data-page-module')],
   ['hash route bridge before main', bridgeIndex !== -1 && mainIndex !== -1 && bridgeIndex < mainIndex],
+  ['ai controller state helpers', aiController.includes('createAiModelStateSnapshot') && aiController.includes('createAiChatStateSnapshot') && aiController.includes('createAiAssistantPageContext')],
+  ['ai controller store delegation', aiController.includes("from '../stores/ai-store.js'") && aiController.includes('aiStore.activeAiModel') && aiController.includes('aiStore.activeAiBudget') && aiController.includes('aiStore.createAiChatRequestPayload') && aiController.includes('aiStore.createAiPromptDebugParams')],
   ['pages registry', pagesRegistry.includes('APP_PAGES') && pagesRegistry.includes('PAGE_CONTRACTS') && pagesRegistry.includes('PAGE_RENDERERS') && pagesRegistry.includes('PAGE_CONTENT_RENDERERS') && pagesRegistry.includes('clientsPageContract') && pagesRegistry.includes('integrationsPageContract')],
   ['clients page contract', clientsPage.includes('CLIENTS_PAGE_ID') && clientsPage.includes('legacyRenderer') && clientsPage.includes('renderClients')],
   ['integrations page contract', integrationsPage.includes('INTEGRATIONS_PAGE_ID') && integrationsPage.includes('legacyRenderer') && integrationsPage.includes('renderIntegrations')],
@@ -171,8 +175,10 @@ const checks = [
   ['main no duplicated async', !js.includes('async async function')],
   ['main ai store import', js.includes("import * as aiStore from './stores/ai-store.js'") && js.includes('const CUSTOM_MODEL_VALUE = aiStore.CUSTOM_MODEL_VALUE')],
   ['main ai store initial state wiring', js.includes('aiStore.createInitialAiModelState()') && js.includes('aiStore.createInitialAiChatState()') && js.includes('aiStore.createInitialAiGenerationState()')],
-  ['main ai current state adapters', js.includes('function currentAiModelState()') && js.includes('function currentAiChatState()') && js.includes('selectedCampaignName: aiChatSelectedCampaignName')],
-  ['main ai store helper delegation', js.includes('return aiStore.activeAiModel(currentAiModelState())') && js.includes('return aiStore.activeAiBudget(currentAiModelState())') && js.includes('return aiStore.createAiChatRequestPayload({') && js.includes('return aiStore.createAiPromptDebugParams(currentAiModelState(), aiChatSelectedCampaignName)')],
+  ['main ai controller import', js.includes("from './controllers/ai-controller.js'") && js.includes('createAiModelStateSnapshot') && js.includes('createAiChatStateSnapshot') && js.includes('createAiAssistantPageContext')],
+  ['main ai current state adapters', js.includes('function currentAiModelState()') && js.includes('return createAiModelStateSnapshot({') && js.includes('function currentAiChatState()') && js.includes('return createAiChatStateSnapshot({')],
+  ['main ai controller helper delegation', js.includes('return selectActiveAiModel(currentAiModelState())') && js.includes('return selectActiveAiBudget(currentAiModelState())') && js.includes('return createAiChatRequestPayload({') && js.includes('return createAiPromptDebugParams(currentAiModelState(), aiChatSelectedCampaignName)')],
+  ['main ai page context delegation', js.includes('function aiAssistantPageContext()') && js.includes('return createAiAssistantPageContext({') && js.includes('campaignOptions: campaignOptions()')],
   ['main ai chat store delegation', js.includes('aiStore.addAiChatMessage(currentAiChatState()') && js.includes('aiChatRequestPayload(text)') && js.includes('aiStore.normalizeAiStatus(await aiService.fetchOpenRouterStatus())')],
   ['main clients content wiring', js.includes("const contentRenderer = resolvePageContentRenderer('clients')") && js.includes('return renderShell(contentRenderer({') && js.includes('selectedClient: currentClient()') && js.includes('clientSettingsDraft') && js.includes('clientSettingsSaving') && js.includes('clientSettingsStatus')],
   ['main campaign store wiring', js.includes("import * as campaignStore from './stores/campaign-store.js'") && js.includes('const campaignsStore = campaignStore.createCampaignStore()') && js.includes('return campaignsStore.getCampaignOptions(perfSummary)')],
@@ -193,11 +199,11 @@ const checks = [
   ['no seeded account data', data.includes('export const clients = []') && !data.includes('fgrf.ru') && !data.includes('Интернет-магазин мебели')],
   ['client add form', js.includes('data-client-form') && js.includes('directpilot_clients')],
   ['autopilot rules', data.includes('autopilotRules')],
-  ['integrations view', js.includes('renderIntegrations') && js.includes('data-integration="yandex-direct"')],
+  ['integrations view', js.includes('renderIntegrations') && integrationsPage.includes('data-integration="yandex-direct"')],
   ['openrouter ai view', js.includes('renderAiAssistant') && aiService.includes('/ai/openrouter/generate') && css.includes('.aiGrid')],
-  ['custom openrouter model input', js.includes('CUSTOM_MODEL_VALUE') && js.includes('data-ai-custom-model') && js.includes('activeAiModel()')],
+  ['custom openrouter model input', js.includes('CUSTOM_MODEL_VALUE') && aiAssistantPage.includes('data-ai-custom-model') && js.includes('activeAiModel()')],
   ['client ai recommendations', aiService.includes('/clients/${clientId}/ai/recommendations') && css.includes('.aiDraftGrid')],
-  ['mcp ai chat', aiService.includes('/ai/chat') && js.includes('renderAiChat') && css.includes('.aiChatPanel')],
+  ['mcp ai chat', aiService.includes('/ai/chat') && aiAssistantPage.includes('renderAiChat') && css.includes('.aiChatPanel')],
   ['no frontend auth bypass', !js.includes('demo-session') && !js.includes('data-demo-login')],
   ['no hardcoded OpenRouter secret', !js.includes('sk-or-') && !data.includes('sk-or-')],
 ];
