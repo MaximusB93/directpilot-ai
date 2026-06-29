@@ -88,7 +88,7 @@ data-route-mode="module|legacy"
 data-page-module="dashboard"
 ```
 
-This is a temporary debugging and migration aid while `src/main.js` still owns most renderers.
+This is a temporary debugging and migration aid while `src/main.js` still owns app orchestration.
 
 ## Page modules
 
@@ -163,17 +163,27 @@ renderOptimizationContent
 
 The optimization content composer is registered in `PAGE_CONTENT_RENDERERS`, and `src/main.js` now routes `renderOptimization()` through `renderOptimizationContent(context)`. The event handlers still live in `src/main.js`, so existing `data-load-optimization-plan`, `data-load-optimization-actions`, `data-create-optimization-drafts`, `data-update-optimization-action` and `data-preview-optimization-action` actions keep working.
 
-Other page modules are currently contract-only. They document required context and legacy renderer names before we move their markup.
+`src/pages/ai-assistant.js` now exposes `renderAiAssistantContent(context)` and these pure HTML builder slices:
+
+```text
+renderAiAssistantIntro
+renderAiStatusPanel
+renderAiPromptDebugPanel
+renderAiChat
+renderClientAiRecommendations
+renderAiQuickActions
+renderAiAssistantContent
+```
+
+The AI assistant content composer is registered in `PAGE_CONTENT_RENDERERS`, and `src/main.js` now routes `renderAiAssistant()` through `renderAiAssistantContent(context)`. The event handlers still live in `src/main.js`, so existing model settings, prompt debug, chat, sample prompts, client recommendations and quick prompt actions keep working.
 
 Current contract-only modules:
 
 ```text
-ai
+none
 ```
 
-Recommended extraction order:
-
-1. `ai` — highest state density: chat, model settings, prompt inspector, tool traces and recommendations.
+All core page content composers are now wired. The next work is no longer page markup extraction, but state and event-handler extraction.
 
 ## Service layer
 
@@ -228,11 +238,14 @@ main clients content wiring
 main campaign store wiring
 main business context content wiring
 main integrations content wiring
+main ai assistant content wiring
 main optimization content wiring
 business context content composer
 business context content registry
 integrations content composer
 integrations content registry
+ai assistant content composer
+ai assistant content registry
 optimization content composer
 optimization content registry
 ```
@@ -264,7 +277,7 @@ Preferred sequence:
 17. Move `business-context` page markup into its page content composer.
 18. Move `integrations` page markup into its page content composer.
 19. Move `optimization` page markup into its page content composer.
-20. Move `ai` page last because it has the densest state and request flow.
+20. Move `ai` page markup into its page content composer.
 
 ## Current progress snapshot
 
@@ -280,11 +293,12 @@ Clients content composer wired
 Business Context content composer wired
 Integrations content composer wired
 Optimization content composer wired
+AI Assistant content composer wired
 static validator guards service/store/page wiring
 ```
 
 Next iteration:
 
 ```text
-Extract `ai` into `src/pages/ai-assistant.js` content composer and leave `src/main.js` as a thin wrapper.
+Split AI state/event handlers from `src/main.js` into dedicated AI store/controller modules.
 ```
