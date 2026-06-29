@@ -48,6 +48,7 @@ src/stores/
   index.js
   client-store.js
   ai-store.js
+  ai-feature-state.js
   campaign-store.js
 
 src/components/
@@ -179,7 +180,7 @@ renderAiQuickActions
 renderAiAssistantContent
 ```
 
-The AI assistant content composer is registered in `PAGE_CONTENT_RENDERERS`, and `src/main.js` now routes `renderAiAssistant()` through `renderAiAssistantContent(context)`. Model settings, prompt debug, chat, sample prompts, client recommendations and quick prompt actions now route through `src/controllers/ai-event-bindings.js` while state mutation still happens in `src/main.js` callbacks.
+The AI assistant content composer is registered in `PAGE_CONTENT_RENDERERS`, and `src/main.js` now routes `renderAiAssistant()` through `renderAiAssistantContent(context)`. Model settings, prompt debug, chat, sample prompts, client recommendations and quick prompt actions now route through `src/controllers/ai-event-bindings.js` while state mutation happens through the `aiFeatureState` facade in `src/main.js`.
 
 Current contract-only modules:
 
@@ -210,9 +211,10 @@ ai-service.js                 OpenRouter status, generation, chat, recommendatio
 Store scaffolds now exist for:
 
 ```text
-client-store.js     selected client id, selected client resolution, localStorage key helpers
-ai-store.js         initial AI chat/model/generation state, AI budget helpers, chat payload builders
-campaign-store.js   campaign names, campaign ids, performance summary campaign options and filtering helpers
+client-store.js        selected client id, selected client resolution, localStorage key helpers
+ai-store.js            initial AI chat/model/generation state, AI budget helpers, chat payload builders
+ai-feature-state.js    AI feature state facade split into model/generation/chat sections
+campaign-store.js      campaign names, campaign ids, performance summary campaign options and filtering helpers
 ```
 
 They are intentionally small until `main.js` stops owning all mutable state.
@@ -220,9 +222,10 @@ They are intentionally small until `main.js` stops owning all mutable state.
 Current wiring:
 
 ```text
-client-store.js     wired into selected client loading/saving and client normalization
-ai-store.js         wired into initial AI state, AI helper delegation, chat payloads and AI status normalization
-campaign-store.js   wired into `campaignOptions()` through `campaignsStore.getCampaignOptions(perfSummary)`
+client-store.js        wired into selected client loading/saving and client normalization
+ai-store.js            wired into AI helpers, chat payloads, status normalization and ai-feature-state initial values
+ai-feature-state.js    wired into `src/main.js` as `aiFeatureState.model`, `aiFeatureState.generation` and `aiFeatureState.chat`
+campaign-store.js      wired into `campaignOptions()` through `campaignsStore.getCampaignOptions(perfSummary)`
 ```
 
 ## Controller layer
@@ -239,25 +242,28 @@ ai-event-bindings.js   AI submit/input/change/click event routing for model sett
 Current AI controller wiring:
 
 ```text
-currentAiModelState() delegates to createAiModelStateSnapshot(...)
-currentAiChatState() delegates to createAiChatStateSnapshot(...)
+currentAiModelState() delegates to createAiModelStateSnapshot(...) with aiFeatureState.model
+currentAiChatState() delegates to createAiChatStateSnapshot(...) with aiFeatureState.chat
 activeAiModel()/activeAiBudget() delegate through ai-controller.js
 aiChatRequestPayload()/aiPromptDebugParams() delegate through ai-controller.js
-aiAssistantPageContext() delegates to createAiAssistantPageContext(...)
-loadAiStatus() delegates to loadAiStatusFlow(...)
-loadAiPromptDebug() delegates to loadAiPromptDebugFlow(...)
-generateAiInsight() delegates to generateAiInsightFlow(...)
-requestAiRecommendations() delegates to requestAiRecommendationsFlow(...)
-sendAiChatMessage() delegates to sendAiChatMessageFlow(...)
-saveAiMemoryNote() delegates to saveAiMemoryNoteFlow(...)
+aiAssistantPageContext() delegates to createAiAssistantPageContext(...) with aiFeatureState fields
+loadAiStatus() delegates to loadAiStatusFlow(...) and writes aiFeatureState.model.status
+loadAiPromptDebug() delegates to loadAiPromptDebugFlow(...) and writes aiFeatureState.generation
+requestAiRecommendations() delegates to requestAiRecommendationsFlow(...) and writes aiFeatureState.generation
+sendAiChatMessage() delegates to sendAiChatMessageFlow(...) and writes aiFeatureState.chat
+saveAiMemoryNote() delegates to saveAiMemoryNoteFlow(...) and writes aiFeatureState.generation.memoryStatus
+generateAiInsight() delegates to generateAiInsightFlow(...) and writes aiFeatureState.generation
 AI input/change/submit/click event branches delegate to ai-event-bindings.js
 ```
 
 Still in `src/main.js` after this controller step:
 
 ```text
-AI mutable variables until a fuller feature state object replaces them
 callback wiring for AI bindings and flows
+business context mutable variables
+optimization mutable variables
+integrations mutable variables
+clients mutable variables
 ```
 
 ## Static validation
@@ -270,7 +276,9 @@ Important checks:
 main no inline apiFetch calls
 main no duplicated async
 main ai store import
-main ai store initial state wiring
+main ai feature state import
+main ai feature state wiring
+main no legacy ai globals
 main ai controller import
 main ai controller flow import
 main ai current state adapters
@@ -287,6 +295,8 @@ main business context content wiring
 main integrations content wiring
 main ai assistant content wiring
 main optimization content wiring
+ai store scaffold
+ai feature state facade
 ai controller state helpers
 ai controller store delegation
 ai controller flow helpers
@@ -337,6 +347,7 @@ Preferred sequence:
 22. Move first AI async flows into `ai-controller.js`: OpenRouter status, prompt debug and quick prompt generation.
 23. Move remaining AI async flows into `ai-controller.js`: recommendations, chat and memory note.
 24. Move AI event-handler branches into `ai-event-bindings.js`: submit, input, change and click.
+25. Add AI feature state facade and wire `src/main.js` AI state access through `aiFeatureState.model/generation/chat`.
 
 ## Current progress snapshot
 
@@ -357,11 +368,12 @@ AI controller state/context helpers wired
 AI controller status/prompt flows wired
 AI controller remaining async flows wired
 AI event bindings wired
+AI feature state facade wired
 static validator guards service/store/controller/page wiring
 ```
 
 Next iteration:
 
 ```text
-Create an AI mutable state object/store facade so `src/main.js` stops owning separate AI globals directly.
+Move Business Context model/store helpers out of `src/main.js`: normalizeBusinessContext, businessContextPayload, businessContextForAi, draft helpers and completeness helpers.
 ```
