@@ -19,6 +19,9 @@ src/app/
   state.js
   hash-route-bridge.js
 
+src/controllers/
+  ai-controller.js
+
 src/pages/
   index.js
   dashboard.js
@@ -221,6 +224,28 @@ ai-store.js         wired into initial AI state, AI helper delegation, chat payl
 campaign-store.js   wired into `campaignOptions()` through `campaignsStore.getCampaignOptions(perfSummary)`
 ```
 
+## Controller layer
+
+Controllers are the next migration layer between `src/main.js`, stores and services. They should collect feature orchestration that is too stateful for page composers and too side-effect-heavy for stores.
+
+Current controller modules:
+
+```text
+ai-controller.js   AI state snapshots, AI page context assembly, and thin delegates to AI store request builders
+```
+
+Current AI controller wiring:
+
+```text
+currentAiModelState() delegates to createAiModelStateSnapshot(...)
+currentAiChatState() delegates to createAiChatStateSnapshot(...)
+activeAiModel()/activeAiBudget() delegate through ai-controller.js
+aiChatRequestPayload()/aiPromptDebugParams() delegate through ai-controller.js
+aiAssistantPageContext() delegates to createAiAssistantPageContext(...)
+```
+
+The next controller step is to move AI async flows out of `src/main.js`: OpenRouter status, prompt debug, quick prompt generation, recommendations, chat and memory-note persistence.
+
 ## Static validation
 
 `scripts/validate-static.mjs` protects the migration from quiet regressions.
@@ -232,7 +257,10 @@ main no inline apiFetch calls
 main no duplicated async
 main ai store import
 main ai store initial state wiring
-main ai store helper delegation
+main ai controller import
+main ai current state adapters
+main ai controller helper delegation
+main ai page context delegation
 main ai chat store delegation
 main clients content wiring
 main campaign store wiring
@@ -240,6 +268,8 @@ main business context content wiring
 main integrations content wiring
 main ai assistant content wiring
 main optimization content wiring
+ai controller state helpers
+ai controller store delegation
 business context content composer
 business context content registry
 integrations content composer
@@ -278,6 +308,7 @@ Preferred sequence:
 18. Move `integrations` page markup into its page content composer.
 19. Move `optimization` page markup into its page content composer.
 20. Move `ai` page markup into its page content composer.
+21. Add AI controller state/context helpers.
 
 ## Current progress snapshot
 
@@ -294,11 +325,12 @@ Business Context content composer wired
 Integrations content composer wired
 Optimization content composer wired
 AI Assistant content composer wired
-static validator guards service/store/page wiring
+AI controller state/context helpers wired
+static validator guards service/store/controller/page wiring
 ```
 
 Next iteration:
 
 ```text
-Split AI state/event handlers from `src/main.js` into dedicated AI store/controller modules.
+Move AI async flows from `src/main.js` into `src/controllers/ai-controller.js`: loadAiStatus, loadAiPromptDebug and generateAiInsight first.
 ```
