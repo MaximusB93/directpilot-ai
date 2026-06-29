@@ -27,6 +27,12 @@ import {
   saveAiMemoryNoteFlow,
   sendAiChatMessageFlow,
 } from './controllers/ai-controller.js';
+import {
+  handleAiChangeEvent,
+  handleAiClickEvent,
+  handleAiInputEvent,
+  handleAiSubmitEvent,
+} from './controllers/ai-event-bindings.js';
 import { renderBusinessContextPanel as renderBusinessContextPanelContent } from './pages/business-context.js';
 import * as aiService from './services/ai-service.js';
 import * as businessContextService from './services/business-context-service.js';
@@ -993,7 +999,6 @@ async function startSync() {
   }
 }
 
-
 async function loadSyncJobs() {
   if (!selectedClientId || syncJobsLoading) return;
   syncJobsLoading = true;
@@ -1592,8 +1597,14 @@ app.addEventListener('input', (event) => {
   const authInput = event.target.closest('input[name="email"], input[name="code"]');
   if (authInput?.name === 'email') authEmail = authInput.value;
   if (authInput?.name === 'code') authCode = authInput.value;
-  if (event.target.matches('[data-ai-custom-model]')) customAiModel = event.target.value;
-  if (event.target.matches('[data-ai-search-query-limit]')) aiSearchQueryLimit = event.target.value;
+  handleAiInputEvent(event, {
+    setCustomModel: (value) => {
+      customAiModel = value;
+    },
+    setSearchQueryLimit: (value) => {
+      aiSearchQueryLimit = value;
+    },
+  });
   if (event.target.matches('[data-business-context-form] textarea')) {
     const form = event.target.closest('[data-business-context-form]');
     if (form) setBusinessContextDraftFromForm(form);
@@ -1605,34 +1616,32 @@ app.addEventListener('input', (event) => {
 });
 
 app.addEventListener('change', (event) => {
-  if (event.target.matches('[data-ai-model]')) {
-    selectedAiModel = event.target.value;
-    if (selectedAiModel !== CUSTOM_MODEL_VALUE) customAiModel = event.target.value;
-    render();
-  }
-  if (event.target.matches('[data-ai-preset]')) {
-    selectedAiPreset = event.target.value;
-    render();
-  }
-  if (event.target.matches('[data-ai-max-tokens-mode]')) {
-    aiMaxTokensMode = event.target.value;
-    render();
-  }
-  if (event.target.matches('[data-ai-tool-results-mode]')) {
-    aiToolResultsMode = event.target.value;
-    render();
-  }
-  if (event.target.matches('[data-ai-chat-history-limit]')) {
-    aiChatHistoryLimit = Number(event.target.value) || 3;
-    render();
-  }
-  if (event.target.matches('[data-ai-compact-context]')) {
-    aiCompactContext = event.target.checked;
-    render();
-  }
-  if (event.target.matches('[data-ai-chat-campaign]')) {
-    aiChatSelectedCampaignName = event.target.value;
-  }
+  if (handleAiChangeEvent(event, {
+    customModelValue: CUSTOM_MODEL_VALUE,
+    setModel: (value, customValue) => {
+      selectedAiModel = value;
+      if (customValue !== undefined) customAiModel = customValue;
+    },
+    setPreset: (value) => {
+      selectedAiPreset = value;
+    },
+    setMaxTokensMode: (value) => {
+      aiMaxTokensMode = value;
+    },
+    setToolResultsMode: (value) => {
+      aiToolResultsMode = value;
+    },
+    setChatHistoryLimit: (value) => {
+      aiChatHistoryLimit = value;
+    },
+    setCompactContext: (value) => {
+      aiCompactContext = value;
+    },
+    setChatCampaign: (value) => {
+      aiChatSelectedCampaignName = value;
+    },
+    render,
+  })) return;
   if (event.target.matches('[data-optimization-action-filter]')) {
     optimizationActionFilter = event.target.value;
     optimizationActionsLoadedFor = '';
@@ -1757,12 +1766,9 @@ app.addEventListener('submit', async (event) => {
     return;
   }
 
-  const aiChatForm = event.target.closest('[data-ai-chat-form]');
-  if (aiChatForm) {
-    event.preventDefault();
-    const message = new FormData(aiChatForm).get('message')?.toString();
-    await sendAiChatMessage(message);
-  }
+  if (await handleAiSubmitEvent(event, {
+    sendChatMessage: sendAiChatMessage,
+  })) return;
 });
 
 app.addEventListener('click', async (event) => {
@@ -1880,25 +1886,16 @@ app.addEventListener('click', async (event) => {
     await deleteClient(deleteButton.dataset.deleteClient);
     return;
   }
-  if (event.target.closest('[data-ai-prompt-debug]')) {
-    await loadAiPromptDebug();
-    return;
-  }
-  if (event.target.closest('[data-client-ai-recommendations]')) {
-    await requestAiRecommendations();
-    return;
-  }
-  const sampleButton = event.target.closest('[data-ai-chat-sample]');
-  if (sampleButton) {
-    aiChatInput = sampleButton.dataset.aiChatSample || '';
-    render();
-    return;
-  }
-  const promptButton = event.target.closest('[data-ai-prompt]');
-  if (promptButton) {
-    await generateAiInsight(aiPromptFor(promptButton.dataset.aiPrompt));
-    return;
-  }
+  if (await handleAiClickEvent(event, {
+    loadPromptDebug: loadAiPromptDebug,
+    requestRecommendations: requestAiRecommendations,
+    setChatInput: (value) => {
+      aiChatInput = value;
+    },
+    generateInsight: generateAiInsight,
+    promptFor: aiPromptFor,
+    render,
+  })) return;
   const integrationButton = event.target.closest('[data-integration="yandex-direct"]');
   if (integrationButton) {
     integrationStatus.message = 'Запрашиваем OAuth URL...';
