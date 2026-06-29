@@ -3,3 +3,4 @@ export * from './ai-feature-state.js';
 export * from './business-context-store.js';
 export * from './campaign-store.js';
 export * from './client-store.js';
+export * from './optimization-store.js';
