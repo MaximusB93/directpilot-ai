@@ -231,7 +231,7 @@ Controllers are the next migration layer between `src/main.js`, stores and servi
 Current controller modules:
 
 ```text
-ai-controller.js   AI state snapshots, AI page context assembly, and thin delegates to AI store request builders
+ai-controller.js   AI state snapshots, AI page context assembly, thin delegates to AI store request builders, and first async AI flows
 ```
 
 Current AI controller wiring:
@@ -242,9 +242,20 @@ currentAiChatState() delegates to createAiChatStateSnapshot(...)
 activeAiModel()/activeAiBudget() delegate through ai-controller.js
 aiChatRequestPayload()/aiPromptDebugParams() delegate through ai-controller.js
 aiAssistantPageContext() delegates to createAiAssistantPageContext(...)
+loadAiStatus() delegates to loadAiStatusFlow(...)
+loadAiPromptDebug() delegates to loadAiPromptDebugFlow(...)
+generateAiInsight() delegates to generateAiInsightFlow(...)
 ```
 
-The next controller step is to move AI async flows out of `src/main.js`: OpenRouter status, prompt debug, quick prompt generation, recommendations, chat and memory-note persistence.
+Still in `src/main.js` after this controller step:
+
+```text
+requestAiRecommendations
+sendAiChatMessage
+saveAiMemoryNote
+AI event-handler bindings
+AI mutable variables until a fuller feature state object replaces them
+```
 
 ## Static validation
 
@@ -258,9 +269,11 @@ main no duplicated async
 main ai store import
 main ai store initial state wiring
 main ai controller import
+main ai controller flow import
 main ai current state adapters
 main ai controller helper delegation
 main ai page context delegation
+main ai controller flow delegation
 main ai chat store delegation
 main clients content wiring
 main campaign store wiring
@@ -270,6 +283,8 @@ main ai assistant content wiring
 main optimization content wiring
 ai controller state helpers
 ai controller store delegation
+ai controller flow helpers
+ai controller flow services
 business context content composer
 business context content registry
 integrations content composer
@@ -309,6 +324,7 @@ Preferred sequence:
 19. Move `optimization` page markup into its page content composer.
 20. Move `ai` page markup into its page content composer.
 21. Add AI controller state/context helpers.
+22. Move first AI async flows into `ai-controller.js`: OpenRouter status, prompt debug and quick prompt generation.
 
 ## Current progress snapshot
 
@@ -326,11 +342,12 @@ Integrations content composer wired
 Optimization content composer wired
 AI Assistant content composer wired
 AI controller state/context helpers wired
+AI controller status/prompt flows wired
 static validator guards service/store/controller/page wiring
 ```
 
 Next iteration:
 
 ```text
-Move AI async flows from `src/main.js` into `src/controllers/ai-controller.js`: loadAiStatus, loadAiPromptDebug and generateAiInsight first.
+Move the remaining AI async flows from `src/main.js` into `src/controllers/ai-controller.js`: requestAiRecommendations, sendAiChatMessage and saveAiMemoryNote.
 ```
