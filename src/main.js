@@ -40,6 +40,14 @@ import * as businessContextStore from './stores/business-context-store.js';
 import * as clientsService from './services/clients-service.js';
 import * as integrationsService from './services/integrations-service.js';
 import * as optimizationService from './services/optimization-service.js';
+import {
+  createOptimizationDraftsFromPlanFlow,
+  loadOptimizationActionsFlow,
+  loadOptimizationExecutionPreviewFlow,
+  loadOptimizationPlanFlow,
+  updateOptimizationActionStatusFlow,
+} from './controllers/optimization-controller.js';
+import * as optimizationStore from './stores/optimization-store.js';
 import * as performanceService from './services/performance-service.js';
 import * as syncService from './services/sync-service.js';
 import * as aiStore from './stores/ai-store.js';
@@ -771,42 +779,19 @@ function aiPromptFor(type) {
 }
 
 function normalizeOptimizationPlan(payload) {
-  if (!payload) return null;
-  return {
-    ...payload,
-    dailyBudgetRecommendations: Array.isArray(payload.daily_budget_recommendations) ? payload.daily_budget_recommendations : payload.dailyBudgetRecommendations || [],
-    deviceAdjustments: Array.isArray(payload.device_adjustments) ? payload.device_adjustments : payload.deviceAdjustments || [],
-    generatedAt: payload.generated_at || payload.generatedAt || '',
-  };
+  return optimizationStore.normalizeOptimizationPlan(payload);
 }
 
 function normalizeOptimizationAction(action) {
-  return {
-    ...action,
-    actionType: action.action_type || action.actionType,
-    entityType: action.entity_type || action.entityType,
-    entityId: action.entity_id || action.entityId,
-    entityName: action.entity_name || action.entityName,
-    currentValue: action.current_value ?? action.currentValue,
-    proposedValue: action.proposed_value ?? action.proposedValue,
-    createdAt: action.created_at || action.createdAt,
-    updatedAt: action.updated_at || action.updatedAt,
-  };
+  return optimizationStore.normalizeOptimizationAction(action);
 }
 
 function normalizeOptimizationPreview(payload) {
-  return {
-    ...payload,
-    actionId: payload.action_id || payload.actionId,
-    steps: Array.isArray(payload.steps) ? payload.steps : [],
-    warnings: Array.isArray(payload.warnings) ? payload.warnings : [],
-    directPayload: payload.direct_payload || payload.directPayload || null,
-    canApply: Boolean(payload.can_apply ?? payload.canApply),
-  };
+  return optimizationStore.normalizeOptimizationPreview(payload);
 }
 
 function getFilteredOptimizationActions() {
-  return optimizationActions.filter((action) => optimizationActionFilter === 'all' || action.status === optimizationActionFilter);
+  return optimizationStore.getFilteredOptimizationActions(optimizationActions, optimizationActionFilter);
 }
 
 async function loadPerformanceSummary() {
@@ -902,102 +887,137 @@ async function loadSyncJobs() {
 
 
 async function loadOptimizationPlan() {
-  if (!selectedClientId || optimizationPlanLoading) return;
-  optimizationPlanLoading = true;
-  optimizationStatus = 'Формируем план оптимизации...';
-  render();
-  try {
-    const payload = await optimizationService.fetchOptimizationPlan(selectedClientId);
-    optimizationPlan = normalizeOptimizationPlan(payload);
-    optimizationStatus = 'План оптимизации обновлён.';
-  } catch (error) {
-    optimizationStatus = error.message || 'Не удалось сформировать план оптимизации.';
-  } finally {
-    optimizationPlanLoading = false;
-    render();
-  }
+  await loadOptimizationPlanFlow({
+    selectedClientId,
+    loading: optimizationPlanLoading,
+    optimizationService,
+    onStart: (message) => {
+      optimizationPlanLoading = true;
+      optimizationStatus = message;
+      render();
+    },
+    onSuccess: (plan, message) => {
+      optimizationPlan = plan;
+      optimizationStatus = message;
+    },
+    onError: (message) => {
+      optimizationStatus = message;
+    },
+    onFinally: () => {
+      optimizationPlanLoading = false;
+      render();
+    },
+  });
 }
 
 
 async function loadOptimizationActions(force = false) {
-  if (!selectedClientId || optimizationActionsLoading) return;
-  if (!force && optimizationActionsLoadedFor === selectedClientId) return;
-  optimizationActionsLoading = true;
-  optimizationActionsStatus = 'Загружаем черновики согласования...';
-  render();
-  try {
-    const payload = await optimizationService.fetchOptimizationActions(selectedClientId, optimizationActionFilter);
-    optimizationActions = Array.isArray(payload) ? payload.map(normalizeOptimizationAction) : [];
-    optimizationActionsLoadedFor = selectedClientId;
-    optimizationActionsStatus = optimizationActions.length ? 'Черновики согласования загружены.' : 'Черновиков пока нет. Сохраните план оптимизации как черновики.';
-  } catch (error) {
-    optimizationActionsStatus = error.message || 'Не удалось загрузить черновики согласования.';
-  } finally {
-    optimizationActionsLoading = false;
-    render();
-  }
+  await loadOptimizationActionsFlow({
+    selectedClientId,
+    loading: optimizationActionsLoading,
+    loadedFor: optimizationActionsLoadedFor,
+    filter: optimizationActionFilter,
+    force,
+    optimizationService,
+    onStart: (message) => {
+      optimizationActionsLoading = true;
+      optimizationActionsStatus = message;
+      render();
+    },
+    onSuccess: (actions, loadedFor, message) => {
+      optimizationActions = actions;
+      optimizationActionsLoadedFor = loadedFor;
+      optimizationActionsStatus = message;
+    },
+    onError: (message) => {
+      optimizationActionsStatus = message;
+    },
+    onFinally: () => {
+      optimizationActionsLoading = false;
+      render();
+    },
+  });
 }
 
 async function createOptimizationDraftsFromPlan() {
-  if (!selectedClientId || optimizationActionsLoading) return;
-  optimizationActionsLoading = true;
-  optimizationActionsStatus = 'Сохраняем рекомендации как черновики...';
-  render();
-  try {
-    const payload = await optimizationService.saveOptimizationPlanAsDrafts(selectedClientId);
-    optimizationActions = Array.isArray(payload) ? payload.map(normalizeOptimizationAction) : [];
-    optimizationActionsLoadedFor = selectedClientId;
-    optimizationActionsStatus = `Сохранено черновиков: ${optimizationActions.length}.`;
-  } catch (error) {
-    optimizationActionsStatus = error.message || 'Не удалось сохранить черновики.';
-  } finally {
-    optimizationActionsLoading = false;
-    render();
-  }
+  await createOptimizationDraftsFromPlanFlow({
+    selectedClientId,
+    loading: optimizationActionsLoading,
+    optimizationService,
+    onStart: (message) => {
+      optimizationActionsLoading = true;
+      optimizationActionsStatus = message;
+      render();
+    },
+    onSuccess: (actions, loadedFor, message) => {
+      optimizationActions = actions;
+      optimizationActionsLoadedFor = loadedFor;
+      optimizationActionsStatus = message;
+    },
+    onError: (message) => {
+      optimizationActionsStatus = message;
+    },
+    onFinally: () => {
+      optimizationActionsLoading = false;
+      render();
+    },
+  });
 }
 
 
 async function updateOptimizationActionStatus(actionId, status, reviewerNote = '') {
-  if (!selectedClientId || !actionId) return;
-  optimizationActionsStatus = 'Обновляем статус черновика...';
-  render();
-  try {
-    const payload = await optimizationService.updateOptimizationAction(selectedClientId, actionId, {
-      status,
-      reviewer_note: reviewerNote,
-    });
-    const updated = normalizeOptimizationAction(payload);
-    optimizationActions = optimizationActions.map((action) => action.id === actionId ? updated : action);
-    optimizationActionsStatus = 'Статус черновика обновлён.';
-  } catch (error) {
-    optimizationActionsStatus = error.message || 'Не удалось обновить черновик.';
-  } finally {
-    render();
-  }
+  await updateOptimizationActionStatusFlow({
+    selectedClientId,
+    actionId,
+    status,
+    reviewerNote,
+    actions: optimizationActions,
+    optimizationService,
+    onStart: (message) => {
+      optimizationActionsStatus = message;
+      render();
+    },
+    onSuccess: (actions, message) => {
+      optimizationActions = actions;
+      optimizationActionsStatus = message;
+    },
+    onError: (message) => {
+      optimizationActionsStatus = message;
+    },
+    onFinally: render,
+  });
 }
 
 
 async function loadOptimizationExecutionPreview(actionId) {
-  if (!selectedClientId || !actionId) return;
-  optimizationExecutionPreviews = {
-    ...optimizationExecutionPreviews,
-    [actionId]: { loading: true, error: '', data: optimizationExecutionPreviews[actionId]?.data || null },
-  };
-  render();
-  try {
-    const payload = await optimizationService.fetchOptimizationExecutionPreview(selectedClientId, actionId);
-    optimizationExecutionPreviews = {
-      ...optimizationExecutionPreviews,
-      [actionId]: { loading: false, error: '', data: normalizeOptimizationPreview(payload) },
-    };
-  } catch (error) {
-    optimizationExecutionPreviews = {
-      ...optimizationExecutionPreviews,
-      [actionId]: { loading: false, error: error.message || 'Не удалось загрузить предпросмотр применения', data: null },
-    };
-  }
-  render();
+  await loadOptimizationExecutionPreviewFlow({
+    selectedClientId,
+    actionId,
+    currentPreview: optimizationExecutionPreviews[actionId],
+    optimizationService,
+    onStart: (targetActionId, data) => {
+      optimizationExecutionPreviews = {
+        ...optimizationExecutionPreviews,
+        [targetActionId]: { loading: true, error: '', data },
+      };
+      render();
+    },
+    onSuccess: (targetActionId, preview) => {
+      optimizationExecutionPreviews = {
+        ...optimizationExecutionPreviews,
+        [targetActionId]: { loading: false, error: '', data: preview },
+      };
+    },
+    onError: (targetActionId, message) => {
+      optimizationExecutionPreviews = {
+        ...optimizationExecutionPreviews,
+        [targetActionId]: { loading: false, error: message, data: null },
+      };
+    },
+    onFinally: render,
+  });
 }
+
 
 function renderMetricCards() {
   return `
