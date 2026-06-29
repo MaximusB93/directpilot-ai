@@ -23,6 +23,9 @@ import {
   generateAiInsightFlow,
   loadAiPromptDebugFlow,
   loadAiStatusFlow,
+  requestAiRecommendationsFlow,
+  saveAiMemoryNoteFlow,
+  sendAiChatMessageFlow,
 } from './controllers/ai-controller.js';
 import { renderBusinessContextPanel as renderBusinessContextPanelContent } from './pages/business-context.js';
 import * as aiService from './services/ai-service.js';
@@ -721,17 +724,11 @@ async function loadAiPromptDebug() {
 
 
 async function requestAiRecommendations() {
-  if (!selectedClientId) {
-    aiRecommendationsError = 'Сначала выберите клиента.';
-    render();
-    return;
-  }
-  aiRecommendationsLoading = true;
-  aiRecommendationsError = '';
-  render();
-  try {
-    const budget = activeAiBudget();
-    const payload = await aiService.fetchClientAiRecommendations(selectedClientId, {
+  const budget = activeAiBudget();
+
+  await requestAiRecommendationsFlow({
+    selectedClientId,
+    params: {
       model: activeAiModel(),
       preset: selectedAiPreset,
       max_tokens: budget.maxTokens,
@@ -741,61 +738,85 @@ async function requestAiRecommendations() {
       compact_context: aiCompactContext,
       include_raw_tool_results: aiToolResultsMode === 'raw' || budget.includeRawToolResults,
       search_query_limit: Number(aiSearchQueryLimit) || 20,
-    });
-    clientAiRecommendations = payload;
-    if (payload.business_context_memory_note) {
-      await saveAiMemoryNote(payload.business_context_memory_note);
-    }
-  } catch (error) {
-    aiRecommendationsError = error.message || 'Не удалось сформировать AI-рекомендации';
-  } finally {
-    aiRecommendationsLoading = false;
-    render();
-  }
+    },
+    aiService,
+    saveMemoryNote: saveAiMemoryNote,
+    onMissingClient: (message) => {
+      aiRecommendationsError = message;
+      render();
+    },
+    onStart: () => {
+      aiRecommendationsLoading = true;
+      aiRecommendationsError = '';
+      render();
+    },
+    onSuccess: (payload) => {
+      clientAiRecommendations = payload;
+    },
+    onError: (message) => {
+      aiRecommendationsError = message;
+    },
+    onFinally: () => {
+      aiRecommendationsLoading = false;
+      render();
+    },
+  });
 }
 
 
 async function sendAiChatMessage(message) {
-  const text = String(message || aiChatInput || '').trim();
-  if (!text || aiChatLoading) return;
-  aiChatMessages = aiStore.addAiChatMessage(currentAiChatState(), { role: 'user', content: text }).messages;
-  aiChatInput = '';
-  aiChatLoading = true;
-  aiChatError = '';
-  aiChatErrorDetails = null;
-  render();
-  try {
-    const payload = await aiService.requestAiChat(aiChatRequestPayload(text));
-    aiChatMessages = aiStore.addAiChatMessage(currentAiChatState(), { role: 'assistant', content: payload.answer || 'Нет ответа.' }).messages;
-    aiChatToolTraces = payload.tool_traces || [];
-    if (payload.business_context_memory_note) {
-      await saveAiMemoryNote(payload.business_context_memory_note);
-    }
-  } catch (error) {
-    const payload = error.payload || {};
-    aiChatError = error.message || 'AI-чат не вернул ответ';
-    aiChatErrorDetails = payload;
-    if (payload.retry_suggestion) {
-      aiChatMessages = aiStore.addAiChatMessage(currentAiChatState(), { role: 'assistant', content: `Не смог собрать ответ: ${payload.retry_suggestion}` }).messages;
-    }
-  } finally {
-    aiChatLoading = false;
-    render();
-  }
+  await sendAiChatMessageFlow({
+    message: message || aiChatInput,
+    loading: aiChatLoading,
+    currentChatState: currentAiChatState,
+    createRequestPayload: aiChatRequestPayload,
+    addChatMessage: aiStore.addAiChatMessage,
+    aiService,
+    saveMemoryNote: saveAiMemoryNote,
+    onStart: ({ messages }) => {
+      aiChatMessages = messages;
+      aiChatInput = '';
+      aiChatLoading = true;
+      aiChatError = '';
+      aiChatErrorDetails = null;
+      render();
+    },
+    onSuccess: ({ messages, toolTraces }) => {
+      aiChatMessages = messages;
+      aiChatToolTraces = toolTraces;
+    },
+    onError: ({ message: errorMessage, payload, messages }) => {
+      aiChatError = errorMessage;
+      aiChatErrorDetails = payload;
+      if (messages) {
+        aiChatMessages = messages;
+      }
+    },
+    onFinally: () => {
+      aiChatLoading = false;
+      render();
+    },
+  });
 }
 
 
 async function saveAiMemoryNote(note) {
-  if (!selectedClientId || !note) return;
-  aiMemoryStatus = 'Сохраняем вывод в память проекта...';
-  try {
-    const payload = await businessContextService.saveBusinessContextMemoryNote(selectedClientId, note);
-    businessContext = normalizeBusinessContext(payload);
-    businessContextDraft = businessContext;
-    aiMemoryStatus = 'AI-вывод сохранён в память проекта.';
-  } catch (error) {
-    aiMemoryStatus = error.message || 'Не удалось сохранить вывод в память проекта.';
-  }
+  await saveAiMemoryNoteFlow({
+    selectedClientId,
+    note,
+    businessContextService,
+    onStart: (message) => {
+      aiMemoryStatus = message;
+    },
+    onSuccess: (payload, message) => {
+      businessContext = normalizeBusinessContext(payload);
+      businessContextDraft = businessContext;
+      aiMemoryStatus = message;
+    },
+    onError: (message) => {
+      aiMemoryStatus = message;
+    },
+  });
 }
 
 
