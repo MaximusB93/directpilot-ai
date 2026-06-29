@@ -15,6 +15,7 @@ const requiredFiles = [
   'src/app/hash-route-bridge.js',
   'src/controllers/ai-controller.js',
   'src/controllers/ai-event-bindings.js',
+  'src/controllers/optimization-controller.js',
   'src/pages/index.js',
   'src/pages/dashboard.js',
   'src/pages/clients.js',
@@ -36,6 +37,7 @@ const requiredFiles = [
   'src/stores/ai-feature-state.js',
   'src/stores/business-context-store.js',
   'src/stores/campaign-store.js',
+  'src/stores/optimization-store.js',
   'src/main.js',
   'src/login.js',
   'src/data.js',
@@ -67,6 +69,7 @@ const appState = await readFile('src/app/state.js', 'utf8');
 const hashRouteBridge = await readFile('src/app/hash-route-bridge.js', 'utf8');
 const aiController = await readFile('src/controllers/ai-controller.js', 'utf8');
 const aiEventBindings = await readFile('src/controllers/ai-event-bindings.js', 'utf8');
+const optimizationController = await readFile('src/controllers/optimization-controller.js', 'utf8');
 const pagesRegistry = await readFile('src/pages/index.js', 'utf8');
 const dashboardPage = await readFile('src/pages/dashboard.js', 'utf8');
 const clientsPage = await readFile('src/pages/clients.js', 'utf8');
@@ -88,6 +91,7 @@ const aiStore = await readFile('src/stores/ai-store.js', 'utf8');
 const aiFeatureState = await readFile('src/stores/ai-feature-state.js', 'utf8');
 const businessContextStore = await readFile('src/stores/business-context-store.js', 'utf8');
 const campaignStore = await readFile('src/stores/campaign-store.js', 'utf8');
+const optimizationStore = await readFile('src/stores/optimization-store.js', 'utf8');
 const js = await readFile('src/main.js', 'utf8');
 const loginJs = await readFile('src/login.js', 'utf8');
 const data = await readFile('src/data.js', 'utf8');
@@ -139,23 +143,24 @@ const checks = [
   ['performance service layer', performanceService.includes('fetchPerformanceSummary')],
   ['optimization service layer', optimizationService.includes('fetchOptimizationPlan') && optimizationService.includes('fetchOptimizationActions') && optimizationService.includes('fetchOptimizationExecutionPreview')],
   ['ai service layer', aiService.includes('fetchOpenRouterStatus') && aiService.includes('requestAiChat') && aiService.includes('fetchClientAiRecommendations') && aiService.includes('generateAiInsight')],
-  ['stores exports', storesIndex.includes('client-store') && storesIndex.includes('ai-store') && storesIndex.includes('ai-feature-state') && storesIndex.includes('business-context-store') && storesIndex.includes('campaign-store')],
+  ['stores exports', storesIndex.includes('client-store') && storesIndex.includes('ai-store') && storesIndex.includes('ai-feature-state') && storesIndex.includes('business-context-store') && storesIndex.includes('campaign-store') && storesIndex.includes('optimization-store')],
   ['client store scaffold', clientStore.includes('loadSelectedClientId') && clientStore.includes('saveSelectedClientId') && clientStore.includes('ensureSelectedClientId')],
   ['ai store scaffold', aiStore.includes('createInitialAiChatState') && aiStore.includes('createInitialAiModelState') && aiStore.includes('CUSTOM_MODEL_VALUE')],
   ['ai store helpers', aiStore.includes('normalizeAiStatus') && aiStore.includes('activeAiModel') && aiStore.includes('activeAiBudget') && aiStore.includes('addAiChatMessage')],
   ['ai feature state facade', aiFeatureState.includes('createAiFeatureState') && aiFeatureState.includes('model: {') && aiFeatureState.includes('generation: {') && aiFeatureState.includes('chat: {')],
-  ['ai feature state reset helper', aiFeatureState.includes('resetAiClientScopedState') && aiFeatureState.includes('clientRecommendations = null')],
   ['business context store helpers', businessContextStore.includes('normalizeBusinessContext') && businessContextStore.includes('createBusinessContextPayload') && businessContextStore.includes('createBusinessContextDraftFromForm') && businessContextStore.includes('createBusinessContextForAi') && businessContextStore.includes('calculateBusinessContextCompletenessScore')],
   ['business context store field mapping', businessContextStore.includes('company_name') && businessContextStore.includes('companyName') && businessContextStore.includes('memory_notes') && businessContextStore.includes('memoryNotes')],
   ['campaign store scaffold', campaignStore.includes('DEFAULT_CAMPAIGN_FILTER') && campaignStore.includes('createCampaignStore') && campaignStore.includes('getCampaignOptions')],
   ['campaign store performance helpers', campaignStore.includes('getCampaignsFromPerformanceSummary') && campaignStore.includes('filterCampaignsBySelectedName')],
+  ['optimization store helpers', optimizationStore.includes('normalizeOptimizationPlan') && optimizationStore.includes('normalizeOptimizationAction') && optimizationStore.includes('normalizeOptimizationPreview') && optimizationStore.includes('normalizeOptimizationActions') && optimizationStore.includes('getFilteredOptimizationActions') && optimizationStore.includes('replaceOptimizationAction')],
+  ['optimization store field mapping', optimizationStore.includes('daily_budget_recommendations') && optimizationStore.includes('dailyBudgetRecommendations') && optimizationStore.includes('direct_payload') && optimizationStore.includes('directPayload')],
   ['ai controller state helpers', aiController.includes('createAiModelStateSnapshot') && aiController.includes('createAiChatStateSnapshot') && aiController.includes('createAiAssistantPageContext')],
-  ['ai controller store delegation', aiController.includes("from '../stores/ai-store.js'") && aiController.includes('aiStore.activeAiModel') && aiController.includes('aiStore.activeAiBudget')],
   ['ai controller flow helpers', aiController.includes('loadAiStatusFlow') && aiController.includes('loadAiPromptDebugFlow') && aiController.includes('generateAiInsightFlow')],
   ['ai controller remaining flow helpers', aiController.includes('requestAiRecommendationsFlow') && aiController.includes('sendAiChatMessageFlow') && aiController.includes('saveAiMemoryNoteFlow')],
   ['ai event bindings helpers', aiEventBindings.includes('handleAiSubmitEvent') && aiEventBindings.includes('handleAiInputEvent') && aiEventBindings.includes('handleAiChangeEvent') && aiEventBindings.includes('handleAiClickEvent')],
-  ['ai event bindings selectors', aiEventBindings.includes('data-ai-chat-form') && aiEventBindings.includes('data-ai-custom-model') && aiEventBindings.includes('data-ai-prompt')],
-  ['frontend architecture docs', frontendArchitecture.includes('Business Context store helpers wired') && frontendArchitecture.includes('Move Optimization controller/store')],
+  ['optimization controller flows', optimizationController.includes('loadOptimizationPlanFlow') && optimizationController.includes('loadOptimizationActionsFlow') && optimizationController.includes('createOptimizationDraftsFromPlanFlow') && optimizationController.includes('updateOptimizationActionStatusFlow') && optimizationController.includes('loadOptimizationExecutionPreviewFlow')],
+  ['optimization controller services', optimizationController.includes('optimizationService.fetchOptimizationPlan') && optimizationController.includes('optimizationService.fetchOptimizationActions') && optimizationController.includes('optimizationService.saveOptimizationPlanAsDrafts') && optimizationController.includes('optimizationService.updateOptimizationAction') && optimizationController.includes('optimizationService.fetchOptimizationExecutionPreview')],
+  ['frontend architecture docs', frontendArchitecture.includes('Optimization controller/store wired') && frontendArchitecture.includes('Move Integrations controller helpers')],
   ['landing module script', html.includes('type="module"') && html.includes('src/main.js')],
   ['login module script', login.includes('type="module"') && login.includes('src/login.js')],
   ['cabinet module scripts', cabinet.includes('type="module"') && cabinet.includes('src/main.js') && cabinet.includes('src/business_context_autofill.js')],
@@ -182,7 +187,10 @@ const checks = [
   ['main no legacy ai globals', !js.includes('let aiStatus =') && !js.includes('let selectedAiModel =') && !js.includes('let aiChatMessages =') && !js.includes('let aiLoading =')],
   ['main business context store import', js.includes("import * as businessContextStore from './stores/business-context-store.js'")],
   ['main business context store delegation', js.includes('businessContextStore.normalizeBusinessContext(payload)') && js.includes('businessContextStore.createBusinessContextPayload(context)') && js.includes('businessContextStore.createBusinessContextDraftFromForm(form)') && js.includes('businessContextStore.createBusinessContextForAi(businessContext, businessContextDraft)')],
-  ['main business context wrappers kept', js.includes('function normalizeBusinessContext(payload)') && js.includes('function businessContextForAi()') && js.includes('function contextCompletenessScore(context = businessContext || businessContextDraft)')],
+  ['main optimization store import', js.includes("import * as optimizationStore from './stores/optimization-store.js'")],
+  ['main optimization store delegation', js.includes('optimizationStore.normalizeOptimizationPlan(payload)') && js.includes('optimizationStore.normalizeOptimizationAction(action)') && js.includes('optimizationStore.normalizeOptimizationPreview(payload)') && js.includes('optimizationStore.getFilteredOptimizationActions(optimizationActions, optimizationActionFilter)')],
+  ['main optimization controller import', js.includes("from './controllers/optimization-controller.js'") && js.includes('loadOptimizationPlanFlow') && js.includes('loadOptimizationActionsFlow') && js.includes('loadOptimizationExecutionPreviewFlow')],
+  ['main optimization controller delegation', js.includes('await loadOptimizationPlanFlow({') && js.includes('await loadOptimizationActionsFlow({') && js.includes('await createOptimizationDraftsFromPlanFlow({') && js.includes('await updateOptimizationActionStatusFlow({') && js.includes('await loadOptimizationExecutionPreviewFlow({')],
   ['main ai controller import', js.includes("from './controllers/ai-controller.js'") && js.includes('createAiModelStateSnapshot') && js.includes('createAiChatStateSnapshot') && js.includes('createAiAssistantPageContext')],
   ['main ai controller flow delegation', js.includes('await loadAiStatusFlow({') && js.includes('await loadAiPromptDebugFlow({') && js.includes('await generateAiInsightFlow({')],
   ['main ai remaining flow delegation', js.includes('await requestAiRecommendationsFlow({') && js.includes('await sendAiChatMessageFlow({') && js.includes('await saveAiMemoryNoteFlow({')],
