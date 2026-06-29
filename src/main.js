@@ -36,6 +36,7 @@ import {
 import { renderBusinessContextPanel as renderBusinessContextPanelContent } from './pages/business-context.js';
 import * as aiService from './services/ai-service.js';
 import * as businessContextService from './services/business-context-service.js';
+import * as businessContextStore from './stores/business-context-store.js';
 import * as clientsService from './services/clients-service.js';
 import * as integrationsService from './services/integrations-service.js';
 import * as optimizationService from './services/optimization-service.js';
@@ -501,123 +502,36 @@ function hasPerformanceData() {
 }
 
 function normalizeBusinessContext(payload) {
-  return {
-    companyName: payload?.company_name || '',
-    websiteUrl: payload?.website_url || '',
-    industry: payload?.industry || '',
-    productDescription: payload?.product_description || '',
-    targetAudience: payload?.target_audience || '',
-    geography: payload?.geography || '',
-    mainOffers: payload?.main_offers || '',
-    conversionActions: payload?.conversion_actions || '',
-    averageOrderValue: payload?.average_order_value || '',
-    leadValueNotes: payload?.lead_value_notes || '',
-    businessConstraints: payload?.business_constraints || '',
-    negativeTopics: payload?.negative_topics || '',
-    landingPageNotes: payload?.landing_page_notes || '',
-    competitorNotes: payload?.competitor_notes || '',
-    manualNotes: payload?.manual_notes || '',
-    memoryNotes: payload?.memory_notes || '',
-    sourceNotes: payload?.source_notes || '',
-    updatedAt: payload?.updated_at || '',
-  };
+  return businessContextStore.normalizeBusinessContext(payload);
 }
 
 function businessContextPayload(context) {
-  return {
-    company_name: context.companyName || '',
-    website_url: context.websiteUrl || '',
-    industry: context.industry || '',
-    product_description: context.productDescription || '',
-    target_audience: context.targetAudience || '',
-    geography: context.geography || '',
-    main_offers: context.mainOffers || '',
-    conversion_actions: context.conversionActions || '',
-    average_order_value: context.averageOrderValue || '',
-    lead_value_notes: context.leadValueNotes || '',
-    business_constraints: context.businessConstraints || '',
-    negative_topics: context.negativeTopics || '',
-    landing_page_notes: context.landingPageNotes || '',
-    competitor_notes: context.competitorNotes || '',
-    manual_notes: context.manualNotes || '',
-    memory_notes: context.memoryNotes || '',
-    source_notes: context.sourceNotes || '',
-  };
+  return businessContextStore.createBusinessContextPayload(context);
 }
 
 function defaultBusinessContext() {
-  const client = currentClient();
-  return normalizeBusinessContext({
-    company_name: client.name || '',
-    website_url: '',
-    industry: client.segment || '',
-  });
+  return businessContextStore.createDefaultBusinessContext(currentClient());
 }
 
 function hasBusinessContextData(context) {
-  if (!context) return false;
-  const fields = ['industry', 'productDescription', 'targetAudience', 'geography', 'mainOffers', 'conversionActions', 'businessConstraints'];
-  return fields.some((field) => String(context[field] || '').trim().length > 0);
+  return businessContextStore.hasBusinessContextData(context);
 }
 
 function businessContextCopyText(context = businessContext || businessContextDraft || defaultBusinessContext()) {
-  const rows = [
-    ['Компания', context.companyName],
-    ['Сайт', context.websiteUrl],
-    ['Ниша', context.industry],
-    ['Продукт', context.productDescription],
-    ['ЦА', context.targetAudience],
-    ['География', context.geography],
-    ['Офферы', context.mainOffers],
-    ['Целевые действия', context.conversionActions],
-    ['Средний чек / ценность лида', context.averageOrderValue],
-    ['Качественные лиды', context.leadValueNotes],
-    ['Ограничения бизнеса', context.businessConstraints],
-    ['Нерелевантные темы', context.negativeTopics],
-    ['Посадочные страницы', context.landingPageNotes],
-    ['Конкуренты', context.competitorNotes],
-    ['Заметки специалиста', context.manualNotes],
-    ['Память проекта', context.memoryNotes],
-    ['Источники', context.sourceNotes],
-  ];
-  return rows.map(([label, value]) => `${label}: ${value || '—'}`).join('\n');
+  return businessContextStore.createBusinessContextCopyText(context);
 }
 
 function setBusinessContextDraftFromForm(form) {
-  const formData = new FormData(form);
-  businessContextDraft = normalizeBusinessContext({
-    company_name: formData.get('companyName'),
-    website_url: formData.get('websiteUrl'),
-    industry: formData.get('industry'),
-    product_description: formData.get('productDescription'),
-    target_audience: formData.get('targetAudience'),
-    geography: formData.get('geography'),
-    main_offers: formData.get('mainOffers'),
-    conversion_actions: formData.get('conversionActions'),
-    average_order_value: formData.get('averageOrderValue'),
-    lead_value_notes: formData.get('leadValueNotes'),
-    business_constraints: formData.get('businessConstraints'),
-    negative_topics: formData.get('negativeTopics'),
-    landing_page_notes: formData.get('landingPageNotes'),
-    competitor_notes: formData.get('competitorNotes'),
-    manual_notes: formData.get('manualNotes'),
-    memory_notes: formData.get('memoryNotes'),
-    source_notes: formData.get('sourceNotes'),
-  });
+  businessContextDraft = businessContextStore.createBusinessContextDraftFromForm(form);
   return businessContextDraft;
 }
 
 function businessContextForAi() {
-  const context = businessContext || businessContextDraft;
-  if (!hasBusinessContextData(context)) return null;
-  return businessContextPayload(context);
+  return businessContextStore.createBusinessContextForAi(businessContext, businessContextDraft);
 }
 
 function contextCompletenessScore(context = businessContext || businessContextDraft) {
-  if (!context) return 0;
-  const important = ['industry', 'productDescription', 'targetAudience', 'geography', 'mainOffers', 'conversionActions', 'businessConstraints', 'negativeTopics'];
-  const filled = important.filter((field) => String(context[field] || '').trim().length > 0).length;
-  return Math.round((filled / important.length) * 100);
+  return businessContextStore.calculateBusinessContextCompletenessScore(context);
 }
 
 function campaignOptions() {
@@ -1084,7 +998,6 @@ async function loadOptimizationExecutionPreview(actionId) {
   }
   render();
 }
-
 
 function renderMetricCards() {
   return `
