@@ -159,6 +159,116 @@ export async function generateAiInsightFlow({
   }
 }
 
+export async function saveAiMemoryNoteFlow({
+  selectedClientId,
+  note,
+  businessContextService,
+  onStart,
+  onSuccess,
+  onError,
+}) {
+  if (!selectedClientId || !note) {
+    return { status: 'skipped' };
+  }
+
+  onStart?.('Сохраняем вывод в память проекта...');
+
+  try {
+    const payload = await businessContextService.saveBusinessContextMemoryNote(selectedClientId, note);
+    const message = 'AI-вывод сохранён в память проекта.';
+    onSuccess?.(payload, message);
+    return { status: 'success', payload };
+  } catch (error) {
+    const message = error.message || 'Не удалось сохранить вывод в память проекта.';
+    onError?.(message, error);
+    return { status: 'error', error: message };
+  }
+}
+
+export async function requestAiRecommendationsFlow({
+  selectedClientId,
+  params,
+  aiService,
+  saveMemoryNote,
+  onMissingClient,
+  onStart,
+  onSuccess,
+  onError,
+  onFinally,
+}) {
+  if (!selectedClientId) {
+    const message = 'Сначала выберите клиента.';
+    onMissingClient?.(message);
+    return { status: 'missing-client', error: message };
+  }
+
+  onStart?.();
+
+  try {
+    const payload = await aiService.fetchClientAiRecommendations(selectedClientId, params);
+    onSuccess?.(payload);
+
+    if (payload.business_context_memory_note) {
+      await saveMemoryNote?.(payload.business_context_memory_note);
+    }
+
+    return { status: 'success', payload };
+  } catch (error) {
+    const message = error.message || 'Не удалось сформировать AI-рекомендации';
+    onError?.(message, error);
+    return { status: 'error', error: message };
+  } finally {
+    onFinally?.();
+  }
+}
+
+export async function sendAiChatMessageFlow({
+  message,
+  loading,
+  currentChatState,
+  createRequestPayload,
+  addChatMessage,
+  aiService,
+  saveMemoryNote,
+  onStart,
+  onSuccess,
+  onError,
+  onFinally,
+}) {
+  const text = String(message || '').trim();
+  if (!text || loading) {
+    return { status: 'skipped' };
+  }
+
+  const userMessages = addChatMessage(currentChatState(), { role: 'user', content: text }).messages;
+  onStart?.({ text, messages: userMessages });
+
+  try {
+    const payload = await aiService.requestAiChat(createRequestPayload(text));
+    const assistantMessages = addChatMessage(currentChatState(), { role: 'assistant', content: payload.answer || 'Нет ответа.' }).messages;
+    onSuccess?.({ payload, messages: assistantMessages, toolTraces: payload.tool_traces || [] });
+
+    if (payload.business_context_memory_note) {
+      await saveMemoryNote?.(payload.business_context_memory_note);
+    }
+
+    return { status: 'success', payload };
+  } catch (error) {
+    const payload = error.payload || {};
+    const messageText = error.message || 'AI-чат не вернул ответ';
+    let retryMessages = null;
+
+    if (payload.retry_suggestion) {
+      retryMessages = addChatMessage(currentChatState(), { role: 'assistant', content: `Не смог собрать ответ: ${payload.retry_suggestion}` }).messages;
+    }
+
+    onError?.({ message: messageText, payload, messages: retryMessages });
+    return { status: 'error', error: messageText, payload };
+  } finally {
+    onFinally?.();
+  }
+}
+
 export function createAiAssistantPageContext({
   selectedClientId,
   selectedClient,
