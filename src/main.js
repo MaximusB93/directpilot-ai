@@ -12,6 +12,15 @@ import {
 } from './core/storage.js';
 import { requestEmailCode, verifyEmailCode } from './core/session-api.js';
 import { resolvePageContentRenderer, resolvePageRenderer } from './app/page-router.js';
+import {
+  activeAiBudget as selectActiveAiBudget,
+  activeAiModel as selectActiveAiModel,
+  createAiAssistantPageContext,
+  createAiChatRequestPayload,
+  createAiChatStateSnapshot,
+  createAiModelStateSnapshot,
+  createAiPromptDebugParams,
+} from './controllers/ai-controller.js';
 import { renderBusinessContextPanel as renderBusinessContextPanelContent } from './pages/business-context.js';
 import * as aiService from './services/ai-service.js';
 import * as businessContextService from './services/business-context-service.js';
@@ -632,41 +641,41 @@ function campaignOptions() {
 }
 
 function currentAiModelState() {
-  return {
-    status: aiStatus,
-    model: selectedAiModel,
-    customModel: customAiModel,
-    preset: selectedAiPreset,
-    maxTokensMode: aiMaxTokensMode,
-    compactContext: aiCompactContext,
-    toolResultsMode: aiToolResultsMode,
-    chatHistoryLimit: aiChatHistoryLimit,
-    searchQueryLimit: aiSearchQueryLimit,
-  };
+  return createAiModelStateSnapshot({
+    aiStatus,
+    selectedAiModel,
+    customAiModel,
+    selectedAiPreset,
+    aiMaxTokensMode,
+    aiCompactContext,
+    aiToolResultsMode,
+    aiChatHistoryLimit,
+    aiSearchQueryLimit,
+  });
 }
 
 function currentAiChatState() {
-  return {
-    messages: aiChatMessages,
-    input: aiChatInput,
-    loading: aiChatLoading,
-    error: aiChatError,
-    errorDetails: aiChatErrorDetails,
-    toolTraces: aiChatToolTraces,
-    selectedCampaignName: aiChatSelectedCampaignName,
-  };
+  return createAiChatStateSnapshot({
+    aiChatMessages,
+    aiChatInput,
+    aiChatLoading,
+    aiChatError,
+    aiChatErrorDetails,
+    aiChatToolTraces,
+    aiChatSelectedCampaignName,
+  });
 }
 
 function activeAiModel() {
-  return aiStore.activeAiModel(currentAiModelState());
+  return selectActiveAiModel(currentAiModelState());
 }
 
 function activeAiBudget() {
-  return aiStore.activeAiBudget(currentAiModelState());
+  return selectActiveAiBudget(currentAiModelState());
 }
 
 function aiChatRequestPayload(message) {
-  return aiStore.createAiChatRequestPayload({
+  return createAiChatRequestPayload({
     clientId: selectedClientId,
     message,
     modelState: currentAiModelState(),
@@ -676,7 +685,7 @@ function aiChatRequestPayload(message) {
 }
 
 function aiPromptDebugParams() {
-  return aiStore.createAiPromptDebugParams(currentAiModelState(), aiChatSelectedCampaignName);
+  return createAiPromptDebugParams(currentAiModelState(), aiChatSelectedCampaignName);
 }
 
 
@@ -1380,7 +1389,7 @@ function renderIntegrations() {
 }
 
 function aiAssistantPageContext() {
-  return {
+  return createAiAssistantPageContext({
     selectedClientId,
     selectedClient: currentClient(),
     aiStatus,
@@ -1415,7 +1424,7 @@ function aiAssistantPageContext() {
     optimizationActions,
     formatNumberSafe,
     escapeHtml,
-  };
+  });
 }
 
 function renderAiAssistant() {
