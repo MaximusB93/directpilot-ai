@@ -49,6 +49,7 @@ src/stores/
   client-store.js
   ai-store.js
   ai-feature-state.js
+  business-context-store.js
   campaign-store.js
 
 src/components/
@@ -93,8 +94,6 @@ data-route-mode="module|legacy"
 data-page-module="dashboard"
 ```
 
-This is a temporary debugging and migration aid while `src/main.js` still owns app orchestration.
-
 ## Page modules
 
 `src/pages/index.js` is the registry for page metadata, page contracts, renderer adapters and content composers.
@@ -110,85 +109,26 @@ ai
 optimization
 ```
 
-`src/pages/dashboard.js` exposes `renderDashboardPage({ legacyRenderDashboard })` and `renderDashboardContent(context)`.
-
-The dashboard legacy markup still partly lives in `src/main.js`, but the page module now owns the dashboard content composition and these pure HTML builder slices:
+Core page content composers are wired for:
 
 ```text
-renderDashboardIntro
-renderDashboardNextStepPanel
-renderDashboardEmptyClientPanel
-renderDashboardConnectedPanels
-renderDashboardContent
+Dashboard
+Clients
+Business Context
+Integrations
+Optimization
+AI Assistant
 ```
 
-`renderDashboardContent(context)` is intentionally dependency-injected: it receives legacy panel renderers from `src/main.js` until those panels are extracted one by one.
+`src/pages/ai-assistant.js` owns AI assistant markup composition. Model settings, prompt debug, chat, sample prompts, client recommendations and quick prompt actions route through `src/controllers/ai-event-bindings.js`, while state mutation happens through the `aiFeatureState` facade in `src/main.js`.
 
-`src/pages/clients.js` now exposes `renderClientsContent(context)` and these pure HTML builder slices:
-
-```text
-renderClientsIntro
-renderClientCreatePanel
-renderClientSettingsPanel
-renderClientGrid
-renderClientsContent
-```
-
-The clients page content composer is registered in `PAGE_CONTENT_RENDERERS`, and `src/main.js` now routes `renderClients()` through `renderClientsContent(context)`.
-
-`src/pages/business-context.js` now exposes `renderBusinessContextContent(context)` and these pure HTML builder slices:
-
-```text
-renderBusinessContextIntro
-renderBusinessContextPanel
-renderBusinessContextContent
-```
-
-The business context content composer is registered in `PAGE_CONTENT_RENDERERS`, and `src/main.js` now routes `renderBusinessContext()` through `renderBusinessContextContent(context)`. The dashboard still uses `renderBusinessContextPanel(compact)` as an injected legacy-compatible panel wrapper.
-
-`src/pages/integrations.js` now exposes `renderIntegrationsContent(context)` and these pure HTML builder slices:
-
-```text
-renderIntegrationsIntro
-renderYandexConnectPanel
-renderClientYandexAccountPanel
-renderIntegrationsContent
-```
-
-The integrations content composer is registered in `PAGE_CONTENT_RENDERERS`, and `src/main.js` now routes `renderIntegrations()` through `renderIntegrationsContent(context)`. The event handlers still live in `src/main.js`, so existing `data-integration`, `data-refresh-client-yandex`, `data-bind-yandex-account` and `data-unbind-yandex` actions keep working.
-
-`src/pages/optimization.js` now exposes `renderOptimizationContent(context)` and these pure HTML builder slices:
-
-```text
-renderOptimizationIntro
-renderOptimizationPlanPanel
-renderOptimizationActionsPanel
-renderOptimizationContent
-```
-
-The optimization content composer is registered in `PAGE_CONTENT_RENDERERS`, and `src/main.js` now routes `renderOptimization()` through `renderOptimizationContent(context)`. The event handlers still live in `src/main.js`, so existing `data-load-optimization-plan`, `data-load-optimization-actions`, `data-create-optimization-drafts`, `data-update-optimization-action` and `data-preview-optimization-action` actions keep working.
-
-`src/pages/ai-assistant.js` now exposes `renderAiAssistantContent(context)` and these pure HTML builder slices:
-
-```text
-renderAiAssistantIntro
-renderAiStatusPanel
-renderAiPromptDebugPanel
-renderAiChat
-renderClientAiRecommendations
-renderAiQuickActions
-renderAiAssistantContent
-```
-
-The AI assistant content composer is registered in `PAGE_CONTENT_RENDERERS`, and `src/main.js` now routes `renderAiAssistant()` through `renderAiAssistantContent(context)`. Model settings, prompt debug, chat, sample prompts, client recommendations and quick prompt actions now route through `src/controllers/ai-event-bindings.js` while state mutation happens through the `aiFeatureState` facade in `src/main.js`.
+`src/pages/business-context.js` owns Business Context markup composition. Business Context model helpers now live in `src/stores/business-context-store.js`, while `src/main.js` keeps thin wrappers where current client/state access is still needed.
 
 Current contract-only modules:
 
 ```text
 none
 ```
-
-All core page content composers are now wired. The next work is no longer page markup extraction, but state and event-handler extraction.
 
 ## Service layer
 
@@ -211,26 +151,26 @@ ai-service.js                 OpenRouter status, generation, chat, recommendatio
 Store scaffolds now exist for:
 
 ```text
-client-store.js        selected client id, selected client resolution, localStorage key helpers
-ai-store.js            initial AI chat/model/generation state, AI budget helpers, chat payload builders
-ai-feature-state.js    AI feature state facade split into model/generation/chat sections
-campaign-store.js      campaign names, campaign ids, performance summary campaign options and filtering helpers
+client-store.js             selected client id, selected client resolution, localStorage key helpers
+ai-store.js                 initial AI chat/model/generation state, AI budget helpers, chat payload builders
+ai-feature-state.js         AI feature state facade split into model/generation/chat sections
+business-context-store.js   Business Context normalization, backend payload, form draft, copy text, AI payload and completeness helpers
+campaign-store.js           campaign names, campaign ids, performance summary campaign options and filtering helpers
 ```
-
-They are intentionally small until `main.js` stops owning all mutable state.
 
 Current wiring:
 
 ```text
-client-store.js        wired into selected client loading/saving and client normalization
-ai-store.js            wired into AI helpers, chat payloads, status normalization and ai-feature-state initial values
-ai-feature-state.js    wired into `src/main.js` as `aiFeatureState.model`, `aiFeatureState.generation` and `aiFeatureState.chat`
-campaign-store.js      wired into `campaignOptions()` through `campaignsStore.getCampaignOptions(perfSummary)`
+client-store.js             wired into selected client loading/saving and client normalization
+ai-store.js                 wired into AI helpers, chat payloads, status normalization and ai-feature-state initial values
+ai-feature-state.js         wired into `src/main.js` as `aiFeatureState.model`, `aiFeatureState.generation` and `aiFeatureState.chat`
+business-context-store.js   wired into `src/main.js` wrappers: normalizeBusinessContext, businessContextPayload, defaultBusinessContext, hasBusinessContextData, businessContextCopyText, setBusinessContextDraftFromForm, businessContextForAi and contextCompletenessScore
+campaign-store.js           wired into `campaignOptions()` through `campaignsStore.getCampaignOptions(perfSummary)`
 ```
 
 ## Controller layer
 
-Controllers are the next migration layer between `src/main.js`, stores and services. They should collect feature orchestration that is too stateful for page composers and too side-effect-heavy for stores.
+Controllers are the migration layer between `src/main.js`, stores and services.
 
 Current controller modules:
 
@@ -256,63 +196,36 @@ generateAiInsight() delegates to generateAiInsightFlow(...) and writes aiFeature
 AI input/change/submit/click event branches delegate to ai-event-bindings.js
 ```
 
-Still in `src/main.js` after this controller step:
+Still in `src/main.js` after this controller/store step:
 
 ```text
 callback wiring for AI bindings and flows
-business context mutable variables
-optimization mutable variables
-integrations mutable variables
-clients mutable variables
+business context mutable variables and service flows
+optimization mutable variables and service flows
+integrations mutable variables and service flows
+clients mutable variables and service flows
 ```
 
 ## Static validation
 
 `scripts/validate-static.mjs` protects the migration from quiet regressions.
 
-Important checks:
+Important checks include:
 
 ```text
 main no inline apiFetch calls
 main no duplicated async
-main ai store import
-main ai feature state import
 main ai feature state wiring
 main no legacy ai globals
-main ai controller import
-main ai controller flow import
-main ai current state adapters
-main ai controller helper delegation
-main ai page context delegation
+main business context store import
+main business context store delegation
+main business context wrappers kept
 main ai controller flow delegation
-main ai remaining flow delegation
-main ai event bindings import
 main ai event bindings delegation
-main ai chat store delegation
-main clients content wiring
-main campaign store wiring
 main business context content wiring
-main integrations content wiring
-main ai assistant content wiring
-main optimization content wiring
-ai store scaffold
-ai feature state facade
-ai controller state helpers
-ai controller store delegation
-ai controller flow helpers
-ai controller flow services
-ai controller remaining flow helpers
-ai controller remaining flow services
-ai event bindings helpers
-ai event bindings selectors
-business context content composer
-business context content registry
-integrations content composer
-integrations content registry
-ai assistant content composer
-ai assistant content registry
-optimization content composer
-optimization content registry
+business context store helpers
+business context store field mapping
+Business Context store helpers wired
 ```
 
 When a new extraction is wired, add a static check in the same or next commit. The validator is intentionally simple string matching. Primitive, yes. Effective enough to keep accidental regressions from crawling into production like raccoons in a ventilation shaft.
@@ -321,37 +234,7 @@ When a new extraction is wired, add a static check in the same or next commit. T
 
 Do not rewrite `src/main.js` in one large commit.
 
-Preferred sequence:
-
-1. Add router/state foundation.
-2. Add hash route bridge.
-3. Add dashboard page contract.
-4. Add pages registry.
-5. Connect pages registry to the app routing layer.
-6. Add dashboard renderer adapter.
-7. Wire `src/main.js` dashboard route to `renderDashboardPage`.
-8. Extract dashboard intro and next-step builders.
-9. Add dashboard content composer.
-10. Add contract-only page modules for clients, integrations, business context, AI assistant and optimization.
-11. Add service and store scaffolds.
-12. Wire `src/main.js` `renderDashboard` to `renderDashboardContent` in one controlled patch.
-13. Replace inline API functions in `src/main.js` with service imports.
-14. Wire `client-store.js`, `ai-store.js` and `campaign-store.js` into `src/main.js` in small controlled patches.
-15. Wire `renderClients()` to `renderClientsContent(context)`.
-16. Add validator checks after each migration step.
-17. Move `business-context` page markup into its page content composer.
-18. Move `integrations` page markup into its page content composer.
-19. Move `optimization` page markup into its page content composer.
-20. Move `ai` page markup into its page content composer.
-21. Add AI controller state/context helpers.
-22. Move first AI async flows into `ai-controller.js`: OpenRouter status, prompt debug and quick prompt generation.
-23. Move remaining AI async flows into `ai-controller.js`: recommendations, chat and memory note.
-24. Move AI event-handler branches into `ai-event-bindings.js`: submit, input, change and click.
-25. Add AI feature state facade and wire `src/main.js` AI state access through `aiFeatureState.model/generation/chat`.
-
-## Current progress snapshot
-
-Completed:
+Completed migration sequence so far:
 
 ```text
 service layer wired
@@ -369,11 +252,12 @@ AI controller status/prompt flows wired
 AI controller remaining async flows wired
 AI event bindings wired
 AI feature state facade wired
+Business Context store helpers wired
 static validator guards service/store/controller/page wiring
 ```
 
 Next iteration:
 
 ```text
-Move Business Context model/store helpers out of `src/main.js`: normalizeBusinessContext, businessContextPayload, businessContextForAi, draft helpers and completeness helpers.
+Move Optimization controller/store helpers out of `src/main.js`: normalizeOptimizationPlan, normalizeOptimizationAction, normalizeOptimizationPreview, filtered actions and optimization async flow orchestration.
 ```
