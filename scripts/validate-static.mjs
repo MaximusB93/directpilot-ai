@@ -33,6 +33,7 @@ const requiredFiles = [
   'src/stores/index.js',
   'src/stores/client-store.js',
   'src/stores/ai-store.js',
+  'src/stores/ai-feature-state.js',
   'src/stores/campaign-store.js',
   'src/main.js',
   'src/login.js',
@@ -83,6 +84,7 @@ const aiService = await readFile('src/services/ai-service.js', 'utf8');
 const storesIndex = await readFile('src/stores/index.js', 'utf8');
 const clientStore = await readFile('src/stores/client-store.js', 'utf8');
 const aiStore = await readFile('src/stores/ai-store.js', 'utf8');
+const aiFeatureState = await readFile('src/stores/ai-feature-state.js', 'utf8');
 const campaignStore = await readFile('src/stores/campaign-store.js', 'utf8');
 const js = await readFile('src/main.js', 'utf8');
 const loginJs = await readFile('src/login.js', 'utf8');
@@ -117,12 +119,6 @@ const checks = [
   ['hash route bridge', hashRouteBridge.includes('resolveAppPage') && hashRouteBridge.includes('markRouteResolution') && hashRouteBridge.includes('data-page-module')],
   ['hash route bridge before main', bridgeIndex !== -1 && mainIndex !== -1 && bridgeIndex < mainIndex],
   ['pages registry', pagesRegistry.includes('APP_PAGES') && pagesRegistry.includes('PAGE_CONTRACTS') && pagesRegistry.includes('PAGE_RENDERERS') && pagesRegistry.includes('PAGE_CONTENT_RENDERERS')],
-  ['dashboard page contract', dashboardPage.includes('DASHBOARD_PAGE_ID') && dashboardPage.includes('dashboardPageContract') && dashboardPage.includes('renderDashboard')],
-  ['clients page contract', clientsPage.includes('CLIENTS_PAGE_ID') && clientsPage.includes('legacyRenderer') && clientsPage.includes('renderClients')],
-  ['integrations page contract', integrationsPage.includes('INTEGRATIONS_PAGE_ID') && integrationsPage.includes('legacyRenderer') && integrationsPage.includes('renderIntegrations')],
-  ['business context page contract', businessContextPage.includes('BUSINESS_CONTEXT_PAGE_ID') && businessContextPage.includes('legacyRenderer') && businessContextPage.includes('renderBusinessContext')],
-  ['ai assistant page contract', aiAssistantPage.includes('AI_ASSISTANT_PAGE_ID') && aiAssistantPage.includes('legacyRenderer') && aiAssistantPage.includes('renderAiAssistant')],
-  ['optimization page contract', optimizationPage.includes('OPTIMIZATION_PAGE_ID') && optimizationPage.includes('legacyRenderer') && optimizationPage.includes('renderOptimization')],
   ['dashboard content composer', dashboardPage.includes('renderDashboardContent') && dashboardPage.includes('renderDashboardIntro') && dashboardPage.includes('renderDashboardConnectedPanels')],
   ['clients content composer', clientsPage.includes('content-composer-ready') && clientsPage.includes('renderClientsContent') && clientsPage.includes('renderClientCreatePanel') && clientsPage.includes('renderClientGrid')],
   ['business context content composer', businessContextPage.includes('content-composer-ready') && businessContextPage.includes('renderBusinessContextPanel') && businessContextPage.includes('renderBusinessContextContent')],
@@ -147,6 +143,8 @@ const checks = [
   ['ai store expanded state', aiStore.includes('createInitialAiGenerationState') && aiStore.includes('DEFAULT_AI_STATUS') && aiStore.includes('AI_PRESETS')],
   ['ai store helpers', aiStore.includes('normalizeAiStatus') && aiStore.includes('activeAiModel') && aiStore.includes('activeAiBudget') && aiStore.includes('aiConversationForRequest') && aiStore.includes('addAiChatMessage')],
   ['ai store request builders', aiStore.includes('createAiChatRequestPayload') && aiStore.includes('createAiPromptDebugParams') && aiStore.includes('business_context') && aiStore.includes('conversation')],
+  ['ai feature state facade', aiFeatureState.includes('createAiFeatureState') && aiFeatureState.includes('model: {') && aiFeatureState.includes('generation: {') && aiFeatureState.includes('chat: {')],
+  ['ai feature state reset helper', aiFeatureState.includes('resetAiClientScopedState') && aiFeatureState.includes('clientRecommendations = null')],
   ['campaign store scaffold', campaignStore.includes('DEFAULT_CAMPAIGN_FILTER') && campaignStore.includes('createCampaignStore') && campaignStore.includes('getCampaignOptions') && campaignStore.includes('normalizeCampaignFilter')],
   ['campaign store performance helpers', campaignStore.includes('getCampaignsFromPerformanceSummary') && campaignStore.includes('filterCampaignsBySelectedName') && campaignStore.includes('isCampaignSelected')],
   ['ai controller state helpers', aiController.includes('createAiModelStateSnapshot') && aiController.includes('createAiChatStateSnapshot') && aiController.includes('createAiAssistantPageContext')],
@@ -157,7 +155,7 @@ const checks = [
   ['ai controller remaining flow services', aiController.includes('aiService.fetchClientAiRecommendations') && aiController.includes('aiService.requestAiChat') && aiController.includes('businessContextService.saveBusinessContextMemoryNote')],
   ['ai event bindings helpers', aiEventBindings.includes('handleAiSubmitEvent') && aiEventBindings.includes('handleAiInputEvent') && aiEventBindings.includes('handleAiChangeEvent') && aiEventBindings.includes('handleAiClickEvent')],
   ['ai event bindings selectors', aiEventBindings.includes('data-ai-chat-form') && aiEventBindings.includes('data-ai-custom-model') && aiEventBindings.includes('data-ai-model') && aiEventBindings.includes('data-ai-prompt-debug') && aiEventBindings.includes('data-client-ai-recommendations') && aiEventBindings.includes('data-ai-chat-sample') && aiEventBindings.includes('data-ai-prompt')],
-  ['frontend architecture docs', frontendArchitecture.includes('AI event bindings wired') && frontendArchitecture.includes('AI mutable state object')],
+  ['frontend architecture docs', frontendArchitecture.includes('AI feature state facade wired') && frontendArchitecture.includes('Move Business Context model/store helpers')],
   ['landing module script', html.includes('type="module"') && html.includes('src/main.js')],
   ['login module script', login.includes('type="module"') && login.includes('src/login.js')],
   ['cabinet module scripts', cabinet.includes('type="module"') && cabinet.includes('src/main.js') && cabinet.includes('src/business_context_autofill.js')],
@@ -179,13 +177,15 @@ const checks = [
   ['main no inline apiFetch calls', !js.includes('apiFetch(')],
   ['main no duplicated async', !js.includes('async async function')],
   ['main ai store import', js.includes("import * as aiStore from './stores/ai-store.js'") && js.includes('const CUSTOM_MODEL_VALUE = aiStore.CUSTOM_MODEL_VALUE')],
-  ['main ai store initial state wiring', js.includes('aiStore.createInitialAiModelState()') && js.includes('aiStore.createInitialAiChatState()') && js.includes('aiStore.createInitialAiGenerationState()')],
+  ['main ai feature state import', js.includes("from './stores/ai-feature-state.js'") && js.includes('createAiFeatureState') && js.includes('resetAiClientScopedState')],
+  ['main ai feature state wiring', js.includes('const aiFeatureState = createAiFeatureState()') && js.includes('aiFeatureState.model.status') && js.includes('aiFeatureState.generation.loading') && js.includes('aiFeatureState.chat.messages')],
+  ['main no legacy ai globals', !js.includes('let aiStatus =') && !js.includes('let selectedAiModel =') && !js.includes('let aiChatMessages =') && !js.includes('let aiLoading =')],
   ['main ai controller import', js.includes("from './controllers/ai-controller.js'") && js.includes('createAiModelStateSnapshot') && js.includes('createAiChatStateSnapshot') && js.includes('createAiAssistantPageContext')],
   ['main ai controller flow import', js.includes('generateAiInsightFlow') && js.includes('loadAiPromptDebugFlow') && js.includes('loadAiStatusFlow')],
   ['main ai remaining flow import', js.includes('requestAiRecommendationsFlow') && js.includes('saveAiMemoryNoteFlow') && js.includes('sendAiChatMessageFlow')],
   ['main ai event bindings import', js.includes("from './controllers/ai-event-bindings.js'") && js.includes('handleAiChangeEvent') && js.includes('handleAiClickEvent') && js.includes('handleAiInputEvent') && js.includes('handleAiSubmitEvent')],
   ['main ai current state adapters', js.includes('function currentAiModelState()') && js.includes('return createAiModelStateSnapshot({') && js.includes('function currentAiChatState()') && js.includes('return createAiChatStateSnapshot({')],
-  ['main ai controller helper delegation', js.includes('return selectActiveAiModel(currentAiModelState())') && js.includes('return selectActiveAiBudget(currentAiModelState())') && js.includes('return createAiChatRequestPayload({') && js.includes('return createAiPromptDebugParams(currentAiModelState(), aiChatSelectedCampaignName)')],
+  ['main ai controller helper delegation', js.includes('return selectActiveAiModel(currentAiModelState())') && js.includes('return selectActiveAiBudget(currentAiModelState())') && js.includes('return createAiChatRequestPayload({') && js.includes('return createAiPromptDebugParams(currentAiModelState(), aiFeatureState.chat.selectedCampaignName)')],
   ['main ai page context delegation', js.includes('function aiAssistantPageContext()') && js.includes('return createAiAssistantPageContext({') && js.includes('campaignOptions: campaignOptions()')],
   ['main ai controller flow delegation', js.includes('await loadAiStatusFlow({') && js.includes('await loadAiPromptDebugFlow({') && js.includes('await generateAiInsightFlow({')],
   ['main ai remaining flow delegation', js.includes('await requestAiRecommendationsFlow({') && js.includes('await sendAiChatMessageFlow({') && js.includes('await saveAiMemoryNoteFlow({')],
