@@ -22,6 +22,7 @@ src/app/
 src/controllers/
   ai-controller.js
   ai-event-bindings.js
+  optimization-controller.js
 
 src/pages/
   index.js
@@ -51,6 +52,7 @@ src/stores/
   ai-feature-state.js
   business-context-store.js
   campaign-store.js
+  optimization-store.js
 
 src/components/
   button.js
@@ -63,7 +65,7 @@ src/components/
 
 ## Routing
 
-The cabinet should use hash routes during the MVP stage:
+The cabinet uses hash routes during the MVP stage:
 
 ```text
 app.html#dashboard
@@ -85,14 +87,6 @@ This keeps the app static-hosting friendly and makes page state shareable/reload
 - `src/app/page-router.js` connects normalized route ids with registered page modules, contracts, renderer adapters and content composers.
 - `src/app/state.js` stores shared app state and dispatches typed browser events.
 - `src/app/hash-route-bridge.js` temporarily synchronizes hash routes with legacy `?view=` routing in `src/main.js`.
-
-The bridge marks route resolution on `document.body`:
-
-```text
-data-route-id="dashboard"
-data-route-mode="module|legacy"
-data-page-module="dashboard"
-```
 
 ## Page modules
 
@@ -123,6 +117,8 @@ AI Assistant
 `src/pages/ai-assistant.js` owns AI assistant markup composition. Model settings, prompt debug, chat, sample prompts, client recommendations and quick prompt actions route through `src/controllers/ai-event-bindings.js`, while state mutation happens through the `aiFeatureState` facade in `src/main.js`.
 
 `src/pages/business-context.js` owns Business Context markup composition. Business Context model helpers now live in `src/stores/business-context-store.js`, while `src/main.js` keeps thin wrappers where current client/state access is still needed.
+
+`src/pages/optimization.js` owns Optimization markup composition. Optimization normalization/filtering helpers now live in `src/stores/optimization-store.js`, and async orchestration now routes through `src/controllers/optimization-controller.js`, while `src/main.js` still owns mutable state and render callbacks.
 
 Current contract-only modules:
 
@@ -156,6 +152,7 @@ ai-store.js                 initial AI chat/model/generation state, AI budget he
 ai-feature-state.js         AI feature state facade split into model/generation/chat sections
 business-context-store.js   Business Context normalization, backend payload, form draft, copy text, AI payload and completeness helpers
 campaign-store.js           campaign names, campaign ids, performance summary campaign options and filtering helpers
+optimization-store.js       Optimization plan/action/preview normalization, action list normalization, filtering and replacement helpers
 ```
 
 Current wiring:
@@ -166,6 +163,7 @@ ai-store.js                 wired into AI helpers, chat payloads, status normali
 ai-feature-state.js         wired into `src/main.js` as `aiFeatureState.model`, `aiFeatureState.generation` and `aiFeatureState.chat`
 business-context-store.js   wired into `src/main.js` wrappers: normalizeBusinessContext, businessContextPayload, defaultBusinessContext, hasBusinessContextData, businessContextCopyText, setBusinessContextDraftFromForm, businessContextForAi and contextCompletenessScore
 campaign-store.js           wired into `campaignOptions()` through `campaignsStore.getCampaignOptions(perfSummary)`
+optimization-store.js       wired into `src/main.js` wrappers: normalizeOptimizationPlan, normalizeOptimizationAction, normalizeOptimizationPreview and getFilteredOptimizationActions
 ```
 
 ## Controller layer
@@ -175,25 +173,22 @@ Controllers are the migration layer between `src/main.js`, stores and services.
 Current controller modules:
 
 ```text
-ai-controller.js        AI state snapshots, AI page context assembly, thin delegates to AI store request builders, and AI async flows
-ai-event-bindings.js   AI submit/input/change/click event routing for model settings, prompt debug, chat, recommendations and quick prompts
+ai-controller.js             AI state snapshots, AI page context assembly, thin delegates to AI store request builders, and AI async flows
+ai-event-bindings.js        AI submit/input/change/click event routing for model settings, prompt debug, chat, recommendations and quick prompts
+optimization-controller.js  Optimization async flows for plan loading, action loading, draft creation, status updates and execution preview
 ```
 
-Current AI controller wiring:
+Current controller wiring:
 
 ```text
-currentAiModelState() delegates to createAiModelStateSnapshot(...) with aiFeatureState.model
-currentAiChatState() delegates to createAiChatStateSnapshot(...) with aiFeatureState.chat
-activeAiModel()/activeAiBudget() delegate through ai-controller.js
-aiChatRequestPayload()/aiPromptDebugParams() delegate through ai-controller.js
-aiAssistantPageContext() delegates to createAiAssistantPageContext(...) with aiFeatureState fields
-loadAiStatus() delegates to loadAiStatusFlow(...) and writes aiFeatureState.model.status
-loadAiPromptDebug() delegates to loadAiPromptDebugFlow(...) and writes aiFeatureState.generation
-requestAiRecommendations() delegates to requestAiRecommendationsFlow(...) and writes aiFeatureState.generation
-sendAiChatMessage() delegates to sendAiChatMessageFlow(...) and writes aiFeatureState.chat
-saveAiMemoryNote() delegates to saveAiMemoryNoteFlow(...) and writes aiFeatureState.generation.memoryStatus
-generateAiInsight() delegates to generateAiInsightFlow(...) and writes aiFeatureState.generation
 AI input/change/submit/click event branches delegate to ai-event-bindings.js
+AI async flows delegate to ai-controller.js
+Optimization normalization/filtering delegates to optimization-store.js
+loadOptimizationPlan() delegates to loadOptimizationPlanFlow(...)
+loadOptimizationActions() delegates to loadOptimizationActionsFlow(...)
+createOptimizationDraftsFromPlan() delegates to createOptimizationDraftsFromPlanFlow(...)
+updateOptimizationActionStatus() delegates to updateOptimizationActionStatusFlow(...)
+loadOptimizationExecutionPreview() delegates to loadOptimizationExecutionPreviewFlow(...)
 ```
 
 Still in `src/main.js` after this controller/store step:
@@ -201,7 +196,7 @@ Still in `src/main.js` after this controller/store step:
 ```text
 callback wiring for AI bindings and flows
 business context mutable variables and service flows
-optimization mutable variables and service flows
+optimization mutable variables and render callbacks
 integrations mutable variables and service flows
 clients mutable variables and service flows
 ```
@@ -216,16 +211,14 @@ Important checks include:
 main no inline apiFetch calls
 main no duplicated async
 main ai feature state wiring
-main no legacy ai globals
-main business context store import
 main business context store delegation
-main business context wrappers kept
-main ai controller flow delegation
-main ai event bindings delegation
-main business context content wiring
-business context store helpers
-business context store field mapping
-Business Context store helpers wired
+main optimization store import
+main optimization store delegation
+main optimization controller import
+main optimization controller delegation
+optimization store helpers
+optimization controller flows
+Optimization controller/store wired
 ```
 
 When a new extraction is wired, add a static check in the same or next commit. The validator is intentionally simple string matching. Primitive, yes. Effective enough to keep accidental regressions from crawling into production like raccoons in a ventilation shaft.
@@ -253,11 +246,12 @@ AI controller remaining async flows wired
 AI event bindings wired
 AI feature state facade wired
 Business Context store helpers wired
+Optimization controller/store wired
 static validator guards service/store/controller/page wiring
 ```
 
 Next iteration:
 
 ```text
-Move Optimization controller/store helpers out of `src/main.js`: normalizeOptimizationPlan, normalizeOptimizationAction, normalizeOptimizationPreview, filtered actions and optimization async flow orchestration.
+Move Integrations controller helpers out of `src/main.js`: Yandex status, OAuth start, client account refresh/bind/unbind flows and related state callbacks.
 ```
