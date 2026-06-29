@@ -39,6 +39,13 @@ import * as businessContextService from './services/business-context-service.js'
 import * as businessContextStore from './stores/business-context-store.js';
 import * as clientsService from './services/clients-service.js';
 import * as integrationsService from './services/integrations-service.js';
+import {
+  bindClientYandexAccountFlow,
+  loadClientYandexIntegrationFlow,
+  loadIntegrationStatusFlow,
+  startYandexOAuthFlow,
+  unbindClientYandexAccountFlow,
+} from './controllers/integrations-controller.js';
 import * as optimizationService from './services/optimization-service.js';
 import {
   createOptimizationDraftsFromPlanFlow,
@@ -1804,91 +1811,117 @@ app.addEventListener('click', async (event) => {
   })) return;
   const integrationButton = event.target.closest('[data-integration="yandex-direct"]');
   if (integrationButton) {
-    integrationStatus.message = 'Запрашиваем OAuth URL...';
-    render();
-    try {
-      const payload = await integrationsService.startYandexOAuth();
-      window.location.href = payload.auth_url;
-    } catch (error) {
-      integrationStatus = { ...integrationStatus, message: error.message || 'Не удалось начать подключение Яндекса.' };
-      render();
-    }
+    await startYandexOAuthFlow({
+      integrationsService,
+      onStart: (message) => {
+        integrationStatus.message = message;
+        render();
+      },
+      onRedirect: (authUrl) => {
+        window.location.href = authUrl;
+      },
+      onError: (message) => {
+        integrationStatus = { ...integrationStatus, message };
+        render();
+      },
+    });
   }
 });
 async function loadIntegrationStatus() {
-  try {
-    const payload = await integrationsService.fetchYandexStatus();
-    integrationStatus = {
-      connected: Boolean(payload.connected),
-      accounts: Array.isArray(payload.accounts) ? payload.accounts : [],
-      message: payload.connected ? 'Яндекс подключён. Можно привязать аккаунт к клиенту.' : 'Яндекс ещё не подключён.',
-    };
-  } catch (error) {
-    integrationStatus = { connected: false, accounts: [], message: 'Backend недоступен, статус Яндекса не проверен.' };
-  }
-  render();
+  await loadIntegrationStatusFlow({
+    integrationsService,
+    onSuccess: (status) => {
+      integrationStatus = status;
+    },
+    onError: (status) => {
+      integrationStatus = status;
+    },
+    onFinally: render,
+  });
 }
 
 
 async function loadClientYandexIntegration(force = false) {
-  if (!selectedClientId || clientYandexLoading || (clientYandexIntegration && !force)) return;
-  clientYandexLoading = true;
-  clientYandexStatus = 'Загружаем привязку клиента к Яндексу...';
-  render();
-  try {
-    const payload = await integrationsService.fetchClientYandexIntegration(selectedClientId);
-    clientYandexIntegration = payload;
-    clientYandexStatus = payload.selected_account ? 'Аккаунт Яндекса привязан к клиенту.' : 'Выберите аккаунт Яндекса для клиента.';
-    if (payload.selected_account?.id) {
-      accountClients = accountClients.map((client) => client.id === selectedClientId ? { ...client, yandexAccountId: payload.selected_account.id } : client);
-      clientsStore.saveStoredClients(accountClients);
-    }
-  } catch (error) {
-    clientYandexStatus = error.message || 'Не удалось загрузить привязку Яндекса.';
-  } finally {
-    clientYandexLoading = false;
-    render();
-  }
+  await loadClientYandexIntegrationFlow({
+    selectedClientId,
+    loading: clientYandexLoading,
+    currentIntegration: clientYandexIntegration,
+    force,
+    integrationsService,
+    onStart: (message) => {
+      clientYandexLoading = true;
+      clientYandexStatus = message;
+      render();
+    },
+    onSuccess: ({ payload, selectedAccountId, message }) => {
+      clientYandexIntegration = payload;
+      clientYandexStatus = message;
+      if (selectedAccountId) {
+        accountClients = accountClients.map((client) => client.id === selectedClientId ? { ...client, yandexAccountId: selectedAccountId } : client);
+        clientsStore.saveStoredClients(accountClients);
+      }
+    },
+    onError: (message) => {
+      clientYandexStatus = message;
+    },
+    onFinally: () => {
+      clientYandexLoading = false;
+      render();
+    },
+  });
 }
 
 
 async function bindClientYandexAccount(accountId) {
-  if (!selectedClientId || !accountId) return;
-  clientYandexLoading = true;
-  clientYandexStatus = 'Привязываем аккаунт Яндекса к клиенту...';
-  render();
-  try {
-    const payload = await integrationsService.bindClientYandexIntegration(selectedClientId, accountId);
-    clientYandexIntegration = payload;
-    accountClients = accountClients.map((client) => client.id === selectedClientId ? { ...client, yandexAccountId: accountId } : client);
-    clientsStore.saveStoredClients(accountClients);
-    clientYandexStatus = 'Аккаунт Яндекса привязан к клиенту.';
-  } catch (error) {
-    clientYandexStatus = error.message || 'Не удалось привязать аккаунт.';
-  } finally {
-    clientYandexLoading = false;
-    render();
-  }
+  await bindClientYandexAccountFlow({
+    selectedClientId,
+    accountId,
+    integrationsService,
+    onStart: (message) => {
+      clientYandexLoading = true;
+      clientYandexStatus = message;
+      render();
+    },
+    onSuccess: ({ payload, accountId: boundAccountId, message }) => {
+      clientYandexIntegration = payload;
+      accountClients = accountClients.map((client) => client.id === selectedClientId ? { ...client, yandexAccountId: boundAccountId } : client);
+      clientsStore.saveStoredClients(accountClients);
+      clientYandexStatus = message;
+    },
+    onError: (message) => {
+      clientYandexStatus = message;
+    },
+    onFinally: () => {
+      clientYandexLoading = false;
+      render();
+    },
+  });
 }
 
 
 async function unbindClientYandexAccount() {
-  if (!selectedClientId) return;
-  clientYandexLoading = true;
-  clientYandexStatus = 'Отвязываем аккаунт Яндекса...';
-  render();
-  try {
-    const payload = await integrationsService.unbindClientYandexIntegration(selectedClientId);
-    clientYandexIntegration = payload;
-    accountClients = accountClients.map((client) => client.id === selectedClientId ? { ...client, yandexAccountId: '' } : client);
-    clientsStore.saveStoredClients(accountClients);
-    clientYandexStatus = 'Аккаунт отвязан от клиента.';
-  } catch (error) {
-    clientYandexStatus = error.message || 'Не удалось отвязать аккаунт.';
-  } finally {
-    clientYandexLoading = false;
-    render();
-  }
+  await unbindClientYandexAccountFlow({
+    selectedClientId,
+    integrationsService,
+    onStart: (message) => {
+      clientYandexLoading = true;
+      clientYandexStatus = message;
+      render();
+    },
+    onSuccess: ({ payload, message }) => {
+      clientYandexIntegration = payload;
+      accountClients = accountClients.map((client) => client.id === selectedClientId ? { ...client, yandexAccountId: '' } : client);
+      clientsStore.saveStoredClients(accountClients);
+      clientYandexStatus = message;
+    },
+    onError: (message) => {
+      clientYandexStatus = message;
+    },
+    onFinally: () => {
+      clientYandexLoading = false;
+      render();
+    },
+  });
 }
 
 
