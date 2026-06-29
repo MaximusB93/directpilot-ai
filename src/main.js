@@ -38,6 +38,13 @@ import * as aiService from './services/ai-service.js';
 import * as businessContextService from './services/business-context-service.js';
 import * as businessContextStore from './stores/business-context-store.js';
 import * as clientsService from './services/clients-service.js';
+import {
+  createClientFlow,
+  createClientSettingsDraftFromForm,
+  deleteClientFlow,
+  loadClientsFromApiFlow,
+  saveClientSettingsFlow,
+} from './controllers/clients-controller.js';
 import * as integrationsService from './services/integrations-service.js';
 import {
   bindClientYandexAccountFlow,
@@ -178,34 +185,41 @@ function saveSelectedClientId(clientId) {
 }
 
 async function loadClientsFromApi(force = false) {
-  if (page !== 'app') return;
-  if (backendClientsLoading || (backendClientsLoaded && !force)) return;
-  backendClientsLoading = true;
-  try {
-    const payload = await clientsService.fetchClients();
-    accountClients = payload.map(clientsStore.normalizeBackendClient);
-    backendClientsLoaded = true;
-    backendClientsAvailable = true;
-    backendClientsStatus = accountClients.length ? 'Клиенты загружены из базы данных.' : 'В базе пока нет клиентов. Создайте первого клиента.';
-    const storedSelected = loadSelectedClientId();
-    selectedClientId = accountClients.find((client) => client.id === storedSelected)?.id || accountClients[0]?.id || '';
-    if (selectedClientId) saveSelectedClientId(selectedClientId);
-    clientsStore.saveStoredClients(accountClients);
-    if (!businessContextLoading) businessContext = null;
-  } catch (error) {
-    if (!backendClientsLoaded) {
-      const storedClients = clientsStore.loadStoredClients();
-      if (storedClients.length) {
-        accountClients = storedClients;
-        selectedClientId = accountClients.find((client) => client.id === loadSelectedClientId())?.id || accountClients[0]?.id || '';
+  await loadClientsFromApiFlow({
+    page,
+    force,
+    loading: backendClientsLoading,
+    loaded: backendClientsLoaded,
+    businessContextLoading,
+    clientsService,
+    clientsStore,
+    loadSelectedClientId,
+    onStart: () => {
+      backendClientsLoading = true;
+    },
+    onSuccess: ({ clients, selectedClientId: nextSelectedClientId, message, shouldResetBusinessContext }) => {
+      accountClients = clients;
+      backendClientsLoaded = true;
+      backendClientsAvailable = true;
+      backendClientsStatus = message;
+      selectedClientId = nextSelectedClientId;
+      if (selectedClientId) saveSelectedClientId(selectedClientId);
+      clientsStore.saveStoredClients(accountClients);
+      if (shouldResetBusinessContext) businessContext = null;
+    },
+    onFallback: ({ clients, selectedClientId: fallbackSelectedClientId, message }) => {
+      if (!backendClientsLoaded && clients.length) {
+        accountClients = clients;
+        selectedClientId = fallbackSelectedClientId || '';
       }
-    }
-    backendClientsAvailable = false;
-    backendClientsStatus = 'Backend недоступен, временно используем локальное хранилище.';
-  } finally {
-    backendClientsLoading = false;
-    render();
-  }
+      backendClientsAvailable = false;
+      backendClientsStatus = message;
+    },
+    onFinally: () => {
+      backendClientsLoading = false;
+      render();
+    },
+  });
 }
 
 
@@ -1625,43 +1639,36 @@ app.addEventListener('submit', async (event) => {
   const clientForm = event.target.closest('[data-client-form]');
   if (clientForm) {
     event.preventDefault();
-    const formData = new FormData(clientForm);
-    const name = formData.get('name')?.toString().trim();
-    const directLogin = formData.get('directLogin')?.toString().trim();
-    const metricaCounter = formData.get('metricaCounter')?.toString().trim();
-    if (!name) return;
-    const newClient = clientsStore.createClientFromForm(name, directLogin, metricaCounter);
-    clientFormStatus = 'Сохраняем клиента...';
-    render();
-    try {
-      if (backendClientsAvailable) {
-        const payload = await clientsService.createClient({
-          id: newClient.id,
-          name: newClient.name,
-          directLogin: newClient.directLogin,
-          metricaCounter: newClient.metricaCounter,
-          segment: newClient.segment,
-        });
-        accountClients = [...accountClients, clientsStore.normalizeBackendClient(payload)];
-        clientFormStatus = 'Клиент сохранён в базе данных.';
-      } else {
-        accountClients = [...accountClients, newClient];
-        clientFormStatus = 'Backend недоступен, клиент временно сохранён локально.';
-      }
-      selectedClientId = newClient.id;
-      saveSelectedClientId(selectedClientId);
-      clientsStore.saveStoredClients(accountClients);
-      clientDraftName = '';
-      clientDraftDirectLogin = '';
-      clientDraftMetricaCounter = '';
-    } catch (error) {
-      accountClients = [...accountClients, newClient];
-      selectedClientId = newClient.id;
-      saveSelectedClientId(selectedClientId);
-      clientsStore.saveStoredClients(accountClients);
-      clientFormStatus = `${error.message}. Клиент сохранён локально.`;
-    }
-    render();
+    await createClientFlow({
+      form: clientForm,
+      backendAvailable: backendClientsAvailable,
+      clientsService,
+      clientsStore,
+      onStart: (message) => {
+        clientFormStatus = message;
+        render();
+      },
+      onSuccess: ({ client, selectedClientId: nextSelectedClientId, message, clearDraft }) => {
+        accountClients = [...accountClients, client];
+        selectedClientId = nextSelectedClientId;
+        saveSelectedClientId(selectedClientId);
+        clientsStore.saveStoredClients(accountClients);
+        clientFormStatus = message;
+        if (clearDraft) {
+          clientDraftName = '';
+          clientDraftDirectLogin = '';
+          clientDraftMetricaCounter = '';
+        }
+      },
+      onError: ({ client, selectedClientId: nextSelectedClientId, message }) => {
+        accountClients = [...accountClients, client];
+        selectedClientId = nextSelectedClientId;
+        saveSelectedClientId(selectedClientId);
+        clientsStore.saveStoredClients(accountClients);
+        clientFormStatus = message;
+      },
+      onFinally: render,
+    });
     return;
   }
 
@@ -1926,87 +1933,72 @@ async function unbindClientYandexAccount() {
 
 
 function setClientSettingsDraftFromForm(form) {
-  const formData = new FormData(form);
-  clientSettingsDraft = {
-    name: formData.get('name')?.toString().trim() || '',
-    directLogin: formData.get('directLogin')?.toString().trim() || '',
-    metricaCounter: formData.get('metricaCounter')?.toString().trim() || '',
-    targetCpa: formData.get('targetCpa')?.toString().trim() || '',
-    mainGoalId: formData.get('mainGoalId')?.toString().trim() || '',
-    conversionGoalIds: formData.get('conversionGoalIds')?.toString().trim() || '',
-    notes: formData.get('notes')?.toString().trim() || '',
-  };
+  clientSettingsDraft = createClientSettingsDraftFromForm(form);
   return clientSettingsDraft;
 }
 
 async function saveClientSettings(form) {
-  if (!selectedClientId) return;
-  const draft = setClientSettingsDraftFromForm(form);
-  clientSettingsSaving = true;
-  clientSettingsStatus = 'Сохраняем настройки клиента...';
-  render();
-  const localUpdate = {
-    name: draft.name,
-    directLogin: draft.directLogin || 'Не подключен',
-    metricaCounter: draft.metricaCounter || 'Не подключен',
-    targetCpa: draft.targetCpa,
-    mainGoalId: draft.mainGoalId,
-    conversionGoalIds: draft.conversionGoalIds,
-    notes: draft.notes,
-  };
-  try {
-    if (backendClientsAvailable) {
-      const payload = await clientsService.updateClient(selectedClientId, {
-        name: draft.name,
-        direct_login: draft.directLogin || null,
-        metrica_counter: draft.metricaCounter || null,
-        target_cpa: draft.targetCpa ? Number(draft.targetCpa) : null,
-        main_goal_id: draft.mainGoalId || null,
-        conversion_goal_ids: draft.conversionGoalIds || null,
-        notes: draft.notes || null,
-      });
-      accountClients = accountClients.map((client) => client.id === selectedClientId ? clientsStore.normalizeBackendClient(payload) : client);
-      clientSettingsStatus = 'Настройки клиента сохранены в базе.';
-    } else {
-      accountClients = accountClients.map((client) => client.id === selectedClientId ? { ...client, ...localUpdate } : client);
-      clientSettingsStatus = 'Backend недоступен, настройки сохранены локально.';
-    }
-    clientsStore.saveStoredClients(accountClients);
-    clientSettingsDraft = null;
-    businessContext = null;
-    perfSummary = null;
-    optimizationPlan = null;
-  } catch (error) {
-    accountClients = accountClients.map((client) => client.id === selectedClientId ? { ...client, ...localUpdate } : client);
-    clientsStore.saveStoredClients(accountClients);
-    clientSettingsStatus = `${error.message}. Локальная копия обновлена.`;
-  } finally {
-    clientSettingsSaving = false;
-    render();
-  }
+  await saveClientSettingsFlow({
+    selectedClientId,
+    form,
+    backendAvailable: backendClientsAvailable,
+    clientsService,
+    clientsStore,
+    onStart: ({ draft, message }) => {
+      clientSettingsDraft = draft;
+      clientSettingsSaving = true;
+      clientSettingsStatus = message;
+      render();
+    },
+    onSuccess: ({ client, localUpdate, message, backend }) => {
+      accountClients = accountClients.map((currentClient) => (
+        currentClient.id === selectedClientId
+          ? backend ? client : { ...currentClient, ...localUpdate }
+          : currentClient
+      ));
+      clientsStore.saveStoredClients(accountClients);
+      clientSettingsStatus = message;
+      clientSettingsDraft = null;
+      businessContext = null;
+      perfSummary = null;
+      optimizationPlan = null;
+    },
+    onError: ({ localUpdate, message }) => {
+      accountClients = accountClients.map((currentClient) => currentClient.id === selectedClientId ? { ...currentClient, ...localUpdate } : currentClient);
+      clientsStore.saveStoredClients(accountClients);
+      clientSettingsStatus = message;
+    },
+    onFinally: () => {
+      clientSettingsSaving = false;
+      render();
+    },
+  });
 }
 
 
 async function deleteClient(clientId) {
-  if (!clientId) return;
-  if (!window.confirm('Удалить клиента? Это действие нельзя отменить.')) return;
-  clientSettingsStatus = 'Удаляем клиента...';
-  render();
-  try {
-    if (backendClientsAvailable) {
-      await clientsService.deleteClient(clientId);
-    }
-    accountClients = accountClients.filter((client) => client.id !== clientId);
-    selectedClientId = accountClients[0]?.id || '';
-    if (selectedClientId) saveSelectedClientId(selectedClientId);
-    clientsStore.saveStoredClients(accountClients);
-    clientSettingsStatus = accountClients.length ? 'Клиент удалён.' : 'Клиент удалён. Создайте нового клиента.';
-    activeView = 'clients';
-  } catch (error) {
-    clientSettingsStatus = error.message || 'Не удалось удалить клиента.';
-  } finally {
-    render();
-  }
+  await deleteClientFlow({
+    clientId,
+    backendAvailable: backendClientsAvailable,
+    clientsService,
+    onConfirm: () => window.confirm('Удалить клиента? Это действие нельзя отменить.'),
+    onStart: (message) => {
+      clientSettingsStatus = message;
+      render();
+    },
+    onSuccess: ({ clientId: deletedClientId }) => {
+      accountClients = accountClients.filter((client) => client.id !== deletedClientId);
+      selectedClientId = accountClients[0]?.id || '';
+      if (selectedClientId) saveSelectedClientId(selectedClientId);
+      clientsStore.saveStoredClients(accountClients);
+      clientSettingsStatus = accountClients.length ? 'Клиент удалён.' : 'Клиент удалён. Создайте нового клиента.';
+      activeView = 'clients';
+    },
+    onError: (message) => {
+      clientSettingsStatus = message;
+    },
+    onFinally: render,
+  });
 }
 
 
