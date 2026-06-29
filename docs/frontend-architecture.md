@@ -1,110 +1,40 @@
 # Frontend architecture
 
-DirectPilot AI frontend is moving from a single large `src/main.js` file to a page-module architecture.
+DirectPilot AI frontend is being migrated from a large `src/main.js` file into layered modules.
 
-## Current target
-
-Keep one static shell:
-
-- `app.html` — cabinet shell.
-- `src/main.js` — temporary bootstrap, legacy renderer and event orchestrator.
-
-Move new code toward layered modules:
+## Target layers
 
 ```text
-src/app/
-  routes.js
-  router.js
-  page-router.js
-  state.js
-  hash-route-bridge.js
+src/app/          routes, router, page-router, shared app state and hash bridge
+src/pages/        page content composers
+src/services/     backend API access
+src/stores/       pure state/data helpers
+src/controllers/  feature orchestration between main, stores and services
+src/components/   reusable UI components, still mostly future work
+```
 
+## Current modules
+
+```text
 src/controllers/
   ai-controller.js
   ai-event-bindings.js
+  clients-controller.js
   integrations-controller.js
   optimization-controller.js
 
-src/pages/
-  index.js
-  dashboard.js
-  clients.js
-  integrations.js
-  business-context.js
-  ai-assistant.js
-  optimization.js
-  wordstat.js
-  journal.js
-
-src/services/
-  index.js
-  clients-service.js
-  integrations-service.js
-  business-context-service.js
-  sync-service.js
-  performance-service.js
-  optimization-service.js
-  ai-service.js
-
 src/stores/
-  index.js
-  client-store.js
   ai-store.js
   ai-feature-state.js
   business-context-store.js
   campaign-store.js
+  client-store.js
   optimization-store.js
-
-src/components/
-  button.js
-  panel.js
-  metric-card.js
-  status-badge.js
-  empty-state.js
-  client-selector.js
 ```
 
-## Routing
+## Page composers
 
-The cabinet uses hash routes during the MVP stage:
-
-```text
-app.html#dashboard
-app.html#clients
-app.html#business-context
-app.html#integrations
-app.html#ai
-app.html#wordstat
-app.html#optimization
-app.html#journal
-```
-
-This keeps the app static-hosting friendly and makes page state shareable/reload-safe.
-
-## Route modules
-
-- `src/app/routes.js` stores route metadata and normalization helpers.
-- `src/app/router.js` owns hash navigation helpers.
-- `src/app/page-router.js` connects normalized route ids with registered page modules, contracts, renderer adapters and content composers.
-- `src/app/state.js` stores shared app state and dispatches typed browser events.
-- `src/app/hash-route-bridge.js` temporarily synchronizes hash routes with legacy `?view=` routing in `src/main.js`.
-
-## Page modules
-
-`src/pages/index.js` is the registry for page metadata, page contracts, renderer adapters and content composers.
-
-Registered page contracts now exist for:
-
-```text
-dashboard
-clients
-business-context
-integrations
-ai
-optimization
-```
-
-Core page content composers are wired for:
+Content composers are wired for:
 
 ```text
 Dashboard
@@ -115,133 +45,65 @@ Optimization
 AI Assistant
 ```
 
-`src/pages/ai-assistant.js` owns AI assistant markup composition. Model settings, prompt debug, chat, sample prompts, client recommendations and quick prompt actions route through `src/controllers/ai-event-bindings.js`, while state mutation happens through the `aiFeatureState` facade in `src/main.js`.
+`src/pages/clients.js` owns Clients markup composition. Client loading, creation, settings and deletion orchestration now routes through `src/controllers/clients-controller.js`, while `src/main.js` still owns selected-client mutable state, storage callbacks and cross-feature reset side effects.
 
-`src/pages/business-context.js` owns Business Context markup composition. Business Context model helpers now live in `src/stores/business-context-store.js`, while `src/main.js` keeps thin wrappers where current client/state access is still needed.
+`src/pages/integrations.js` owns Integrations markup composition. Yandex OAuth/status/client-binding orchestration routes through `src/controllers/integrations-controller.js`, while `src/main.js` still owns mutable state, client list patches and render callbacks.
 
-`src/pages/optimization.js` owns Optimization markup composition. Optimization normalization/filtering helpers now live in `src/stores/optimization-store.js`, and async orchestration now routes through `src/controllers/optimization-controller.js`, while `src/main.js` still owns mutable state and render callbacks.
+`src/pages/optimization.js` owns Optimization markup composition. Normalization/filtering helpers live in `src/stores/optimization-store.js`, and async orchestration routes through `src/controllers/optimization-controller.js`.
 
-`src/pages/integrations.js` owns Integrations markup composition. Yandex OAuth/status/client-binding orchestration now routes through `src/controllers/integrations-controller.js`, while `src/main.js` still owns mutable state, client list patches and render callbacks.
+`src/pages/business-context.js` owns Business Context markup composition. Business Context model helpers live in `src/stores/business-context-store.js`.
 
-Current contract-only modules:
+`src/pages/ai-assistant.js` owns AI Assistant markup composition. AI state uses `aiFeatureState`, AI flows route through `src/controllers/ai-controller.js`, and AI event branches route through `src/controllers/ai-event-bindings.js`.
 
-```text
-none
-```
-
-## Service layer
-
-Service modules isolate backend calls that previously lived inside `src/main.js`:
-
-```text
-clients-service.js            /clients CRUD
-integrations-service.js       Yandex OAuth and client binding
-business-context-service.js   business context and memory notes
-sync-service.js               sync run and sync job history
-performance-service.js        performance summary
-optimization-service.js       optimization plan/actions/execution preview
-ai-service.js                 OpenRouter status, generation, chat, recommendations, prompt debug
-```
-
-`src/main.js` now uses these service modules instead of direct inline `apiFetch(...)` calls. The static validator checks this with `main no inline apiFetch calls`, so direct backend access should stay in `src/services/` or dedicated feature modules.
-
-## Store layer
-
-Store scaffolds now exist for:
-
-```text
-client-store.js             selected client id, selected client resolution, localStorage key helpers
-ai-store.js                 initial AI chat/model/generation state, AI budget helpers, chat payload builders
-ai-feature-state.js         AI feature state facade split into model/generation/chat sections
-business-context-store.js   Business Context normalization, backend payload, form draft, copy text, AI payload and completeness helpers
-campaign-store.js           campaign names, campaign ids, performance summary campaign options and filtering helpers
-optimization-store.js       Optimization plan/action/preview normalization, action list normalization, filtering and replacement helpers
-```
-
-Current wiring:
-
-```text
-client-store.js             wired into selected client loading/saving and client normalization
-ai-store.js                 wired into AI helpers, chat payloads, status normalization and ai-feature-state initial values
-ai-feature-state.js         wired into `src/main.js` as `aiFeatureState.model`, `aiFeatureState.generation` and `aiFeatureState.chat`
-business-context-store.js   wired into `src/main.js` wrappers: normalizeBusinessContext, businessContextPayload, defaultBusinessContext, hasBusinessContextData, businessContextCopyText, setBusinessContextDraftFromForm, businessContextForAi and contextCompletenessScore
-campaign-store.js           wired into `campaignOptions()` through `campaignsStore.getCampaignOptions(perfSummary)`
-optimization-store.js       wired into `src/main.js` wrappers: normalizeOptimizationPlan, normalizeOptimizationAction, normalizeOptimizationPreview and getFilteredOptimizationActions
-```
-
-## Controller layer
-
-Controllers are the migration layer between `src/main.js`, stores and services.
-
-Current controller modules:
-
-```text
-ai-controller.js             AI state snapshots, AI page context assembly, thin delegates to AI store request builders, and AI async flows
-ai-event-bindings.js        AI submit/input/change/click event routing for model settings, prompt debug, chat, recommendations and quick prompts
-integrations-controller.js  Integrations async flows for Yandex status, OAuth start, client account refresh, bind and unbind
-optimization-controller.js  Optimization async flows for plan loading, action loading, draft creation, status updates and execution preview
-```
-
-Current controller wiring:
+## Controller wiring
 
 ```text
 AI input/change/submit/click event branches delegate to ai-event-bindings.js
 AI async flows delegate to ai-controller.js
-Optimization normalization/filtering delegates to optimization-store.js
-loadOptimizationPlan() delegates to loadOptimizationPlanFlow(...)
-loadOptimizationActions() delegates to loadOptimizationActionsFlow(...)
-createOptimizationDraftsFromPlan() delegates to createOptimizationDraftsFromPlanFlow(...)
-updateOptimizationActionStatus() delegates to updateOptimizationActionStatusFlow(...)
-loadOptimizationExecutionPreview() delegates to loadOptimizationExecutionPreviewFlow(...)
-Yandex OAuth click delegates to startYandexOAuthFlow(...)
-loadIntegrationStatus() delegates to loadIntegrationStatusFlow(...)
-loadClientYandexIntegration() delegates to loadClientYandexIntegrationFlow(...)
-bindClientYandexAccount() delegates to bindClientYandexAccountFlow(...)
-unbindClientYandexAccount() delegates to unbindClientYandexAccountFlow(...)
+Client backend loading delegates to loadClientsFromApiFlow(...)
+Client creation delegates to createClientFlow(...)
+Client settings draft delegates to createClientSettingsDraftFromForm(...)
+Client settings save delegates to saveClientSettingsFlow(...)
+Client deletion delegates to deleteClientFlow(...)
+Optimization async flows delegate to optimization-controller.js
+Yandex OAuth/status/bind/unbind flows delegate to integrations-controller.js
 ```
 
-Still in `src/main.js` after this controller/store step:
+## Still in main.js
 
 ```text
-callback wiring for AI bindings and flows
+selected client side-effect reset block
 business context mutable variables and service flows
 optimization mutable variables and render callbacks
 integrations mutable variables and client list patch callbacks
-clients mutable variables and service flows
+clients mutable variables and storage/render callbacks
+legacy routing glue
 ```
 
 ## Static validation
 
-`scripts/validate-static.mjs` protects the migration from quiet regressions.
-
-Important checks include:
+`scripts/validate-static.mjs` guards the migration with string-based checks. Important checks now include:
 
 ```text
 main no inline apiFetch calls
-main no duplicated async
 main ai feature state wiring
 main business context store delegation
 main optimization controller delegation
-main integrations controller import
 main integrations controller delegation
-integrations controller flows
-integrations controller services
-Integrations controller wired
+main clients controller import
+main clients controller delegation
+clients controller flows
+clients controller services
+Clients controller wired
 ```
 
-When a new extraction is wired, add a static check in the same or next commit. The validator is intentionally simple string matching. Primitive, yes. Effective enough to keep accidental regressions from crawling into production like raccoons in a ventilation shaft.
-
-## Migration rule
-
-Do not rewrite `src/main.js` in one large commit.
-
-Completed migration sequence so far:
+## Completed migration sequence
 
 ```text
 service layer wired
 client store wired
 ai store wired
-campaign store scaffolded and wired
+campaign store wired
 Dashboard content composer wired
 Clients content composer wired
 Business Context content composer wired
@@ -256,11 +118,12 @@ AI feature state facade wired
 Business Context store helpers wired
 Optimization controller/store wired
 Integrations controller wired
+Clients controller wired
 static validator guards service/store/controller/page wiring
 ```
 
-Next iteration:
+## Next iteration
 
 ```text
-Move Clients controller + app state sync out of `src/main.js`: backend client loading, local fallback, selected client side effects and client settings flows.
+Router cleanup + Wordstat/Journal decision + components старт: reduce remaining routing glue, decide what stays legacy, and start extracting reusable UI components only where it is safe.
 ```
