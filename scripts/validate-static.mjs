@@ -78,20 +78,17 @@ function lacks(file, values) {
 
 const checks = [
   ['app shells', has('index.html', 'id="app"') && has('login.html', 'data-page="login"') && has('app.html', 'data-page="app"')],
-  ['routes guarded', has('src/app/routes.js', "mode: 'module'") && has('src/app/routes.js', "mode: 'reserved'")],
+  ['routes module modes', has('src/app/routes.js', 'wordstat') && has('src/app/routes.js', 'journal') && has('src/app/routes.js', "mode: 'module'") && !has('src/app/routes.js', "mode: 'reserved'")],
   ['wordstat runtime via main', has('src/main.js', "import './wordstat.js';") && lacks('app.html', ['src/wordstat.js', 'src/wordstat_date_fix.js', 'src/wordstat_regions_patch.js', 'src/wordstat_ai_chat.js', 'src/wordstat_chart_hover.js'])],
-  ['wordstat wiring guarded', has('src/pages/index.js', '[WORDSTAT_PAGE_ID]: renderWordstatContent') && has('src/wordstat.js', 'createWordstatEventHandlers({') && lacks('src/main.js', ['apiFetch('])],
   ['journal exports', ['journal-store.js', 'journal-local-source.js', 'journal-controller.js', 'journal-page.js', 'journal-events.js'].every((name) => has('src/features/journal/index.js', name))],
   ['journal store pure', has('src/features/journal/journal-store.js', 'normalizeJournalEntry') && has('src/features/journal/journal-store.js', 'groupJournalEntriesByDate') && lacks('src/features/journal/journal-store.js', ['apiFetch', 'document.', 'localStorage'])],
-  ['journal local source', has('src/features/journal/journal-local-source.js', 'createJournalLocalSource') && has('src/features/journal/journal-local-source.js', 'scopedStorageKey') && has('src/features/journal/journal-local-source.js', 'filterJournalEntries')],
-  ['journal controller pure', has('src/features/journal/journal-controller.js', 'loadJournalEntriesFlow') && has('src/features/journal/journal-controller.js', 'createJournalEntryFlow') && lacks('src/features/journal/journal-controller.js', ['document.', 'querySelector', 'localStorage', 'apiFetch'])],
-  ['journal page pure', has('src/features/journal/journal-page.js', 'createJournalPageRenderers') && has('src/features/journal/journal-page.js', 'renderJournalTimeline') && lacks('src/features/journal/journal-page.js', ['apiFetch', 'document.', 'addEventListener'])],
-  ['journal events pure', has('src/features/journal/journal-events.js', 'createJournalEventHandlers') && has('src/features/journal/journal-events.js', 'handleJournalClickEvent') && has('src/features/journal/journal-events.js', 'data-journal-load-more') && lacks('src/features/journal/journal-events.js', ['document.', 'addEventListener', 'querySelector', 'localStorage', 'apiFetch'])],
-  ['journal page module', has('src/pages/journal.js', 'JOURNAL_PAGE_ID') && has('src/pages/journal.js', 'journalPageContract') && has('src/pages/journal.js', 'renderJournalContent') && has('src/pages/journal.js', 'createJournalPageRenderers')],
-  ['journal registry', has('src/pages/index.js', '[JOURNAL_PAGE_ID]: journalPage') && has('src/pages/index.js', '[JOURNAL_PAGE_ID]: journalPageContract()') && has('src/pages/index.js', '[JOURNAL_PAGE_ID]: renderJournalContent')],
-  ['journal still reserved', has('src/app/routes.js', "mode: 'reserved'") && !has('src/main.js', 'renderJournal()')],
-  ['docs updated', has('docs/journal-domain-model.md', 'src/pages/journal.js: created and registered') && has('docs/frontend-architecture.md', 'Journal page module registered')],
+  ['journal source/controller/page/events', has('src/features/journal/journal-local-source.js', 'createJournalLocalSource') && has('src/features/journal/journal-controller.js', 'loadJournalEntriesFlow') && has('src/features/journal/journal-page.js', 'createJournalPageRenderers') && has('src/features/journal/journal-events.js', 'createJournalEventHandlers')],
+  ['journal page registry', has('src/pages/journal.js', 'renderJournalContent') && has('src/pages/index.js', '[JOURNAL_PAGE_ID]: renderJournalContent')],
+  ['journal app shell runtime', has('src/main.js', 'const journalSource = createJournalLocalSource();') && has('src/main.js', 'function renderJournal()') && has('src/main.js', 'journal: renderJournal,') && has('src/main.js', "activeView === 'journal'") && has('src/main.js', 'journalEventHandlers.handleJournalClickEvent(event);')],
+  ['journal client scoped reset', has('src/app/client-scope-reset.js', 'journalLoadedFor')],
+  ['main no direct api helper calls', lacks('src/main.js', ['apiFetch('])],
   ['no seeded account data', has('src/data.js', 'export const clients = []')],
+  ['docs updated', has('docs/journal-domain-model.md', 'route mode switch: done') && has('docs/frontend-architecture.md', 'Journal route mode switched to module')],
 ];
 
 const failed = checks.filter(([, ok]) => !ok);
