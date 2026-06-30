@@ -1,3 +1,5 @@
+import { renderEmptyState, renderPanel, renderStatusBadge } from '../components/index.js';
+
 export const BUSINESS_CONTEXT_PAGE_ID = 'business-context';
 
 export const businessContextPage = {
@@ -20,13 +22,34 @@ export function businessContextPageContract() {
     ],
     legacyRenderer: 'renderBusinessContext',
     extractionStatus: 'content-composer-ready',
+    componentPrimitives: [
+      'renderPanel',
+      'renderEmptyState',
+      'renderStatusBadge',
+    ],
     extractedBuilders: [
       'renderBusinessContextIntro',
       'renderBusinessContextPanel',
       'renderBusinessContextContent',
     ],
-    nextStep: 'Wire integrations page content composer after business context is stable.',
+    nextStep: 'Start Wordstat store/service extraction after local validation path is ready.',
   };
+}
+
+function contextScoreTone(score = 0) {
+  if (score >= 80) return 'success';
+  if (score >= 40) return 'info';
+  if (score > 0) return 'warning';
+  return 'neutral';
+}
+
+function hasBusinessContextData(context = {}) {
+  return Object.values(context || {}).some((value) => String(value || '').trim());
+}
+
+function renderBusinessContextStatus(message, { escapeHtml } = {}) {
+  if (!message) return '';
+  return `<div class="authStatus integrationStatus">${escapeHtml(message)}</div>`;
 }
 
 export function renderBusinessContextIntro({ escapeHtml }) {
@@ -49,25 +72,30 @@ export function renderBusinessContextPanel({
   businessContextStatus = '',
   escapeHtml,
 }) {
+  const isBusy = businessContextLoading || businessContextSaving;
   const field = (name, label, placeholder = '') => `
-    <label class="businessContextField">
-      <span>${label}</span>
-      <textarea name="${name}" placeholder="${escapeHtml(placeholder)}" ${businessContextLoading || businessContextSaving ? 'disabled' : ''}>${escapeHtml(context[name] || '')}</textarea>
+    <label class="authField businessContextField">
+      <span>${escapeHtml(label)}</span>
+      <textarea name="${name}" placeholder="${escapeHtml(placeholder)}" ${isBusy ? 'disabled' : ''}>${escapeHtml(context[name] || '')}</textarea>
     </label>
   `;
+  const scoreBadge = renderStatusBadge({
+    label: `Заполнено ${score}%`,
+    tone: contextScoreTone(score),
+    title: 'Оценка заполненности бизнес-контекста',
+  });
+  const emptyContext = !hasBusinessContextData(context);
 
-  return `
-    <section class="panel businessContextPanel ${compact ? 'compactBusinessContext' : ''}">
-      <div class="panelHeader">
-        <div>
-          <h3>${compact ? 'Контекст бизнеса для AI' : 'Контекст бизнеса'}</h3>
-          <p>${compact ? 'AI учитывает эти данные при аудите и рекомендациях.' : 'Заполните информацию о бизнесе, чтобы AI не давал generic-рекомендации.'}</p>
-        </div>
-        <div class="contextScore"><span>Заполнено</span><strong>${score}%</strong></div>
-      </div>
-      ${businessContextStatus ? `<div class="authStatus integrationStatus">${escapeHtml(businessContextStatus)}</div>` : ''}
+  return renderPanel({
+    title: compact ? 'Контекст бизнеса для AI' : 'Контекст бизнеса',
+    subtitle: compact ? 'AI учитывает эти данные при аудите и рекомендациях.' : 'Заполните информацию о бизнесе, чтобы AI не давал generic-рекомендации.',
+    className: `businessContextPanel ${compact ? 'compactBusinessContext' : ''}`,
+    actions: `<div class="panelActionsInline">${scoreBadge}</div>`,
+    children: `
+      ${renderBusinessContextStatus(businessContextStatus, { escapeHtml })}
+      ${emptyContext ? renderEmptyState({ title: 'Контекст пока пустой', description: 'Заполните ключевые поля: нишу, продукт, аудиторию, географию и ограничения. AI без контекста превращается в генератор общих советов, а это мы уже видели и не скучаем.' }) : ''}
       <form class="businessContextForm" data-business-context-form>
-        <div class="businessContextGrid">
+        <div class="clientSettingsGrid businessContextGrid">
           ${field('companyName', 'Компания', 'Название клиента')}
           ${field('websiteUrl', 'Сайт', 'https://example.ru')}
           ${field('industry', 'Ниша', 'Например: медицина, недвижимость, e-commerce')}
@@ -88,13 +116,13 @@ export function renderBusinessContextPanel({
         </div>
         <div class="authStatus integrationStatus">Автоматический анализ посадочных страниц будет добавлен отдельной итерацией. Сейчас контекст заполняется вручную.</div>
         <div class="heroActions">
-          <button class="approveButton" type="submit" ${businessContextLoading ? 'disabled' : ''}>${businessContextLoading ? 'Сохраняем...' : 'Сохранить контекст'}</button>
+          <button class="approveButton" type="submit" ${isBusy ? 'disabled' : ''}>${isBusy ? 'Сохраняем...' : 'Сохранить контекст'}</button>
           <button class="secondaryButton" type="button" data-reset-business-context>Очистить несохранённые изменения</button>
           <button class="secondaryButton" type="button" data-copy-text="${escapeHtml(copyText)}">Скопировать контекст</button>
         </div>
       </form>
-    </section>
-  `;
+    `,
+  });
 }
 
 export function renderBusinessContextContent(context) {
