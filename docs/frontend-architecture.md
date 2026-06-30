@@ -75,9 +75,13 @@ src/features/wordstat/wordstat-page.js
 src/features/wordstat/wordstat-events.js
 ```
 
-These files now own pure helpers, API access, a stable legacy facade, async Wordstat flows, reusable render helpers and event handler logic.
+Journal has started its feature-first scaffold with a local MVP source and pure store helpers.
 
-`src/wordstat.js` is imported by `src/main.js`. It still owns the outer DOM lifecycle and listener registration, but it is no longer loaded as a standalone script from `app.html`.
+```text
+src/features/journal/index.js
+src/features/journal/journal-store.js
+src/features/journal/journal-local-source.js
+```
 
 ## Routing cleanup
 
@@ -121,11 +125,13 @@ Current status:
 
 ```text
 journal route mode: reserved
-current module: none
 target module: src/features/journal/*
+local MVP source: created
+store scaffold: created
+page/controller/events: pending
 ```
 
-Do not create `src/pages/journal.js` until backend/local source, store, service and page contracts are ready.
+Do not create `src/pages/journal.js` until page/controller/events exist.
 
 ## Page composers
 
@@ -133,7 +139,7 @@ Content composers are wired for Dashboard, Clients, Business Context, Integratio
 
 Wordstat page module currently provides a bridge shell while `src/wordstat.js` owns the remaining runtime lifecycle.
 
-Journal remains a reserved route until its domain model is implemented.
+Journal remains a reserved route until the local source, store, page, controller and events are wired.
 
 ## Still in main.js
 
@@ -185,6 +191,8 @@ Wordstat page module registered
 Wordstat module route wired in app shell
 Wordstat standalone scripts removed from app.html
 Wordstat route mode switched to module
+Journal local source scaffold created
+Journal store scaffold created
 Wordstat/Journal decision documented
 Components scaffold wired
 static validator guards service/store/controller/page/events/page registration/app shell wiring
@@ -193,6 +201,9 @@ static validator guards service/store/controller/page/events/page registration/a
 ## Next safe refactors
 
 ```text
-1. Start Journal MVP source/store extraction after backend/local source is chosen.
-2. Later: absorb remaining Wordstat runtime bridge and patch modules into feature modules.
+1. Create Journal page/controller around the local source.
+2. Create Journal events.
+3. Wire Journal into page renderer and client-scope reset.
+4. Change Journal route mode from reserved to module.
+5. Later: absorb remaining Wordstat runtime bridge and patch modules into feature modules.
 ```
