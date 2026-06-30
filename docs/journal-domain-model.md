@@ -2,15 +2,17 @@
 
 ## Status
 
-`journal` is still a reserved route, but the feature module and page module are now registered.
+Journal MVP is now registered, wired in the app shell and enabled as a module route.
 
 Current route metadata:
 
 ```text
 Route id: journal
-Route mode: reserved
+Route mode: module
 Feature scaffold: src/features/journal/*
 Page module: src/pages/journal.js
+Runtime: src/main.js
+Source: local MVP source
 ```
 
 Current extraction status:
@@ -22,10 +24,10 @@ journal-controller.js: created
 journal-page.js: created
 journal-events.js: created
 src/pages/journal.js: created and registered
+app shell runtime wiring: done
+client-scope reset: done
+route mode switch: done
 journal-service.js: pending backend endpoints
-app shell runtime wiring: pending
-client-scope reset: pending
-route mode switch: pending
 ```
 
 ## Product definition
@@ -46,31 +48,6 @@ what happened next
 
 Journal is not a generic changelog and not a dumping ground for every console-like event.
 
-## Entity model
-
-Target entity:
-
-```ts
-type JournalEntry = {
-  id: string;
-  scope: 'client' | 'account' | 'system';
-  clientId: string | null;
-  occurredAt: string;
-  createdAt: string;
-  source: 'ai' | 'optimization' | 'integration' | 'sync' | 'business_context' | 'client' | 'system';
-  category: 'recommendation' | 'action' | 'status' | 'data_change' | 'error' | 'note';
-  type: string;
-  severity: 'info' | 'success' | 'warning' | 'error';
-  title: string;
-  summary: string;
-  actor: JournalActor;
-  entity: JournalEntity | null;
-  before: Record<string, unknown> | null;
-  after: Record<string, unknown> | null;
-  metadata: Record<string, unknown>;
-};
-```
-
 ## Current module contracts
 
 ### Store
@@ -79,24 +56,7 @@ type JournalEntry = {
 src/features/journal/journal-store.js
 ```
 
-Owns:
-
-```text
-createInitialJournalState()
-createDefaultJournalFilters(overrides)
-normalizeJournalEntry(payload)
-normalizeJournalEntries(payload)
-normalizeJournalActor(actor)
-normalizeJournalEntity(entity)
-createJournalQueryParams(filters)
-createJournalEntryPayload(input)
-filterJournalEntries(entries, filters)
-groupJournalEntriesByDate(entries)
-formatJournalEntryDate(value)
-compareJournalEntriesNewestFirst(a, b)
-```
-
-Store must not call API, read DOM, attach listeners, render UI or read localStorage directly.
+Owns normalization, filters, grouping and entry payload helpers. Store must not call API, read DOM, attach listeners, render UI or read localStorage directly.
 
 ### Local MVP source
 
@@ -132,27 +92,13 @@ createJournalEntryFlow(...)
 refreshJournalFlow(...)
 ```
 
-Controller receives dependencies explicitly and must not own DOM selectors.
-
 ### Page renderers
 
 ```text
 src/features/journal/journal-page.js
 ```
 
-Owns reusable HTML render helpers:
-
-```text
-createJournalPageRenderers(context)
-renderJournalPage(context)
-renderJournalFilters(context)
-renderJournalTimeline(context)
-renderJournalEntry(entry)
-renderJournalEmptyState()
-renderJournalLoadMore(context)
-```
-
-Page functions receive context and return HTML strings. They must not call backend or attach listeners.
+Owns reusable HTML render helpers.
 
 ### Events
 
@@ -160,16 +106,7 @@ Page functions receive context and return HTML strings. They must not call backe
 src/features/journal/journal-events.js
 ```
 
-Owns event handlers:
-
-```text
-createJournalEventHandlers(context)
-handleJournalClickEvent(event)
-handleJournalChangeEvent(event)
-handleJournalSubmitEvent(event)
-```
-
-Events functions receive context and event objects. They must not register document listeners themselves.
+Owns event handlers and does not register document listeners itself.
 
 ### Page module
 
@@ -186,54 +123,35 @@ journalPageContract()
 renderJournalContent(context)
 ```
 
-`src/pages/index.js` registers Journal in:
-
-```text
-APP_PAGES
-PAGE_CONTRACTS
-PAGE_CONTENT_RENDERERS
-```
-
 ## Routing contract
 
 Current route mode:
 
 ```text
-journal: reserved
-```
-
-Target route mode after runtime wiring and reset:
-
-```text
 journal: module
 ```
 
-Migration condition before changing route mode:
+Migration condition status:
 
 ```text
 1. Backend or local MVP journal source exists. Done.
-2. `src/features/journal/journal-store.js` owns normalization and filters. Done.
-3. `src/features/journal/journal-controller.js` is wired to source/service. Done.
-4. `src/features/journal/journal-page.js` renders from context. Done.
-5. `src/features/journal/journal-events.js` owns event handlers. Done.
-6. `PAGE_CONTENT_RENDERERS` can render Journal from app context. Done.
-7. App shell owns Journal runtime state/source/listeners. Pending.
-8. Client-scoped reset clears Journal state. Pending.
-9. Route mode can change from reserved to module. Pending.
+2. journal-store.js owns normalization and filters. Done.
+3. journal-controller.js is wired to source/service. Done.
+4. journal-page.js renders from context. Done.
+5. journal-events.js owns event handlers. Done.
+6. PAGE_CONTENT_RENDERERS can render Journal from app context. Done.
+7. App shell owns Journal runtime state/source/listeners. Done.
+8. Client-scoped reset clears Journal state. Done.
+9. Route mode changed from reserved to module. Done.
 ```
 
-## Migration order
+## Next useful iterations
 
 ```text
-1. Create backend/local MVP source contract. Done: journal-local-source.js.
-2. Create `src/features/journal/journal-store.js` with normalization and filters. Done.
-3. Create controller/page around local source. Done.
-4. Create events. Done.
-5. Wire into page renderer. Done.
-6. Wire Journal runtime in app shell.
-7. Add journal state to client-scope reset.
-8. Change route mode from reserved to module.
-9. Create `src/features/journal/journal-service.js` once endpoints are available.
+1. Add real auto-logging for client.created / client.updated / client.selected.
+2. Add optimization action status journal entries.
+3. Add integrations/sync journal entries.
+4. Replace local source with backend service when endpoints exist.
 ```
 
 ## Known risks
@@ -243,13 +161,4 @@ Journal can become a dumping ground if event types are not constrained.
 Too many low-level events will make the timeline useless.
 Entries need stable clientId and entity references to stay explainable.
 Before/after payloads may contain sensitive data and should be filtered before storing.
-```
-
-## Do not do yet
-
-```text
-Do not change route mode from reserved yet.
-Do not log every UI click.
-Do not store raw tokens, OAuth payloads or full API responses in Journal metadata.
-Do not mix Journal with system debug logs.
 ```
