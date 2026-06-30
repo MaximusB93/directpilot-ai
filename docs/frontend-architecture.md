@@ -98,11 +98,26 @@ activeView
 
 `src/main.js` applies this patch and separately resets AI client-scoped state through `resetAiClientScopedState(aiFeatureState)`.
 
+## Wordstat contract
+
+`docs/wordstat-page-contract.md` defines the target Wordstat feature contract before code migration.
+
+Current status:
+
+```text
+wordstat route mode: legacy
+current module: src/wordstat.js
+current script loading: app.html standalone modules
+target module: src/features/wordstat/*
+```
+
+Migration must start with store/service extraction, not with moving the full legacy file.
+
 ## Page composers
 
 Content composers are wired for Dashboard, Clients, Business Context, Integrations, Optimization and AI Assistant.
 
-Wordstat remains a standalone legacy module until its page contract is clear.
+Wordstat remains a standalone legacy module until its feature contract is implemented.
 
 Journal remains a reserved route until its product behavior is clear.
 
@@ -141,6 +156,7 @@ Router legacy metadata wired
 Main route normalization wired
 Main auth session persistence fixed
 Client scoped reset helper wired
+Wordstat page contract documented
 Wordstat/Journal decision documented
 Components scaffold wired
 static validator guards service/store/controller/page wiring
@@ -149,8 +165,8 @@ static validator guards service/store/controller/page wiring
 ## Next safe refactors
 
 ```text
-1. Define Wordstat page/service/state contract before wiring it into PAGE_CONTENT_RENDERERS.
-2. Define Journal domain model before creating src/pages/journal.js.
-3. Use renderPanel/renderEmptyState/renderStatusBadge in one page at a time.
+1. Define Journal domain model before creating src/pages/journal.js.
+2. Use renderPanel/renderEmptyState/renderStatusBadge in one page at a time.
+3. Start Wordstat store/service extraction after local validation path is ready.
 4. Start new large modules in src/features/* after their contracts are clear.
 ```
