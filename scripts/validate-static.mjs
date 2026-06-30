@@ -72,6 +72,7 @@ const legacyPagesDecision = files['docs/legacy-pages-decision.md'];
 const wordstatContract = files['docs/wordstat-page-contract.md'];
 const journalDomainModel = files['docs/journal-domain-model.md'];
 const integrationsPage = files['src/pages/integrations.js'];
+const businessContextPage = files['src/pages/business-context.js'];
 const clientsController = files['src/controllers/clients-controller.js'];
 const integrationsController = files['src/controllers/integrations-controller.js'];
 const optimizationController = files['src/controllers/optimization-controller.js'];
@@ -96,6 +97,7 @@ const checks = [
   ['page content composers', files['src/pages/dashboard.js'].includes('renderDashboardContent') && files['src/pages/clients.js'].includes('renderClientsContent') && files['src/pages/integrations.js'].includes('renderIntegrationsContent') && files['src/pages/business-context.js'].includes('renderBusinessContextContent') && files['src/pages/ai-assistant.js'].includes('renderAiAssistantContent') && files['src/pages/optimization.js'].includes('renderOptimizationContent')],
   ['component scaffold', files['src/components/index.js'].includes('status-badge') && files['src/components/status-badge.js'].includes('renderStatusBadge') && files['src/components/panel.js'].includes('renderPanel') && files['src/components/empty-state.js'].includes('renderEmptyState')],
   ['integrations UI primitive wiring', integrationsPage.includes("from '../components/index.js'") && integrationsPage.includes('renderPanel({') && integrationsPage.includes('renderStatusBadge({') && integrationsPage.includes('renderEmptyState({')],
+  ['business context UI primitive wiring', businessContextPage.includes("from '../components/index.js'") && businessContextPage.includes('renderPanel({') && businessContextPage.includes('renderStatusBadge({') && businessContextPage.includes('renderEmptyState({')],
   ['shared UI primitive styles', styles.includes('.statusBadge') && styles.includes('.statusBadge--success') && styles.includes('.emptyState') && styles.includes('.panelActions') && styles.includes('.panelSubtitle')],
   ['client store scaffold', files['src/stores/client-store.js'].includes('loadSelectedClientId') && files['src/stores/client-store.js'].includes('saveSelectedClientId') && files['src/stores/client-store.js'].includes('normalizeBackendClient')],
   ['feature stores', files['src/stores/ai-feature-state.js'].includes('createAiFeatureState') && files['src/stores/business-context-store.js'].includes('createBusinessContextPayload') && files['src/stores/campaign-store.js'].includes('createCampaignStore') && files['src/stores/optimization-store.js'].includes('normalizeOptimizationAction')],
@@ -111,7 +113,7 @@ const checks = [
   ['wordstat legacy status guarded', routes.includes("mode: 'legacy'") && files['app.html'].includes('src/wordstat.js') && files['src/wordstat.js'].includes("apiFetch('/wordstat/connection')")],
   ['journal domain model docs', journalDomainModel.includes('JournalEntry') && journalDomainModel.includes('src/features/journal/') && journalDomainModel.includes('journal-store.js') && journalDomainModel.includes('journal-service.js') && journalDomainModel.includes('journal-controller.js') && journalDomainModel.includes('journal-page.js')],
   ['journal api contract docs', journalDomainModel.includes('GET /journal') && journalDomainModel.includes('GET /clients/{clientId}/journal') && journalDomainModel.includes('POST /journal')],
-  ['frontend architecture docs', frontendArchitecture.includes('Integrations UI primitives wired') && frontendArchitecture.includes('Use UI primitives in one more page')],
+  ['frontend architecture docs', frontendArchitecture.includes('Business Context UI primitives wired') && frontendArchitecture.includes('Start Wordstat store/service extraction')],
   ['wordstat refactor guard', files['src/wordstat.js'].includes("from './core/api.js'") && files['docs/wordstat-refactor.md'].includes('src/wordstat.js')],
   ['no seeded account data', files['src/data.js'].includes('export const clients = []')],
 ];
