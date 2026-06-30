@@ -27,6 +27,14 @@ import {
   refreshJournalFlow,
 } from './features/journal/index.js';
 import {
+  createClientCreatedJournalEvent,
+  createClientSelectedJournalEvent,
+  createClientUpdatedJournalEvent,
+  createIntegrationStatusJournalEvent,
+  createOptimizationActionStatusJournalEvent,
+  createSyncStatusJournalEvent,
+} from './features/journal/journal-logging.js';
+import {
   activeAiBudget as selectActiveAiBudget,
   activeAiModel as selectActiveAiModel,
   createAiAssistantPageContext,
@@ -244,6 +252,24 @@ function currentClient() {
 
 function currentClientName() {
   return currentClient().name || 'Клиент не выбран';
+}
+
+function currentJournalActor() {
+  return {
+    kind: 'user',
+    id: currentEmail,
+    label: currentEmail || 'User',
+  };
+}
+
+async function logJournalEvent(input = {}) {
+  if (!input || typeof input !== 'object') return null;
+  return createJournalEntry({
+    scope: selectedClientId ? 'client' : input.scope || 'system',
+    clientId: selectedClientId || input.clientId || null,
+    actor: currentJournalActor(),
+    ...input,
+  });
 }
 
 function formatNumberSafe(value) {
@@ -884,12 +910,32 @@ async function startSync() {
   syncStatusMessage = 'Запускаем синхронизацию с Директом и Метрикой...';
   render();
   try {
+    void logJournalEvent(createSyncStatusJournalEvent({
+      status: 'started',
+      client: currentClient(),
+      actor: currentJournalActor(),
+      metadata: { directLogin: currentClient().directLogin || '' },
+    }));
     const payload = await syncService.runClientSync(selectedClientId);
     syncStatusMessage = `Синхронизация запущена. Статус: ${syncJobStatusLabel(payload.status)}.`;
+    void logJournalEvent(createSyncStatusJournalEvent({
+      status: payload.status || 'started',
+      client: currentClient(),
+      actor: currentJournalActor(),
+      entityId: payload.id || payload.job_id || null,
+      metadata: { message: payload.message || syncStatusMessage },
+    }));
     await loadSyncJobs();
     await loadPerformanceSummary();
   } catch (error) {
     syncStatusMessage = error.message || 'Не удалось запустить синхронизацию.';
+    void logJournalEvent(createSyncStatusJournalEvent({
+      status: 'failed',
+      client: currentClient(),
+      actor: currentJournalActor(),
+      severity: 'error',
+      metadata: { message: syncStatusMessage },
+    }));
   } finally {
     syncLoading = false;
     render();
@@ -1006,6 +1052,13 @@ async function updateOptimizationActionStatus(actionId, status, reviewerNote = '
     onSuccess: (actions, message) => {
       optimizationActions = actions;
       optimizationActionsStatus = message;
+      const updatedAction = actions.find((action) => action.id === actionId) || { id: actionId, status };
+      void logJournalEvent(createOptimizationActionStatusJournalEvent({
+        action: updatedAction,
+        status,
+        actor: currentJournalActor(),
+        metadata: { message },
+      }));
     },
     onError: (message) => {
       optimizationActionsStatus = message;
@@ -1822,6 +1875,10 @@ app.addEventListener('submit', async (event) => {
           clientDraftDirectLogin = '';
           clientDraftMetricaCounter = '';
         }
+        void logJournalEvent(createClientCreatedJournalEvent({
+          client,
+          actor: currentJournalActor(),
+        }));
       },
       onError: ({ client, selectedClientId: nextSelectedClientId, message }) => {
         accountClients = [...accountClients, client];
@@ -1829,6 +1886,11 @@ app.addEventListener('submit', async (event) => {
         saveSelectedClientId(selectedClientId);
         clientsStore.saveStoredClients(accountClients);
         clientFormStatus = message;
+        void logJournalEvent(createClientCreatedJournalEvent({
+          client,
+          actor: currentJournalActor(),
+          metadata: { fallback: true, message },
+        }));
       },
       onFinally: render,
     });
@@ -1907,9 +1969,16 @@ app.addEventListener('click', async (event) => {
       optimizationActions = patch.optimizationActions;
       optimizationActionsLoadedFor = patch.optimizationActionsLoadedFor;
       optimizationExecutionPreviews = patch.optimizationExecutionPreviews;
+      journalState = createInitialJournalState();
+      journalState.filters = createDefaultJournalFilters({ clientId: selectedClientId || null });
+      journalLoadedFor = patch.journalLoadedFor;
       activeView = patch.activeView;
     }, createClientScopeResetPatch());
     resetAiClientScopedState(aiFeatureState);
+    void logJournalEvent(createClientSelectedJournalEvent({
+      client: currentClient(),
+      actor: currentJournalActor(),
+    }));
     render();
     return;
   }
@@ -2064,6 +2133,13 @@ async function bindClientYandexAccount(accountId) {
       accountClients = accountClients.map((client) => client.id === selectedClientId ? { ...client, yandexAccountId: boundAccountId } : client);
       clientsStore.saveStoredClients(accountClients);
       clientYandexStatus = message;
+      void logJournalEvent(createIntegrationStatusJournalEvent({
+        action: 'bound',
+        client: currentClient(),
+        actor: currentJournalActor(),
+        entityId: boundAccountId,
+        metadata: { message },
+      }));
     },
     onError: (message) => {
       clientYandexStatus = message;
@@ -2090,6 +2166,12 @@ async function unbindClientYandexAccount() {
       accountClients = accountClients.map((client) => client.id === selectedClientId ? { ...client, yandexAccountId: '' } : client);
       clientsStore.saveStoredClients(accountClients);
       clientYandexStatus = message;
+      void logJournalEvent(createIntegrationStatusJournalEvent({
+        action: 'unbound',
+        client: currentClient(),
+        actor: currentJournalActor(),
+        metadata: { message },
+      }));
     },
     onError: (message) => {
       clientYandexStatus = message;
@@ -2132,11 +2214,21 @@ async function saveClientSettings(form) {
       businessContext = null;
       perfSummary = null;
       optimizationPlan = null;
+      void logJournalEvent(createClientUpdatedJournalEvent({
+        client: currentClient(),
+        actor: currentJournalActor(),
+        metadata: { backend: Boolean(backend), message },
+      }));
     },
     onError: ({ localUpdate, message }) => {
       accountClients = accountClients.map((currentClient) => currentClient.id === selectedClientId ? { ...currentClient, ...localUpdate } : currentClient);
       clientsStore.saveStoredClients(accountClients);
       clientSettingsStatus = message;
+      void logJournalEvent(createClientUpdatedJournalEvent({
+        client: currentClient(),
+        actor: currentJournalActor(),
+        metadata: { fallback: true, message },
+      }));
     },
     onFinally: () => {
       clientSettingsSaving = false;
