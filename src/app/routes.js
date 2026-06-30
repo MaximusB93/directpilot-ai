@@ -28,7 +28,7 @@ export const APP_ROUTES = Object.freeze({
     id: 'wordstat',
     hash: '#wordstat',
     label: 'Wordstat',
-    mode: 'legacy',
+    mode: 'module',
   },
   optimization: {
     id: 'optimization',
