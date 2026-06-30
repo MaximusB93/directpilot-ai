@@ -1,3 +1,5 @@
+import { renderEmptyState, renderPanel, renderStatusBadge } from '../components/index.js';
+
 export const INTEGRATIONS_PAGE_ID = 'integrations';
 
 export const integrationsPage = {
@@ -20,14 +22,31 @@ export function integrationsPageContract() {
     ],
     legacyRenderer: 'renderIntegrations',
     extractionStatus: 'content-composer-ready',
+    componentPrimitives: [
+      'renderPanel',
+      'renderEmptyState',
+      'renderStatusBadge',
+    ],
     extractedBuilders: [
       'renderIntegrationsIntro',
+      'renderIntegrationStatusMessage',
       'renderYandexConnectPanel',
       'renderClientYandexAccountPanel',
       'renderIntegrationsContent',
     ],
-    nextStep: 'Move optimization page markup after integrations wiring is stable.',
+    nextStep: 'Use UI primitives in one more page after integrations wiring is stable.',
   };
+}
+
+function integrationConnectionTone(integrationStatus = {}) {
+  if (integrationStatus.connected) return 'success';
+  if (integrationStatus.message) return 'warning';
+  return 'neutral';
+}
+
+function renderIntegrationStatusMessage(message, { escapeHtml, className = 'integrationStatus' } = {}) {
+  if (!message) return '';
+  return `<div class="authStatus ${escapeHtml(className)}">${escapeHtml(message)}</div>`;
 }
 
 export function renderIntegrationsIntro({ escapeHtml }) {
@@ -42,13 +61,23 @@ export function renderIntegrationsIntro({ escapeHtml }) {
 
 export function renderYandexConnectPanel({ integrationStatus = {}, escapeHtml }) {
   const accounts = integrationStatus.accounts || [];
-  return `
-    <section class="panel integrationConnectPanel">
-      <div class="panelHeader"><div><h3>Яндекс</h3><p>Доступ нужен для синхронизации кампаний, расходов, целей и поисковых запросов.</p></div><button class="approveButton" data-integration="yandex-direct">Подключить Яндекс</button></div>
-      <div class="authStatus integrationStatus">${escapeHtml(integrationStatus.message || 'Статус подключения ещё не проверен.')}</div>
+  const statusMessage = integrationStatus.message || 'Статус подключения ещё не проверен.';
+  const connectionBadge = renderStatusBadge({
+    label: integrationStatus.connected ? 'Подключено' : 'Не готово',
+    tone: integrationConnectionTone(integrationStatus),
+    title: statusMessage,
+  });
+
+  return renderPanel({
+    title: 'Яндекс',
+    subtitle: 'Доступ нужен для синхронизации кампаний, расходов, целей и поисковых запросов.',
+    className: 'integrationConnectPanel',
+    actions: `<div class="panelActionsInline">${connectionBadge}<button class="approveButton" data-integration="yandex-direct">Подключить Яндекс</button></div>`,
+    children: `
+      ${renderIntegrationStatusMessage(statusMessage, { escapeHtml })}
       ${integrationStatus.connected ? `<div class="integrationSuccess">Подключено аккаунтов: ${accounts.length}</div>` : ''}
-    </section>
-  `;
+    `,
+  });
 }
 
 export function renderClientYandexAccountPanel({
@@ -61,23 +90,32 @@ export function renderClientYandexAccountPanel({
 }) {
   const accounts = integrationStatus.accounts || [];
   const selectedAccountId = String(clientYandexIntegration?.selected_account?.id || selectedClient.yandexAccountId || '');
+  const selectedAccountBadge = renderStatusBadge({
+    label: selectedAccountId ? 'Аккаунт привязан' : 'Аккаунт не выбран',
+    tone: selectedAccountId ? 'success' : 'warning',
+    title: selectedAccountId || 'Для активного клиента не выбран аккаунт Яндекса',
+  });
   const accountCards = accounts.map((account) => {
     const accountId = String(account.id || '');
     const selected = accountId === selectedAccountId;
     const buttonClass = selected ? 'secondaryButton' : 'approveButton';
     const buttonText = selected ? 'Привязан' : 'Привязать';
-    return `<article class="accountCard ${selected ? 'selected' : ''}"><div><strong>${escapeHtml(account.login || account.name || account.id)}</strong><span>${escapeHtml(account.id)}</span></div><button class="${buttonClass}" data-bind-yandex-account="${escapeHtml(account.id)}" ${selected ? 'disabled' : ''}>${buttonText}</button></article>`;
+    const selectedBadge = selected ? renderStatusBadge({ label: 'selected', tone: 'success' }) : '';
+    return `<article class="accountCard ${selected ? 'selected' : ''}"><div><strong>${escapeHtml(account.login || account.name || account.id)}</strong><span>${escapeHtml(account.id)}</span>${selectedBadge}</div><button class="${buttonClass}" data-bind-yandex-account="${escapeHtml(account.id)}" ${selected ? 'disabled' : ''}>${buttonText}</button></article>`;
   }).join('');
 
-  return `
-    <section class="panel integrationConnectPanel">
-      <div class="panelHeader"><div><h3>Привязка к клиенту</h3><p>Активный клиент: ${escapeHtml(selectedClient.name || 'не выбран')}. Direct login: ${escapeHtml(selectedClient.directLogin || 'не указан')}.</p></div><button class="secondaryButton" data-refresh-client-yandex ${selectedClient.id ? '' : 'disabled'}>Обновить</button></div>
-      ${clientYandexStatus ? `<div class="authStatus integrationStatus">${escapeHtml(clientYandexStatus)}</div>` : ''}
-      ${clientYandexLoading ? '<div class="authStatus integrationStatus">Загружаем доступные аккаунты...</div>' : ''}
-      ${accounts.length ? `<div class="accountList">${accountCards}</div>` : '<div class="authStatus integrationStatus">Нет доступных аккаунтов. Сначала подключите Яндекс.</div>'}
+  return renderPanel({
+    title: 'Привязка к клиенту',
+    subtitle: `Активный клиент: ${selectedClient.name || 'не выбран'}. Direct login: ${selectedClient.directLogin || 'не указан'}.`,
+    className: 'integrationConnectPanel',
+    actions: `<div class="panelActionsInline">${selectedAccountBadge}<button class="secondaryButton" data-refresh-client-yandex ${selectedClient.id ? '' : 'disabled'}>Обновить</button></div>`,
+    children: `
+      ${renderIntegrationStatusMessage(clientYandexStatus, { escapeHtml })}
+      ${clientYandexLoading ? renderIntegrationStatusMessage('Загружаем доступные аккаунты...', { escapeHtml }) : ''}
+      ${accounts.length ? `<div class="accountList">${accountCards}</div>` : renderEmptyState({ title: 'Нет доступных аккаунтов', description: 'Сначала подключите Яндекс, затем выберите аккаунт для активного клиента.' })}
       ${clientYandexIntegration?.selected_account ? `<button class="dangerButton" data-unbind-yandex ${selectedClient.id ? '' : 'disabled'}>Отвязать аккаунт</button>` : ''}
-    </section>
-  `;
+    `,
+  });
 }
 
 export function renderIntegrationsContent(context) {
