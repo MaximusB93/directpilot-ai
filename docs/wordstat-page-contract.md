@@ -1,0 +1,295 @@
+# Wordstat page contract
+
+## Status
+
+`src/wordstat.js` remains a legacy standalone module.
+
+The target direction is a feature-first module:
+
+```text
+src/features/wordstat/
+  wordstat-page.js
+  wordstat-controller.js
+  wordstat-store.js
+  wordstat-service.js
+  wordstat-events.js
+```
+
+Do not move the current module as one large file. First split service, store and page contracts.
+
+## Current legacy entrypoints
+
+`app.html` currently loads Wordstat as separate ES modules:
+
+```text
+src/wordstat.js
+src/wordstat_date_fix.js
+src/wordstat_regions_patch.js
+src/wordstat_ai_chat.js
+src/wordstat_chart_hover.js
+```
+
+`src/wordstat.js` currently owns state, rendering, API calls, navigation injection, region modal behavior, compare behavior, chart tooltip behavior and submit/click/input/change listeners.
+
+## Existing shared dependencies
+
+`src/wordstat.js` already imports shared helpers:
+
+```text
+src/core/api.js        apiFetch
+src/core/format.js     formatNumber, formatPercent
+src/core/html.js       escapeHtml
+src/core/storage.js    getCurrentEmail, scopedStorageKey
+```
+
+Keep these shared dependencies. Do not duplicate local API, HTML escaping or format helpers.
+
+## Backend API contract
+
+### Check connection
+
+```text
+GET /wordstat/connection
+```
+
+Expected UI use:
+
+```text
+connection.configured
+connection.can_call_api
+connection.provider
+connection.message
+```
+
+### Load dynamics
+
+```text
+POST /wordstat/dynamics/batch
+```
+
+Request body:
+
+```json
+{
+  "phrases": ["купить диван", "диван кровать"],
+  "period": "WEEKLY",
+  "fromDate": "2026-03-30",
+  "toDate": "2026-06-30",
+  "regions": ["213"],
+  "devices": ["DEVICE_ALL"],
+  "clientId": "client-id-or-null",
+  "forceRefresh": false
+}
+```
+
+`period` allowed values:
+
+```text
+DAILY
+WEEKLY
+MONTHLY
+```
+
+`devices` current values:
+
+```text
+DEVICE_ALL
+DEVICE_DESKTOP
+DEVICE_PHONE
+DEVICE_TABLET
+```
+
+The same endpoint is used for comparison requests by changing `fromDate`, `toDate` and forcing `forceRefresh: false`.
+
+## Store contract
+
+Target file:
+
+```text
+src/features/wordstat/wordstat-store.js
+```
+
+Responsibilities:
+
+```text
+createDefaultWordstatForm()
+createInitialWordstatState()
+parseWordstatPhrases(value)
+parseWordstatCustomRegions(value)
+createWordstatRequestBody(state, clientId, overrides)
+createPreviousWordstatPeriodRange(form)
+buildWordstatTotalPoints(result)
+buildWordstatTotalSummary(result)
+calculateWordstatPercentDelta(current, previous)
+regionsSummary(regionIds, regionById)
+```
+
+Store must not:
+
+```text
+call apiFetch
+read DOM
+write DOM
+attach event listeners
+call render
+read localStorage directly
+```
+
+## Service contract
+
+Target file:
+
+```text
+src/features/wordstat/wordstat-service.js
+```
+
+Responsibilities:
+
+```text
+fetchWordstatConnection()
+fetchWordstatDynamics(requestBody)
+```
+
+Service must only call backend and parse/validate the response enough to throw useful errors.
+
+Service must not:
+
+```text
+mutate wordstat state
+render UI
+read form elements
+read selected client from DOM
+```
+
+## Controller contract
+
+Target file:
+
+```text
+src/features/wordstat/wordstat-controller.js
+```
+
+Responsibilities:
+
+```text
+openWordstatFlow(...)
+submitWordstatDynamicsFlow(...)
+compareWordstatPeriodFlow(...)
+copyWordstatJsonFlow(...)
+```
+
+Controller receives dependencies explicitly:
+
+```text
+service
+store helpers
+getSelectedClientId
+onStart
+onSuccess
+onError
+onFinally
+render
+copyText
+```
+
+Controller may orchestrate async work but should not own DOM selectors.
+
+## Page contract
+
+Target file:
+
+```text
+src/features/wordstat/wordstat-page.js
+```
+
+Responsibilities:
+
+```text
+renderWordstatPage(context)
+renderWordstatConnectionPanel(context)
+renderWordstatForm(context)
+renderWordstatCompareControls(context)
+renderWordstatLimitsPanel(context)
+renderWordstatResult(context)
+renderWordstatRegionModal(context)
+renderWordstatEmptyState()
+```
+
+Page functions must receive context and return HTML strings. They must not call API or attach listeners.
+
+## Events contract
+
+Target file:
+
+```text
+src/features/wordstat/wordstat-events.js
+```
+
+Responsibilities:
+
+```text
+handleWordstatInputEvent(event, context)
+handleWordstatChangeEvent(event, context)
+handleWordstatClickEvent(event, context)
+handleWordstatSubmitEvent(event, context)
+handleWordstatTooltipEvent(event, context)
+```
+
+Events should be wired from the app shell or a feature mount function after the feature page exists.
+
+## Routing contract
+
+Current route mode:
+
+```text
+wordstat: legacy
+```
+
+Target route mode after migration:
+
+```text
+wordstat: module
+```
+
+Migration condition before changing route mode:
+
+```text
+1. `src/features/wordstat/wordstat-page.js` exists.
+2. `src/features/wordstat/wordstat-service.js` owns backend calls.
+3. `src/features/wordstat/wordstat-store.js` owns request/state helpers.
+4. `PAGE_CONTENT_RENDERERS` can render Wordstat from context.
+5. `app.html` no longer needs standalone Wordstat scripts.
+```
+
+## Migration order
+
+```text
+1. Move pure form/date/request helpers into wordstat-store.js.
+2. Move GET /wordstat/connection and POST /wordstat/dynamics/batch into wordstat-service.js.
+3. Move async open/submit/compare/copy flows into wordstat-controller.js.
+4. Move render helpers into wordstat-page.js.
+5. Move input/change/click/submit listeners into wordstat-events.js.
+6. Register Wordstat in page renderer.
+7. Remove standalone Wordstat scripts from app.html.
+8. Change route mode from legacy to module.
+```
+
+## Known risks
+
+```text
+region tree is large and should not be edited manually without validation
+current Wordstat scripts mutate DOM outside page-router
+standalone scripts can conflict with main render lifecycle
+clipboard and tooltip behavior must stay outside pure page/store code
+comparison uses the same backend endpoint as current dynamics
+selected client currently comes from DOM/localStorage fallback and must become explicit context
+```
+
+## Do not do yet
+
+```text
+Do not move the full legacy file into src/features/wordstat as-is.
+Do not wire Wordstat into PAGE_CONTENT_RENDERERS before service/store/page contracts exist.
+Do not remove app.html Wordstat scripts until the feature module fully replaces them.
+Do not edit region arrays by hand unless the change is isolated and validated.
+```
