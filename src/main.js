@@ -16,6 +16,17 @@ import { normalizeAppRouteId } from './app/routes.js';
 import { applyClientScopeResetPatch, createClientScopeResetPatch } from './app/client-scope-reset.js';
 import './wordstat.js';
 import {
+  createDefaultJournalFilters,
+  createInitialJournalState,
+  createJournalEventHandlers,
+  createJournalLocalSource,
+  createJournalEntryPayload,
+  loadJournalEntriesFlow,
+  loadMoreJournalEntriesFlow,
+  createJournalEntryFlow,
+  refreshJournalFlow,
+} from './features/journal/index.js';
+import {
   activeAiBudget as selectActiveAiBudget,
   activeAiModel as selectActiveAiModel,
   createAiAssistantPageContext,
@@ -157,6 +168,9 @@ let businessContextSaving = false;
 let businessContextDraft = null;
 const CUSTOM_MODEL_VALUE = aiStore.CUSTOM_MODEL_VALUE;
 const aiFeatureState = createAiFeatureState();
+const journalSource = createJournalLocalSource();
+let journalState = createInitialJournalState();
+let journalLoadedFor = '';
 let pendingEditableFocusTarget = null;
 
 function storageKey(key) {
@@ -1450,6 +1464,129 @@ function renderWordstat() {
   return renderShell(contentRenderer(wordstatPageContext()));
 }
 
+function journalPageContext() {
+  return {
+    selectedClientId,
+    selectedClient: currentClient(),
+    journalState,
+    escapeHtml,
+  };
+}
+
+function renderJournal() {
+  const contentRenderer = resolvePageContentRenderer('journal');
+
+  if (typeof contentRenderer !== 'function') {
+    return renderShell(`
+      <div class="pageIntro"><span class="eyebrow">Журнал</span><h2>Журнал временно недоступен</h2><p>Модуль Journal не зарегистрирован. Проверьте src/pages/index.js.</p></div>
+    `);
+  }
+
+  return renderShell(contentRenderer(journalPageContext()));
+}
+
+function journalFiltersWithClient(filters = {}) {
+  return {
+    ...filters,
+    clientId: selectedClientId || null,
+    cursor: null,
+  };
+}
+
+function readJournalFilters() {
+  const fields = app.querySelectorAll('[data-journal-filters] input[name], [data-journal-filters] select[name], [data-journal-filters] textarea[name]');
+  const filters = {};
+  fields.forEach((field) => {
+    filters[field.name] = field.value;
+  });
+  return journalFiltersWithClient(filters);
+}
+
+function readJournalCreateInput(event) {
+  const form = event?.target?.closest?.('[data-journal-create-form]');
+  if (!form) return {};
+  const formData = new FormData(form);
+  return createJournalEntryPayload({
+    scope: selectedClientId ? 'client' : 'system',
+    clientId: selectedClientId || null,
+    source: formData.get('source'),
+    category: formData.get('category'),
+    type: formData.get('type'),
+    severity: formData.get('severity'),
+    title: formData.get('title'),
+    summary: formData.get('summary'),
+    actor: { kind: 'user', id: currentEmail, label: currentEmail || 'User' },
+  });
+}
+
+function resetJournalFilters() {
+  journalState.filters = createDefaultJournalFilters({ clientId: selectedClientId || null });
+  journalState.nextCursor = null;
+  journalLoadedFor = '';
+  render();
+}
+
+async function loadJournalEntries(filters = journalState.filters) {
+  await loadJournalEntriesFlow({
+    state: journalState,
+    source: journalSource,
+    filters: journalFiltersWithClient(filters),
+    onSuccess: () => {
+      journalLoadedFor = selectedClientId || 'system';
+    },
+    render,
+  });
+}
+
+async function loadMoreJournalEntries() {
+  await loadMoreJournalEntriesFlow({
+    state: journalState,
+    source: journalSource,
+    render,
+  });
+}
+
+async function createJournalEntry(input = {}) {
+  await createJournalEntryFlow({
+    state: journalState,
+    source: journalSource,
+    input: {
+      ...input,
+      scope: selectedClientId ? 'client' : input.scope || 'system',
+      clientId: selectedClientId || input.clientId || null,
+    },
+    onSuccess: () => {
+      journalLoadedFor = selectedClientId || 'system';
+    },
+    render,
+  });
+}
+
+async function refreshJournal() {
+  await refreshJournalFlow({
+    state: journalState,
+    source: journalSource,
+    filters: journalFiltersWithClient(journalState.filters),
+    onSuccess: () => {
+      journalLoadedFor = selectedClientId || 'system';
+    },
+    render,
+  });
+}
+
+const journalEventHandlers = createJournalEventHandlers({
+  state: journalState,
+  readFilters: readJournalFilters,
+  readCreateInput: readJournalCreateInput,
+  loadEntries: loadJournalEntries,
+  loadMore: loadMoreJournalEntries,
+  createEntry: createJournalEntry,
+  refresh: refreshJournal,
+  resetFilters: resetJournalFilters,
+  render,
+});
+
+
 function render() {
   activeView = normalizeAppView(activeView);
   const views = {
@@ -1466,6 +1603,7 @@ function render() {
     integrations: renderIntegrations,
     optimization: renderOptimization,
     wordstat: renderWordstat,
+    journal: renderJournal,
   };
   const renderView = views[activeView] || renderDashboard;
   app.innerHTML = renderView();
@@ -1502,6 +1640,10 @@ function render() {
   }
   if (activeView === 'ai' && selectedClientId && !businessContextLoading) {
     loadBusinessContext();
+  }
+  if (activeView === 'journal' && (selectedClientId || !journalState.loading)) {
+    const expectedJournalKey = selectedClientId || 'system';
+    if (journalLoadedFor !== expectedJournalKey && !journalState.loading) loadJournalEntries();
   }
   if (activeView !== 'landing' && activeView !== 'login') {
     loadClientsFromApi();
@@ -1553,6 +1695,10 @@ app.addEventListener('input', (event) => {
 });
 
 app.addEventListener('change', (event) => {
+  if (event.target.closest('[data-journal-filters]')) {
+    journalEventHandlers.handleJournalChangeEvent(event);
+    return;
+  }
   if (handleAiChangeEvent(event, {
     customModelValue: CUSTOM_MODEL_VALUE,
     setModel: (value, customValue) => {
@@ -1607,6 +1753,10 @@ function restorePendingEditableFocus() {
 }
 
 app.addEventListener('submit', async (event) => {
+  if (event.target.closest('[data-journal-create-form]')) {
+    await journalEventHandlers.handleJournalSubmitEvent(event);
+    return;
+  }
   const authForm = event.target.closest('[data-auth-form]');
   if (authForm) {
     event.preventDefault();
@@ -1714,6 +1864,10 @@ app.addEventListener('click', async (event) => {
   if (goViewButton) {
     activeView = normalizeAppView(goViewButton.dataset.goView);
     render();
+    return;
+  }
+  if (event.target.closest('[data-journal-apply-filters], [data-journal-reset-filters], [data-journal-refresh], [data-journal-load-more]')) {
+    await journalEventHandlers.handleJournalClickEvent(event);
     return;
   }
   if (event.target.closest('[data-logout]')) {
