@@ -43,6 +43,7 @@ const requiredFiles = [
   'src/features/journal/journal-controller.js',
   'src/features/journal/journal-page.js',
   'src/features/journal/journal-events.js',
+  'src/features/journal/journal-logging.js',
   'src/main.js',
   'src/login.js',
   'src/data.js',
@@ -80,15 +81,17 @@ const checks = [
   ['app shells', has('index.html', 'id="app"') && has('login.html', 'data-page="login"') && has('app.html', 'data-page="app"')],
   ['routes module modes', has('src/app/routes.js', 'wordstat') && has('src/app/routes.js', 'journal') && has('src/app/routes.js', "mode: 'module'") && !has('src/app/routes.js', "mode: 'reserved'")],
   ['wordstat runtime via main', has('src/main.js', "import './wordstat.js';") && lacks('app.html', ['src/wordstat.js', 'src/wordstat_date_fix.js', 'src/wordstat_regions_patch.js', 'src/wordstat_ai_chat.js', 'src/wordstat_chart_hover.js'])],
-  ['journal exports', ['journal-store.js', 'journal-local-source.js', 'journal-controller.js', 'journal-page.js', 'journal-events.js'].every((name) => has('src/features/journal/index.js', name))],
+  ['journal exports', ['journal-store.js', 'journal-local-source.js', 'journal-controller.js', 'journal-page.js', 'journal-events.js', 'journal-logging.js'].every((name) => has('src/features/journal/index.js', name))],
   ['journal store pure', has('src/features/journal/journal-store.js', 'normalizeJournalEntry') && has('src/features/journal/journal-store.js', 'groupJournalEntriesByDate') && lacks('src/features/journal/journal-store.js', ['apiFetch', 'document.', 'localStorage'])],
   ['journal source/controller/page/events', has('src/features/journal/journal-local-source.js', 'createJournalLocalSource') && has('src/features/journal/journal-controller.js', 'loadJournalEntriesFlow') && has('src/features/journal/journal-page.js', 'createJournalPageRenderers') && has('src/features/journal/journal-events.js', 'createJournalEventHandlers')],
+  ['journal logging helpers', has('src/features/journal/journal-logging.js', 'createClientSelectedJournalEvent') && has('src/features/journal/journal-logging.js', 'createOptimizationActionStatusJournalEvent') && has('src/features/journal/journal-logging.js', 'createSyncStatusJournalEvent') && lacks('src/features/journal/journal-logging.js', ['document.', 'localStorage', 'apiFetch'])],
   ['journal page registry', has('src/pages/journal.js', 'renderJournalContent') && has('src/pages/index.js', '[JOURNAL_PAGE_ID]: renderJournalContent')],
   ['journal app shell runtime', has('src/main.js', 'const journalSource = createJournalLocalSource();') && has('src/main.js', 'function renderJournal()') && has('src/main.js', 'journal: renderJournal,') && has('src/main.js', "activeView === 'journal'") && has('src/main.js', 'journalEventHandlers.handleJournalClickEvent(event);')],
-  ['journal client scoped reset', has('src/app/client-scope-reset.js', 'journalLoadedFor')],
+  ['journal auto logging wired', has('src/main.js', 'function logJournalEvent') && has('src/main.js', 'createClientSelectedJournalEvent') && has('src/main.js', 'createClientCreatedJournalEvent') && has('src/main.js', 'createClientUpdatedJournalEvent') && has('src/main.js', 'createOptimizationActionStatusJournalEvent') && has('src/main.js', 'createSyncStatusJournalEvent') && has('src/main.js', 'createIntegrationStatusJournalEvent')],
+  ['journal client scoped reset', has('src/app/client-scope-reset.js', 'journalLoadedFor') && has('src/main.js', 'journalState = createInitialJournalState();') && has('src/main.js', 'journalState.filters = createDefaultJournalFilters')],
   ['main no direct api helper calls', lacks('src/main.js', ['apiFetch('])],
   ['no seeded account data', has('src/data.js', 'export const clients = []')],
-  ['docs updated', has('docs/journal-domain-model.md', 'route mode switch: done') && has('docs/frontend-architecture.md', 'Journal route mode switched to module')],
+  ['docs updated', has('docs/journal-domain-model.md', 'auto-logging v1: done') && has('docs/frontend-architecture.md', 'Journal auto-logging v1 wired')],
 ];
 
 const failed = checks.filter(([, ok]) => !ok);
