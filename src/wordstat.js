@@ -16,6 +16,12 @@ import {
   regionsSummary as summarizeWordstatRegions,
   WORDSTAT_LIMITS,
 } from './features/wordstat/wordstat-legacy-adapter.js';
+import {
+  compareWordstatPeriodFlow,
+  copyWordstatJsonFlow,
+  openWordstatFlow,
+  submitWordstatDynamicsFlow,
+} from './features/wordstat/wordstat-controller.js';
 
 const WORDSTAT_VIEW_ID = 'wordstat';
 const WORDSTAT_COLORS = ['#1677ff', '#16a34a', '#f97316', '#9333ea', '#dc2626', '#0891b2', '#4f46e5', '#65a30d'];
@@ -185,15 +191,6 @@ function setWordstatNavActive(active) {
   document.querySelectorAll('.sideNavItem').forEach((item) => item.classList.remove('active'));
   const button = document.querySelector('[data-wordstat-view]');
   if (button) button.classList.toggle('active', Boolean(active));
-}
-
-async function loadWordstatConnection() {
-  try {
-    wordstatState.connection = await fetchWordstatConnection();
-  } catch (error) {
-    if (error.message === 'Authentication required') return;
-    wordstatState.connection = { configured: false, can_call_api: false, provider: 'yandex_search_api', message: error.message };
-  }
 }
 
 function renderWordstatPage() {
@@ -485,75 +482,39 @@ function syncFormState(form) {
 }
 
 async function openWordstatView() {
-  wordstatState.active = true;
-  wordstatState.status = 'Проверяем подключение Wordstat...';
-  wordstatState.error = '';
-  ensureWordstatNav();
-  renderWordstatPage();
-  await loadWordstatConnection();
-  wordstatState.status = wordstatState.connection?.configured ? 'Wordstat API готов. Можно загружать динамику.' : 'Wordstat API не готов: проверьте YANDEX_SEARCH_API_KEY / YANDEX_SEARCH_FOLDER_ID или OAuth.';
-  renderWordstatPage();
+  await openWordstatFlow({
+    state: wordstatState,
+    ensureNav: ensureWordstatNav,
+    render: renderWordstatPage,
+    loadConnection: fetchWordstatConnection,
+  });
 }
 
 async function submitWordstatForm(form) {
-  syncFormState(form);
-  const phrases = parsePhrases(wordstatState.form.phrases);
-  if (!phrases.length) {
-    wordstatState.error = 'Добавьте хотя бы одну фразу.';
-    renderWordstatPage();
-    return;
-  }
-  if (!wordstatState.form.fromDate || !wordstatState.form.toDate) {
-    wordstatState.error = 'Укажите даты периода.';
-    renderWordstatPage();
-    return;
-  }
-
-  wordstatState.loading = true;
-  wordstatState.comparison = null;
-  wordstatState.comparisonRange = null;
-  wordstatState.status = `Отправляем batch-запрос: ${phrases.length} фраз.`;
-  wordstatState.error = '';
-  renderWordstatPage();
-
-  try {
-    const payload = await fetchWordstatDynamics(collectRequestBody());
-    wordstatState.result = payload;
-    wordstatState.status = `Готово: ${payload.meta?.completedPhrases || 0} фраз, ошибок: ${payload.meta?.failedPhrases || 0}.`;
-  } catch (error) {
-    if (error.message === 'Authentication required') return;
-    wordstatState.error = error.message;
-  } finally {
-    wordstatState.loading = false;
-    renderWordstatPage();
-  }
+  await submitWordstatDynamicsFlow({
+    state: wordstatState,
+    form,
+    syncFormState,
+    parsePhrases,
+    loadDynamics: (overrides) => fetchWordstatDynamics(collectRequestBody(overrides)),
+    render: renderWordstatPage,
+  });
 }
 
 async function compareWordstatPeriod() {
-  const fromDate = wordstatState.form.compareFromDate;
-  const toDate = wordstatState.form.compareToDate;
-  if (!fromDate || !toDate || !wordstatState.result) return;
-  wordstatState.compareLoading = true;
-  wordstatState.status = `Сравниваем с периодом: ${fromDate} → ${toDate}.`;
-  wordstatState.error = '';
-  renderWordstatPage();
-  try {
-    wordstatState.comparison = await fetchWordstatDynamics(collectRequestBody({ fromDate, toDate, forceRefresh: false }));
-    wordstatState.comparisonRange = { fromDate, toDate };
-    wordstatState.status = 'Сравнение готово.';
-  } catch (error) {
-    if (error.message === 'Authentication required') return;
-    wordstatState.error = error.message;
-  } finally {
-    wordstatState.compareLoading = false;
-    renderWordstatPage();
-  }
+  await compareWordstatPeriodFlow({
+    state: wordstatState,
+    loadDynamics: (overrides) => fetchWordstatDynamics(collectRequestBody(overrides)),
+    render: renderWordstatPage,
+  });
 }
 
 async function copyWordstatJson() {
-  await navigator.clipboard?.writeText(JSON.stringify({ current: wordstatState.result || {}, comparison: wordstatState.comparison || null }, null, 2));
-  wordstatState.status = 'JSON результата скопирован.';
-  renderWordstatPage();
+  await copyWordstatJsonFlow({
+    state: wordstatState,
+    copyText: (text) => navigator.clipboard?.writeText(text),
+    render: renderWordstatPage,
+  });
 }
 
 function showChartTooltip(event) {
