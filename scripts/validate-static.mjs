@@ -34,6 +34,7 @@ const requiredFiles = [
   'src/features/wordstat/wordstat-legacy-adapter.js',
   'src/features/wordstat/wordstat-controller.js',
   'src/features/wordstat/wordstat-page.js',
+  'src/features/wordstat/wordstat-events.js',
   'src/services/clients-service.js',
   'src/services/integrations-service.js',
   'src/services/business-context-service.js',
@@ -86,6 +87,7 @@ const wordstatService = files['src/features/wordstat/wordstat-service.js'];
 const wordstatLegacyAdapter = files['src/features/wordstat/wordstat-legacy-adapter.js'];
 const wordstatController = files['src/features/wordstat/wordstat-controller.js'];
 const wordstatPage = files['src/features/wordstat/wordstat-page.js'];
+const wordstatEvents = files['src/features/wordstat/wordstat-events.js'];
 const clientsController = files['src/controllers/clients-controller.js'];
 const integrationsController = files['src/controllers/integrations-controller.js'];
 const optimizationController = files['src/controllers/optimization-controller.js'];
@@ -112,12 +114,14 @@ const checks = [
   ['integrations UI primitive wiring', integrationsPage.includes("from '../components/index.js'") && integrationsPage.includes('renderPanel({') && integrationsPage.includes('renderStatusBadge({') && integrationsPage.includes('renderEmptyState({')],
   ['business context UI primitive wiring', businessContextPage.includes("from '../components/index.js'") && businessContextPage.includes('renderPanel({') && businessContextPage.includes('renderStatusBadge({') && businessContextPage.includes('renderEmptyState({')],
   ['shared UI primitive styles', styles.includes('.statusBadge') && styles.includes('.statusBadge--success') && styles.includes('.emptyState') && styles.includes('.panelActions') && styles.includes('.panelSubtitle')],
-  ['wordstat feature exports', wordstatIndex.includes('wordstat-store.js') && wordstatIndex.includes('wordstat-service.js') && wordstatIndex.includes('wordstat-legacy-adapter.js') && wordstatIndex.includes('wordstat-controller.js') && wordstatIndex.includes('wordstat-page.js')],
+  ['wordstat feature exports', wordstatIndex.includes('wordstat-store.js') && wordstatIndex.includes('wordstat-service.js') && wordstatIndex.includes('wordstat-legacy-adapter.js') && wordstatIndex.includes('wordstat-controller.js') && wordstatIndex.includes('wordstat-page.js') && wordstatIndex.includes('wordstat-events.js')],
   ['wordstat store scaffold', wordstatStore.includes('createDefaultWordstatForm') && wordstatStore.includes('createInitialWordstatState') && wordstatStore.includes('parseWordstatPhrases') && wordstatStore.includes('parseWordstatCustomRegions') && wordstatStore.includes('createWordstatRequestBody') && wordstatStore.includes('buildWordstatTotalSummary') && !wordstatStore.includes('apiFetch') && !wordstatStore.includes('document.') && !wordstatStore.includes('localStorage')],
   ['wordstat service scaffold', wordstatService.includes('fetchWordstatConnection') && wordstatService.includes('fetchWordstatDynamics') && wordstatService.includes("/wordstat/connection") && wordstatService.includes("/wordstat/dynamics/batch") && wordstatService.includes("../../core/api.js")],
   ['wordstat legacy adapter scaffold', wordstatLegacyAdapter.includes('createWordstatLegacyApi') && wordstatLegacyAdapter.includes('createWordstatRequestBody') && wordstatLegacyAdapter.includes('fetchWordstatConnection') && wordstatLegacyAdapter.includes('fetchWordstatDynamics') && wordstatLegacyAdapter.includes('loadDynamics')],
   ['wordstat controller flows', wordstatController.includes('openWordstatFlow') && wordstatController.includes('submitWordstatDynamicsFlow') && wordstatController.includes('compareWordstatPeriodFlow') && wordstatController.includes('copyWordstatJsonFlow') && !wordstatController.includes('document.') && !wordstatController.includes('querySelector')],
   ['wordstat page renderers', wordstatPage.includes('createWordstatPageRenderers') && wordstatPage.includes('renderWordstatResult') && wordstatPage.includes('renderWordstatChart') && wordstatPage.includes('renderRegionModal') && !wordstatPage.includes('apiFetch(') && !wordstatPage.includes('document.') && !wordstatPage.includes('querySelector')],
+  ['wordstat event handlers', wordstatEvents.includes('createWordstatEventHandlers') && wordstatEvents.includes('handleInputEvent') && wordstatEvents.includes('handleChangeEvent') && wordstatEvents.includes('handleClickEvent') && wordstatEvents.includes('handleSubmitEvent') && !wordstatEvents.includes('document.') && !wordstatEvents.includes('addEventListener') && !wordstatEvents.includes('querySelector')],
+  ['wordstat event handler wiring', wordstatLegacy.includes("from './features/wordstat/wordstat-events.js'") && wordstatLegacy.includes('createWordstatEventHandlers({') && wordstatLegacy.includes('document.addEventListener(\'input\', wordstatEventHandlers.handleInputEvent)') && wordstatLegacy.includes('document.addEventListener(\'submit\', wordstatEventHandlers.handleSubmitEvent)')],
   ['wordstat page renderer wiring', wordstatLegacy.includes("from './features/wordstat/wordstat-page.js'") && wordstatLegacy.includes('createWordstatPageRenderers({') && wordstatLegacy.includes('const wordstatPageRenderers =') && wordstatLegacy.includes('renderWordstatResult')],
   ['wordstat controller wiring', wordstatLegacy.includes("from './features/wordstat/wordstat-controller.js'") && wordstatLegacy.includes('await openWordstatFlow({') && wordstatLegacy.includes('await submitWordstatDynamicsFlow({') && wordstatLegacy.includes('await compareWordstatPeriodFlow({') && wordstatLegacy.includes('await copyWordstatJsonFlow({')],
   ['wordstat legacy adapter wiring', wordstatLegacy.includes("from './features/wordstat/wordstat-legacy-adapter.js'") && wordstatLegacy.includes('createWordstatRequestBody(wordstatState.form') && !wordstatLegacy.includes('apiFetch(')],
@@ -132,11 +136,11 @@ const checks = [
   ['main no direct api helper calls', !js.includes('apiFetch(')],
   ['main clients inline flow removed', !js.includes('const payload = await clientsService.fetchClients()') && !js.includes('await clientsService.deleteClient(clientId)') && !js.includes('const formData = new FormData(clientForm);')],
   ['legacy pages decision', legacyPagesDecision.includes('wordstat') && legacyPagesDecision.includes('legacy') && legacyPagesDecision.includes('journal') && legacyPagesDecision.includes('reserved')],
-  ['wordstat contract docs', wordstatContract.includes('wordstat-page.js: created and wired') && wordstatContract.includes('Move render helpers into wordstat-page.js. Done.') && wordstatContract.includes('Move input/change/click/submit listeners into wordstat-events.js')],
+  ['wordstat contract docs', wordstatContract.includes('wordstat-events.js: created and wired') && wordstatContract.includes('Move input/change/click/submit listeners into wordstat-events.js. Done.') && wordstatContract.includes('Register Wordstat in page renderer')],
   ['journal domain model docs', journalDomainModel.includes('JournalEntry') && journalDomainModel.includes('src/features/journal/') && journalDomainModel.includes('journal-store.js') && journalDomainModel.includes('journal-service.js') && journalDomainModel.includes('journal-controller.js') && journalDomainModel.includes('journal-page.js')],
   ['journal api contract docs', journalDomainModel.includes('GET /journal') && journalDomainModel.includes('GET /clients/{clientId}/journal') && journalDomainModel.includes('POST /journal')],
-  ['frontend architecture docs', frontendArchitecture.includes('Wordstat page renderers wired') && frontendArchitecture.includes('Move Wordstat input/change/click/submit listeners into wordstat-events.js')],
-  ['wordstat refactor guard', wordstatLegacy.includes("from './features/wordstat/wordstat-page.js'") && files['docs/wordstat-refactor.md'].includes('src/wordstat.js')],
+  ['frontend architecture docs', frontendArchitecture.includes('Wordstat event handlers wired') && frontendArchitecture.includes('Register Wordstat in page renderer after events exist')],
+  ['wordstat refactor guard', wordstatLegacy.includes("from './features/wordstat/wordstat-events.js'") && files['docs/wordstat-refactor.md'].includes('src/wordstat.js')],
   ['no seeded account data', files['src/data.js'].includes('export const clients = []')],
 ];
 
