@@ -4,12 +4,23 @@ DirectPilot AI frontend is being migrated from a large `src/main.js` file into l
 
 ## Current layers
 
-- `src/app/` — routes, router, page-router, shared app state and hash bridge.
+- `src/app/` — routes, router, page-router, shared app state, hash bridge and client-scoped reset helpers.
 - `src/pages/` — page content composers.
 - `src/services/` — backend API access.
 - `src/stores/` — pure state and data helpers.
 - `src/controllers/` — feature orchestration between `main.js`, stores and services.
 - `src/components/` — reusable UI primitives.
+
+## Current app helpers
+
+```text
+routes.js
+router.js
+page-router.js
+state.js
+hash-route-bridge.js
+client-scope-reset.js
+```
 
 ## Current controllers
 
@@ -66,6 +77,27 @@ saveSession(sessionToken, sessionEmail)
 
 It accepts both `session_token` and `access_token` backend payload fields as a compatibility fallback.
 
+## Client-scoped reset cleanup
+
+`src/app/client-scope-reset.js` owns the reset patch for state that must be cleared when the selected client changes.
+
+It currently resets:
+
+```text
+businessContext
+businessContextDraft
+clientYandexIntegration
+syncJobs
+perfSummary
+optimizationPlan
+optimizationActions
+optimizationActionsLoadedFor
+optimizationExecutionPreviews
+activeView
+```
+
+`src/main.js` applies this patch and separately resets AI client-scoped state through `resetAiClientScopedState(aiFeatureState)`.
+
 ## Page composers
 
 Content composers are wired for Dashboard, Clients, Business Context, Integrations, Optimization and AI Assistant.
@@ -77,7 +109,6 @@ Journal remains a reserved route until its product behavior is clear.
 ## Still in main.js
 
 ```text
-selected client side-effect reset block
 business context mutable variables and service flows
 optimization mutable variables and render callbacks
 integrations mutable variables and client list patch callbacks
@@ -109,6 +140,7 @@ Clients controller wired
 Router legacy metadata wired
 Main route normalization wired
 Main auth session persistence fixed
+Client scoped reset helper wired
 Wordstat/Journal decision documented
 Components scaffold wired
 static validator guards service/store/controller/page wiring
@@ -117,8 +149,8 @@ static validator guards service/store/controller/page wiring
 ## Next safe refactors
 
 ```text
-1. Extract selected client side-effect reset helper.
-2. Define Wordstat page/service/state contract before wiring it into PAGE_CONTENT_RENDERERS.
-3. Define Journal domain model before creating src/pages/journal.js.
-4. Use renderPanel/renderEmptyState/renderStatusBadge in one page at a time.
+1. Define Wordstat page/service/state contract before wiring it into PAGE_CONTENT_RENDERERS.
+2. Define Journal domain model before creating src/pages/journal.js.
+3. Use renderPanel/renderEmptyState/renderStatusBadge in one page at a time.
+4. Start new large modules in src/features/* after their contracts are clear.
 ```
