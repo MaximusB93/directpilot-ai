@@ -39,6 +39,8 @@ const requiredFiles = [
   'src/features/journal/index.js',
   'src/features/journal/journal-store.js',
   'src/features/journal/journal-local-source.js',
+  'src/features/journal/journal-controller.js',
+  'src/features/journal/journal-page.js',
   'src/services/clients-service.js',
   'src/services/integrations-service.js',
   'src/services/business-context-service.js',
@@ -94,6 +96,8 @@ const wordstatEvents = files['src/features/wordstat/wordstat-events.js'];
 const journalIndex = files['src/features/journal/index.js'];
 const journalStore = files['src/features/journal/journal-store.js'];
 const journalLocalSource = files['src/features/journal/journal-local-source.js'];
+const journalController = files['src/features/journal/journal-controller.js'];
+const journalPage = files['src/features/journal/journal-page.js'];
 const frontendArchitecture = files['docs/frontend-architecture.md'];
 const legacyPagesDecision = files['docs/legacy-pages-decision.md'];
 const wordstatContract = files['docs/wordstat-page-contract.md'];
@@ -117,16 +121,18 @@ const checks = [
   ['wordstat page renderers wired', wordstatPage.includes('createWordstatPageRenderers') && wordstatPage.includes('renderWordstatResult') && wordstatPage.includes('renderWordstatChart') && !wordstatPage.includes('apiFetch(') && !wordstatPage.includes('document.') && wordstatLegacy.includes('createWordstatPageRenderers({')],
   ['wordstat events wired', wordstatEvents.includes('createWordstatEventHandlers') && wordstatEvents.includes('handleClickEvent') && wordstatEvents.includes('handleSubmitEvent') && !wordstatEvents.includes('document.') && !wordstatEvents.includes('addEventListener') && wordstatLegacy.includes('createWordstatEventHandlers({')],
   ['wordstat auto open bridge', wordstatLegacy.includes('let wordstatAutoOpening = false') && wordstatLegacy.includes('function shouldAutoOpenWordstatView()') && wordstatLegacy.includes("document.body.dataset.view === WORDSTAT_VIEW_ID") && wordstatLegacy.includes('async function autoOpenWordstatView()') && wordstatLegacy.includes('void autoOpenWordstatView();')],
-  ['journal feature exports', journalIndex.includes('journal-store.js') && journalIndex.includes('journal-local-source.js')],
+  ['journal feature exports', journalIndex.includes('journal-store.js') && journalIndex.includes('journal-local-source.js') && journalIndex.includes('journal-controller.js') && journalIndex.includes('journal-page.js')],
   ['journal store scaffold', journalStore.includes('createInitialJournalState') && journalStore.includes('normalizeJournalEntry') && journalStore.includes('normalizeJournalEntries') && journalStore.includes('createJournalQueryParams') && journalStore.includes('createJournalEntryPayload') && journalStore.includes('filterJournalEntries') && journalStore.includes('groupJournalEntriesByDate') && !journalStore.includes('apiFetch') && !journalStore.includes('document.') && !journalStore.includes('localStorage')],
   ['journal local source scaffold', journalLocalSource.includes('createJournalLocalSource') && journalLocalSource.includes('JOURNAL_LOCAL_STORAGE_KEY') && journalLocalSource.includes('scopedStorageKey') && journalLocalSource.includes('list(query') && journalLocalSource.includes('create(input') && journalLocalSource.includes('filterJournalEntries')],
+  ['journal controller scaffold', journalController.includes('loadJournalEntriesFlow') && journalController.includes('loadMoreJournalEntriesFlow') && journalController.includes('createJournalEntryFlow') && journalController.includes('refreshJournalFlow') && !journalController.includes('document.') && !journalController.includes('querySelector') && !journalController.includes('localStorage') && !journalController.includes('apiFetch')],
+  ['journal page scaffold', journalPage.includes('createJournalPageRenderers') && journalPage.includes('renderJournalPage') && journalPage.includes('renderJournalFilters') && journalPage.includes('renderJournalTimeline') && journalPage.includes('renderJournalEntry') && journalPage.includes('renderJournalEmptyState') && journalPage.includes('renderJournalLoadMore') && !journalPage.includes('apiFetch') && !journalPage.includes('document.') && !journalPage.includes('addEventListener')],
   ['journal route remains reserved', routes.includes("journal") && routes.includes("mode: 'reserved'") && !pagesIndex.includes('journalPage') && !pagesIndex.includes('renderJournalContent')],
   ['main no direct api helper calls', !js.includes('apiFetch(')],
   ['no seeded account data', files['src/data.js'].includes('export const clients = []')],
   ['legacy pages decision updated', legacyPagesDecision.includes('Route mode: module') && legacyPagesDecision.includes('Runtime bridge: src/main.js imports src/wordstat.js') && legacyPagesDecision.includes('journal') && legacyPagesDecision.includes('Route mode: reserved')],
   ['wordstat docs updated', wordstatContract.includes('route mode: module') && wordstatContract.includes('Change route mode from legacy to module. Done.') && wordstatContract.includes('wordstat: module')],
-  ['journal domain docs updated', journalDomainModel.includes('journal-store.js: created') && journalDomainModel.includes('journal-local-source.js: created') && journalDomainModel.includes('Backend or local MVP journal source exists. Done.') && journalDomainModel.includes('journal: reserved')],
-  ['frontend architecture docs updated', frontendArchitecture.includes('Journal local source scaffold created') && frontendArchitecture.includes('Journal store scaffold created') && frontendArchitecture.includes('Create Journal page/controller around the local source')],
+  ['journal domain docs updated', journalDomainModel.includes('journal-controller.js: created') && journalDomainModel.includes('journal-page.js: created') && journalDomainModel.includes('Create controller/page around local source. Done.') && journalDomainModel.includes('journal: reserved')],
+  ['frontend architecture docs updated', frontendArchitecture.includes('Journal controller scaffold created') && frontendArchitecture.includes('Journal page renderer scaffold created') && frontendArchitecture.includes('Create Journal events')],
 ];
 
 const failed = checks.filter(([, ok]) => !ok);
