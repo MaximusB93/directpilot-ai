@@ -24,6 +24,10 @@ import {
 } from './features/wordstat/wordstat-controller.js';
 import { createWordstatPageRenderers } from './features/wordstat/wordstat-page.js';
 import { createWordstatEventHandlers } from './features/wordstat/wordstat-events.js';
+import './wordstat_date_fix.js';
+import './wordstat_regions_patch.js';
+import './wordstat_ai_chat.js';
+import './wordstat_chart_hover.js';
 
 const WORDSTAT_VIEW_ID = 'wordstat';
 const WORDSTAT_COLORS = ['#1677ff', '#16a34a', '#f97316', '#9333ea', '#dc2626', '#0891b2', '#4f46e5', '#65a30d'];
