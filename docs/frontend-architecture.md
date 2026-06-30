@@ -56,6 +56,16 @@ journal: reserved
 
 The Wordstat and Journal decision is documented in `docs/legacy-pages-decision.md`.
 
+## Auth cleanup
+
+The legacy auth branch in `src/main.js` now persists session data with the same argument order as `src/login.js`:
+
+```text
+saveSession(sessionToken, sessionEmail)
+```
+
+It accepts both `session_token` and `access_token` backend payload fields as a compatibility fallback.
+
 ## Page composers
 
 Content composers are wired for Dashboard, Clients, Business Context, Integrations, Optimization and AI Assistant.
@@ -98,6 +108,7 @@ Integrations controller wired
 Clients controller wired
 Router legacy metadata wired
 Main route normalization wired
+Main auth session persistence fixed
 Wordstat/Journal decision documented
 Components scaffold wired
 static validator guards service/store/controller/page wiring
