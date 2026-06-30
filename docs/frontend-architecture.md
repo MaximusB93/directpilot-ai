@@ -72,7 +72,7 @@ src/features/wordstat/wordstat-service.js
 src/features/wordstat/wordstat-legacy-adapter.js
 ```
 
-These files are scaffolds for pure helpers, API access and a stable legacy facade. Legacy `src/wordstat.js` is not wired to them yet.
+These files are scaffolds for pure helpers, API access and a stable legacy facade. Legacy `src/wordstat.js` now imports the adapter for store/service work, but still owns rendering, events and DOM lifecycle.
 
 ## Routing cleanup
 
@@ -131,7 +131,7 @@ current script loading: app.html standalone modules
 target module: src/features/wordstat/*
 store/service scaffold: created
 legacy adapter scaffold: created
-legacy wiring: pending
+legacy wiring: done
 ```
 
 Migration started with store/service extraction and a legacy adapter, not with moving the full legacy file.
@@ -154,7 +154,7 @@ Do not create `src/pages/journal.js` until backend/local source, store, service 
 
 Content composers are wired for Dashboard, Clients, Business Context, Integrations, Optimization and AI Assistant.
 
-Wordstat remains a standalone legacy module until its feature contract is implemented.
+Wordstat remains a standalone legacy module until its controller/page/events contracts are implemented.
 
 Journal remains a reserved route until its domain model is implemented.
 
@@ -199,6 +199,7 @@ Integrations UI primitives wired
 Business Context UI primitives wired
 Wordstat store/service scaffold created
 Wordstat legacy adapter scaffold created
+Wordstat legacy adapter wired
 Wordstat/Journal decision documented
 Components scaffold wired
 static validator guards service/store/controller/page wiring
@@ -207,8 +208,8 @@ static validator guards service/store/controller/page wiring
 ## Next safe refactors
 
 ```text
-1. Wire legacy src/wordstat.js to use wordstat-legacy-adapter.js.
-2. Start Journal MVP source/store extraction after backend/local source is chosen.
-3. Use UI primitives in one more page if duplication stays obvious.
-4. Start new large modules in src/features/* after their contracts are clear.
+1. Move Wordstat async open/submit/compare/copy flows into wordstat-controller.js.
+2. Move Wordstat render helpers into wordstat-page.js.
+3. Move Wordstat input/change/click/submit listeners into wordstat-events.js.
+4. Start Journal MVP source/store extraction after backend/local source is chosen.
 ```
