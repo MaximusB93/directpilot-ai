@@ -55,6 +55,7 @@ const requiredFiles = [
   'docs/frontend-architecture.md',
   'docs/legacy-pages-decision.md',
   'docs/wordstat-refactor.md',
+  'docs/wordstat-page-contract.md',
 ];
 
 await Promise.all(requiredFiles.map((file) => access(file)));
@@ -66,6 +67,7 @@ const routes = files['src/app/routes.js'];
 const clientScopeReset = files['src/app/client-scope-reset.js'];
 const frontendArchitecture = files['docs/frontend-architecture.md'];
 const legacyPagesDecision = files['docs/legacy-pages-decision.md'];
+const wordstatContract = files['docs/wordstat-page-contract.md'];
 const clientsController = files['src/controllers/clients-controller.js'];
 const integrationsController = files['src/controllers/integrations-controller.js'];
 const optimizationController = files['src/controllers/optimization-controller.js'];
@@ -98,7 +100,9 @@ const checks = [
   ['main no direct api helper calls', !js.includes('apiFetch(')],
   ['main clients inline flow removed', !js.includes('const payload = await clientsService.fetchClients()') && !js.includes('await clientsService.deleteClient(clientId)') && !js.includes('const formData = new FormData(clientForm);')],
   ['legacy pages decision', legacyPagesDecision.includes('wordstat') && legacyPagesDecision.includes('legacy') && legacyPagesDecision.includes('journal') && legacyPagesDecision.includes('reserved')],
-  ['frontend architecture docs', frontendArchitecture.includes('Client scoped reset helper wired') && frontendArchitecture.includes('Start new large modules in src/features/*')],
+  ['wordstat contract docs', wordstatContract.includes('src/features/wordstat/') && wordstatContract.includes('GET /wordstat/connection') && wordstatContract.includes('POST /wordstat/dynamics/batch') && wordstatContract.includes('wordstat-store.js') && wordstatContract.includes('wordstat-service.js') && wordstatContract.includes('wordstat-controller.js') && wordstatContract.includes('wordstat-page.js')],
+  ['wordstat legacy status guarded', routes.includes("mode: 'legacy'") && files['app.html'].includes('src/wordstat.js') && files['src/wordstat.js'].includes("apiFetch('/wordstat/connection')")],
+  ['frontend architecture docs', frontendArchitecture.includes('Wordstat page contract documented') && frontendArchitecture.includes('Define Journal domain model')],
   ['wordstat refactor guard', files['src/wordstat.js'].includes("from './core/api.js'") && files['docs/wordstat-refactor.md'].includes('src/wordstat.js')],
   ['no seeded account data', files['src/data.js'].includes('export const clients = []')],
 ];
