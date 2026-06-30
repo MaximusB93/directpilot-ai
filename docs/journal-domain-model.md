@@ -2,7 +2,7 @@
 
 ## Status
 
-Journal MVP is registered, wired in the app shell, enabled as a module route, and has auto-logging v1.
+Journal MVP is registered, wired in the app shell, enabled as a module route, has auto-logging v1, and renders entry details.
 
 Current route metadata:
 
@@ -29,6 +29,7 @@ app shell runtime wiring: done
 client-scope reset: done
 route mode switch: done
 auto-logging v1: done
+details UI: done
 journal-service.js: pending backend endpoints
 ```
 
@@ -47,6 +48,20 @@ sync.<backend status>
 integration.yandex_account_bound
 integration.yandex_account_unbound
 ```
+
+## Entry details UI
+
+Journal entries render a native expandable details panel.
+
+Rendered details:
+
+```text
+before
+after
+metadata
+```
+
+If an entry has no useful details, the UI shows a small empty details state instead of an empty JSON block.
 
 ## Current module contracts
 
@@ -106,15 +121,22 @@ createSyncStatusJournalEvent(...)
 createIntegrationStatusJournalEvent(...)
 ```
 
-The logging module must not call API, read DOM or write localStorage.
+### Page details renderers
+
+```text
+renderJournalEntryDetailsPanel(...)
+renderJournalJsonBlock(...)
+```
+
+These renderers keep before / after / metadata display inside the page layer.
 
 ## Next useful iterations
 
 ```text
-1. Add Journal details drawer for before/after/metadata.
+1. Add AI recommendation and business-context save journal entries.
 2. Add backend journal-service once endpoints exist.
-3. Add AI recommendation and business-context save journal entries.
-4. Add de-duplication rules for noisy repeated events.
+3. Add de-duplication rules for noisy repeated events.
+4. Add richer styling for JSON details if the current native details UI feels too plain.
 ```
 
 ## Known risks
