@@ -70,9 +70,10 @@ src/features/wordstat/index.js
 src/features/wordstat/wordstat-store.js
 src/features/wordstat/wordstat-service.js
 src/features/wordstat/wordstat-legacy-adapter.js
+src/features/wordstat/wordstat-controller.js
 ```
 
-These files are scaffolds for pure helpers, API access and a stable legacy facade. Legacy `src/wordstat.js` now imports the adapter for store/service work, but still owns rendering, events and DOM lifecycle.
+These files now own pure helpers, API access, a stable legacy facade and async Wordstat flows. Legacy `src/wordstat.js` imports the adapter/controller for store/service/controller work, but still owns rendering, events and DOM lifecycle.
 
 ## Routing cleanup
 
@@ -131,10 +132,11 @@ current script loading: app.html standalone modules
 target module: src/features/wordstat/*
 store/service scaffold: created
 legacy adapter scaffold: created
+controller: created and wired
 legacy wiring: done
 ```
 
-Migration started with store/service extraction and a legacy adapter, not with moving the full legacy file.
+Migration started with store/service extraction, a legacy adapter and controller extraction, not with moving the full legacy file.
 
 ## Journal domain model
 
@@ -154,7 +156,7 @@ Do not create `src/pages/journal.js` until backend/local source, store, service 
 
 Content composers are wired for Dashboard, Clients, Business Context, Integrations, Optimization and AI Assistant.
 
-Wordstat remains a standalone legacy module until its controller/page/events contracts are implemented.
+Wordstat remains a standalone legacy module until its page/events contracts are implemented.
 
 Journal remains a reserved route until its domain model is implemented.
 
@@ -200,6 +202,7 @@ Business Context UI primitives wired
 Wordstat store/service scaffold created
 Wordstat legacy adapter scaffold created
 Wordstat legacy adapter wired
+Wordstat controller wired
 Wordstat/Journal decision documented
 Components scaffold wired
 static validator guards service/store/controller/page wiring
@@ -208,8 +211,8 @@ static validator guards service/store/controller/page wiring
 ## Next safe refactors
 
 ```text
-1. Move Wordstat async open/submit/compare/copy flows into wordstat-controller.js.
-2. Move Wordstat render helpers into wordstat-page.js.
-3. Move Wordstat input/change/click/submit listeners into wordstat-events.js.
+1. Move Wordstat render helpers into wordstat-page.js.
+2. Move Wordstat input/change/click/submit listeners into wordstat-events.js.
+3. Register Wordstat in page renderer after page/events exist.
 4. Start Journal MVP source/store extraction after backend/local source is chosen.
 ```
