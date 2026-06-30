@@ -1,0 +1,82 @@
+/* Scoped hotfix for dashboard readiness cards.
+   Keeps label, description and status badge from collapsing into inline text. */
+
+body[data-page="app"] .readinessPanel {
+  overflow: hidden;
+}
+
+body[data-page="app"] .readinessGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+
+body[data-page="app"] .readinessCard {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid #dfe7f2;
+  border-radius: 14px;
+  background: #ffffff;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
+}
+
+body[data-page="app"] .readinessCard.ready {
+  border-color: #c9f0dc;
+  background: #f7fffb;
+}
+
+body[data-page="app"] .readinessCard.pending,
+body[data-page="app"] .readinessCard.action_needed,
+body[data-page="app"] .readinessCard.blocked {
+  border-color: #f3dfb4;
+  background: #fffaf0;
+}
+
+body[data-page="app"] .readinessCard > div {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+body[data-page="app"] .readinessCard strong {
+  display: block;
+  color: #0f172a;
+  font-size: 14px;
+  line-height: 1.25;
+  font-weight: 900;
+}
+
+body[data-page="app"] .readinessCard > div > span {
+  display: block;
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.45;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+body[data-page="app"] .readinessCard .aiStatusBadge {
+  flex: 0 0 auto;
+  margin: 0;
+  white-space: nowrap;
+}
+
+body[data-page="app"] .readinessPanel .integrationStatus {
+  margin-top: 14px;
+}
+
+@media (max-width: 760px) {
+  body[data-page="app"] .readinessGrid {
+    grid-template-columns: 1fr;
+  }
+
+  body[data-page="app"] .readinessCard {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
