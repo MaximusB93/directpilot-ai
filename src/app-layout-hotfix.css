@@ -240,51 +240,82 @@ body[data-page="app"] .approveButton svg {
   flex: 0 0 auto;
 }
 
-body[data-page="app"] .sideNavItem {
-  min-height: 40px;
-  border-radius: 10px;
-  transition:
-    background-color .16s ease,
-    border-color .16s ease,
-    color .16s ease;
+body[data-page="app"] .readinessPanel {
+  overflow: hidden !important;
 }
 
-body[data-page="app"] hr,
-body[data-page="app"] .divider {
-  border-color: #e5edf6;
+body[data-page="app"] .readinessGrid {
+  display: grid !important;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)) !important;
+  gap: 10px !important;
+  margin-top: 14px !important;
 }
 
-@media (max-width: 1180px) {
-  body[data-page="app"] .appHeader {
-    grid-template-columns: 1fr;
-  }
-
-  body[data-page="app"] .clientSelect {
-    justify-self: stretch;
-    width: 100%;
-  }
-
-  body[data-page="app"] .clientSourcePanel {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
+body[data-page="app"] .readinessCard {
+  display: flex !important;
+  align-items: flex-start !important;
+  justify-content: space-between !important;
+  gap: 14px !important;
+  min-width: 0 !important;
+  padding: 14px !important;
+  border: 1px solid #dfe7f2 !important;
+  border-radius: 14px !important;
+  background: #ffffff !important;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04) !important;
 }
 
-@media (max-width: 720px) {
-  body[data-page="app"] .appHeader {
-    padding: 14px;
+body[data-page="app"] .readinessCard.ready {
+  border-color: #c9f0dc !important;
+  background: #f7fffb !important;
+}
+
+body[data-page="app"] .readinessCard.pending,
+body[data-page="app"] .readinessCard.action_needed,
+body[data-page="app"] .readinessCard.blocked {
+  border-color: #f3dfb4 !important;
+  background: #fffaf0 !important;
+}
+
+body[data-page="app"] .readinessCard > div {
+  display: grid !important;
+  gap: 5px !important;
+  min-width: 0 !important;
+}
+
+body[data-page="app"] .readinessCard strong {
+  display: block !important;
+  color: #0f172a !important;
+  font-size: 14px !important;
+  line-height: 1.25 !important;
+  font-weight: 900 !important;
+}
+
+body[data-page="app"] .readinessCard > div > span {
+  display: block !important;
+  color: #64748b !important;
+  font-size: 13px !important;
+  line-height: 1.45 !important;
+  font-weight: 700 !important;
+  overflow-wrap: anywhere !important;
+}
+
+body[data-page="app"] .readinessCard .aiStatusBadge {
+  flex: 0 0 auto !important;
+  margin: 0 !important;
+  white-space: nowrap !important;
+}
+
+body[data-page="app"] .readinessPanel .integrationStatus {
+  margin-top: 14px !important;
+}
+
+@media (max-width: 760px) {
+  body[data-page="app"] .readinessGrid {
+    grid-template-columns: 1fr !important;
   }
 
-  body[data-page="app"] .clientSourcePanel {
-    grid-template-columns: 1fr;
-  }
-
-  body[data-page="app"] button:not(.sideNavItem),
-  body[data-page="app"] a.primaryButton,
-  body[data-page="app"] a.secondaryButton,
-  body[data-page="app"] a.approveButton,
-  body[data-page="app"] .primaryButton,
-  body[data-page="app"] .secondaryButton,
-  body[data-page="app"] .approveButton {
-    width: 100%;
+  body[data-page="app"] .readinessCard {
+    align-items: flex-start !important;
+    flex-direction: column !important;
   }
 }
