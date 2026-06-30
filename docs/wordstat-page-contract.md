@@ -2,7 +2,7 @@
 
 ## Status
 
-`src/wordstat.js` remains a legacy standalone module, but it now uses the Wordstat feature store/service through the legacy adapter.
+`src/wordstat.js` remains a legacy standalone module, but it now uses the Wordstat feature store/service/controller through the legacy adapter and controller flows.
 
 The target direction is a feature-first module:
 
@@ -23,13 +23,13 @@ Current extraction status:
 wordstat-store.js: created
 wordstat-service.js: created
 wordstat-legacy-adapter.js: created
+wordstat-controller.js: created and wired
 wordstat-page.js: pending
-wordstat-controller.js: pending
 wordstat-events.js: pending
 legacy src/wordstat.js wiring: done
 ```
 
-Do not move the current module as one large file. First split service, store and page contracts.
+Do not move the current module as one large file. First split service, store, controller, page and events contracts.
 
 ## Current legacy entrypoints
 
@@ -43,9 +43,11 @@ src/wordstat_ai_chat.js
 src/wordstat_chart_hover.js
 ```
 
-`src/wordstat.js` still owns rendering, navigation injection, region modal behavior, compare behavior, chart tooltip behavior and submit/click/input/change listeners.
+`src/wordstat.js` still owns rendering, navigation injection, region modal behavior, chart tooltip behavior and submit/click/input/change listeners.
 
 `src/wordstat.js` no longer calls `apiFetch` directly. Backend calls are delegated through `src/features/wordstat/wordstat-service.js` via `src/features/wordstat/wordstat-legacy-adapter.js`.
+
+`src/wordstat.js` no longer owns async Wordstat flows directly. It calls `src/features/wordstat/wordstat-controller.js` wrappers for open, submit, compare and copy JSON flows.
 
 ## Existing shared dependencies
 
@@ -61,6 +63,7 @@ Feature helpers are imported through:
 
 ```text
 src/features/wordstat/wordstat-legacy-adapter.js
+src/features/wordstat/wordstat-controller.js
 ```
 
 Keep shared dependencies. Do not duplicate local API, HTML escaping or format helpers.
@@ -228,6 +231,12 @@ Target file:
 src/features/wordstat/wordstat-controller.js
 ```
 
+Current status:
+
+```text
+created and used by legacy src/wordstat.js
+```
+
 Responsibilities:
 
 ```text
@@ -240,18 +249,17 @@ copyWordstatJsonFlow(...)
 Controller receives dependencies explicitly:
 
 ```text
-service
-store helpers
-getSelectedClientId
-onStart
-onSuccess
-onError
-onFinally
+state
+syncFormState
+parsePhrases
+loadConnection
+loadDynamics
+ensureNav
 render
 copyText
 ```
 
-Controller may orchestrate async work but should not own DOM selectors.
+Controller may orchestrate async work but must not own DOM selectors.
 
 ## Page contract
 
@@ -316,8 +324,9 @@ Migration condition before changing route mode:
 1. `src/features/wordstat/wordstat-page.js` exists.
 2. `src/features/wordstat/wordstat-service.js` owns backend calls.
 3. `src/features/wordstat/wordstat-store.js` owns request/state helpers.
-4. `PAGE_CONTENT_RENDERERS` can render Wordstat from context.
-5. `app.html` no longer needs standalone Wordstat scripts.
+4. `src/features/wordstat/wordstat-controller.js` owns async flows.
+5. `PAGE_CONTENT_RENDERERS` can render Wordstat from context.
+6. `app.html` no longer needs standalone Wordstat scripts.
 ```
 
 ## Migration order
@@ -327,7 +336,7 @@ Migration condition before changing route mode:
 2. Move GET /wordstat/connection and POST /wordstat/dynamics/batch into wordstat-service.js. Done: scaffold created.
 3. Create legacy adapter facade. Done: scaffold created.
 4. Wire legacy src/wordstat.js to use wordstat-legacy-adapter.js. Done.
-5. Move async open/submit/compare/copy flows into wordstat-controller.js.
+5. Move async open/submit/compare/copy flows into wordstat-controller.js. Done.
 6. Move render helpers into wordstat-page.js.
 7. Move input/change/click/submit listeners into wordstat-events.js.
 8. Register Wordstat in page renderer.
@@ -350,7 +359,7 @@ selected client currently comes from DOM/localStorage fallback and must become e
 
 ```text
 Do not move the full legacy file into src/features/wordstat as-is.
-Do not wire Wordstat into PAGE_CONTENT_RENDERERS before controller/page/events exist.
+Do not wire Wordstat into PAGE_CONTENT_RENDERERS before page/events exist.
 Do not remove app.html Wordstat scripts until the feature module fully replaces them.
 Do not edit region arrays by hand unless the change is isolated and validated.
 ```
