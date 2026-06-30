@@ -26,11 +26,12 @@ Route mode: module
 Frontend page module: src/pages/journal.js
 Runtime: src/main.js owns Journal state/source/event wiring
 Source: local MVP source
-Migration status: module route enabled
+Auto-logging: v1 wired
+Migration status: module route enabled with meaningful app event logging
 ```
 
 Next safe step:
 
 ```text
-Add meaningful auto-logging from clients, optimization, integrations and sync flows.
+Add Journal details UI and extend logging to AI/business-context events.
 ```
