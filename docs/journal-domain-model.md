@@ -2,7 +2,7 @@
 
 ## Status
 
-`journal` is currently a reserved route, but the MVP data source, store, controller and page renderers now exist.
+`journal` is currently a reserved route, but the MVP data source, store, controller, page renderers and event handlers now exist.
 
 Current route metadata:
 
@@ -20,12 +20,12 @@ journal-store.js: created
 journal-local-source.js: created
 journal-controller.js: created
 journal-page.js: created
+journal-events.js: created
 journal-service.js: pending backend endpoints
-journal-events.js: pending
 src/pages/journal.js: pending
 ```
 
-Do not create `src/pages/journal.js` until events and app wiring are implemented.
+Do not create `src/pages/journal.js` until app wiring and client-scope reset are implemented.
 
 ## Product definition
 
@@ -298,6 +298,25 @@ renderJournalLoadMore(context)
 
 Page functions receive context and return HTML strings. They must not call backend or attach listeners.
 
+## Events contract
+
+Current file:
+
+```text
+src/features/journal/journal-events.js
+```
+
+Current responsibilities:
+
+```text
+createJournalEventHandlers(context)
+handleJournalClickEvent(event)
+handleJournalChangeEvent(event)
+handleJournalSubmitEvent(event)
+```
+
+Events functions receive context and event objects. They must not register document listeners themselves.
+
 ## Service contract
 
 Target file:
@@ -316,22 +335,6 @@ createJournalEntry(payload)
 ```
 
 Service must only call backend and throw useful errors.
-
-## Events contract
-
-Target file:
-
-```text
-src/features/journal/journal-events.js
-```
-
-Responsibilities:
-
-```text
-handleJournalClickEvent(event, context)
-handleJournalChangeEvent(event, context)
-handleJournalSubmitEvent(event, context)
-```
 
 ## UI behavior
 
@@ -369,7 +372,7 @@ Migration condition before changing route mode:
 2. `src/features/journal/journal-store.js` owns normalization and filters. Done.
 3. `src/features/journal/journal-controller.js` is wired to source/service. Done.
 4. `src/features/journal/journal-page.js` renders from context. Done.
-5. `src/features/journal/journal-events.js` owns event handlers. Pending.
+5. `src/features/journal/journal-events.js` owns event handlers. Done.
 6. `PAGE_CONTENT_RENDERERS` can render Journal from app context. Pending.
 7. Route mode can change from reserved to module. Pending.
 ```
@@ -392,7 +395,7 @@ Do not add it now because there is still no app-level journal state.
 1. Create backend/local MVP source contract. Done: journal-local-source.js.
 2. Create `src/features/journal/journal-store.js` with normalization and filters. Done.
 3. Create controller/page around local source. Done.
-4. Create events.
+4. Create events. Done.
 5. Wire into page renderer.
 6. Add journal state to client-scope reset.
 7. Change route mode from reserved to module.
@@ -412,7 +415,7 @@ Before/after payloads may contain sensitive data and should be filtered before s
 ## Do not do yet
 
 ```text
-Do not create `src/pages/journal.js` before events and app wiring exist.
+Do not create `src/pages/journal.js` before app wiring and reset exist.
 Do not change route mode from reserved yet.
 Do not log every UI click.
 Do not store raw tokens, OAuth payloads or full API responses in Journal metadata.
