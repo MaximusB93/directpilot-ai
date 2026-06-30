@@ -1,0 +1,171 @@
+/* Final interaction layer for the cabinet.
+   Loaded after visual CSS to keep controls clickable and stacking sane. */
+
+body[data-page="app"] .appShell,
+body[data-page="app"] .sidebar,
+body[data-page="app"] .dashboard,
+body[data-page="app"] .workspace,
+body[data-page="app"] .dashboardHeader,
+body[data-page="app"] .appHeader,
+body[data-page="app"] .panel,
+body[data-page="app"] .pageIntro,
+body[data-page="app"] .settingsPanel,
+body[data-page="app"] .emptyState {
+  position: relative;
+}
+
+body[data-page="app"] .sidebar {
+  z-index: 100 !important;
+}
+
+body[data-page="app"] .dashboard,
+body[data-page="app"] .workspace {
+  z-index: 1 !important;
+  overflow: visible !important;
+}
+
+body[data-page="app"] .dashboardHeader,
+body[data-page="app"] .appHeader {
+  z-index: 80 !important;
+  pointer-events: auto !important;
+}
+
+body[data-page="app"] .panel,
+body[data-page="app"] .pageIntro,
+body[data-page="app"] .settingsPanel,
+body[data-page="app"] .emptyState,
+body[data-page="app"] .clientSourcePanel,
+body[data-page="app"] .readinessGrid,
+body[data-page="app"] .formGrid,
+body[data-page="app"] .integrationGrid,
+body[data-page="app"] .optimizationGrid,
+body[data-page="app"] .journalTimeline {
+  z-index: 1 !important;
+  pointer-events: auto !important;
+}
+
+body[data-page="app"] .clientSelectorWrap {
+  position: relative !important;
+  z-index: 120 !important;
+}
+
+body[data-page="app"] .clientMenu {
+  z-index: 9999 !important;
+  pointer-events: auto !important;
+}
+
+body[data-page="app"] [hidden] {
+  display: none !important;
+}
+
+body[data-page="app"] button,
+body[data-page="app"] a,
+body[data-page="app"] label,
+body[data-page="app"] input,
+body[data-page="app"] select,
+body[data-page="app"] textarea,
+body[data-page="app"] summary,
+body[data-page="app"] [data-view],
+body[data-page="app"] [data-go-view],
+body[data-page="app"] [data-sync-client],
+body[data-page="app"] [data-load-performance],
+body[data-page="app"] [data-load-optimization-plan],
+body[data-page="app"] [data-load-optimization-actions],
+body[data-page="app"] [data-create-optimization-drafts],
+body[data-page="app"] [data-update-optimization-action],
+body[data-page="app"] [data-preview-optimization-action],
+body[data-page="app"] [data-refresh-client-yandex],
+body[data-page="app"] [data-bind-yandex-account],
+body[data-page="app"] [data-unbind-yandex],
+body[data-page="app"] [data-open-settings],
+body[data-page="app"] [data-client-menu-toggle],
+body[data-page="app"] [data-client-id],
+body[data-page="app"] [data-select-client],
+body[data-page="app"] [data-reset-business-context],
+body[data-page="app"] [data-reset-client-settings],
+body[data-page="app"] [data-delete-client],
+body[data-page="app"] [data-copy-text],
+body[data-page="app"] [data-journal-apply-filters],
+body[data-page="app"] [data-journal-reset-filters],
+body[data-page="app"] [data-journal-refresh],
+body[data-page="app"] [data-journal-load-more] {
+  position: relative !important;
+  z-index: 5 !important;
+  pointer-events: auto !important;
+}
+
+body[data-page="app"] button,
+body[data-page="app"] a,
+body[data-page="app"] summary,
+body[data-page="app"] [data-view],
+body[data-page="app"] [data-go-view] {
+  cursor: pointer !important;
+}
+
+body[data-page="app"] button:disabled,
+body[data-page="app"] [disabled],
+body[data-page="app"] [aria-disabled="true"] {
+  pointer-events: none !important;
+  cursor: not-allowed !important;
+}
+
+body[data-page="app"] .panel::before,
+body[data-page="app"] .panel::after,
+body[data-page="app"] .pageIntro::before,
+body[data-page="app"] .pageIntro::after,
+body[data-page="app"] .dashboardHeader::before,
+body[data-page="app"] .dashboardHeader::after,
+body[data-page="app"] .appHeader::before,
+body[data-page="app"] .appHeader::after,
+body[data-page="app"] .clientSourcePanel::before,
+body[data-page="app"] .clientSourcePanel::after,
+body[data-page="app"] .readinessCard::before,
+body[data-page="app"] .readinessCard::after,
+body[data-page="app"] .metricCard::before,
+body[data-page="app"] .metricCard::after,
+body[data-page="app"] .kpi::before,
+body[data-page="app"] .kpi::after {
+  pointer-events: none !important;
+}
+
+body[data-page="app"] .formActions,
+body[data-page="app"] .heroActions,
+body[data-page="app"] .panelActions,
+body[data-page="app"] .actionRow,
+body[data-page="app"] .headerActions {
+  position: relative !important;
+  z-index: 10 !important;
+}
+
+body[data-page="app"] .sidebar nav,
+body[data-page="app"] .sideNav {
+  position: relative !important;
+  z-index: 20 !important;
+}
+
+body[data-page="app"] .sidebar nav button,
+body[data-page="app"] .sideNavItem {
+  pointer-events: auto !important;
+}
+
+body[data-page="app"] .readinessCard,
+body[data-page="app"] .clientSourcePanel > div,
+body[data-page="app"] .metricCard,
+body[data-page="app"] .kpi,
+body[data-page="app"] .accountCard,
+body[data-page="app"] .integrationCard,
+body[data-page="app"] .optimizationCard,
+body[data-page="app"] .journalEntry {
+  overflow: visible !important;
+}
+
+body[data-page="app"] .tableWrap {
+  position: relative !important;
+  z-index: 1 !important;
+  overflow: auto !important;
+}
+
+body[data-page="app"] .wordstatChartTooltip {
+  z-index: 10000 !important;
+  pointer-events: none !important;
+}
