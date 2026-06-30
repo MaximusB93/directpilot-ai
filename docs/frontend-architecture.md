@@ -52,7 +52,13 @@ status-badge.js
 index.js
 ```
 
-These components are intentionally not mass-wired into every page yet. Use them one page at a time where markup duplication is obvious.
+Use components one page at a time where markup duplication is obvious. Integrations is the first page wired to shared UI primitives.
+
+Current wired pages:
+
+```text
+src/pages/integrations.js -> renderPanel, renderEmptyState, renderStatusBadge
+```
 
 ## Routing cleanup
 
@@ -172,6 +178,7 @@ Main auth session persistence fixed
 Client scoped reset helper wired
 Wordstat page contract documented
 Journal domain model documented
+Integrations UI primitives wired
 Wordstat/Journal decision documented
 Components scaffold wired
 static validator guards service/store/controller/page wiring
@@ -180,7 +187,7 @@ static validator guards service/store/controller/page wiring
 ## Next safe refactors
 
 ```text
-1. Use renderPanel/renderEmptyState/renderStatusBadge in one page at a time.
+1. Use UI primitives in one more page after integrations stays stable.
 2. Start Wordstat store/service extraction after local validation path is ready.
 3. Start Journal MVP source/store extraction after backend/local source is chosen.
 4. Start new large modules in src/features/* after their contracts are clear.
