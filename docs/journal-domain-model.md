@@ -1,0 +1,439 @@
+# Journal domain model
+
+## Status
+
+`journal` is currently a reserved route only.
+
+Current route metadata:
+
+```text
+Route id: journal
+Route mode: reserved
+Frontend module: none yet
+```
+
+Do not create `src/pages/journal.js` until the domain model, backend contract and intended workflow are stable.
+
+## Product definition
+
+Journal is the client-scoped operational history of DirectPilot AI.
+
+It should answer:
+
+```text
+what happened
+who/what triggered it
+which client it belongs to
+which feature produced it
+which entity was affected
+what changed
+what happened next
+```
+
+Journal is not a generic changelog and not a dumping ground for every console-like event.
+
+## Primary use cases
+
+```text
+1. See the history of AI recommendations and optimization decisions for a client.
+2. Audit applied or rejected optimization actions.
+3. Review integration/sync events for debugging client data freshness.
+4. Track meaningful business-context changes.
+5. Explain to a specialist or client why a recommendation/action exists.
+```
+
+## Scope
+
+Journal is client-scoped by default.
+
+Every journal entry should have:
+
+```text
+clientId
+occurredAt
+source
+category
+type
+severity
+title
+summary
+```
+
+Entries without `clientId` are allowed only for account-level/system events and must be explicitly marked as `scope: account` or `scope: system`.
+
+## Entity model
+
+Target entity:
+
+```ts
+type JournalEntry = {
+  id: string;
+  scope: 'client' | 'account' | 'system';
+  clientId: string | null;
+  occurredAt: string;
+  createdAt: string;
+  source: 'ai' | 'optimization' | 'integration' | 'sync' | 'business_context' | 'client' | 'system';
+  category: 'recommendation' | 'action' | 'status' | 'data_change' | 'error' | 'note';
+  type: string;
+  severity: 'info' | 'success' | 'warning' | 'error';
+  title: string;
+  summary: string;
+  actor: JournalActor;
+  entity: JournalEntity | null;
+  before: Record<string, unknown> | null;
+  after: Record<string, unknown> | null;
+  metadata: Record<string, unknown>;
+};
+```
+
+Nested models:
+
+```ts
+type JournalActor = {
+  kind: 'user' | 'ai' | 'system' | 'backend';
+  id: string | null;
+  label: string;
+};
+
+type JournalEntity = {
+  kind: 'client' | 'campaign' | 'optimization_action' | 'business_context' | 'integration' | 'sync_job' | 'ai_recommendation';
+  id: string | null;
+  label: string;
+};
+```
+
+## Event type groups
+
+### AI
+
+```text
+ai.recommendation_generated
+ai.chat_message_sent
+ai.memory_note_saved
+ai.model_changed
+ai.prompt_debug_loaded
+```
+
+### Optimization
+
+```text
+optimization.plan_generated
+optimization.action_created
+optimization.action_status_changed
+optimization.execution_preview_loaded
+optimization.drafts_created
+```
+
+### Integrations
+
+```text
+integration.yandex_oauth_started
+integration.yandex_connected
+integration.yandex_account_bound
+integration.yandex_account_unbound
+integration.yandex_connection_failed
+```
+
+### Sync / performance
+
+```text
+sync.started
+sync.completed
+sync.failed
+performance.summary_loaded
+```
+
+### Business context
+
+```text
+business_context.loaded
+business_context.saved
+business_context.reset
+business_context.changed
+```
+
+### Clients
+
+```text
+client.created
+client.updated
+client.deleted
+client.selected
+```
+
+### System
+
+```text
+system.error
+system.warning
+system.info
+```
+
+## Backend API contract
+
+Target endpoints:
+
+```text
+GET /journal
+GET /clients/{clientId}/journal
+GET /journal/{entryId}
+POST /journal
+```
+
+Optional later endpoints:
+
+```text
+POST /journal/bulk
+PATCH /journal/{entryId}
+```
+
+### List query params
+
+```text
+clientId
+scope
+source
+category
+type
+severity
+entityKind
+entityId
+fromDate
+toDate
+limit
+cursor
+```
+
+### List response
+
+```json
+{
+  "items": [],
+  "nextCursor": null
+}
+```
+
+### Create payload
+
+```json
+{
+  "scope": "client",
+  "clientId": "client-id",
+  "source": "optimization",
+  "category": "action",
+  "type": "optimization.action_status_changed",
+  "severity": "success",
+  "title": "Action approved",
+  "summary": "Specialist approved bid adjustment recommendation.",
+  "actor": { "kind": "user", "id": "user-id", "label": "User" },
+  "entity": { "kind": "optimization_action", "id": "action-id", "label": "Bid adjustment" },
+  "before": { "status": "pending" },
+  "after": { "status": "approved" },
+  "metadata": {}
+}
+```
+
+## Store contract
+
+Target file:
+
+```text
+src/features/journal/journal-store.js
+```
+
+Responsibilities:
+
+```text
+createInitialJournalState()
+normalizeJournalEntry(payload)
+normalizeJournalEntries(payload)
+createJournalQueryParams(filters)
+createJournalEntryPayload(input)
+filterJournalEntries(entries, filters)
+groupJournalEntriesByDate(entries)
+formatJournalEntryDate(value)
+```
+
+Store must not:
+
+```text
+call apiFetch
+read DOM
+write DOM
+attach listeners
+render UI
+read localStorage directly
+```
+
+## Service contract
+
+Target file:
+
+```text
+src/features/journal/journal-service.js
+```
+
+Responsibilities:
+
+```text
+fetchJournalEntries(query)
+fetchClientJournalEntries(clientId, query)
+fetchJournalEntry(entryId)
+createJournalEntry(payload)
+```
+
+Service must only call backend and throw useful errors.
+
+## Controller contract
+
+Target file:
+
+```text
+src/features/journal/journal-controller.js
+```
+
+Responsibilities:
+
+```text
+loadJournalEntriesFlow(...)
+loadMoreJournalEntriesFlow(...)
+createJournalEntryFlow(...)
+refreshJournalFlow(...)
+```
+
+Controller receives dependencies explicitly:
+
+```text
+service
+store helpers
+getSelectedClientId
+onStart
+onSuccess
+onError
+onFinally
+render
+```
+
+Controller must not own DOM selectors.
+
+## Page contract
+
+Target file:
+
+```text
+src/features/journal/journal-page.js
+```
+
+Responsibilities:
+
+```text
+renderJournalPage(context)
+renderJournalFilters(context)
+renderJournalTimeline(context)
+renderJournalEntry(entry)
+renderJournalEmptyState()
+renderJournalLoadMore(context)
+```
+
+Page functions receive context and return HTML strings. They must not call backend or attach listeners.
+
+## Events contract
+
+Target file:
+
+```text
+src/features/journal/journal-events.js
+```
+
+Responsibilities:
+
+```text
+handleJournalClickEvent(event, context)
+handleJournalChangeEvent(event, context)
+handleJournalSubmitEvent(event, context)
+```
+
+## UI behavior
+
+Default page behavior:
+
+```text
+show entries for selected client
+newest first
+group by date
+filter by source/category/severity
+load more with cursor
+show empty state if there are no entries
+```
+
+Journal should never mutate source entities. It displays history and can create entries, but it should not apply optimization actions or change integrations directly.
+
+## Routing contract
+
+Current route mode:
+
+```text
+journal: reserved
+```
+
+Target route mode after migration:
+
+```text
+journal: module
+```
+
+Migration condition before changing route mode:
+
+```text
+1. Backend or local MVP journal source exists.
+2. `src/features/journal/journal-store.js` owns normalization and filters.
+3. `src/features/journal/journal-service.js` owns API calls.
+4. `src/features/journal/journal-page.js` renders from context.
+5. `PAGE_CONTENT_RENDERERS` can render Journal from app context.
+6. Route mode can change from reserved to module.
+```
+
+## Client-scoped reset integration
+
+Journal state is client-scoped by default and should be reset when selected client changes.
+
+After implementation, add journal state to:
+
+```text
+src/app/client-scope-reset.js
+```
+
+Do not add it now because there is no journal state yet.
+
+## Migration order
+
+```text
+1. Create backend/local MVP source contract.
+2. Create `src/features/journal/journal-store.js` with normalization and filters.
+3. Create `src/features/journal/journal-service.js` once endpoints are available.
+4. Create `src/features/journal/journal-page.js` using empty/mock-safe context.
+5. Create controller/events.
+6. Wire into page renderer.
+7. Add journal state to client-scope reset.
+8. Change route mode from reserved to module.
+```
+
+## Known risks
+
+```text
+Journal can become a dumping ground if event types are not constrained.
+Too many low-level events will make the timeline useless.
+Entries need stable clientId and entity references to stay explainable.
+AI-generated summaries should be stored as generated text, not re-generated every render.
+Before/after payloads may contain sensitive data and should be filtered before storing.
+```
+
+## Do not do yet
+
+```text
+Do not create `src/pages/journal.js` without data source.
+Do not change route mode from reserved yet.
+Do not log every UI click.
+Do not store raw tokens, OAuth payloads or full API responses in Journal metadata.
+Do not mix Journal with system debug logs.
+```
