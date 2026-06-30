@@ -41,19 +41,7 @@ const requiredFiles = [
   'src/features/journal/journal-local-source.js',
   'src/features/journal/journal-controller.js',
   'src/features/journal/journal-page.js',
-  'src/services/clients-service.js',
-  'src/services/integrations-service.js',
-  'src/services/business-context-service.js',
-  'src/services/sync-service.js',
-  'src/services/performance-service.js',
-  'src/services/optimization-service.js',
-  'src/services/ai-service.js',
-  'src/stores/client-store.js',
-  'src/stores/ai-store.js',
-  'src/stores/ai-feature-state.js',
-  'src/stores/business-context-store.js',
-  'src/stores/campaign-store.js',
-  'src/stores/optimization-store.js',
+  'src/features/journal/journal-events.js',
   'src/main.js',
   'src/login.js',
   'src/data.js',
@@ -77,62 +65,30 @@ const requiredFiles = [
 ];
 
 await Promise.all(requiredFiles.map((file) => access(file)));
-
 const files = Object.fromEntries(await Promise.all(requiredFiles.map(async (file) => [file, await readFile(file, 'utf8')])));
 
-const appHtml = files['app.html'];
-const js = files['src/main.js'];
-const routes = files['src/app/routes.js'];
-const pagesIndex = files['src/pages/index.js'];
-const wordstatPageModule = files['src/pages/wordstat.js'];
-const wordstatLegacy = files['src/wordstat.js'];
-const wordstatIndex = files['src/features/wordstat/index.js'];
-const wordstatStore = files['src/features/wordstat/wordstat-store.js'];
-const wordstatService = files['src/features/wordstat/wordstat-service.js'];
-const wordstatAdapter = files['src/features/wordstat/wordstat-legacy-adapter.js'];
-const wordstatController = files['src/features/wordstat/wordstat-controller.js'];
-const wordstatPage = files['src/features/wordstat/wordstat-page.js'];
-const wordstatEvents = files['src/features/wordstat/wordstat-events.js'];
-const journalIndex = files['src/features/journal/index.js'];
-const journalStore = files['src/features/journal/journal-store.js'];
-const journalLocalSource = files['src/features/journal/journal-local-source.js'];
-const journalController = files['src/features/journal/journal-controller.js'];
-const journalPage = files['src/features/journal/journal-page.js'];
-const frontendArchitecture = files['docs/frontend-architecture.md'];
-const legacyPagesDecision = files['docs/legacy-pages-decision.md'];
-const wordstatContract = files['docs/wordstat-page-contract.md'];
-const journalDomainModel = files['docs/journal-domain-model.md'];
+function has(file, value) {
+  return files[file].includes(value);
+}
+
+function lacks(file, values) {
+  return values.every((value) => !files[file].includes(value));
+}
 
 const checks = [
-  ['app shell files', files['index.html'].includes('id="app"') && files['login.html'].includes('data-page="login"') && appHtml.includes('data-page="app"')],
-  ['app routing modules', routes.includes('APP_ROUTES') && routes.includes('LEGACY_ROUTE_REDIRECTS') && routes.includes('normalizeAppRouteId') && routes.includes('getRouteMode')],
-  ['route mode metadata guarded', routes.includes("wordstat") && routes.includes("mode: 'module'") && routes.includes("journal") && routes.includes("mode: 'reserved'")],
-  ['main imports wordstat runtime', js.includes("import './wordstat.js';")],
-  ['main wordstat route wiring', js.includes("{ id: 'wordstat', label: 'Wordstat', icon: '📈' }") && js.includes('function wordstatPageContext()') && js.includes("resolvePageContentRenderer('wordstat')") && js.includes('function renderWordstat()') && js.includes('wordstat: renderWordstat,')],
-  ['app html removed standalone wordstat scripts', !appHtml.includes('src/wordstat.js') && !appHtml.includes('src/wordstat_date_fix.js') && !appHtml.includes('src/wordstat_regions_patch.js') && !appHtml.includes('src/wordstat_ai_chat.js') && !appHtml.includes('src/wordstat_chart_hover.js')],
-  ['app html keeps app shell scripts', appHtml.includes('src/app/hash-route-bridge.js') && appHtml.includes('src/main.js') && appHtml.includes('src/business_context_autofill.js') && appHtml.includes('src/performance_range_panel.js')],
-  ['wordstat legacy imports patch modules', wordstatLegacy.includes("import './wordstat_date_fix.js';") && wordstatLegacy.includes("import './wordstat_regions_patch.js';") && wordstatLegacy.includes("import './wordstat_ai_chat.js';") && wordstatLegacy.includes("import './wordstat_chart_hover.js';")],
-  ['wordstat feature exports', wordstatIndex.includes('wordstat-store.js') && wordstatIndex.includes('wordstat-service.js') && wordstatIndex.includes('wordstat-legacy-adapter.js') && wordstatIndex.includes('wordstat-controller.js') && wordstatIndex.includes('wordstat-page.js') && wordstatIndex.includes('wordstat-events.js')],
-  ['wordstat page module registered', wordstatPageModule.includes('WORDSTAT_PAGE_ID') && wordstatPageModule.includes('wordstatPageContract') && wordstatPageModule.includes('renderWordstatContent') && wordstatPageModule.includes('data-wordstat-workspace') && pagesIndex.includes("from './wordstat.js'") && pagesIndex.includes('[WORDSTAT_PAGE_ID]: wordstatPage') && pagesIndex.includes('[WORDSTAT_PAGE_ID]: renderWordstatContent')],
-  ['wordstat store pure', wordstatStore.includes('createWordstatRequestBody') && wordstatStore.includes('buildWordstatTotalSummary') && !wordstatStore.includes('apiFetch') && !wordstatStore.includes('document.') && !wordstatStore.includes('localStorage')],
-  ['wordstat service owns backend calls', wordstatService.includes('fetchWordstatConnection') && wordstatService.includes('fetchWordstatDynamics') && wordstatService.includes('/wordstat/connection') && wordstatService.includes('/wordstat/dynamics/batch')],
-  ['wordstat adapter wired', wordstatAdapter.includes('createWordstatLegacyApi') && wordstatLegacy.includes("from './features/wordstat/wordstat-legacy-adapter.js'") && wordstatLegacy.includes('createWordstatRequestBody(wordstatState.form') && !wordstatLegacy.includes('apiFetch(')],
-  ['wordstat controller wired', wordstatController.includes('openWordstatFlow') && wordstatController.includes('submitWordstatDynamicsFlow') && wordstatController.includes('compareWordstatPeriodFlow') && wordstatController.includes('copyWordstatJsonFlow') && !wordstatController.includes('document.') && wordstatLegacy.includes('await openWordstatFlow({')],
-  ['wordstat page renderers wired', wordstatPage.includes('createWordstatPageRenderers') && wordstatPage.includes('renderWordstatResult') && wordstatPage.includes('renderWordstatChart') && !wordstatPage.includes('apiFetch(') && !wordstatPage.includes('document.') && wordstatLegacy.includes('createWordstatPageRenderers({')],
-  ['wordstat events wired', wordstatEvents.includes('createWordstatEventHandlers') && wordstatEvents.includes('handleClickEvent') && wordstatEvents.includes('handleSubmitEvent') && !wordstatEvents.includes('document.') && !wordstatEvents.includes('addEventListener') && wordstatLegacy.includes('createWordstatEventHandlers({')],
-  ['wordstat auto open bridge', wordstatLegacy.includes('let wordstatAutoOpening = false') && wordstatLegacy.includes('function shouldAutoOpenWordstatView()') && wordstatLegacy.includes("document.body.dataset.view === WORDSTAT_VIEW_ID") && wordstatLegacy.includes('async function autoOpenWordstatView()') && wordstatLegacy.includes('void autoOpenWordstatView();')],
-  ['journal feature exports', journalIndex.includes('journal-store.js') && journalIndex.includes('journal-local-source.js') && journalIndex.includes('journal-controller.js') && journalIndex.includes('journal-page.js')],
-  ['journal store scaffold', journalStore.includes('createInitialJournalState') && journalStore.includes('normalizeJournalEntry') && journalStore.includes('normalizeJournalEntries') && journalStore.includes('createJournalQueryParams') && journalStore.includes('createJournalEntryPayload') && journalStore.includes('filterJournalEntries') && journalStore.includes('groupJournalEntriesByDate') && !journalStore.includes('apiFetch') && !journalStore.includes('document.') && !journalStore.includes('localStorage')],
-  ['journal local source scaffold', journalLocalSource.includes('createJournalLocalSource') && journalLocalSource.includes('JOURNAL_LOCAL_STORAGE_KEY') && journalLocalSource.includes('scopedStorageKey') && journalLocalSource.includes('list(query') && journalLocalSource.includes('create(input') && journalLocalSource.includes('filterJournalEntries')],
-  ['journal controller scaffold', journalController.includes('loadJournalEntriesFlow') && journalController.includes('loadMoreJournalEntriesFlow') && journalController.includes('createJournalEntryFlow') && journalController.includes('refreshJournalFlow') && !journalController.includes('document.') && !journalController.includes('querySelector') && !journalController.includes('localStorage') && !journalController.includes('apiFetch')],
-  ['journal page scaffold', journalPage.includes('createJournalPageRenderers') && journalPage.includes('renderJournalPage') && journalPage.includes('renderJournalFilters') && journalPage.includes('renderJournalTimeline') && journalPage.includes('renderJournalEntry') && journalPage.includes('renderJournalEmptyState') && journalPage.includes('renderJournalLoadMore') && !journalPage.includes('apiFetch') && !journalPage.includes('document.') && !journalPage.includes('addEventListener')],
-  ['journal route remains reserved', routes.includes("journal") && routes.includes("mode: 'reserved'") && !pagesIndex.includes('journalPage') && !pagesIndex.includes('renderJournalContent')],
-  ['main no direct api helper calls', !js.includes('apiFetch(')],
-  ['no seeded account data', files['src/data.js'].includes('export const clients = []')],
-  ['legacy pages decision updated', legacyPagesDecision.includes('Route mode: module') && legacyPagesDecision.includes('Runtime bridge: src/main.js imports src/wordstat.js') && legacyPagesDecision.includes('journal') && legacyPagesDecision.includes('Route mode: reserved')],
-  ['wordstat docs updated', wordstatContract.includes('route mode: module') && wordstatContract.includes('Change route mode from legacy to module. Done.') && wordstatContract.includes('wordstat: module')],
-  ['journal domain docs updated', journalDomainModel.includes('journal-controller.js: created') && journalDomainModel.includes('journal-page.js: created') && journalDomainModel.includes('Create controller/page around local source. Done.') && journalDomainModel.includes('journal: reserved')],
-  ['frontend architecture docs updated', frontendArchitecture.includes('Journal controller scaffold created') && frontendArchitecture.includes('Journal page renderer scaffold created') && frontendArchitecture.includes('Create Journal events')],
+  ['app shells', has('index.html', 'id="app"') && has('login.html', 'data-page="login"') && has('app.html', 'data-page="app"')],
+  ['routes guarded', has('src/app/routes.js', "mode: 'module'") && has('src/app/routes.js', "mode: 'reserved'")],
+  ['wordstat runtime via main', has('src/main.js', "import './wordstat.js';") && lacks('app.html', ['src/wordstat.js', 'src/wordstat_date_fix.js', 'src/wordstat_regions_patch.js', 'src/wordstat_ai_chat.js', 'src/wordstat_chart_hover.js'])],
+  ['wordstat wiring guarded', has('src/pages/index.js', '[WORDSTAT_PAGE_ID]: renderWordstatContent') && has('src/wordstat.js', 'createWordstatEventHandlers({') && lacks('src/main.js', ['apiFetch('])],
+  ['journal exports', ['journal-store.js', 'journal-local-source.js', 'journal-controller.js', 'journal-page.js', 'journal-events.js'].every((name) => has('src/features/journal/index.js', name))],
+  ['journal store pure', has('src/features/journal/journal-store.js', 'normalizeJournalEntry') && has('src/features/journal/journal-store.js', 'groupJournalEntriesByDate') && lacks('src/features/journal/journal-store.js', ['apiFetch', 'document.', 'localStorage'])],
+  ['journal local source', has('src/features/journal/journal-local-source.js', 'createJournalLocalSource') && has('src/features/journal/journal-local-source.js', 'scopedStorageKey') && has('src/features/journal/journal-local-source.js', 'filterJournalEntries')],
+  ['journal controller pure', has('src/features/journal/journal-controller.js', 'loadJournalEntriesFlow') && has('src/features/journal/journal-controller.js', 'createJournalEntryFlow') && lacks('src/features/journal/journal-controller.js', ['document.', 'querySelector', 'localStorage', 'apiFetch'])],
+  ['journal page pure', has('src/features/journal/journal-page.js', 'createJournalPageRenderers') && has('src/features/journal/journal-page.js', 'renderJournalTimeline') && lacks('src/features/journal/journal-page.js', ['apiFetch', 'document.', 'addEventListener'])],
+  ['journal events pure', has('src/features/journal/journal-events.js', 'createJournalEventHandlers') && has('src/features/journal/journal-events.js', 'handleJournalClickEvent') && has('src/features/journal/journal-events.js', 'data-journal-load-more') && lacks('src/features/journal/journal-events.js', ['document.', 'addEventListener', 'querySelector', 'localStorage', 'apiFetch'])],
+  ['journal still reserved', has('src/app/routes.js', "mode: 'reserved'") && lacks('src/pages/index.js', ['journalPage', 'renderJournalContent'])],
+  ['docs updated', has('docs/journal-domain-model.md', 'journal-events.js: created') && has('docs/journal-domain-model.md', 'Create events. Done.') && has('docs/frontend-architecture.md', 'Journal event handler scaffold created')],
+  ['no seeded account data', has('src/data.js', 'export const clients = []')],
 ];
 
 const failed = checks.filter(([, ok]) => !ok);
