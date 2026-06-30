@@ -2,7 +2,7 @@
 
 ## Status
 
-`src/wordstat.js` remains a legacy standalone module, but it now uses the Wordstat feature store/service/controller/page/events helpers through the legacy adapter and feature modules.
+`src/wordstat.js` remains a legacy standalone module, but Wordstat is now registered in the app page registry and opened through a module shell.
 
 The target direction is a feature-first module:
 
@@ -26,14 +26,15 @@ wordstat-legacy-adapter.js: created
 wordstat-controller.js: created and wired
 wordstat-page.js: created and wired
 wordstat-events.js: created and wired
-legacy src/wordstat.js wiring: done
+src/pages/wordstat.js: created and registered
+legacy src/wordstat.js wiring: done with module auto-open bridge
 ```
 
-Do not move the current module as one large file. First split service, store, controller, page and events contracts.
+Do not move the current module as one large file. First split service, store, controller, page, events and route registration contracts.
 
 ## Current legacy entrypoints
 
-`app.html` currently loads Wordstat as separate ES modules:
+`app.html` currently still loads Wordstat as separate ES modules:
 
 ```text
 src/wordstat.js
@@ -42,6 +43,10 @@ src/wordstat_regions_patch.js
 src/wordstat_ai_chat.js
 src/wordstat_chart_hover.js
 ```
+
+`src/pages/wordstat.js` is registered in `src/pages/index.js` and renders a module shell with `.workspace` for the current legacy Wordstat renderer.
+
+`src/main.js` now owns the Wordstat route entry in the sidebar and render map through `renderWordstat()`.
 
 `src/wordstat.js` still owns the outer `renderWordstatPage()` orchestrator, navigation injection, chart tooltip DOM helpers and document listener registration.
 
@@ -52,6 +57,8 @@ src/wordstat_chart_hover.js
 `src/wordstat.js` no longer owns most reusable Wordstat render helpers directly. It creates render helpers through `src/features/wordstat/wordstat-page.js` and keeps only the outer legacy DOM shell.
 
 `src/wordstat.js` no longer owns input/change/click/submit handler logic directly. It creates event handlers through `src/features/wordstat/wordstat-events.js` and only registers them on `document`.
+
+`src/wordstat.js` now has an auto-open bridge: when `document.body.dataset.view === 'wordstat'`, it opens the Wordstat view inside the module shell.
 
 ## Existing shared dependencies
 
@@ -70,6 +77,13 @@ src/features/wordstat/wordstat-legacy-adapter.js
 src/features/wordstat/wordstat-controller.js
 src/features/wordstat/wordstat-page.js
 src/features/wordstat/wordstat-events.js
+```
+
+The app page registration is imported through:
+
+```text
+src/pages/wordstat.js
+src/pages/index.js
 ```
 
 Keep shared dependencies. Do not duplicate local API, HTML escaping or format helpers.
@@ -332,6 +346,31 @@ handleSubmitEvent(event)
 
 Events functions receive context and event objects. They must not register document listeners themselves.
 
+## App page registration contract
+
+Target file:
+
+```text
+src/pages/wordstat.js
+```
+
+Current status:
+
+```text
+created and registered in src/pages/index.js
+```
+
+Responsibilities:
+
+```text
+WORDSTAT_PAGE_ID
+wordstatPage
+wordstatPageContract()
+renderWordstatContent(context)
+```
+
+Current `renderWordstatContent(context)` provides a bridge shell, not the final full Wordstat page. It must keep a `.workspace` element until the standalone legacy script is removed.
+
 ## Routing contract
 
 Current route mode:
@@ -349,13 +388,13 @@ wordstat: module
 Migration condition before changing route mode:
 
 ```text
-1. `src/features/wordstat/wordstat-page.js` exists.
-2. `src/features/wordstat/wordstat-service.js` owns backend calls.
-3. `src/features/wordstat/wordstat-store.js` owns request/state helpers.
-4. `src/features/wordstat/wordstat-controller.js` owns async flows.
-5. `src/features/wordstat/wordstat-events.js` owns event handlers.
-6. `PAGE_CONTENT_RENDERERS` can render Wordstat from context.
-7. `app.html` no longer needs standalone Wordstat scripts.
+1. `src/features/wordstat/wordstat-page.js` exists. Done.
+2. `src/features/wordstat/wordstat-service.js` owns backend calls. Done.
+3. `src/features/wordstat/wordstat-store.js` owns request/state helpers. Done.
+4. `src/features/wordstat/wordstat-controller.js` owns async flows. Done.
+5. `src/features/wordstat/wordstat-events.js` owns event handlers. Done.
+6. `PAGE_CONTENT_RENDERERS` can render Wordstat from context. Done.
+7. `app.html` no longer needs standalone Wordstat scripts. Pending.
 ```
 
 ## Migration order
@@ -368,7 +407,7 @@ Migration condition before changing route mode:
 5. Move async open/submit/compare/copy flows into wordstat-controller.js. Done.
 6. Move render helpers into wordstat-page.js. Done.
 7. Move input/change/click/submit listeners into wordstat-events.js. Done.
-8. Register Wordstat in page renderer.
+8. Register Wordstat in page renderer. Done.
 9. Remove standalone Wordstat scripts from app.html.
 10. Change route mode from legacy to module.
 ```
@@ -388,7 +427,7 @@ selected client currently comes from DOM/localStorage fallback and must become e
 
 ```text
 Do not move the full legacy file into src/features/wordstat as-is.
-Do not wire Wordstat into PAGE_CONTENT_RENDERERS before module registration step.
-Do not remove app.html Wordstat scripts until the feature module fully replaces them.
+Do not remove app.html Wordstat scripts until the module shell and auto-open bridge have been verified.
+Do not change route mode to module until standalone scripts are removed.
 Do not edit region arrays by hand unless the change is isolated and validated.
 ```
