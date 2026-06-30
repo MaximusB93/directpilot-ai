@@ -41,6 +41,12 @@ import {
   wordstatPageContract,
   renderWordstatContent,
 } from './wordstat.js';
+import {
+  JOURNAL_PAGE_ID,
+  journalPage,
+  journalPageContract,
+  renderJournalContent,
+} from './journal.js';
 
 export const APP_PAGES = {
   [DASHBOARD_PAGE_ID]: dashboardPage,
@@ -50,6 +56,7 @@ export const APP_PAGES = {
   [AI_ASSISTANT_PAGE_ID]: aiAssistantPage,
   [OPTIMIZATION_PAGE_ID]: optimizationPage,
   [WORDSTAT_PAGE_ID]: wordstatPage,
+  [JOURNAL_PAGE_ID]: journalPage,
 };
 
 export const PAGE_CONTRACTS = {
@@ -60,6 +67,7 @@ export const PAGE_CONTRACTS = {
   [AI_ASSISTANT_PAGE_ID]: aiAssistantPageContract(),
   [OPTIMIZATION_PAGE_ID]: optimizationPageContract(),
   [WORDSTAT_PAGE_ID]: wordstatPageContract(),
+  [JOURNAL_PAGE_ID]: journalPageContract(),
 };
 
 export const PAGE_RENDERERS = {
@@ -74,6 +82,7 @@ export const PAGE_CONTENT_RENDERERS = {
   [AI_ASSISTANT_PAGE_ID]: renderAiAssistantContent,
   [OPTIMIZATION_PAGE_ID]: renderOptimizationContent,
   [WORDSTAT_PAGE_ID]: renderWordstatContent,
+  [JOURNAL_PAGE_ID]: renderJournalContent,
 };
 
 export function getPageByRouteId(routeId) {
