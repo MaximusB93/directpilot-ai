@@ -22,45 +22,6 @@ hash-route-bridge.js
 client-scope-reset.js
 ```
 
-## Current controllers
-
-```text
-ai-controller.js
-ai-event-bindings.js
-clients-controller.js
-integrations-controller.js
-optimization-controller.js
-```
-
-## Current stores
-
-```text
-ai-store.js
-ai-feature-state.js
-business-context-store.js
-campaign-store.js
-client-store.js
-optimization-store.js
-```
-
-## Current components scaffold
-
-```text
-empty-state.js
-panel.js
-status-badge.js
-index.js
-```
-
-Use components one page at a time where markup duplication is obvious.
-
-Current wired pages:
-
-```text
-src/pages/integrations.js -> renderPanel, renderEmptyState, renderStatusBadge
-src/pages/business-context.js -> renderPanel, renderEmptyState, renderStatusBadge
-```
-
 ## Feature-first modules
 
 Wordstat has moved to module route mode while still keeping a runtime bridge.
@@ -75,7 +36,7 @@ src/features/wordstat/wordstat-page.js
 src/features/wordstat/wordstat-events.js
 ```
 
-Journal has started its feature-first scaffold with a local MVP source, pure store helpers, controller flows, page renderers and event handlers.
+Journal has a feature-first scaffold plus a registered page module.
 
 ```text
 src/features/journal/index.js
@@ -84,20 +45,17 @@ src/features/journal/journal-local-source.js
 src/features/journal/journal-controller.js
 src/features/journal/journal-page.js
 src/features/journal/journal-events.js
+src/pages/journal.js
 ```
 
 ## Routing cleanup
-
-`src/app/routes.js` is now the canonical place for route ids, legacy redirects and route mode metadata.
 
 ```text
 wordstat: module
 journal: reserved
 ```
 
-`src/main.js` imports `normalizeAppRouteId` from `src/app/routes.js`; the old local `primaryAppViews` and `legacyViewRedirects` block has been removed.
-
-The Wordstat and Journal decision is documented in `docs/legacy-pages-decision.md`.
+`src/app/routes.js` is the canonical place for route ids, legacy redirects and route mode metadata.
 
 ## Wordstat contract
 
@@ -118,11 +76,7 @@ page registration: created and wired
 legacy auto-open bridge: wired
 ```
 
-`app.html` now loads the app shell plus non-Wordstat app patches. Wordstat runtime is pulled through the app shell.
-
 ## Journal domain model
-
-`docs/journal-domain-model.md` defines Journal as client-scoped operational history.
 
 Current status:
 
@@ -134,18 +88,18 @@ store scaffold: created
 controller: created
 page renderers: created
 events: created
-page registration/client-scope reset: pending
+page registration: created and wired
+app shell runtime: pending
+client-scope reset: pending
 ```
 
-Do not create `src/pages/journal.js` until app wiring and client-scope reset exist.
+Journal remains a reserved route until app shell runtime and client-scope reset are wired.
 
 ## Page composers
 
-Content composers are wired for Dashboard, Clients, Business Context, Integrations, Optimization, AI Assistant and Wordstat.
+Content composers are wired for Dashboard, Clients, Business Context, Integrations, Optimization, AI Assistant, Wordstat and Journal.
 
-Wordstat page module currently provides a bridge shell while `src/wordstat.js` owns the remaining runtime lifecycle.
-
-Journal remains a reserved route until page registration and client-scope reset are wired.
+Journal page module is registered but not activated as a route yet.
 
 ## Still in main.js
 
@@ -155,6 +109,7 @@ optimization mutable variables and render callbacks
 integrations mutable variables and client list patch callbacks
 clients mutable variables and storage/render callbacks
 Wordstat runtime import until remaining legacy lifecycle is absorbed by feature modules
+Journal runtime state/source/listeners after the next iteration
 ```
 
 ## Completed migration sequence
@@ -202,6 +157,7 @@ Journal store scaffold created
 Journal controller scaffold created
 Journal page renderer scaffold created
 Journal event handler scaffold created
+Journal page module registered
 Wordstat/Journal decision documented
 Components scaffold wired
 static validator guards service/store/controller/page/events/page registration/app shell wiring
@@ -210,7 +166,8 @@ static validator guards service/store/controller/page/events/page registration/a
 ## Next safe refactors
 
 ```text
-1. Wire Journal into page renderer and client-scope reset.
-2. Change Journal route mode from reserved to module.
-3. Later: absorb remaining Wordstat runtime bridge and patch modules into feature modules.
+1. Wire Journal runtime in app shell.
+2. Add Journal state to client-scope reset.
+3. Change Journal route mode from reserved to module.
+4. Later: absorb remaining Wordstat runtime bridge and patch modules into feature modules.
 ```
