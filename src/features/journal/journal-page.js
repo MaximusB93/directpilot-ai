@@ -144,8 +144,45 @@ export function createJournalPageRenderers({ escapeHtml = fallbackEscapeHtml } =
             ${entry.entity ? `<span>Объект: ${escapeHtml(entry.entity.label)}</span>` : ''}
             <span>Тип: ${escapeHtml(entry.type)}</span>
           </div>
+          ${renderJournalEntryDetailsPanel(entry)}
         </div>
       </article>
+    `;
+  }
+
+  function renderJournalEntryDetailsPanel(entry) {
+    const rows = [
+      renderJournalJsonBlock('До', entry.before),
+      renderJournalJsonBlock('После', entry.after),
+      renderJournalJsonBlock('Метаданные', entry.metadata),
+    ].filter(Boolean);
+
+    if (rows.length === 0) {
+      return `
+        <details class="journalEntryMore" data-journal-entry-more>
+          <summary>Подробнее</summary>
+          <p class="muted">Для этой записи нет before / after / metadata. Бывает и такое: событие есть, драматургии нет.</p>
+        </details>
+      `;
+    }
+
+    return `
+      <details class="journalEntryMore" data-journal-entry-more>
+        <summary>Подробнее</summary>
+        <div class="journalEntryJsonGrid">
+          ${rows.join('')}
+        </div>
+      </details>
+    `;
+  }
+
+  function renderJournalJsonBlock(label, value) {
+    if (!hasUsefulDetails(value)) return '';
+    return `
+      <section class="journalEntryJsonBlock">
+        <h5>${escapeHtml(label)}</h5>
+        <pre><code>${escapeHtml(formatJson(value))}</code></pre>
+      </section>
     `;
   }
 
@@ -198,6 +235,8 @@ export function createJournalPageRenderers({ escapeHtml = fallbackEscapeHtml } =
     renderJournalFilters,
     renderJournalTimeline,
     renderJournalEntry,
+    renderJournalEntryDetailsPanel,
+    renderJournalJsonBlock,
     renderJournalEmptyState,
     renderJournalLoadMore,
   };
@@ -207,6 +246,20 @@ function formatTime(value) {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return '—';
   return parsed.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+}
+
+function hasUsefulDetails(value) {
+  if (!value || typeof value !== 'object') return false;
+  if (Array.isArray(value)) return value.length > 0;
+  return Object.keys(value).length > 0;
+}
+
+function formatJson(value) {
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch (error) {
+    return String(value ?? '');
+  }
 }
 
 function pluralize(value, forms) {
