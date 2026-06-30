@@ -56,6 +56,7 @@ const requiredFiles = [
   'docs/legacy-pages-decision.md',
   'docs/wordstat-refactor.md',
   'docs/wordstat-page-contract.md',
+  'docs/journal-domain-model.md',
 ];
 
 await Promise.all(requiredFiles.map((file) => access(file)));
@@ -68,6 +69,7 @@ const clientScopeReset = files['src/app/client-scope-reset.js'];
 const frontendArchitecture = files['docs/frontend-architecture.md'];
 const legacyPagesDecision = files['docs/legacy-pages-decision.md'];
 const wordstatContract = files['docs/wordstat-page-contract.md'];
+const journalDomainModel = files['docs/journal-domain-model.md'];
 const clientsController = files['src/controllers/clients-controller.js'];
 const integrationsController = files['src/controllers/integrations-controller.js'];
 const optimizationController = files['src/controllers/optimization-controller.js'];
@@ -81,6 +83,7 @@ const checks = [
   ['main client scoped reset wiring', js.includes("from './app/client-scope-reset.js'") && js.includes('applyClientScopeResetPatch((patch) => {') && js.includes('optimizationExecutionPreviews = patch.optimizationExecutionPreviews')],
   ['main old client reset block removed', !js.includes('businessContext = null;\n    businessContextDraft = null;\n    clientYandexIntegration = null;') && !js.includes("optimizationActionsLoadedFor = '';\n    resetAiClientScopedState")],
   ['route mode metadata', routes.includes("mode: 'legacy'") && routes.includes("mode: 'reserved'") && routes.includes('wordstat') && routes.includes('journal')],
+  ['journal remains reserved', routes.includes("journal: {") && routes.includes("mode: 'reserved'") && !files['src/pages/index.js'].includes('journal')],
   ['main route normalization import', js.includes("import { normalizeAppRouteId } from './app/routes.js'")],
   ['main route normalization delegation', js.includes('return page === \'app\' ? normalizeAppRouteId(view) : view;')],
   ['main legacy route block removed', !js.includes('const primaryAppViews') && !js.includes('const legacyViewRedirects') && !js.includes('primaryAppViews.has(view)')],
@@ -102,7 +105,9 @@ const checks = [
   ['legacy pages decision', legacyPagesDecision.includes('wordstat') && legacyPagesDecision.includes('legacy') && legacyPagesDecision.includes('journal') && legacyPagesDecision.includes('reserved')],
   ['wordstat contract docs', wordstatContract.includes('src/features/wordstat/') && wordstatContract.includes('GET /wordstat/connection') && wordstatContract.includes('POST /wordstat/dynamics/batch') && wordstatContract.includes('wordstat-store.js') && wordstatContract.includes('wordstat-service.js') && wordstatContract.includes('wordstat-controller.js') && wordstatContract.includes('wordstat-page.js')],
   ['wordstat legacy status guarded', routes.includes("mode: 'legacy'") && files['app.html'].includes('src/wordstat.js') && files['src/wordstat.js'].includes("apiFetch('/wordstat/connection')")],
-  ['frontend architecture docs', frontendArchitecture.includes('Wordstat page contract documented') && frontendArchitecture.includes('Define Journal domain model')],
+  ['journal domain model docs', journalDomainModel.includes('JournalEntry') && journalDomainModel.includes('src/features/journal/') && journalDomainModel.includes('journal-store.js') && journalDomainModel.includes('journal-service.js') && journalDomainModel.includes('journal-controller.js') && journalDomainModel.includes('journal-page.js')],
+  ['journal api contract docs', journalDomainModel.includes('GET /journal') && journalDomainModel.includes('GET /clients/{clientId}/journal') && journalDomainModel.includes('POST /journal')],
+  ['frontend architecture docs', frontendArchitecture.includes('Journal domain model documented') && frontendArchitecture.includes('Start Journal MVP source/store extraction')],
   ['wordstat refactor guard', files['src/wordstat.js'].includes("from './core/api.js'") && files['docs/wordstat-refactor.md'].includes('src/wordstat.js')],
   ['no seeded account data', files['src/data.js'].includes('export const clients = []')],
 ];
