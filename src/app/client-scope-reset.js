@@ -10,6 +10,7 @@ export function createClientScopeResetPatch({ activeView = 'dashboard' } = {}) {
     optimizationActions: [],
     optimizationActionsLoadedFor: '',
     optimizationExecutionPreviews: {},
+    journalLoadedFor: '',
   };
 }
 
