@@ -2,7 +2,7 @@
 
 ## Status
 
-Wordstat is registered in the app page registry and opened through the app shell. `app.html` no longer loads Wordstat as separate standalone scripts.
+Wordstat is registered in the app page registry, opened through the app shell, and uses module route mode.
 
 Target feature-first module:
 
@@ -29,7 +29,7 @@ wordstat-events.js: created and wired
 src/pages/wordstat.js: created and registered
 legacy src/wordstat.js wiring: done with module auto-open bridge
 app.html standalone Wordstat scripts: removed
-route mode: legacy, pending module switch
+route mode: module
 ```
 
 ## Current entrypoints
@@ -49,7 +49,7 @@ src/performance_range_panel.js
 import './wordstat.js';
 ```
 
-`src/wordstat.js` temporarily imports legacy Wordstat patch modules while the feature still owns the runtime bridge:
+`src/wordstat.js` temporarily imports legacy Wordstat patch modules while the remaining runtime bridge exists:
 
 ```js
 import './wordstat_date_fix.js';
@@ -116,7 +116,7 @@ POST /wordstat/dynamics/batch
 src/features/wordstat/wordstat-legacy-adapter.js
 ```
 
-Provides the stable facade used by `src/wordstat.js` while the old runtime still exists.
+Provides the stable facade used by `src/wordstat.js` while the old runtime bridge still exists.
 
 ### Controller
 
@@ -178,34 +178,17 @@ wordstatPageContract()
 renderWordstatContent(context)
 ```
 
-Current `renderWordstatContent(context)` provides a bridge shell, not the final full Wordstat page. It must keep a `.workspace` element while the legacy runtime exists.
+Current `renderWordstatContent(context)` provides a bridge shell, not the final full Wordstat page. It must keep a `.workspace` element while the legacy runtime bridge exists.
 
 ## Routing contract
 
 Current route mode:
 
 ```text
-wordstat: legacy
-```
-
-Target route mode after the next migration:
-
-```text
 wordstat: module
 ```
 
-Migration condition before changing route mode:
-
-```text
-1. `src/features/wordstat/wordstat-page.js` exists. Done.
-2. `src/features/wordstat/wordstat-service.js` owns backend calls. Done.
-3. `src/features/wordstat/wordstat-store.js` owns request/state helpers. Done.
-4. `src/features/wordstat/wordstat-controller.js` owns async flows. Done.
-5. `src/features/wordstat/wordstat-events.js` owns event handlers. Done.
-6. `PAGE_CONTENT_RENDERERS` can render Wordstat from context. Done.
-7. `app.html` no longer loads standalone Wordstat scripts. Done.
-8. Route mode can be changed from legacy to module. Pending.
-```
+The route is now part of the app page registry and page content renderer flow.
 
 ## Migration order
 
@@ -219,7 +202,7 @@ Migration condition before changing route mode:
 7. Move input/change/click/submit listeners into wordstat-events.js. Done.
 8. Register Wordstat in page renderer. Done.
 9. Remove standalone Wordstat scripts from app.html. Done.
-10. Change route mode from legacy to module.
+10. Change route mode from legacy to module. Done.
 ```
 
 ## Known risks
@@ -233,10 +216,10 @@ comparison uses the same backend endpoint as current dynamics
 selected client currently comes from DOM/localStorage fallback and must become explicit context
 ```
 
-## Do not do yet
+## Later cleanup, not part of this migration
 
 ```text
-Do not move the full legacy file into src/features/wordstat as-is.
-Do not delete legacy Wordstat patch modules until their behavior is absorbed into feature modules.
+Absorb legacy Wordstat patch modules into feature modules.
+Move the remaining runtime bridge out of src/wordstat.js when the feature owns the full lifecycle.
 Do not edit region arrays by hand unless the change is isolated and validated.
 ```
