@@ -13,6 +13,7 @@ import {
 import { requestEmailCode, verifyEmailCode } from './core/session-api.js';
 import { resolvePageContentRenderer, resolvePageRenderer } from './app/page-router.js';
 import { normalizeAppRouteId } from './app/routes.js';
+import { applyClientScopeResetPatch, createClientScopeResetPatch } from './app/client-scope-reset.js';
 import {
   activeAiBudget as selectActiveAiBudget,
   activeAiModel as selectActiveAiModel,
@@ -1719,16 +1720,19 @@ app.addEventListener('click', async (event) => {
   if (clientButton) {
     selectedClientId = clientButton.dataset.clientId || clientButton.dataset.selectClient;
     saveSelectedClientId(selectedClientId);
-    businessContext = null;
-    businessContextDraft = null;
-    clientYandexIntegration = null;
-    syncJobs = [];
-    perfSummary = null;
-    optimizationPlan = null;
-    optimizationActions = [];
-    optimizationActionsLoadedFor = '';
+    applyClientScopeResetPatch((patch) => {
+      businessContext = patch.businessContext;
+      businessContextDraft = patch.businessContextDraft;
+      clientYandexIntegration = patch.clientYandexIntegration;
+      syncJobs = patch.syncJobs;
+      perfSummary = patch.perfSummary;
+      optimizationPlan = patch.optimizationPlan;
+      optimizationActions = patch.optimizationActions;
+      optimizationActionsLoadedFor = patch.optimizationActionsLoadedFor;
+      optimizationExecutionPreviews = patch.optimizationExecutionPreviews;
+      activeView = patch.activeView;
+    }, createClientScopeResetPatch());
     resetAiClientScopedState(aiFeatureState);
-    activeView = 'dashboard';
     render();
     return;
   }
