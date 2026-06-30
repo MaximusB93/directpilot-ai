@@ -75,7 +75,9 @@ src/features/wordstat/wordstat-page.js
 src/features/wordstat/wordstat-events.js
 ```
 
-These files now own pure helpers, API access, a stable legacy facade, async Wordstat flows, reusable render helpers and event handler logic. Legacy `src/wordstat.js` imports the adapter/controller/page/events helpers for feature work, but still owns the outer DOM lifecycle and listener registration.
+These files now own pure helpers, API access, a stable legacy facade, async Wordstat flows, reusable render helpers and event handler logic.
+
+`src/wordstat.js` is now imported by `src/main.js`. It still owns the outer DOM lifecycle and listener registration, but it is no longer loaded as a standalone script from `app.html`.
 
 ## Routing cleanup
 
@@ -86,51 +88,19 @@ wordstat: legacy
 journal: reserved
 ```
 
-`src/main.js` now imports `normalizeAppRouteId` from `src/app/routes.js`; the old local `primaryAppViews` and `legacyViewRedirects` block has been removed.
+`src/main.js` imports `normalizeAppRouteId` from `src/app/routes.js`; the old local `primaryAppViews` and `legacyViewRedirects` block has been removed.
 
 The Wordstat and Journal decision is documented in `docs/legacy-pages-decision.md`.
 
-## Auth cleanup
-
-The legacy auth branch in `src/main.js` now persists session data with the same argument order as `src/login.js`:
-
-```text
-saveSession(sessionToken, sessionEmail)
-```
-
-It accepts both `session_token` and `access_token` backend payload fields as a compatibility fallback.
-
-## Client-scoped reset cleanup
-
-`src/app/client-scope-reset.js` owns the reset patch for state that must be cleared when the selected client changes.
-
-It currently resets:
-
-```text
-businessContext
-businessContextDraft
-clientYandexIntegration
-syncJobs
-perfSummary
-optimizationPlan
-optimizationActions
-optimizationActionsLoadedFor
-optimizationExecutionPreviews
-activeView
-```
-
-`src/main.js` applies this patch and separately resets AI client-scoped state through `resetAiClientScopedState(aiFeatureState)`.
-
 ## Wordstat contract
-
-`docs/wordstat-page-contract.md` defines the target Wordstat feature contract before code migration.
 
 Current status:
 
 ```text
 wordstat route mode: legacy
-current module: src/wordstat.js
-current script loading: app.html standalone modules
+runtime import: src/main.js -> import './wordstat.js'
+app.html standalone Wordstat scripts: removed
+legacy patch modules: imported by src/wordstat.js
 target module: src/features/wordstat/*
 store/service scaffold: created
 legacy adapter scaffold: created
@@ -141,7 +111,7 @@ page registration: created and wired
 legacy auto-open bridge: wired
 ```
 
-Migration started with store/service extraction, a legacy adapter, controller extraction, page-renderer extraction, event-handler extraction and module route registration, not with moving the full legacy file.
+`app.html` now loads the app shell plus non-Wordstat app patches. Wordstat runtime is pulled through the app shell.
 
 ## Journal domain model
 
@@ -161,7 +131,7 @@ Do not create `src/pages/journal.js` until backend/local source, store, service 
 
 Content composers are wired for Dashboard, Clients, Business Context, Integrations, Optimization, AI Assistant and Wordstat.
 
-Wordstat still uses a standalone legacy script for the full runtime lifecycle. The page module currently provides a bridge shell.
+Wordstat page module currently provides a bridge shell while `src/wordstat.js` owns the remaining runtime lifecycle.
 
 Journal remains a reserved route until its domain model is implemented.
 
@@ -172,7 +142,7 @@ business context mutable variables and service flows
 optimization mutable variables and render callbacks
 integrations mutable variables and client list patch callbacks
 clients mutable variables and storage/render callbacks
-Wordstat module shell wiring until standalone scripts are removed
+Wordstat runtime import until remaining legacy lifecycle is absorbed by feature modules
 ```
 
 ## Completed migration sequence
@@ -213,15 +183,15 @@ Wordstat page renderers wired
 Wordstat event handlers wired
 Wordstat page module registered
 Wordstat module route wired in app shell
+Wordstat standalone scripts removed from app.html
 Wordstat/Journal decision documented
 Components scaffold wired
-static validator guards service/store/controller/page/events/page registration wiring
+static validator guards service/store/controller/page/events/page registration/app shell wiring
 ```
 
 ## Next safe refactors
 
 ```text
-1. Remove standalone Wordstat scripts from app.html once feature module bridge is verified.
-2. Change Wordstat route mode from legacy to module.
-3. Start Journal MVP source/store extraction after backend/local source is chosen.
+1. Change Wordstat route mode from legacy to module.
+2. Start Journal MVP source/store extraction after backend/local source is chosen.
 ```
