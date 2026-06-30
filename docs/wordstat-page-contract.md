@@ -2,7 +2,7 @@
 
 ## Status
 
-`src/wordstat.js` remains a legacy standalone module, but it now uses the Wordstat feature store/service/controller/page helpers through the legacy adapter and feature renderers.
+`src/wordstat.js` remains a legacy standalone module, but it now uses the Wordstat feature store/service/controller/page/events helpers through the legacy adapter and feature modules.
 
 The target direction is a feature-first module:
 
@@ -25,7 +25,7 @@ wordstat-service.js: created
 wordstat-legacy-adapter.js: created
 wordstat-controller.js: created and wired
 wordstat-page.js: created and wired
-wordstat-events.js: pending
+wordstat-events.js: created and wired
 legacy src/wordstat.js wiring: done
 ```
 
@@ -43,13 +43,15 @@ src/wordstat_ai_chat.js
 src/wordstat_chart_hover.js
 ```
 
-`src/wordstat.js` still owns the outer `renderWordstatPage()` orchestrator, navigation injection, chart tooltip behavior and submit/click/input/change listeners.
+`src/wordstat.js` still owns the outer `renderWordstatPage()` orchestrator, navigation injection, chart tooltip DOM helpers and document listener registration.
 
 `src/wordstat.js` no longer calls `apiFetch` directly. Backend calls are delegated through `src/features/wordstat/wordstat-service.js` via `src/features/wordstat/wordstat-legacy-adapter.js`.
 
 `src/wordstat.js` no longer owns async Wordstat flows directly. It calls `src/features/wordstat/wordstat-controller.js` wrappers for open, submit, compare and copy JSON flows.
 
 `src/wordstat.js` no longer owns most reusable Wordstat render helpers directly. It creates render helpers through `src/features/wordstat/wordstat-page.js` and keeps only the outer legacy DOM shell.
+
+`src/wordstat.js` no longer owns input/change/click/submit handler logic directly. It creates event handlers through `src/features/wordstat/wordstat-events.js` and only registers them on `document`.
 
 ## Existing shared dependencies
 
@@ -67,6 +69,7 @@ Feature helpers are imported through:
 src/features/wordstat/wordstat-legacy-adapter.js
 src/features/wordstat/wordstat-controller.js
 src/features/wordstat/wordstat-page.js
+src/features/wordstat/wordstat-events.js
 ```
 
 Keep shared dependencies. Do not duplicate local API, HTML escaping or format helpers.
@@ -308,17 +311,26 @@ Target file:
 src/features/wordstat/wordstat-events.js
 ```
 
+Current status:
+
+```text
+created and used by legacy src/wordstat.js through createWordstatEventHandlers()
+```
+
 Responsibilities:
 
 ```text
-handleWordstatInputEvent(event, context)
-handleWordstatChangeEvent(event, context)
-handleWordstatClickEvent(event, context)
-handleWordstatSubmitEvent(event, context)
-handleWordstatTooltipEvent(event, context)
+createWordstatEventHandlers(context)
+handleMouseMoveEvent(event)
+handleMouseOutEvent(event)
+handleInputEvent(event)
+handleChangeEvent(event)
+handleClickEvent(event)
+handleRouteClickEvent(event)
+handleSubmitEvent(event)
 ```
 
-Events should be wired from the app shell or a feature mount function after the feature page exists.
+Events functions receive context and event objects. They must not register document listeners themselves.
 
 ## Routing contract
 
@@ -355,7 +367,7 @@ Migration condition before changing route mode:
 4. Wire legacy src/wordstat.js to use wordstat-legacy-adapter.js. Done.
 5. Move async open/submit/compare/copy flows into wordstat-controller.js. Done.
 6. Move render helpers into wordstat-page.js. Done.
-7. Move input/change/click/submit listeners into wordstat-events.js.
+7. Move input/change/click/submit listeners into wordstat-events.js. Done.
 8. Register Wordstat in page renderer.
 9. Remove standalone Wordstat scripts from app.html.
 10. Change route mode from legacy to module.
@@ -365,7 +377,7 @@ Migration condition before changing route mode:
 
 ```text
 region tree is large and should not be edited manually without validation
-current Wordstat scripts still mutate DOM outside page-router
+current Wordstat script still registers document listeners from legacy shell
 standalone scripts can conflict with main render lifecycle
 clipboard and tooltip behavior must stay outside pure page/store code
 comparison uses the same backend endpoint as current dynamics
@@ -376,7 +388,7 @@ selected client currently comes from DOM/localStorage fallback and must become e
 
 ```text
 Do not move the full legacy file into src/features/wordstat as-is.
-Do not wire Wordstat into PAGE_CONTENT_RENDERERS before events exist.
+Do not wire Wordstat into PAGE_CONTENT_RENDERERS before module registration step.
 Do not remove app.html Wordstat scripts until the feature module fully replaces them.
 Do not edit region arrays by hand unless the change is isolated and validated.
 ```
