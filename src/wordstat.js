@@ -87,6 +87,8 @@ const WORDSTAT_REGION_TREE = [
 const WORDSTAT_REGION_BY_ID = new Map();
 collectRegions(WORDSTAT_REGION_TREE).forEach((region) => WORDSTAT_REGION_BY_ID.set(region.id, region));
 
+let wordstatAutoOpening = false;
+
 const wordstatState = {
   mounted: false,
   active: false,
@@ -362,6 +364,20 @@ function hideChartTooltip() {
   if (tooltip) tooltip.style.display = 'none';
 }
 
+function shouldAutoOpenWordstatView() {
+  return document.body.dataset.view === WORDSTAT_VIEW_ID && !document.querySelector('[data-wordstat-form]');
+}
+
+async function autoOpenWordstatView() {
+  if (wordstatAutoOpening || wordstatState.active || !shouldAutoOpenWordstatView()) return;
+  wordstatAutoOpening = true;
+  try {
+    await openWordstatView();
+  } finally {
+    wordstatAutoOpening = false;
+  }
+}
+
 const wordstatEventHandlers = createWordstatEventHandlers({
   state: wordstatState,
   render: renderWordstatPage,
@@ -382,9 +398,11 @@ function mountWordstatExtension() {
 
   const observer = new MutationObserver(() => {
     ensureWordstatNav();
+    void autoOpenWordstatView();
     if (wordstatState.active && !document.querySelector('[data-wordstat-form]')) renderWordstatPage();
   });
   observer.observe(document.body, { childList: true, subtree: true });
+  void autoOpenWordstatView();
 
   document.addEventListener('mousemove', wordstatEventHandlers.handleMouseMoveEvent);
   document.addEventListener('mouseout', wordstatEventHandlers.handleMouseOutEvent);
