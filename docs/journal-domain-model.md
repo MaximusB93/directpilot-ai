@@ -2,7 +2,7 @@
 
 ## Status
 
-Journal MVP is now registered, wired in the app shell and enabled as a module route.
+Journal MVP is registered, wired in the app shell, enabled as a module route, and has auto-logging v1.
 
 Current route metadata:
 
@@ -23,30 +23,30 @@ journal-local-source.js: created
 journal-controller.js: created
 journal-page.js: created
 journal-events.js: created
+journal-logging.js: created
 src/pages/journal.js: created and registered
 app shell runtime wiring: done
 client-scope reset: done
 route mode switch: done
+auto-logging v1: done
 journal-service.js: pending backend endpoints
 ```
 
-## Product definition
+## Auto-logging v1
 
-Journal is the client-scoped operational history of DirectPilot AI.
-
-It should answer:
+Wired events:
 
 ```text
-what happened
-who/what triggered it
-which client it belongs to
-which feature produced it
-which entity was affected
-what changed
-what happened next
+client.selected
+client.created
+client.updated
+optimization.action_status_changed
+sync.started
+sync.failed
+sync.<backend status>
+integration.yandex_account_bound
+integration.yandex_account_unbound
 ```
-
-Journal is not a generic changelog and not a dumping ground for every console-like event.
 
 ## Current module contracts
 
@@ -56,7 +56,7 @@ Journal is not a generic changelog and not a dumping ground for every console-li
 src/features/journal/journal-store.js
 ```
 
-Owns normalization, filters, grouping and entry payload helpers. Store must not call API, read DOM, attach listeners, render UI or read localStorage directly.
+Owns normalization, filters, grouping and entry payload helpers.
 
 ### Local MVP source
 
@@ -64,18 +64,7 @@ Owns normalization, filters, grouping and entry payload helpers. Store must not 
 src/features/journal/journal-local-source.js
 ```
 
-Owns scoped local storage source methods:
-
-```text
-createJournalLocalSource(options)
-readAll()
-writeAll(entries)
-list(query)
-get(entryId)
-create(input)
-replace(entries)
-clear()
-```
+Owns scoped local storage source methods.
 
 ### Controller
 
@@ -92,66 +81,40 @@ createJournalEntryFlow(...)
 refreshJournalFlow(...)
 ```
 
-### Page renderers
-
-```text
-src/features/journal/journal-page.js
-```
-
-Owns reusable HTML render helpers.
-
 ### Events
 
 ```text
 src/features/journal/journal-events.js
 ```
 
-Owns event handlers and does not register document listeners itself.
+Owns UI event handlers and does not register document listeners itself.
 
-### Page module
-
-```text
-src/pages/journal.js
-```
-
-Owns:
+### Logging
 
 ```text
-JOURNAL_PAGE_ID
-journalPage
-journalPageContract()
-renderJournalContent(context)
+src/features/journal/journal-logging.js
 ```
 
-## Routing contract
-
-Current route mode:
+Owns payload builders for meaningful app events:
 
 ```text
-journal: module
+createClientSelectedJournalEvent(...)
+createClientCreatedJournalEvent(...)
+createClientUpdatedJournalEvent(...)
+createOptimizationActionStatusJournalEvent(...)
+createSyncStatusJournalEvent(...)
+createIntegrationStatusJournalEvent(...)
 ```
 
-Migration condition status:
-
-```text
-1. Backend or local MVP journal source exists. Done.
-2. journal-store.js owns normalization and filters. Done.
-3. journal-controller.js is wired to source/service. Done.
-4. journal-page.js renders from context. Done.
-5. journal-events.js owns event handlers. Done.
-6. PAGE_CONTENT_RENDERERS can render Journal from app context. Done.
-7. App shell owns Journal runtime state/source/listeners. Done.
-8. Client-scoped reset clears Journal state. Done.
-9. Route mode changed from reserved to module. Done.
-```
+The logging module must not call API, read DOM or write localStorage.
 
 ## Next useful iterations
 
 ```text
-1. Add real auto-logging for client.created / client.updated / client.selected.
-2. Add optimization action status journal entries.
-3. Add integrations/sync journal entries.
-4. Replace local source with backend service when endpoints exist.
+1. Add Journal details drawer for before/after/metadata.
+2. Add backend journal-service once endpoints exist.
+3. Add AI recommendation and business-context save journal entries.
+4. Add de-duplication rules for noisy repeated events.
 ```
 
 ## Known risks
