@@ -29,6 +29,7 @@ const requiredFiles = [
   'src/pages/ai-assistant.js',
   'src/pages/optimization.js',
   'src/pages/wordstat.js',
+  'src/pages/journal.js',
   'src/features/wordstat/index.js',
   'src/features/wordstat/wordstat-store.js',
   'src/features/wordstat/wordstat-service.js',
@@ -86,8 +87,10 @@ const checks = [
   ['journal controller pure', has('src/features/journal/journal-controller.js', 'loadJournalEntriesFlow') && has('src/features/journal/journal-controller.js', 'createJournalEntryFlow') && lacks('src/features/journal/journal-controller.js', ['document.', 'querySelector', 'localStorage', 'apiFetch'])],
   ['journal page pure', has('src/features/journal/journal-page.js', 'createJournalPageRenderers') && has('src/features/journal/journal-page.js', 'renderJournalTimeline') && lacks('src/features/journal/journal-page.js', ['apiFetch', 'document.', 'addEventListener'])],
   ['journal events pure', has('src/features/journal/journal-events.js', 'createJournalEventHandlers') && has('src/features/journal/journal-events.js', 'handleJournalClickEvent') && has('src/features/journal/journal-events.js', 'data-journal-load-more') && lacks('src/features/journal/journal-events.js', ['document.', 'addEventListener', 'querySelector', 'localStorage', 'apiFetch'])],
-  ['journal still reserved', has('src/app/routes.js', "mode: 'reserved'") && lacks('src/pages/index.js', ['journalPage', 'renderJournalContent'])],
-  ['docs updated', has('docs/journal-domain-model.md', 'journal-events.js: created') && has('docs/journal-domain-model.md', 'Create events. Done.') && has('docs/frontend-architecture.md', 'Journal event handler scaffold created')],
+  ['journal page module', has('src/pages/journal.js', 'JOURNAL_PAGE_ID') && has('src/pages/journal.js', 'journalPageContract') && has('src/pages/journal.js', 'renderJournalContent') && has('src/pages/journal.js', 'createJournalPageRenderers')],
+  ['journal registry', has('src/pages/index.js', '[JOURNAL_PAGE_ID]: journalPage') && has('src/pages/index.js', '[JOURNAL_PAGE_ID]: journalPageContract()') && has('src/pages/index.js', '[JOURNAL_PAGE_ID]: renderJournalContent')],
+  ['journal still reserved', has('src/app/routes.js', "mode: 'reserved'") && !has('src/main.js', 'renderJournal()')],
+  ['docs updated', has('docs/journal-domain-model.md', 'src/pages/journal.js: created and registered') && has('docs/frontend-architecture.md', 'Journal page module registered')],
   ['no seeded account data', has('src/data.js', 'export const clients = []')],
 ];
 
