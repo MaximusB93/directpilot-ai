@@ -109,6 +109,7 @@ const navItems = [
   { id: 'ai', label: 'AI-аналитик', icon: '🧠' },
   { id: 'optimization', label: 'Оптимизация', icon: '🎯' },
   { id: 'wordstat', label: 'Wordstat', icon: '📈' },
+  { id: 'journal', label: 'Журнал', icon: '🕘' },
 ];
 function normalizeAppView(view) {
   return page === 'app' ? normalizeAppRouteId(view) : view;
