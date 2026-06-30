@@ -2,27 +2,29 @@
 
 ## Wordstat
 
-`wordstat` remains a legacy standalone frontend area for now.
+`wordstat` is no longer a legacy route. It is registered as a module route and rendered through the app page registry.
 
 Current decision:
 
 ```text
 Route id: wordstat
-Route mode: legacy
-Frontend module: src/wordstat.js
-Migration status: keep separate until data/service/page contracts are clear
+Route mode: module
+Frontend page module: src/pages/wordstat.js
+Runtime bridge: src/main.js imports src/wordstat.js
+Migration status: module route registered; remaining legacy runtime bridge can be absorbed later
 ```
 
 Reasoning:
 
-- `src/wordstat.js` already has its own refactor track in `docs/wordstat-refactor.md`.
-- It imports shared core helpers, but it is not yet part of the main page composer registry.
-- Moving it into `src/pages/index.js` before its data contract is stabilized would only create decorative architecture. Decorative architecture is how projects grow mold.
+- `src/pages/wordstat.js` is registered in `src/pages/index.js`.
+- `src/main.js` owns the Wordstat sidebar entry and render map entry.
+- `app.html` no longer loads standalone Wordstat scripts directly.
+- `src/wordstat.js` still contains the remaining runtime bridge and temporarily imports legacy Wordstat patch modules.
 
 Next safe step:
 
 ```text
-Define Wordstat page contract, service boundaries and state ownership before wiring it into PAGE_CONTENT_RENDERERS.
+Absorb remaining Wordstat runtime bridge and legacy patch modules into feature modules only after the current module route is verified in production.
 ```
 
 ## Journal
