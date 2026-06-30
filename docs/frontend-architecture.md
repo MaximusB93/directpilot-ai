@@ -61,6 +61,18 @@ src/pages/integrations.js -> renderPanel, renderEmptyState, renderStatusBadge
 src/pages/business-context.js -> renderPanel, renderEmptyState, renderStatusBadge
 ```
 
+## Feature-first modules
+
+Wordstat has started moving toward the target `src/features/*` structure.
+
+```text
+src/features/wordstat/index.js
+src/features/wordstat/wordstat-store.js
+src/features/wordstat/wordstat-service.js
+```
+
+These files are scaffolds for pure helpers and API access. Legacy `src/wordstat.js` is not wired to them yet.
+
 ## Routing cleanup
 
 `src/app/routes.js` is now the canonical place for route ids, legacy redirects and route mode metadata.
@@ -116,9 +128,11 @@ wordstat route mode: legacy
 current module: src/wordstat.js
 current script loading: app.html standalone modules
 target module: src/features/wordstat/*
+store/service scaffold: created
+legacy wiring: pending
 ```
 
-Migration must start with store/service extraction, not with moving the full legacy file.
+Migration started with store/service extraction, not with moving the full legacy file.
 
 ## Journal domain model
 
@@ -181,6 +195,7 @@ Wordstat page contract documented
 Journal domain model documented
 Integrations UI primitives wired
 Business Context UI primitives wired
+Wordstat store/service scaffold created
 Wordstat/Journal decision documented
 Components scaffold wired
 static validator guards service/store/controller/page wiring
@@ -189,7 +204,7 @@ static validator guards service/store/controller/page wiring
 ## Next safe refactors
 
 ```text
-1. Start Wordstat store/service extraction after local validation path is ready.
+1. Wire legacy src/wordstat.js to use wordstat-store.js and wordstat-service.js.
 2. Start Journal MVP source/store extraction after backend/local source is chosen.
 3. Use UI primitives in one more page if duplication stays obvious.
 4. Start new large modules in src/features/* after their contracts are clear.
