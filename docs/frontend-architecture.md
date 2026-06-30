@@ -113,13 +113,27 @@ target module: src/features/wordstat/*
 
 Migration must start with store/service extraction, not with moving the full legacy file.
 
+## Journal domain model
+
+`docs/journal-domain-model.md` defines Journal as client-scoped operational history.
+
+Current status:
+
+```text
+journal route mode: reserved
+current module: none
+target module: src/features/journal/*
+```
+
+Do not create `src/pages/journal.js` until backend/local source, store, service and page contracts are ready.
+
 ## Page composers
 
 Content composers are wired for Dashboard, Clients, Business Context, Integrations, Optimization and AI Assistant.
 
 Wordstat remains a standalone legacy module until its feature contract is implemented.
 
-Journal remains a reserved route until its product behavior is clear.
+Journal remains a reserved route until its domain model is implemented.
 
 ## Still in main.js
 
@@ -157,6 +171,7 @@ Main route normalization wired
 Main auth session persistence fixed
 Client scoped reset helper wired
 Wordstat page contract documented
+Journal domain model documented
 Wordstat/Journal decision documented
 Components scaffold wired
 static validator guards service/store/controller/page wiring
@@ -165,8 +180,8 @@ static validator guards service/store/controller/page wiring
 ## Next safe refactors
 
 ```text
-1. Define Journal domain model before creating src/pages/journal.js.
-2. Use renderPanel/renderEmptyState/renderStatusBadge in one page at a time.
-3. Start Wordstat store/service extraction after local validation path is ready.
+1. Use renderPanel/renderEmptyState/renderStatusBadge in one page at a time.
+2. Start Wordstat store/service extraction after local validation path is ready.
+3. Start Journal MVP source/store extraction after backend/local source is chosen.
 4. Start new large modules in src/features/* after their contracts are clear.
 ```
