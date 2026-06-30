@@ -77,6 +77,7 @@ const wordstatContract = files['docs/wordstat-page-contract.md'];
 const journalDomainModel = files['docs/journal-domain-model.md'];
 const integrationsPage = files['src/pages/integrations.js'];
 const businessContextPage = files['src/pages/business-context.js'];
+const wordstatLegacy = files['src/wordstat.js'];
 const wordstatIndex = files['src/features/wordstat/index.js'];
 const wordstatStore = files['src/features/wordstat/wordstat-store.js'];
 const wordstatService = files['src/features/wordstat/wordstat-service.js'];
@@ -111,7 +112,8 @@ const checks = [
   ['wordstat store scaffold', wordstatStore.includes('createDefaultWordstatForm') && wordstatStore.includes('createInitialWordstatState') && wordstatStore.includes('parseWordstatPhrases') && wordstatStore.includes('parseWordstatCustomRegions') && wordstatStore.includes('createWordstatRequestBody') && wordstatStore.includes('buildWordstatTotalSummary') && !wordstatStore.includes('apiFetch') && !wordstatStore.includes('document.') && !wordstatStore.includes('localStorage')],
   ['wordstat service scaffold', wordstatService.includes('fetchWordstatConnection') && wordstatService.includes('fetchWordstatDynamics') && wordstatService.includes("/wordstat/connection") && wordstatService.includes("/wordstat/dynamics/batch") && wordstatService.includes("../../core/api.js")],
   ['wordstat legacy adapter scaffold', wordstatLegacyAdapter.includes('createWordstatLegacyApi') && wordstatLegacyAdapter.includes('createWordstatRequestBody') && wordstatLegacyAdapter.includes('fetchWordstatConnection') && wordstatLegacyAdapter.includes('fetchWordstatDynamics') && wordstatLegacyAdapter.includes('loadDynamics')],
-  ['wordstat legacy wiring still guarded', files['src/wordstat.js'].includes("apiFetch('/wordstat/connection')") && files['app.html'].includes('src/wordstat.js') && routes.includes("mode: 'legacy'")],
+  ['wordstat legacy adapter wiring', wordstatLegacy.includes("from './features/wordstat/wordstat-legacy-adapter.js'") && wordstatLegacy.includes('await fetchWordstatConnection()') && wordstatLegacy.includes('await fetchWordstatDynamics(collectRequestBody())') && wordstatLegacy.includes('createWordstatRequestBody(wordstatState.form') && !wordstatLegacy.includes('apiFetch(')],
+  ['wordstat remains legacy route', files['app.html'].includes('src/wordstat.js') && routes.includes("mode: 'legacy'")],
   ['client store scaffold', files['src/stores/client-store.js'].includes('loadSelectedClientId') && files['src/stores/client-store.js'].includes('saveSelectedClientId') && files['src/stores/client-store.js'].includes('normalizeBackendClient')],
   ['feature stores', files['src/stores/ai-feature-state.js'].includes('createAiFeatureState') && files['src/stores/business-context-store.js'].includes('createBusinessContextPayload') && files['src/stores/campaign-store.js'].includes('createCampaignStore') && files['src/stores/optimization-store.js'].includes('normalizeOptimizationAction')],
   ['services present', files['src/services/clients-service.js'].includes('fetchClients') && files['src/services/integrations-service.js'].includes('fetchYandexStatus') && files['src/services/business-context-service.js'].includes('fetchBusinessContext') && files['src/services/sync-service.js'].includes('runClientSync') && files['src/services/performance-service.js'].includes('fetchPerformanceSummary') && files['src/services/optimization-service.js'].includes('fetchOptimizationPlan') && files['src/services/ai-service.js'].includes('requestAiChat')],
@@ -122,12 +124,11 @@ const checks = [
   ['main no direct api helper calls', !js.includes('apiFetch(')],
   ['main clients inline flow removed', !js.includes('const payload = await clientsService.fetchClients()') && !js.includes('await clientsService.deleteClient(clientId)') && !js.includes('const formData = new FormData(clientForm);')],
   ['legacy pages decision', legacyPagesDecision.includes('wordstat') && legacyPagesDecision.includes('legacy') && legacyPagesDecision.includes('journal') && legacyPagesDecision.includes('reserved')],
-  ['wordstat contract docs', wordstatContract.includes('wordstat-legacy-adapter.js: created') && wordstatContract.includes('legacy src/wordstat.js wiring: pending') && wordstatContract.includes('Wire legacy src/wordstat.js to use wordstat-legacy-adapter.js')],
-  ['wordstat legacy status guarded', routes.includes("mode: 'legacy'") && files['app.html'].includes('src/wordstat.js') && files['src/wordstat.js'].includes("apiFetch('/wordstat/connection')")],
+  ['wordstat contract docs', wordstatContract.includes('legacy src/wordstat.js wiring: done') && wordstatContract.includes('src/wordstat.js no longer calls `apiFetch` directly') && wordstatContract.includes('Move async open/submit/compare/copy flows into wordstat-controller.js')],
   ['journal domain model docs', journalDomainModel.includes('JournalEntry') && journalDomainModel.includes('src/features/journal/') && journalDomainModel.includes('journal-store.js') && journalDomainModel.includes('journal-service.js') && journalDomainModel.includes('journal-controller.js') && journalDomainModel.includes('journal-page.js')],
   ['journal api contract docs', journalDomainModel.includes('GET /journal') && journalDomainModel.includes('GET /clients/{clientId}/journal') && journalDomainModel.includes('POST /journal')],
-  ['frontend architecture docs', frontendArchitecture.includes('Wordstat legacy adapter scaffold created') && frontendArchitecture.includes('wordstat-legacy-adapter.js')],
-  ['wordstat refactor guard', files['src/wordstat.js'].includes("from './core/api.js'") && files['docs/wordstat-refactor.md'].includes('src/wordstat.js')],
+  ['frontend architecture docs', frontendArchitecture.includes('Wordstat legacy adapter wired') && frontendArchitecture.includes('Move Wordstat async open/submit/compare/copy flows')],
+  ['wordstat refactor guard', wordstatLegacy.includes("from './features/wordstat/wordstat-legacy-adapter.js'") && files['docs/wordstat-refactor.md'].includes('src/wordstat.js')],
   ['no seeded account data', files['src/data.js'].includes('export const clients = []')],
 ];
 
