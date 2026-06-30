@@ -2,17 +2,30 @@
 
 ## Status
 
-`journal` is currently a reserved route only.
+`journal` is currently a reserved route, but the MVP data source and store scaffold now exist.
 
 Current route metadata:
 
 ```text
 Route id: journal
 Route mode: reserved
-Frontend module: none yet
+Frontend route module: none yet
+Feature scaffold: src/features/journal/*
 ```
 
-Do not create `src/pages/journal.js` until the domain model, backend contract and intended workflow are stable.
+Current extraction status:
+
+```text
+journal-store.js: created
+journal-local-source.js: created
+journal-service.js: pending backend endpoints
+journal-page.js: pending
+journal-controller.js: pending
+journal-events.js: pending
+src/pages/journal.js: pending
+```
+
+Do not create `src/pages/journal.js` until the page/controller/events contract is implemented.
 
 ## Product definition
 
@@ -169,6 +182,31 @@ system.warning
 system.info
 ```
 
+## MVP local source contract
+
+Current file:
+
+```text
+src/features/journal/journal-local-source.js
+```
+
+Responsibilities:
+
+```text
+createJournalLocalSource(options)
+readAll()
+writeAll(entries)
+list(query)
+get(entryId)
+create(input)
+replace(entries)
+clear()
+```
+
+The local source uses scoped `localStorage` through `scopedStorageKey()` and delegates normalization/filtering to `journal-store.js`.
+
+The local source is temporary. Backend endpoints can replace it later without changing store/page contracts.
+
 ## Backend API contract
 
 Target endpoints:
@@ -235,23 +273,27 @@ cursor
 
 ## Store contract
 
-Target file:
+Current file:
 
 ```text
 src/features/journal/journal-store.js
 ```
 
-Responsibilities:
+Current responsibilities:
 
 ```text
 createInitialJournalState()
+createDefaultJournalFilters(overrides)
 normalizeJournalEntry(payload)
 normalizeJournalEntries(payload)
+normalizeJournalActor(actor)
+normalizeJournalEntity(entity)
 createJournalQueryParams(filters)
 createJournalEntryPayload(input)
 filterJournalEntries(entries, filters)
 groupJournalEntriesByDate(entries)
 formatJournalEntryDate(value)
+compareJournalEntriesNewestFirst(a, b)
 ```
 
 Store must not:
@@ -273,7 +315,7 @@ Target file:
 src/features/journal/journal-service.js
 ```
 
-Responsibilities:
+Responsibilities after backend is available:
 
 ```text
 fetchJournalEntries(query)
@@ -304,7 +346,7 @@ refreshJournalFlow(...)
 Controller receives dependencies explicitly:
 
 ```text
-service
+service/source
 store helpers
 getSelectedClientId
 onStart
@@ -385,12 +427,12 @@ journal: module
 Migration condition before changing route mode:
 
 ```text
-1. Backend or local MVP journal source exists.
-2. `src/features/journal/journal-store.js` owns normalization and filters.
-3. `src/features/journal/journal-service.js` owns API calls.
-4. `src/features/journal/journal-page.js` renders from context.
-5. `PAGE_CONTENT_RENDERERS` can render Journal from app context.
-6. Route mode can change from reserved to module.
+1. Backend or local MVP journal source exists. Done.
+2. `src/features/journal/journal-store.js` owns normalization and filters. Done.
+3. `src/features/journal/journal-service.js` owns API calls, or controller is explicitly wired to MVP local source. Pending.
+4. `src/features/journal/journal-page.js` renders from context. Pending.
+5. `PAGE_CONTENT_RENDERERS` can render Journal from app context. Pending.
+6. Route mode can change from reserved to module. Pending.
 ```
 
 ## Client-scoped reset integration
@@ -403,16 +445,16 @@ After implementation, add journal state to:
 src/app/client-scope-reset.js
 ```
 
-Do not add it now because there is no journal state yet.
+Do not add it now because there is still no app-level journal state.
 
 ## Migration order
 
 ```text
-1. Create backend/local MVP source contract.
-2. Create `src/features/journal/journal-store.js` with normalization and filters.
-3. Create `src/features/journal/journal-service.js` once endpoints are available.
-4. Create `src/features/journal/journal-page.js` using empty/mock-safe context.
-5. Create controller/events.
+1. Create backend/local MVP source contract. Done: journal-local-source.js.
+2. Create `src/features/journal/journal-store.js` with normalization and filters. Done.
+3. Create controller/page around local source.
+4. Create `src/features/journal/journal-service.js` once endpoints are available.
+5. Create events.
 6. Wire into page renderer.
 7. Add journal state to client-scope reset.
 8. Change route mode from reserved to module.
@@ -431,7 +473,7 @@ Before/after payloads may contain sensitive data and should be filtered before s
 ## Do not do yet
 
 ```text
-Do not create `src/pages/journal.js` without data source.
+Do not create `src/pages/journal.js` before page/controller/events exist.
 Do not change route mode from reserved yet.
 Do not log every UI click.
 Do not store raw tokens, OAuth payloads or full API responses in Journal metadata.
