@@ -2,9 +2,9 @@
 
 ## Status
 
-`src/wordstat.js` remains a legacy standalone module, but Wordstat is now registered in the app page registry and opened through a module shell.
+Wordstat is registered in the app page registry and opened through the app shell. `app.html` no longer loads Wordstat as separate standalone scripts.
 
-The target direction is a feature-first module:
+Target feature-first module:
 
 ```text
 src/features/wordstat/
@@ -28,138 +28,51 @@ wordstat-page.js: created and wired
 wordstat-events.js: created and wired
 src/pages/wordstat.js: created and registered
 legacy src/wordstat.js wiring: done with module auto-open bridge
+app.html standalone Wordstat scripts: removed
+route mode: legacy, pending module switch
 ```
 
-Do not move the current module as one large file. First split service, store, controller, page, events and route registration contracts.
+## Current entrypoints
 
-## Current legacy entrypoints
-
-`app.html` currently still loads Wordstat as separate ES modules:
+`app.html` loads only the app shell and non-Wordstat app patches:
 
 ```text
-src/wordstat.js
-src/wordstat_date_fix.js
-src/wordstat_regions_patch.js
-src/wordstat_ai_chat.js
-src/wordstat_chart_hover.js
+src/app/hash-route-bridge.js
+src/main.js
+src/business_context_autofill.js
+src/performance_range_panel.js
 ```
 
-`src/pages/wordstat.js` is registered in `src/pages/index.js` and renders a module shell with `.workspace` for the current legacy Wordstat renderer.
+`src/main.js` imports Wordstat runtime:
 
-`src/main.js` now owns the Wordstat route entry in the sidebar and render map through `renderWordstat()`.
+```js
+import './wordstat.js';
+```
+
+`src/wordstat.js` temporarily imports legacy Wordstat patch modules while the feature still owns the runtime bridge:
+
+```js
+import './wordstat_date_fix.js';
+import './wordstat_regions_patch.js';
+import './wordstat_ai_chat.js';
+import './wordstat_chart_hover.js';
+```
+
+`src/pages/wordstat.js` is registered in `src/pages/index.js` and renders a module shell with `.workspace` for the current Wordstat renderer.
+
+`src/main.js` owns the Wordstat route entry in the sidebar and render map through `renderWordstat()`.
 
 `src/wordstat.js` still owns the outer `renderWordstatPage()` orchestrator, navigation injection, chart tooltip DOM helpers and document listener registration.
 
-`src/wordstat.js` no longer calls `apiFetch` directly. Backend calls are delegated through `src/features/wordstat/wordstat-service.js` via `src/features/wordstat/wordstat-legacy-adapter.js`.
+## Extracted responsibilities
 
-`src/wordstat.js` no longer owns async Wordstat flows directly. It calls `src/features/wordstat/wordstat-controller.js` wrappers for open, submit, compare and copy JSON flows.
-
-`src/wordstat.js` no longer owns most reusable Wordstat render helpers directly. It creates render helpers through `src/features/wordstat/wordstat-page.js` and keeps only the outer legacy DOM shell.
-
-`src/wordstat.js` no longer owns input/change/click/submit handler logic directly. It creates event handlers through `src/features/wordstat/wordstat-events.js` and only registers them on `document`.
-
-`src/wordstat.js` now has an auto-open bridge: when `document.body.dataset.view === 'wordstat'`, it opens the Wordstat view inside the module shell.
-
-## Existing shared dependencies
-
-`src/wordstat.js` imports shared helpers:
-
-```text
-src/core/format.js     formatNumber, formatPercent
-src/core/html.js       escapeHtml
-src/core/storage.js    getCurrentEmail, scopedStorageKey
-```
-
-Feature helpers are imported through:
-
-```text
-src/features/wordstat/wordstat-legacy-adapter.js
-src/features/wordstat/wordstat-controller.js
-src/features/wordstat/wordstat-page.js
-src/features/wordstat/wordstat-events.js
-```
-
-The app page registration is imported through:
-
-```text
-src/pages/wordstat.js
-src/pages/index.js
-```
-
-Keep shared dependencies. Do not duplicate local API, HTML escaping or format helpers.
-
-## Backend API contract
-
-### Check connection
-
-```text
-GET /wordstat/connection
-```
-
-Expected UI use:
-
-```text
-connection.configured
-connection.can_call_api
-connection.provider
-connection.message
-```
-
-### Load dynamics
-
-```text
-POST /wordstat/dynamics/batch
-```
-
-Request body:
-
-```json
-{
-  "phrases": ["купить диван", "диван кровать"],
-  "period": "WEEKLY",
-  "fromDate": "2026-03-30",
-  "toDate": "2026-06-30",
-  "regions": ["213"],
-  "devices": ["DEVICE_ALL"],
-  "clientId": "client-id-or-null",
-  "forceRefresh": false
-}
-```
-
-`period` allowed values:
-
-```text
-DAILY
-WEEKLY
-MONTHLY
-```
-
-`devices` current values:
-
-```text
-DEVICE_ALL
-DEVICE_DESKTOP
-DEVICE_PHONE
-DEVICE_TABLET
-```
-
-The same endpoint is used for comparison requests by changing `fromDate`, `toDate` and forcing `forceRefresh: false`.
-
-## Store contract
-
-Target file:
+### Store
 
 ```text
 src/features/wordstat/wordstat-store.js
 ```
 
-Current status:
-
-```text
-created and used by legacy src/wordstat.js through wordstat-legacy-adapter.js
-```
-
-Responsibilities:
+Owns pure form/date/request/summary helpers:
 
 ```text
 createDefaultWordstatForm()
@@ -175,89 +88,43 @@ calculateWordstatPercentDelta(current, previous)
 regionsSummary(regionIds, regionById)
 ```
 
-Store must not:
+Store must not call API, read/write DOM, attach listeners, render UI or read localStorage directly.
 
-```text
-call apiFetch
-read DOM
-write DOM
-attach event listeners
-call render
-read localStorage directly
-```
-
-## Service contract
-
-Target file:
+### Service
 
 ```text
 src/features/wordstat/wordstat-service.js
 ```
 
-Current status:
-
-```text
-created and used by legacy src/wordstat.js through wordstat-legacy-adapter.js
-```
-
-Responsibilities:
+Owns backend calls:
 
 ```text
 fetchWordstatConnection()
 fetchWordstatDynamics(requestBody)
 ```
 
-Service must only call backend and parse/validate the response enough to throw useful errors.
-
-Service must not:
+Backend contract:
 
 ```text
-mutate wordstat state
-render UI
-read form elements
-read selected client from DOM
+GET /wordstat/connection
+POST /wordstat/dynamics/batch
 ```
 
-## Legacy adapter contract
-
-Target file:
+### Legacy adapter
 
 ```text
 src/features/wordstat/wordstat-legacy-adapter.js
 ```
 
-Current status:
+Provides the stable facade used by `src/wordstat.js` while the old runtime still exists.
 
-```text
-created and imported by src/wordstat.js
-```
-
-Responsibilities:
-
-```text
-createWordstatLegacyApi({ state, getSelectedClientId, regionById, service })
-export store helpers
-export service helpers
-provide a stable facade for legacy src/wordstat.js wiring
-```
-
-The adapter exists to avoid importing many feature helpers directly inside the legacy file. Legacy wiring now imports this facade and delegates store/service work through it.
-
-## Controller contract
-
-Target file:
+### Controller
 
 ```text
 src/features/wordstat/wordstat-controller.js
 ```
 
-Current status:
-
-```text
-created and used by legacy src/wordstat.js
-```
-
-Responsibilities:
+Owns async flows:
 
 ```text
 openWordstatFlow(...)
@@ -266,101 +133,43 @@ compareWordstatPeriodFlow(...)
 copyWordstatJsonFlow(...)
 ```
 
-Controller receives dependencies explicitly:
+Controller receives dependencies explicitly and must not own DOM selectors.
 
-```text
-state
-syncFormState
-parsePhrases
-loadConnection
-loadDynamics
-ensureNav
-render
-copyText
-```
-
-Controller may orchestrate async work but must not own DOM selectors.
-
-## Page contract
-
-Target file:
+### Page renderers
 
 ```text
 src/features/wordstat/wordstat-page.js
 ```
 
-Current status:
-
-```text
-created and used by legacy src/wordstat.js through createWordstatPageRenderers()
-```
-
-Responsibilities:
+Owns reusable HTML render helpers through:
 
 ```text
 createWordstatPageRenderers(context)
-renderCompareControls()
-renderWordstatLimitsPanel(phrasesCount, regionsCount)
-renderQuotaWarnings()
-renderRegionModal()
-renderRegionTreeNode(node, level)
-renderWordstatEmptyState()
-renderWordstatResult(result)
-renderPhraseSummaryTable(result)
-renderWordstatChart(result, comparison)
-renderComparisonPanel(current, previous)
-renderComparisonTotalRow(current, previous)
-renderTotalSeries(result)
-renderWordstatSeries(series)
-renderSeriesTable(series)
 ```
 
 Page functions must receive context and return HTML strings. They must not call API or attach listeners.
 
-## Events contract
-
-Target file:
+### Events
 
 ```text
 src/features/wordstat/wordstat-events.js
 ```
 
-Current status:
-
-```text
-created and used by legacy src/wordstat.js through createWordstatEventHandlers()
-```
-
-Responsibilities:
+Owns event handler logic through:
 
 ```text
 createWordstatEventHandlers(context)
-handleMouseMoveEvent(event)
-handleMouseOutEvent(event)
-handleInputEvent(event)
-handleChangeEvent(event)
-handleClickEvent(event)
-handleRouteClickEvent(event)
-handleSubmitEvent(event)
 ```
 
 Events functions receive context and event objects. They must not register document listeners themselves.
 
-## App page registration contract
-
-Target file:
+### App page registration
 
 ```text
 src/pages/wordstat.js
 ```
 
-Current status:
-
-```text
-created and registered in src/pages/index.js
-```
-
-Responsibilities:
+Owns:
 
 ```text
 WORDSTAT_PAGE_ID
@@ -369,7 +178,7 @@ wordstatPageContract()
 renderWordstatContent(context)
 ```
 
-Current `renderWordstatContent(context)` provides a bridge shell, not the final full Wordstat page. It must keep a `.workspace` element until the standalone legacy script is removed.
+Current `renderWordstatContent(context)` provides a bridge shell, not the final full Wordstat page. It must keep a `.workspace` element while the legacy runtime exists.
 
 ## Routing contract
 
@@ -379,7 +188,7 @@ Current route mode:
 wordstat: legacy
 ```
 
-Target route mode after migration:
+Target route mode after the next migration:
 
 ```text
 wordstat: module
@@ -394,21 +203,22 @@ Migration condition before changing route mode:
 4. `src/features/wordstat/wordstat-controller.js` owns async flows. Done.
 5. `src/features/wordstat/wordstat-events.js` owns event handlers. Done.
 6. `PAGE_CONTENT_RENDERERS` can render Wordstat from context. Done.
-7. `app.html` no longer needs standalone Wordstat scripts. Pending.
+7. `app.html` no longer loads standalone Wordstat scripts. Done.
+8. Route mode can be changed from legacy to module. Pending.
 ```
 
 ## Migration order
 
 ```text
-1. Move pure form/date/request helpers into wordstat-store.js. Done: scaffold created.
-2. Move GET /wordstat/connection and POST /wordstat/dynamics/batch into wordstat-service.js. Done: scaffold created.
-3. Create legacy adapter facade. Done: scaffold created.
+1. Move pure form/date/request helpers into wordstat-store.js. Done.
+2. Move GET /wordstat/connection and POST /wordstat/dynamics/batch into wordstat-service.js. Done.
+3. Create legacy adapter facade. Done.
 4. Wire legacy src/wordstat.js to use wordstat-legacy-adapter.js. Done.
 5. Move async open/submit/compare/copy flows into wordstat-controller.js. Done.
 6. Move render helpers into wordstat-page.js. Done.
 7. Move input/change/click/submit listeners into wordstat-events.js. Done.
 8. Register Wordstat in page renderer. Done.
-9. Remove standalone Wordstat scripts from app.html.
+9. Remove standalone Wordstat scripts from app.html. Done.
 10. Change route mode from legacy to module.
 ```
 
@@ -417,7 +227,7 @@ Migration condition before changing route mode:
 ```text
 region tree is large and should not be edited manually without validation
 current Wordstat script still registers document listeners from legacy shell
-standalone scripts can conflict with main render lifecycle
+legacy patch modules are still imported by src/wordstat.js
 clipboard and tooltip behavior must stay outside pure page/store code
 comparison uses the same backend endpoint as current dynamics
 selected client currently comes from DOM/localStorage fallback and must become explicit context
@@ -427,7 +237,6 @@ selected client currently comes from DOM/localStorage fallback and must become e
 
 ```text
 Do not move the full legacy file into src/features/wordstat as-is.
-Do not remove app.html Wordstat scripts until the module shell and auto-open bridge have been verified.
-Do not change route mode to module until standalone scripts are removed.
+Do not delete legacy Wordstat patch modules until their behavior is absorbed into feature modules.
 Do not edit region arrays by hand unless the change is isolated and validated.
 ```
