@@ -63,7 +63,7 @@ src/pages/business-context.js -> renderPanel, renderEmptyState, renderStatusBadg
 
 ## Feature-first modules
 
-Wordstat has started moving toward the target `src/features/*` structure.
+Wordstat has moved to module route mode while still keeping a runtime bridge.
 
 ```text
 src/features/wordstat/index.js
@@ -77,14 +77,14 @@ src/features/wordstat/wordstat-events.js
 
 These files now own pure helpers, API access, a stable legacy facade, async Wordstat flows, reusable render helpers and event handler logic.
 
-`src/wordstat.js` is now imported by `src/main.js`. It still owns the outer DOM lifecycle and listener registration, but it is no longer loaded as a standalone script from `app.html`.
+`src/wordstat.js` is imported by `src/main.js`. It still owns the outer DOM lifecycle and listener registration, but it is no longer loaded as a standalone script from `app.html`.
 
 ## Routing cleanup
 
 `src/app/routes.js` is now the canonical place for route ids, legacy redirects and route mode metadata.
 
 ```text
-wordstat: legacy
+wordstat: module
 journal: reserved
 ```
 
@@ -97,7 +97,7 @@ The Wordstat and Journal decision is documented in `docs/legacy-pages-decision.m
 Current status:
 
 ```text
-wordstat route mode: legacy
+wordstat route mode: module
 runtime import: src/main.js -> import './wordstat.js'
 app.html standalone Wordstat scripts: removed
 legacy patch modules: imported by src/wordstat.js
@@ -184,6 +184,7 @@ Wordstat event handlers wired
 Wordstat page module registered
 Wordstat module route wired in app shell
 Wordstat standalone scripts removed from app.html
+Wordstat route mode switched to module
 Wordstat/Journal decision documented
 Components scaffold wired
 static validator guards service/store/controller/page/events/page registration/app shell wiring
@@ -192,6 +193,6 @@ static validator guards service/store/controller/page/events/page registration/a
 ## Next safe refactors
 
 ```text
-1. Change Wordstat route mode from legacy to module.
-2. Start Journal MVP source/store extraction after backend/local source is chosen.
+1. Start Journal MVP source/store extraction after backend/local source is chosen.
+2. Later: absorb remaining Wordstat runtime bridge and patch modules into feature modules.
 ```
