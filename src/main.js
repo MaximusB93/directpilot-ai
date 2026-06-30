@@ -14,6 +14,7 @@ import { requestEmailCode, verifyEmailCode } from './core/session-api.js';
 import { resolvePageContentRenderer, resolvePageRenderer } from './app/page-router.js';
 import { normalizeAppRouteId } from './app/routes.js';
 import { applyClientScopeResetPatch, createClientScopeResetPatch } from './app/client-scope-reset.js';
+import './wordstat.js';
 import {
   activeAiBudget as selectActiveAiBudget,
   activeAiModel as selectActiveAiModel,
