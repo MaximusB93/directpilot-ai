@@ -11,6 +11,7 @@ const requiredFiles = [
   'src/app/page-router.js',
   'src/app/state.js',
   'src/app/hash-route-bridge.js',
+  'src/app/client-scope-reset.js',
   'src/components/index.js',
   'src/components/empty-state.js',
   'src/components/panel.js',
@@ -62,6 +63,7 @@ const files = Object.fromEntries(await Promise.all(requiredFiles.map(async (file
 
 const js = files['src/main.js'];
 const routes = files['src/app/routes.js'];
+const clientScopeReset = files['src/app/client-scope-reset.js'];
 const frontendArchitecture = files['docs/frontend-architecture.md'];
 const legacyPagesDecision = files['docs/legacy-pages-decision.md'];
 const clientsController = files['src/controllers/clients-controller.js'];
@@ -73,6 +75,9 @@ const aiEventBindings = files['src/controllers/ai-event-bindings.js'];
 const checks = [
   ['app shell files', files['index.html'].includes('id="app"') && files['login.html'].includes('data-page="login"') && files['app.html'].includes('data-page="app"')],
   ['app routing modules', routes.includes('APP_ROUTES') && routes.includes('LEGACY_ROUTE_REDIRECTS') && routes.includes('normalizeAppRouteId') && routes.includes('getRouteMode')],
+  ['client scoped reset helper', clientScopeReset.includes('createClientScopeResetPatch') && clientScopeReset.includes('applyClientScopeResetPatch') && clientScopeReset.includes('optimizationExecutionPreviews')],
+  ['main client scoped reset wiring', js.includes("from './app/client-scope-reset.js'") && js.includes('applyClientScopeResetPatch((patch) => {') && js.includes('optimizationExecutionPreviews = patch.optimizationExecutionPreviews')],
+  ['main old client reset block removed', !js.includes('businessContext = null;\n    businessContextDraft = null;\n    clientYandexIntegration = null;') && !js.includes("optimizationActionsLoadedFor = '';\n    resetAiClientScopedState")],
   ['route mode metadata', routes.includes("mode: 'legacy'") && routes.includes("mode: 'reserved'") && routes.includes('wordstat') && routes.includes('journal')],
   ['main route normalization import', js.includes("import { normalizeAppRouteId } from './app/routes.js'")],
   ['main route normalization delegation', js.includes('return page === \'app\' ? normalizeAppRouteId(view) : view;')],
@@ -93,7 +98,7 @@ const checks = [
   ['main no direct api helper calls', !js.includes('apiFetch(')],
   ['main clients inline flow removed', !js.includes('const payload = await clientsService.fetchClients()') && !js.includes('await clientsService.deleteClient(clientId)') && !js.includes('const formData = new FormData(clientForm);')],
   ['legacy pages decision', legacyPagesDecision.includes('wordstat') && legacyPagesDecision.includes('legacy') && legacyPagesDecision.includes('journal') && legacyPagesDecision.includes('reserved')],
-  ['frontend architecture docs', frontendArchitecture.includes('Main auth session persistence fixed') && frontendArchitecture.includes('Extract selected client side-effect reset helper')],
+  ['frontend architecture docs', frontendArchitecture.includes('Client scoped reset helper wired') && frontendArchitecture.includes('Start new large modules in src/features/*')],
   ['wordstat refactor guard', files['src/wordstat.js'].includes("from './core/api.js'") && files['docs/wordstat-refactor.md'].includes('src/wordstat.js')],
   ['no seeded account data', files['src/data.js'].includes('export const clients = []')],
 ];
