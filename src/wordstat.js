@@ -1,17 +1,24 @@
-import { apiFetch } from './core/api.js';
 import { formatNumber, formatPercent } from './core/format.js';
 import { escapeHtml } from './core/html.js';
 import { getCurrentEmail, scopedStorageKey } from './core/storage.js';
+import {
+  buildWordstatTotalPoints,
+  buildWordstatTotalSummary,
+  calculateWordstatPercentDelta,
+  createDefaultWordstatForm,
+  createPreviousWordstatPeriodRange,
+  createSelectedWordstatRegionIds,
+  createWordstatRequestBody,
+  fetchWordstatConnection,
+  fetchWordstatDynamics,
+  parseWordstatCustomRegions,
+  parseWordstatPhrases,
+  regionsSummary as summarizeWordstatRegions,
+  WORDSTAT_LIMITS,
+} from './features/wordstat/wordstat-legacy-adapter.js';
 
 const WORDSTAT_VIEW_ID = 'wordstat';
-const WORDSTAT_DEFAULT_PHRASES = 'купить диван\nдиван кровать\nугловой диван';
 const WORDSTAT_COLORS = ['#1677ff', '#16a34a', '#f97316', '#9333ea', '#dc2626', '#0891b2', '#4f46e5', '#65a30d'];
-const WORDSTAT_LIMITS = {
-  maxPhrasesPerBatch: 50,
-  maxPhraseLength: 400,
-  maxRegions: 100,
-  maxDevices: 3,
-};
 const WORDSTAT_REGION_TREE = [
   {
     id: '225',
@@ -96,20 +103,7 @@ function collectRegions(nodes) {
 }
 
 function defaultWordstatForm() {
-  const today = startOfDay(new Date());
-  const from = addMonths(today, -3);
-  return {
-    phrases: WORDSTAT_DEFAULT_PHRASES,
-    period: 'WEEKLY',
-    fromDate: toInputDate(from),
-    toDate: toInputDate(today),
-    compareFromDate: '',
-    compareToDate: '',
-    regions: [],
-    customRegions: '',
-    devices: 'DEVICE_ALL',
-    forceRefresh: false,
-  };
+  return createDefaultWordstatForm();
 }
 
 function startOfDay(date) {
@@ -145,11 +139,11 @@ function toInputDate(date) {
 }
 
 function parsePhrases(value) {
-  return String(value || '').split(/\n+/).map((item) => item.trim()).filter(Boolean);
+  return parseWordstatPhrases(value);
 }
 
 function parseCustomRegions(value) {
-  return String(value || '').split(/[\n,;]+/).map((item) => item.trim()).filter(Boolean);
+  return parseWordstatCustomRegions(value);
 }
 
 function selectedClientIdFromStorageOrDom() {
@@ -160,7 +154,7 @@ function selectedClientIdFromStorageOrDom() {
 }
 
 function allSelectedRegionIds() {
-  return [...new Set([...(wordstatState.form.regions || []), ...parseCustomRegions(wordstatState.form.customRegions)])];
+  return createSelectedWordstatRegionIds(wordstatState.form);
 }
 
 function regionLabel(id) {
@@ -169,19 +163,11 @@ function regionLabel(id) {
 }
 
 function regionsSummary(ids) {
-  if (!ids?.length) return 'Все регионы';
-  const labels = ids.map(regionLabel);
-  return labels.length > 4 ? `${labels.slice(0, 4).join(', ')} и ещё ${labels.length - 4}` : labels.join(', ');
+  return summarizeWordstatRegions(ids, WORDSTAT_REGION_BY_ID);
 }
 
 function previousPeriodRange() {
-  const from = parseInputDate(wordstatState.form.fromDate);
-  const to = parseInputDate(wordstatState.form.toDate);
-  if (!from || !to) return null;
-  const days = Math.max(1, Math.round((to - from) / 86400000) + 1);
-  const prevTo = addDays(from, -1);
-  const prevFrom = addDays(prevTo, -(days - 1));
-  return { fromDate: toInputDate(prevFrom), toDate: toInputDate(prevTo) };
+  return createPreviousWordstatPeriodRange(wordstatState.form);
 }
 
 function ensureWordstatNav() {
@@ -203,10 +189,7 @@ function setWordstatNavActive(active) {
 
 async function loadWordstatConnection() {
   try {
-    const response = await apiFetch('/wordstat/connection');
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.detail || 'Не удалось проверить Wordstat');
-    wordstatState.connection = payload;
+    wordstatState.connection = await fetchWordstatConnection();
   } catch (error) {
     if (error.message === 'Authentication required') return;
     wordstatState.connection = { configured: false, can_call_api: false, provider: 'yandex_search_api', message: error.message };
@@ -470,49 +453,23 @@ function renderSeriesTable(series) {
 }
 
 function buildTotalPoints(result) {
-  const byDate = new Map();
-  for (const series of result.series || []) {
-    if (series.error) continue;
-    for (const point of series.points || []) {
-      const existing = byDate.get(point.date) || { date: point.date, count: 0, share: null };
-      existing.count += Number(point.count || 0);
-      byDate.set(point.date, existing);
-    }
-  }
-  const ordered = [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
-  const first = ordered.find((point) => point.count)?.count || 0;
-  let previous = null;
-  return ordered.map((point) => {
-    const enriched = { ...point, mom: percentDelta(point.count, previous), yoy: null, index: first ? Math.round((point.count / first) * 10000) / 100 : null };
-    previous = point.count;
-    return enriched;
-  });
+  return buildWordstatTotalPoints(result);
 }
 
 function buildTotalSummary(result) {
-  const points = buildTotalPoints(result);
-  const total = points.reduce((sum, point) => sum + Number(point.count || 0), 0);
-  const firstCount = points[0]?.count || 0;
-  const lastCount = points.at(-1)?.count || 0;
-  return { points: points.length, total, firstCount, lastCount, growthPercent: percentDelta(lastCount, firstCount) };
+  return buildWordstatTotalSummary(result);
 }
 
 function percentDelta(current, previous) {
-  if (previous === null || previous === undefined || Number(previous) === 0) return null;
-  return Math.round(((Number(current || 0) - Number(previous)) / Number(previous)) * 10000) / 100;
+  return calculateWordstatPercentDelta(current, previous);
 }
 
 function collectRequestBody({ fromDate = wordstatState.form.fromDate, toDate = wordstatState.form.toDate, forceRefresh = wordstatState.form.forceRefresh } = {}) {
-  return {
-    phrases: parsePhrases(wordstatState.form.phrases),
-    period: wordstatState.form.period,
+  return createWordstatRequestBody(wordstatState.form, selectedClientIdFromStorageOrDom() || null, {
     fromDate,
     toDate,
-    regions: allSelectedRegionIds(),
-    devices: [wordstatState.form.devices],
-    clientId: selectedClientIdFromStorageOrDom() || null,
     forceRefresh,
-  };
+  });
 }
 
 function syncFormState(form) {
@@ -560,9 +517,7 @@ async function submitWordstatForm(form) {
   renderWordstatPage();
 
   try {
-    const response = await apiFetch('/wordstat/dynamics/batch', { method: 'POST', body: JSON.stringify(collectRequestBody()) });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.detail || 'Wordstat API не вернул данные');
+    const payload = await fetchWordstatDynamics(collectRequestBody());
     wordstatState.result = payload;
     wordstatState.status = `Готово: ${payload.meta?.completedPhrases || 0} фраз, ошибок: ${payload.meta?.failedPhrases || 0}.`;
   } catch (error) {
@@ -583,10 +538,7 @@ async function compareWordstatPeriod() {
   wordstatState.error = '';
   renderWordstatPage();
   try {
-    const response = await apiFetch('/wordstat/dynamics/batch', { method: 'POST', body: JSON.stringify(collectRequestBody({ fromDate, toDate, forceRefresh: false })) });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.detail || 'Wordstat API не вернул сравнение');
-    wordstatState.comparison = payload;
+    wordstatState.comparison = await fetchWordstatDynamics(collectRequestBody({ fromDate, toDate, forceRefresh: false }));
     wordstatState.comparisonRange = { fromDate, toDate };
     wordstatState.status = 'Сравнение готово.';
   } catch (error) {
