@@ -96,6 +96,7 @@ const navItems = [
   { id: 'integrations', label: 'Интеграции', icon: '🔌' },
   { id: 'ai', label: 'AI-аналитик', icon: '🧠' },
   { id: 'optimization', label: 'Оптимизация', icon: '🎯' },
+  { id: 'wordstat', label: 'Wordstat', icon: '📈' },
 ];
 function normalizeAppView(view) {
   return page === 'app' ? normalizeAppRouteId(view) : view;
@@ -997,7 +998,6 @@ async function updateOptimizationActionStatus(actionId, status, reviewerNote = '
   });
 }
 
-
 async function loadOptimizationExecutionPreview(actionId) {
   await loadOptimizationExecutionPreviewFlow({
     selectedClientId,
@@ -1429,6 +1429,26 @@ function renderOptimization() {
   return renderShell(contentRenderer(optimizationPageContext()));
 }
 
+function wordstatPageContext() {
+  return {
+    selectedClientId,
+    selectedClient: currentClient(),
+    escapeHtml,
+  };
+}
+
+function renderWordstat() {
+  const contentRenderer = resolvePageContentRenderer('wordstat');
+
+  if (typeof contentRenderer !== 'function') {
+    return renderShell(`
+      <div class="pageIntro"><span class="eyebrow">Wordstat</span><h2>Wordstat временно недоступен</h2><p>Модуль Wordstat не зарегистрирован. Проверьте src/pages/index.js.</p></div>
+    `);
+  }
+
+  return renderShell(contentRenderer(wordstatPageContext()));
+}
+
 function render() {
   activeView = normalizeAppView(activeView);
   const views = {
@@ -1444,6 +1464,7 @@ function render() {
     autopilot: renderAutopilot,
     integrations: renderIntegrations,
     optimization: renderOptimization,
+    wordstat: renderWordstat,
   };
   const renderView = views[activeView] || renderDashboard;
   app.innerHTML = renderView();
