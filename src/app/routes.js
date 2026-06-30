@@ -39,7 +39,7 @@ export const APP_ROUTES = Object.freeze({
     id: 'journal',
     hash: '#journal',
     label: 'Журнал',
-    mode: 'reserved',
+    mode: 'module',
   },
 });
 
