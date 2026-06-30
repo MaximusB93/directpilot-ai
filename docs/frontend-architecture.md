@@ -14,7 +14,7 @@ DirectPilot AI frontend is being migrated from a large `src/main.js` file into l
 
 ## Feature-first modules
 
-Journal is enabled as a module route with local MVP source and auto-logging v1.
+Journal is enabled as a module route with local MVP source, auto-logging v1, and details UI.
 
 ```text
 src/features/journal/index.js
@@ -42,12 +42,14 @@ local MVP source: created
 store scaffold: created
 controller: created
 page renderers: created
+details UI: created
 events: created
 logging helpers: created
 page registration: created and wired
 app shell runtime: wired
 client-scope reset: wired
 Journal auto-logging v1 wired
+Journal details UI wired
 ```
 
 ## Completed migration sequence
@@ -64,14 +66,15 @@ Journal runtime wired in app shell
 Journal client scoped reset wired
 Journal route mode switched to module
 Journal auto-logging v1 wired
-static validator guards Journal route/runtime/reset/logging wiring
+Journal details UI wired
+static validator guards Journal route/runtime/reset/logging/details wiring
 ```
 
 ## Next safe refactors
 
 ```text
-1. Add Journal details UI for before/after/metadata.
-2. Add AI recommendation and business-context journal entries.
-3. Replace Journal local source with backend service once endpoints exist.
+1. Add AI recommendation and business-context journal entries.
+2. Replace Journal local source with backend service once endpoints exist.
+3. Add richer styling for Journal JSON details if needed.
 4. Later: absorb remaining Wordstat runtime bridge and patch modules into feature modules.
 ```
