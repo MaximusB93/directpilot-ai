@@ -14,19 +14,7 @@ DirectPilot AI frontend is being migrated from a large `src/main.js` file into l
 
 ## Feature-first modules
 
-Wordstat has moved to module route mode while still keeping a runtime bridge.
-
-```text
-src/features/wordstat/index.js
-src/features/wordstat/wordstat-store.js
-src/features/wordstat/wordstat-service.js
-src/features/wordstat/wordstat-legacy-adapter.js
-src/features/wordstat/wordstat-controller.js
-src/features/wordstat/wordstat-page.js
-src/features/wordstat/wordstat-events.js
-```
-
-Journal is now enabled as a module route with local MVP source.
+Journal is enabled as a module route with local MVP source and auto-logging v1.
 
 ```text
 src/features/journal/index.js
@@ -35,6 +23,7 @@ src/features/journal/journal-local-source.js
 src/features/journal/journal-controller.js
 src/features/journal/journal-page.js
 src/features/journal/journal-events.js
+src/features/journal/journal-logging.js
 src/pages/journal.js
 ```
 
@@ -45,8 +34,6 @@ wordstat: module
 journal: module
 ```
 
-`src/app/routes.js` is the canonical place for route ids, legacy redirects and route mode metadata.
-
 ## Journal status
 
 ```text
@@ -56,20 +43,11 @@ store scaffold: created
 controller: created
 page renderers: created
 events: created
+logging helpers: created
 page registration: created and wired
 app shell runtime: wired
 client-scope reset: wired
-```
-
-## Still in main.js
-
-```text
-business context mutable variables and service flows
-optimization mutable variables and render callbacks
-integrations mutable variables and client list patch callbacks
-clients mutable variables and storage/render callbacks
-Wordstat runtime import until remaining legacy lifecycle is absorbed by feature modules
-Journal runtime state/source/listeners until backend service and app state are extracted further
+Journal auto-logging v1 wired
 ```
 
 ## Completed migration sequence
@@ -85,13 +63,15 @@ Journal page module registered
 Journal runtime wired in app shell
 Journal client scoped reset wired
 Journal route mode switched to module
-static validator guards Journal route/runtime/reset wiring
+Journal auto-logging v1 wired
+static validator guards Journal route/runtime/reset/logging wiring
 ```
 
 ## Next safe refactors
 
 ```text
-1. Add real Journal auto-logging for client/integration/sync/optimization events.
-2. Replace Journal local source with backend service once endpoints exist.
-3. Later: absorb remaining Wordstat runtime bridge and patch modules into feature modules.
+1. Add Journal details UI for before/after/metadata.
+2. Add AI recommendation and business-context journal entries.
+3. Replace Journal local source with backend service once endpoints exist.
+4. Later: absorb remaining Wordstat runtime bridge and patch modules into feature modules.
 ```
