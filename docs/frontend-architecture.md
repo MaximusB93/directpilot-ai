@@ -137,10 +137,11 @@ legacy adapter scaffold: created
 controller: created and wired
 page renderers: created and wired
 events: created and wired
-legacy wiring: done
+page registration: created and wired
+legacy auto-open bridge: wired
 ```
 
-Migration started with store/service extraction, a legacy adapter, controller extraction, page-renderer extraction and event-handler extraction, not with moving the full legacy file.
+Migration started with store/service extraction, a legacy adapter, controller extraction, page-renderer extraction, event-handler extraction and module route registration, not with moving the full legacy file.
 
 ## Journal domain model
 
@@ -158,9 +159,9 @@ Do not create `src/pages/journal.js` until backend/local source, store, service 
 
 ## Page composers
 
-Content composers are wired for Dashboard, Clients, Business Context, Integrations, Optimization and AI Assistant.
+Content composers are wired for Dashboard, Clients, Business Context, Integrations, Optimization, AI Assistant and Wordstat.
 
-Wordstat remains a standalone legacy module until module registration replaces the standalone script path.
+Wordstat still uses a standalone legacy script for the full runtime lifecycle. The page module currently provides a bridge shell.
 
 Journal remains a reserved route until its domain model is implemented.
 
@@ -171,6 +172,7 @@ business context mutable variables and service flows
 optimization mutable variables and render callbacks
 integrations mutable variables and client list patch callbacks
 clients mutable variables and storage/render callbacks
+Wordstat module shell wiring until standalone scripts are removed
 ```
 
 ## Completed migration sequence
@@ -209,16 +211,17 @@ Wordstat legacy adapter wired
 Wordstat controller wired
 Wordstat page renderers wired
 Wordstat event handlers wired
+Wordstat page module registered
+Wordstat module route wired in app shell
 Wordstat/Journal decision documented
 Components scaffold wired
-static validator guards service/store/controller/page/events wiring
+static validator guards service/store/controller/page/events/page registration wiring
 ```
 
 ## Next safe refactors
 
 ```text
-1. Register Wordstat in page renderer after events exist.
-2. Remove standalone Wordstat scripts from app.html once feature module fully replaces them.
-3. Change Wordstat route mode from legacy to module.
-4. Start Journal MVP source/store extraction after backend/local source is chosen.
+1. Remove standalone Wordstat scripts from app.html once feature module bridge is verified.
+2. Change Wordstat route mode from legacy to module.
+3. Start Journal MVP source/store extraction after backend/local source is chosen.
 ```
