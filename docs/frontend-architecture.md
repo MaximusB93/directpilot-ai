@@ -75,12 +75,14 @@ src/features/wordstat/wordstat-page.js
 src/features/wordstat/wordstat-events.js
 ```
 
-Journal has started its feature-first scaffold with a local MVP source and pure store helpers.
+Journal has started its feature-first scaffold with a local MVP source, pure store helpers, controller flows and page renderers.
 
 ```text
 src/features/journal/index.js
 src/features/journal/journal-store.js
 src/features/journal/journal-local-source.js
+src/features/journal/journal-controller.js
+src/features/journal/journal-page.js
 ```
 
 ## Routing cleanup
@@ -128,10 +130,12 @@ journal route mode: reserved
 target module: src/features/journal/*
 local MVP source: created
 store scaffold: created
-page/controller/events: pending
+controller: created
+page renderers: created
+events/page registration: pending
 ```
 
-Do not create `src/pages/journal.js` until page/controller/events exist.
+Do not create `src/pages/journal.js` until events and app wiring exist.
 
 ## Page composers
 
@@ -139,7 +143,7 @@ Content composers are wired for Dashboard, Clients, Business Context, Integratio
 
 Wordstat page module currently provides a bridge shell while `src/wordstat.js` owns the remaining runtime lifecycle.
 
-Journal remains a reserved route until the local source, store, page, controller and events are wired.
+Journal remains a reserved route until events, page registration and client-scope reset are wired.
 
 ## Still in main.js
 
@@ -193,6 +197,8 @@ Wordstat standalone scripts removed from app.html
 Wordstat route mode switched to module
 Journal local source scaffold created
 Journal store scaffold created
+Journal controller scaffold created
+Journal page renderer scaffold created
 Wordstat/Journal decision documented
 Components scaffold wired
 static validator guards service/store/controller/page/events/page registration/app shell wiring
@@ -201,9 +207,8 @@ static validator guards service/store/controller/page/events/page registration/a
 ## Next safe refactors
 
 ```text
-1. Create Journal page/controller around the local source.
-2. Create Journal events.
-3. Wire Journal into page renderer and client-scope reset.
-4. Change Journal route mode from reserved to module.
-5. Later: absorb remaining Wordstat runtime bridge and patch modules into feature modules.
+1. Create Journal events.
+2. Wire Journal into page renderer and client-scope reset.
+3. Change Journal route mode from reserved to module.
+4. Later: absorb remaining Wordstat runtime bridge and patch modules into feature modules.
 ```
