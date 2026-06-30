@@ -2,7 +2,7 @@
 
 ## Status
 
-`journal` is currently a reserved route, but the MVP data source and store scaffold now exist.
+`journal` is currently a reserved route, but the MVP data source, store, controller and page renderers now exist.
 
 Current route metadata:
 
@@ -18,14 +18,14 @@ Current extraction status:
 ```text
 journal-store.js: created
 journal-local-source.js: created
+journal-controller.js: created
+journal-page.js: created
 journal-service.js: pending backend endpoints
-journal-page.js: pending
-journal-controller.js: pending
 journal-events.js: pending
 src/pages/journal.js: pending
 ```
 
-Do not create `src/pages/journal.js` until the page/controller/events contract is implemented.
+Do not create `src/pages/journal.js` until events and app wiring are implemented.
 
 ## Product definition
 
@@ -207,70 +207,6 @@ The local source uses scoped `localStorage` through `scopedStorageKey()` and del
 
 The local source is temporary. Backend endpoints can replace it later without changing store/page contracts.
 
-## Backend API contract
-
-Target endpoints:
-
-```text
-GET /journal
-GET /clients/{clientId}/journal
-GET /journal/{entryId}
-POST /journal
-```
-
-Optional later endpoints:
-
-```text
-POST /journal/bulk
-PATCH /journal/{entryId}
-```
-
-### List query params
-
-```text
-clientId
-scope
-source
-category
-type
-severity
-entityKind
-entityId
-fromDate
-toDate
-limit
-cursor
-```
-
-### List response
-
-```json
-{
-  "items": [],
-  "nextCursor": null
-}
-```
-
-### Create payload
-
-```json
-{
-  "scope": "client",
-  "clientId": "client-id",
-  "source": "optimization",
-  "category": "action",
-  "type": "optimization.action_status_changed",
-  "severity": "success",
-  "title": "Action approved",
-  "summary": "Specialist approved bid adjustment recommendation.",
-  "actor": { "kind": "user", "id": "user-id", "label": "User" },
-  "entity": { "kind": "optimization_action", "id": "action-id", "label": "Bid adjustment" },
-  "before": { "status": "pending" },
-  "after": { "status": "approved" },
-  "metadata": {}
-}
-```
-
 ## Store contract
 
 Current file:
@@ -307,6 +243,61 @@ render UI
 read localStorage directly
 ```
 
+## Controller contract
+
+Current file:
+
+```text
+src/features/journal/journal-controller.js
+```
+
+Current responsibilities:
+
+```text
+loadJournalEntriesFlow(...)
+loadMoreJournalEntriesFlow(...)
+createJournalEntryFlow(...)
+refreshJournalFlow(...)
+```
+
+Controller receives dependencies explicitly:
+
+```text
+state
+source/service
+filters
+input
+onStart
+onSuccess
+onError
+onFinally
+render
+```
+
+Controller must not own DOM selectors.
+
+## Page contract
+
+Current file:
+
+```text
+src/features/journal/journal-page.js
+```
+
+Current responsibilities:
+
+```text
+createJournalPageRenderers(context)
+renderJournalPage(context)
+renderJournalFilters(context)
+renderJournalTimeline(context)
+renderJournalEntry(entry)
+renderJournalEmptyState()
+renderJournalLoadMore(context)
+```
+
+Page functions receive context and return HTML strings. They must not call backend or attach listeners.
+
 ## Service contract
 
 Target file:
@@ -325,59 +316,6 @@ createJournalEntry(payload)
 ```
 
 Service must only call backend and throw useful errors.
-
-## Controller contract
-
-Target file:
-
-```text
-src/features/journal/journal-controller.js
-```
-
-Responsibilities:
-
-```text
-loadJournalEntriesFlow(...)
-loadMoreJournalEntriesFlow(...)
-createJournalEntryFlow(...)
-refreshJournalFlow(...)
-```
-
-Controller receives dependencies explicitly:
-
-```text
-service/source
-store helpers
-getSelectedClientId
-onStart
-onSuccess
-onError
-onFinally
-render
-```
-
-Controller must not own DOM selectors.
-
-## Page contract
-
-Target file:
-
-```text
-src/features/journal/journal-page.js
-```
-
-Responsibilities:
-
-```text
-renderJournalPage(context)
-renderJournalFilters(context)
-renderJournalTimeline(context)
-renderJournalEntry(entry)
-renderJournalEmptyState()
-renderJournalLoadMore(context)
-```
-
-Page functions receive context and return HTML strings. They must not call backend or attach listeners.
 
 ## Events contract
 
@@ -429,10 +367,11 @@ Migration condition before changing route mode:
 ```text
 1. Backend or local MVP journal source exists. Done.
 2. `src/features/journal/journal-store.js` owns normalization and filters. Done.
-3. `src/features/journal/journal-service.js` owns API calls, or controller is explicitly wired to MVP local source. Pending.
-4. `src/features/journal/journal-page.js` renders from context. Pending.
-5. `PAGE_CONTENT_RENDERERS` can render Journal from app context. Pending.
-6. Route mode can change from reserved to module. Pending.
+3. `src/features/journal/journal-controller.js` is wired to source/service. Done.
+4. `src/features/journal/journal-page.js` renders from context. Done.
+5. `src/features/journal/journal-events.js` owns event handlers. Pending.
+6. `PAGE_CONTENT_RENDERERS` can render Journal from app context. Pending.
+7. Route mode can change from reserved to module. Pending.
 ```
 
 ## Client-scoped reset integration
@@ -452,12 +391,12 @@ Do not add it now because there is still no app-level journal state.
 ```text
 1. Create backend/local MVP source contract. Done: journal-local-source.js.
 2. Create `src/features/journal/journal-store.js` with normalization and filters. Done.
-3. Create controller/page around local source.
-4. Create `src/features/journal/journal-service.js` once endpoints are available.
-5. Create events.
-6. Wire into page renderer.
-7. Add journal state to client-scope reset.
-8. Change route mode from reserved to module.
+3. Create controller/page around local source. Done.
+4. Create events.
+5. Wire into page renderer.
+6. Add journal state to client-scope reset.
+7. Change route mode from reserved to module.
+8. Create `src/features/journal/journal-service.js` once endpoints are available.
 ```
 
 ## Known risks
@@ -473,7 +412,7 @@ Before/after payloads may contain sensitive data and should be filtered before s
 ## Do not do yet
 
 ```text
-Do not create `src/pages/journal.js` before page/controller/events exist.
+Do not create `src/pages/journal.js` before events and app wiring exist.
 Do not change route mode from reserved yet.
 Do not log every UI click.
 Do not store raw tokens, OAuth payloads or full API responses in Journal metadata.
