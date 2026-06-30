@@ -2,7 +2,7 @@
 
 ## Status
 
-`src/wordstat.js` remains a legacy standalone module.
+`src/wordstat.js` remains a legacy standalone module, but it now uses the Wordstat feature store/service through the legacy adapter.
 
 The target direction is a feature-first module:
 
@@ -26,7 +26,7 @@ wordstat-legacy-adapter.js: created
 wordstat-page.js: pending
 wordstat-controller.js: pending
 wordstat-events.js: pending
-legacy src/wordstat.js wiring: pending
+legacy src/wordstat.js wiring: done
 ```
 
 Do not move the current module as one large file. First split service, store and page contracts.
@@ -43,20 +43,27 @@ src/wordstat_ai_chat.js
 src/wordstat_chart_hover.js
 ```
 
-`src/wordstat.js` currently owns state, rendering, API calls, navigation injection, region modal behavior, compare behavior, chart tooltip behavior and submit/click/input/change listeners.
+`src/wordstat.js` still owns rendering, navigation injection, region modal behavior, compare behavior, chart tooltip behavior and submit/click/input/change listeners.
+
+`src/wordstat.js` no longer calls `apiFetch` directly. Backend calls are delegated through `src/features/wordstat/wordstat-service.js` via `src/features/wordstat/wordstat-legacy-adapter.js`.
 
 ## Existing shared dependencies
 
-`src/wordstat.js` already imports shared helpers:
+`src/wordstat.js` imports shared helpers:
 
 ```text
-src/core/api.js        apiFetch
 src/core/format.js     formatNumber, formatPercent
 src/core/html.js       escapeHtml
 src/core/storage.js    getCurrentEmail, scopedStorageKey
 ```
 
-Keep these shared dependencies. Do not duplicate local API, HTML escaping or format helpers.
+Feature helpers are imported through:
+
+```text
+src/features/wordstat/wordstat-legacy-adapter.js
+```
+
+Keep shared dependencies. Do not duplicate local API, HTML escaping or format helpers.
 
 ## Backend API contract
 
@@ -126,7 +133,7 @@ src/features/wordstat/wordstat-store.js
 Current status:
 
 ```text
-created, not yet wired into legacy src/wordstat.js
+created and used by legacy src/wordstat.js through wordstat-legacy-adapter.js
 ```
 
 Responsibilities:
@@ -167,7 +174,7 @@ src/features/wordstat/wordstat-service.js
 Current status:
 
 ```text
-created, not yet wired into legacy src/wordstat.js
+created and used by legacy src/wordstat.js through wordstat-legacy-adapter.js
 ```
 
 Responsibilities:
@@ -199,7 +206,7 @@ src/features/wordstat/wordstat-legacy-adapter.js
 Current status:
 
 ```text
-created, not yet imported by src/wordstat.js
+created and imported by src/wordstat.js
 ```
 
 Responsibilities:
@@ -211,7 +218,7 @@ export service helpers
 provide a stable facade for legacy src/wordstat.js wiring
 ```
 
-The adapter exists to avoid importing many feature helpers directly inside the legacy file. Legacy wiring should import one facade first, then replace local helper functions gradually.
+The adapter exists to avoid importing many feature helpers directly inside the legacy file. Legacy wiring now imports this facade and delegates store/service work through it.
 
 ## Controller contract
 
@@ -319,7 +326,7 @@ Migration condition before changing route mode:
 1. Move pure form/date/request helpers into wordstat-store.js. Done: scaffold created.
 2. Move GET /wordstat/connection and POST /wordstat/dynamics/batch into wordstat-service.js. Done: scaffold created.
 3. Create legacy adapter facade. Done: scaffold created.
-4. Wire legacy src/wordstat.js to use wordstat-legacy-adapter.js.
+4. Wire legacy src/wordstat.js to use wordstat-legacy-adapter.js. Done.
 5. Move async open/submit/compare/copy flows into wordstat-controller.js.
 6. Move render helpers into wordstat-page.js.
 7. Move input/change/click/submit listeners into wordstat-events.js.
@@ -332,7 +339,7 @@ Migration condition before changing route mode:
 
 ```text
 region tree is large and should not be edited manually without validation
-current Wordstat scripts mutate DOM outside page-router
+current Wordstat scripts still mutate DOM outside page-router
 standalone scripts can conflict with main render lifecycle
 clipboard and tooltip behavior must stay outside pure page/store code
 comparison uses the same backend endpoint as current dynamics
@@ -343,7 +350,7 @@ selected client currently comes from DOM/localStorage fallback and must become e
 
 ```text
 Do not move the full legacy file into src/features/wordstat as-is.
-Do not wire Wordstat into PAGE_CONTENT_RENDERERS before service/store/page contracts exist.
+Do not wire Wordstat into PAGE_CONTENT_RENDERERS before controller/page/events exist.
 Do not remove app.html Wordstat scripts until the feature module fully replaces them.
 Do not edit region arrays by hand unless the change is isolated and validated.
 ```
