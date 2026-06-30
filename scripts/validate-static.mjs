@@ -32,6 +32,7 @@ const requiredFiles = [
   'src/features/wordstat/wordstat-store.js',
   'src/features/wordstat/wordstat-service.js',
   'src/features/wordstat/wordstat-legacy-adapter.js',
+  'src/features/wordstat/wordstat-controller.js',
   'src/services/clients-service.js',
   'src/services/integrations-service.js',
   'src/services/business-context-service.js',
@@ -82,6 +83,7 @@ const wordstatIndex = files['src/features/wordstat/index.js'];
 const wordstatStore = files['src/features/wordstat/wordstat-store.js'];
 const wordstatService = files['src/features/wordstat/wordstat-service.js'];
 const wordstatLegacyAdapter = files['src/features/wordstat/wordstat-legacy-adapter.js'];
+const wordstatController = files['src/features/wordstat/wordstat-controller.js'];
 const clientsController = files['src/controllers/clients-controller.js'];
 const integrationsController = files['src/controllers/integrations-controller.js'];
 const optimizationController = files['src/controllers/optimization-controller.js'];
@@ -108,11 +110,13 @@ const checks = [
   ['integrations UI primitive wiring', integrationsPage.includes("from '../components/index.js'") && integrationsPage.includes('renderPanel({') && integrationsPage.includes('renderStatusBadge({') && integrationsPage.includes('renderEmptyState({')],
   ['business context UI primitive wiring', businessContextPage.includes("from '../components/index.js'") && businessContextPage.includes('renderPanel({') && businessContextPage.includes('renderStatusBadge({') && businessContextPage.includes('renderEmptyState({')],
   ['shared UI primitive styles', styles.includes('.statusBadge') && styles.includes('.statusBadge--success') && styles.includes('.emptyState') && styles.includes('.panelActions') && styles.includes('.panelSubtitle')],
-  ['wordstat feature exports', wordstatIndex.includes('wordstat-store.js') && wordstatIndex.includes('wordstat-service.js') && wordstatIndex.includes('wordstat-legacy-adapter.js')],
+  ['wordstat feature exports', wordstatIndex.includes('wordstat-store.js') && wordstatIndex.includes('wordstat-service.js') && wordstatIndex.includes('wordstat-legacy-adapter.js') && wordstatIndex.includes('wordstat-controller.js')],
   ['wordstat store scaffold', wordstatStore.includes('createDefaultWordstatForm') && wordstatStore.includes('createInitialWordstatState') && wordstatStore.includes('parseWordstatPhrases') && wordstatStore.includes('parseWordstatCustomRegions') && wordstatStore.includes('createWordstatRequestBody') && wordstatStore.includes('buildWordstatTotalSummary') && !wordstatStore.includes('apiFetch') && !wordstatStore.includes('document.') && !wordstatStore.includes('localStorage')],
   ['wordstat service scaffold', wordstatService.includes('fetchWordstatConnection') && wordstatService.includes('fetchWordstatDynamics') && wordstatService.includes("/wordstat/connection") && wordstatService.includes("/wordstat/dynamics/batch") && wordstatService.includes("../../core/api.js")],
   ['wordstat legacy adapter scaffold', wordstatLegacyAdapter.includes('createWordstatLegacyApi') && wordstatLegacyAdapter.includes('createWordstatRequestBody') && wordstatLegacyAdapter.includes('fetchWordstatConnection') && wordstatLegacyAdapter.includes('fetchWordstatDynamics') && wordstatLegacyAdapter.includes('loadDynamics')],
-  ['wordstat legacy adapter wiring', wordstatLegacy.includes("from './features/wordstat/wordstat-legacy-adapter.js'") && wordstatLegacy.includes('await fetchWordstatConnection()') && wordstatLegacy.includes('await fetchWordstatDynamics(collectRequestBody())') && wordstatLegacy.includes('createWordstatRequestBody(wordstatState.form') && !wordstatLegacy.includes('apiFetch(')],
+  ['wordstat controller flows', wordstatController.includes('openWordstatFlow') && wordstatController.includes('submitWordstatDynamicsFlow') && wordstatController.includes('compareWordstatPeriodFlow') && wordstatController.includes('copyWordstatJsonFlow') && !wordstatController.includes('document.') && !wordstatController.includes('querySelector')],
+  ['wordstat controller wiring', wordstatLegacy.includes("from './features/wordstat/wordstat-controller.js'") && wordstatLegacy.includes('await openWordstatFlow({') && wordstatLegacy.includes('await submitWordstatDynamicsFlow({') && wordstatLegacy.includes('await compareWordstatPeriodFlow({') && wordstatLegacy.includes('await copyWordstatJsonFlow({')],
+  ['wordstat legacy adapter wiring', wordstatLegacy.includes("from './features/wordstat/wordstat-legacy-adapter.js'") && wordstatLegacy.includes('createWordstatRequestBody(wordstatState.form') && !wordstatLegacy.includes('apiFetch(')],
   ['wordstat remains legacy route', files['app.html'].includes('src/wordstat.js') && routes.includes("mode: 'legacy'")],
   ['client store scaffold', files['src/stores/client-store.js'].includes('loadSelectedClientId') && files['src/stores/client-store.js'].includes('saveSelectedClientId') && files['src/stores/client-store.js'].includes('normalizeBackendClient')],
   ['feature stores', files['src/stores/ai-feature-state.js'].includes('createAiFeatureState') && files['src/stores/business-context-store.js'].includes('createBusinessContextPayload') && files['src/stores/campaign-store.js'].includes('createCampaignStore') && files['src/stores/optimization-store.js'].includes('normalizeOptimizationAction')],
@@ -124,11 +128,11 @@ const checks = [
   ['main no direct api helper calls', !js.includes('apiFetch(')],
   ['main clients inline flow removed', !js.includes('const payload = await clientsService.fetchClients()') && !js.includes('await clientsService.deleteClient(clientId)') && !js.includes('const formData = new FormData(clientForm);')],
   ['legacy pages decision', legacyPagesDecision.includes('wordstat') && legacyPagesDecision.includes('legacy') && legacyPagesDecision.includes('journal') && legacyPagesDecision.includes('reserved')],
-  ['wordstat contract docs', wordstatContract.includes('legacy src/wordstat.js wiring: done') && wordstatContract.includes('src/wordstat.js no longer calls `apiFetch` directly') && wordstatContract.includes('Move async open/submit/compare/copy flows into wordstat-controller.js')],
+  ['wordstat contract docs', wordstatContract.includes('wordstat-controller.js: created and wired') && wordstatContract.includes('Move async open/submit/compare/copy flows into wordstat-controller.js. Done.') && wordstatContract.includes('Move render helpers into wordstat-page.js')],
   ['journal domain model docs', journalDomainModel.includes('JournalEntry') && journalDomainModel.includes('src/features/journal/') && journalDomainModel.includes('journal-store.js') && journalDomainModel.includes('journal-service.js') && journalDomainModel.includes('journal-controller.js') && journalDomainModel.includes('journal-page.js')],
   ['journal api contract docs', journalDomainModel.includes('GET /journal') && journalDomainModel.includes('GET /clients/{clientId}/journal') && journalDomainModel.includes('POST /journal')],
-  ['frontend architecture docs', frontendArchitecture.includes('Wordstat legacy adapter wired') && frontendArchitecture.includes('Move Wordstat async open/submit/compare/copy flows')],
-  ['wordstat refactor guard', wordstatLegacy.includes("from './features/wordstat/wordstat-legacy-adapter.js'") && files['docs/wordstat-refactor.md'].includes('src/wordstat.js')],
+  ['frontend architecture docs', frontendArchitecture.includes('Wordstat controller wired') && frontendArchitecture.includes('Move Wordstat render helpers into wordstat-page.js')],
+  ['wordstat refactor guard', wordstatLegacy.includes("from './features/wordstat/wordstat-controller.js'") && files['docs/wordstat-refactor.md'].includes('src/wordstat.js')],
   ['no seeded account data', files['src/data.js'].includes('export const clients = []')],
 ];
 
