@@ -13,6 +13,7 @@ src/features/wordstat/
   wordstat-controller.js
   wordstat-store.js
   wordstat-service.js
+  wordstat-legacy-adapter.js
   wordstat-events.js
 ```
 
@@ -21,6 +22,7 @@ Current extraction status:
 ```text
 wordstat-store.js: created
 wordstat-service.js: created
+wordstat-legacy-adapter.js: created
 wordstat-page.js: pending
 wordstat-controller.js: pending
 wordstat-events.js: pending
@@ -186,6 +188,31 @@ read form elements
 read selected client from DOM
 ```
 
+## Legacy adapter contract
+
+Target file:
+
+```text
+src/features/wordstat/wordstat-legacy-adapter.js
+```
+
+Current status:
+
+```text
+created, not yet imported by src/wordstat.js
+```
+
+Responsibilities:
+
+```text
+createWordstatLegacyApi({ state, getSelectedClientId, regionById, service })
+export store helpers
+export service helpers
+provide a stable facade for legacy src/wordstat.js wiring
+```
+
+The adapter exists to avoid importing many feature helpers directly inside the legacy file. Legacy wiring should import one facade first, then replace local helper functions gradually.
+
 ## Controller contract
 
 Target file:
@@ -291,13 +318,14 @@ Migration condition before changing route mode:
 ```text
 1. Move pure form/date/request helpers into wordstat-store.js. Done: scaffold created.
 2. Move GET /wordstat/connection and POST /wordstat/dynamics/batch into wordstat-service.js. Done: scaffold created.
-3. Wire legacy src/wordstat.js to use wordstat-store.js and wordstat-service.js.
-4. Move async open/submit/compare/copy flows into wordstat-controller.js.
-5. Move render helpers into wordstat-page.js.
-6. Move input/change/click/submit listeners into wordstat-events.js.
-7. Register Wordstat in page renderer.
-8. Remove standalone Wordstat scripts from app.html.
-9. Change route mode from legacy to module.
+3. Create legacy adapter facade. Done: scaffold created.
+4. Wire legacy src/wordstat.js to use wordstat-legacy-adapter.js.
+5. Move async open/submit/compare/copy flows into wordstat-controller.js.
+6. Move render helpers into wordstat-page.js.
+7. Move input/change/click/submit listeners into wordstat-events.js.
+8. Register Wordstat in page renderer.
+9. Remove standalone Wordstat scripts from app.html.
+10. Change route mode from legacy to module.
 ```
 
 ## Known risks
