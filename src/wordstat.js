@@ -23,6 +23,7 @@ import {
   submitWordstatDynamicsFlow,
 } from './features/wordstat/wordstat-controller.js';
 import { createWordstatPageRenderers } from './features/wordstat/wordstat-page.js';
+import { createWordstatEventHandlers } from './features/wordstat/wordstat-events.js';
 
 const WORDSTAT_VIEW_ID = 'wordstat';
 const WORDSTAT_COLORS = ['#1677ff', '#16a34a', '#f97316', '#9333ea', '#dc2626', '#0891b2', '#4f46e5', '#65a30d'];
@@ -361,6 +362,19 @@ function hideChartTooltip() {
   if (tooltip) tooltip.style.display = 'none';
 }
 
+const wordstatEventHandlers = createWordstatEventHandlers({
+  state: wordstatState,
+  render: renderWordstatPage,
+  openView: openWordstatView,
+  submitForm: submitWordstatForm,
+  comparePeriod: compareWordstatPeriod,
+  copyJson: copyWordstatJson,
+  previousPeriodRange,
+  setNavActive: setWordstatNavActive,
+  showTooltip: showChartTooltip,
+  hideTooltip: hideChartTooltip,
+});
+
 function mountWordstatExtension() {
   if (wordstatState.mounted) return;
   wordstatState.mounted = true;
@@ -372,111 +386,13 @@ function mountWordstatExtension() {
   });
   observer.observe(document.body, { childList: true, subtree: true });
 
-  document.addEventListener('mousemove', showChartTooltip);
-  document.addEventListener('mouseout', (event) => {
-    if (event.target.closest?.('[data-wordstat-chart-point]')) hideChartTooltip();
-  });
-
-  document.addEventListener('input', (event) => {
-    if (event.target.matches('[data-wordstat-region-custom]')) {
-      wordstatState.regionDraftCustom = event.target.value;
-    }
-    if (event.target.matches('[name="compareFromDate"]')) wordstatState.form.compareFromDate = event.target.value;
-    if (event.target.matches('[name="compareToDate"]')) wordstatState.form.compareToDate = event.target.value;
-  });
-
-  document.addEventListener('change', (event) => {
-    if (event.target.matches('[data-wordstat-region-modal]')) {
-      const value = event.target.value;
-      wordstatState.regionDraftRegions = event.target.checked
-        ? [...new Set([...wordstatState.regionDraftRegions, value])]
-        : wordstatState.regionDraftRegions.filter((id) => id !== value);
-      renderWordstatPage();
-    }
-    if (event.target.matches('[data-wordstat-region-all]')) {
-      wordstatState.regionDraftRegions = [];
-      wordstatState.regionDraftCustom = '';
-      renderWordstatPage();
-    }
-  });
-
-  document.addEventListener('click', async (event) => {
-    const navButton = event.target.closest('[data-wordstat-view]');
-    if (navButton) {
-      event.preventDefault();
-      await openWordstatView();
-      return;
-    }
-    if (event.target.closest('[data-wordstat-open-region-modal]')) {
-      wordstatState.regionDraftRegions = [...(wordstatState.form.regions || [])];
-      wordstatState.regionDraftCustom = wordstatState.form.customRegions || '';
-      wordstatState.regionModalOpen = true;
-      renderWordstatPage();
-      return;
-    }
-    if (event.target.closest('[data-wordstat-close-region-modal]')) {
-      wordstatState.regionModalOpen = false;
-      renderWordstatPage();
-      return;
-    }
-    const toggleNode = event.target.closest('[data-wordstat-toggle-region-node]');
-    if (toggleNode) {
-      const id = toggleNode.dataset.wordstatToggleRegionNode;
-      if (wordstatState.expandedRegions.has(id)) wordstatState.expandedRegions.delete(id);
-      else wordstatState.expandedRegions.add(id);
-      renderWordstatPage();
-      return;
-    }
-    if (event.target.closest('[data-wordstat-clear-regions]')) {
-      wordstatState.regionDraftRegions = [];
-      wordstatState.regionDraftCustom = '';
-      renderWordstatPage();
-      return;
-    }
-    if (event.target.closest('[data-wordstat-apply-regions]')) {
-      wordstatState.form.regions = [...new Set(wordstatState.regionDraftRegions)];
-      wordstatState.form.customRegions = wordstatState.regionDraftCustom;
-      wordstatState.regionModalOpen = false;
-      renderWordstatPage();
-      return;
-    }
-    if (event.target.closest('[data-wordstat-toggle-compare]')) {
-      wordstatState.comparePanelOpen = !wordstatState.comparePanelOpen;
-      const range = previousPeriodRange();
-      if (range && !wordstatState.form.compareFromDate) wordstatState.form.compareFromDate = range.fromDate;
-      if (range && !wordstatState.form.compareToDate) wordstatState.form.compareToDate = range.toDate;
-      renderWordstatPage();
-      return;
-    }
-    if (event.target.closest('[data-wordstat-fill-previous-period]')) {
-      const range = previousPeriodRange();
-      if (range) {
-        wordstatState.form.compareFromDate = range.fromDate;
-        wordstatState.form.compareToDate = range.toDate;
-      }
-      renderWordstatPage();
-      return;
-    }
-    if (event.target.closest('[data-wordstat-run-compare]')) {
-      await compareWordstatPeriod();
-      return;
-    }
-    if (event.target.closest('[data-wordstat-copy-json]')) await copyWordstatJson();
-  });
-
-  document.addEventListener('click', (event) => {
-    if (event.target.closest('[data-view], [data-go-view]') && !event.target.closest('[data-wordstat-view]')) {
-      wordstatState.active = false;
-      setWordstatNavActive(false);
-    }
-  }, true);
-
-  document.addEventListener('submit', async (event) => {
-    const form = event.target.closest('[data-wordstat-form]');
-    if (!form) return;
-    event.preventDefault();
-    await submitWordstatForm(form);
-  });
+  document.addEventListener('mousemove', wordstatEventHandlers.handleMouseMoveEvent);
+  document.addEventListener('mouseout', wordstatEventHandlers.handleMouseOutEvent);
+  document.addEventListener('input', wordstatEventHandlers.handleInputEvent);
+  document.addEventListener('change', wordstatEventHandlers.handleChangeEvent);
+  document.addEventListener('click', wordstatEventHandlers.handleClickEvent);
+  document.addEventListener('click', wordstatEventHandlers.handleRouteClickEvent, true);
+  document.addEventListener('submit', wordstatEventHandlers.handleSubmitEvent);
 }
 
 if (document.body.dataset.page === 'app') {
