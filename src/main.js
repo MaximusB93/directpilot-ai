@@ -1601,7 +1601,9 @@ app.addEventListener('submit', async (event) => {
       } else {
         const code = new FormData(authForm).get('code');
         const data = await verifyEmailCode(authEmail, code);
-        saveSession(authEmail, data.access_token);
+        const sessionToken = data.session_token || data.access_token;
+        const sessionEmail = data.email || authEmail;
+        saveSession(sessionToken, sessionEmail);
         window.location.href = 'app.html';
       }
     } catch (error) {
