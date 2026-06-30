@@ -35,6 +35,12 @@ import {
   optimizationPageContract,
   renderOptimizationContent,
 } from './optimization.js';
+import {
+  WORDSTAT_PAGE_ID,
+  wordstatPage,
+  wordstatPageContract,
+  renderWordstatContent,
+} from './wordstat.js';
 
 export const APP_PAGES = {
   [DASHBOARD_PAGE_ID]: dashboardPage,
@@ -43,6 +49,7 @@ export const APP_PAGES = {
   [INTEGRATIONS_PAGE_ID]: integrationsPage,
   [AI_ASSISTANT_PAGE_ID]: aiAssistantPage,
   [OPTIMIZATION_PAGE_ID]: optimizationPage,
+  [WORDSTAT_PAGE_ID]: wordstatPage,
 };
 
 export const PAGE_CONTRACTS = {
@@ -52,6 +59,7 @@ export const PAGE_CONTRACTS = {
   [INTEGRATIONS_PAGE_ID]: integrationsPageContract(),
   [AI_ASSISTANT_PAGE_ID]: aiAssistantPageContract(),
   [OPTIMIZATION_PAGE_ID]: optimizationPageContract(),
+  [WORDSTAT_PAGE_ID]: wordstatPageContract(),
 };
 
 export const PAGE_RENDERERS = {
@@ -65,6 +73,7 @@ export const PAGE_CONTENT_RENDERERS = {
   [INTEGRATIONS_PAGE_ID]: renderIntegrationsContent,
   [AI_ASSISTANT_PAGE_ID]: renderAiAssistantContent,
   [OPTIMIZATION_PAGE_ID]: renderOptimizationContent,
+  [WORDSTAT_PAGE_ID]: renderWordstatContent,
 };
 
 export function getPageByRouteId(routeId) {
