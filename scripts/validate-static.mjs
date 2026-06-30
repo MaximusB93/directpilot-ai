@@ -85,13 +85,14 @@ const checks = [
   ['journal store pure', has('src/features/journal/journal-store.js', 'normalizeJournalEntry') && has('src/features/journal/journal-store.js', 'groupJournalEntriesByDate') && lacks('src/features/journal/journal-store.js', ['apiFetch', 'document.', 'localStorage'])],
   ['journal source/controller/page/events', has('src/features/journal/journal-local-source.js', 'createJournalLocalSource') && has('src/features/journal/journal-controller.js', 'loadJournalEntriesFlow') && has('src/features/journal/journal-page.js', 'createJournalPageRenderers') && has('src/features/journal/journal-events.js', 'createJournalEventHandlers')],
   ['journal logging helpers', has('src/features/journal/journal-logging.js', 'createClientSelectedJournalEvent') && has('src/features/journal/journal-logging.js', 'createOptimizationActionStatusJournalEvent') && has('src/features/journal/journal-logging.js', 'createSyncStatusJournalEvent') && lacks('src/features/journal/journal-logging.js', ['document.', 'localStorage', 'apiFetch'])],
+  ['journal details UI', has('src/features/journal/journal-page.js', 'renderJournalEntryDetailsPanel') && has('src/features/journal/journal-page.js', 'renderJournalJsonBlock') && has('src/features/journal/journal-page.js', 'data-journal-entry-more') && has('src/features/journal/journal-page.js', 'before / after / metadata')],
   ['journal page registry', has('src/pages/journal.js', 'renderJournalContent') && has('src/pages/index.js', '[JOURNAL_PAGE_ID]: renderJournalContent')],
   ['journal app shell runtime', has('src/main.js', 'const journalSource = createJournalLocalSource();') && has('src/main.js', 'function renderJournal()') && has('src/main.js', 'journal: renderJournal,') && has('src/main.js', "activeView === 'journal'") && has('src/main.js', 'journalEventHandlers.handleJournalClickEvent(event);')],
   ['journal auto logging wired', has('src/main.js', 'function logJournalEvent') && has('src/main.js', 'createClientSelectedJournalEvent') && has('src/main.js', 'createClientCreatedJournalEvent') && has('src/main.js', 'createClientUpdatedJournalEvent') && has('src/main.js', 'createOptimizationActionStatusJournalEvent') && has('src/main.js', 'createSyncStatusJournalEvent') && has('src/main.js', 'createIntegrationStatusJournalEvent')],
   ['journal client scoped reset', has('src/app/client-scope-reset.js', 'journalLoadedFor') && has('src/main.js', 'journalState = createInitialJournalState();') && has('src/main.js', 'journalState.filters = createDefaultJournalFilters')],
   ['main no direct api helper calls', lacks('src/main.js', ['apiFetch('])],
   ['no seeded account data', has('src/data.js', 'export const clients = []')],
-  ['docs updated', has('docs/journal-domain-model.md', 'auto-logging v1: done') && has('docs/frontend-architecture.md', 'Journal auto-logging v1 wired')],
+  ['docs updated', has('docs/journal-domain-model.md', 'details UI: done') && has('docs/frontend-architecture.md', 'Journal details UI wired')],
 ];
 
 const failed = checks.filter(([, ok]) => !ok);
