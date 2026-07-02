@@ -175,6 +175,7 @@ let businessContextLoading = false;
 let businessContextStatus = '';
 let businessContextSaving = false;
 let businessContextDraft = null;
+let businessContextLoadedFor = '';
 const CUSTOM_MODEL_VALUE = aiStore.CUSTOM_MODEL_VALUE;
 const aiFeatureState = createAiFeatureState();
 const journalSource = createJournalLocalSource();
@@ -863,8 +864,10 @@ async function loadPerformanceSummary() {
 }
 
 
-async function loadBusinessContext() {
+async function loadBusinessContext(force = false) {
   if (!selectedClientId || businessContextLoading) return;
+  if (!force && businessContextLoadedFor === selectedClientId) return;
+  businessContextLoadedFor = selectedClientId;
   businessContextLoading = true;
   businessContextStatus = 'Загружаем контекст бизнеса...';
   render();
@@ -1676,9 +1679,9 @@ function render() {
     if (!syncJobs.length && !syncJobsLoading) loadSyncJobs();
     if (!perfSummary && !perfLoading) loadPerformanceSummary();
     if (!clientYandexIntegration && !clientYandexLoading) loadClientYandexIntegration();
-    if (!businessContext && !businessContextLoading) loadBusinessContext();
+    if (!businessContext && !businessContextLoading && businessContextLoadedFor !== selectedClientId) loadBusinessContext();
   }
-  if (activeView === 'business-context' && selectedClientId && !businessContextLoading) {
+  if (activeView === 'business-context' && selectedClientId && !businessContextLoading && businessContextLoadedFor !== selectedClientId) {
     loadBusinessContext();
   }
   if (activeView === 'recommendations' && selectedClientId && !perfSummary && !perfLoading) {
@@ -1692,7 +1695,7 @@ function render() {
   if (activeView === 'ai' && aiFeatureState.model.status.message === 'Статус OpenRouter ещё не загружен.') {
     loadAiStatus();
   }
-  if (activeView === 'ai' && selectedClientId && !businessContextLoading) {
+  if (activeView === 'ai' && selectedClientId && !businessContextLoading && businessContextLoadedFor !== selectedClientId) {
     loadBusinessContext();
   }
   if (activeView === 'journal' && (selectedClientId || !journalState.loading)) {
@@ -1962,6 +1965,7 @@ app.addEventListener('click', async (event) => {
     applyClientScopeResetPatch((patch) => {
       businessContext = patch.businessContext;
       businessContextDraft = patch.businessContextDraft;
+      businessContextLoadedFor = '';
       clientYandexIntegration = patch.clientYandexIntegration;
       syncJobs = patch.syncJobs;
       perfSummary = patch.perfSummary;
@@ -2212,6 +2216,7 @@ async function saveClientSettings(form) {
       clientSettingsStatus = message;
       clientSettingsDraft = null;
       businessContext = null;
+      businessContextLoadedFor = '';
       perfSummary = null;
       optimizationPlan = null;
       void logJournalEvent(createClientUpdatedJournalEvent({
