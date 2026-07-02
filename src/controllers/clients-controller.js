@@ -1,3 +1,5 @@
+let fallbackClientsLoaded = false;
+
 export async function loadClientsFromApiFlow({
   page,
   force = false,
@@ -13,7 +15,7 @@ export async function loadClientsFromApiFlow({
   onFinally,
 }) {
   if (page !== 'app') return { status: 'skipped' };
-  if (loading || (loaded && !force)) return { status: 'skipped' };
+  if (loading || ((loaded || fallbackClientsLoaded) && !force)) return { status: 'skipped' };
 
   onStart?.();
 
@@ -23,9 +25,11 @@ export async function loadClientsFromApiFlow({
     const storedSelected = loadSelectedClientId?.() || '';
     const selectedClientId = clients.find((client) => client.id === storedSelected)?.id || clients[0]?.id || '';
     const message = clients.length ? 'Клиенты загружены из базы данных.' : 'В базе пока нет клиентов. Создайте первого клиента.';
+    fallbackClientsLoaded = false;
     onSuccess?.({ clients, selectedClientId, message, shouldResetBusinessContext: !businessContextLoading });
     return { status: 'success', clients, selectedClientId };
   } catch (error) {
+    fallbackClientsLoaded = true;
     const storedClients = !loaded ? clientsStore.loadStoredClients() : [];
     const selectedClientId = storedClients.length
       ? storedClients.find((client) => client.id === loadSelectedClientId?.())?.id || storedClients[0]?.id || ''
@@ -36,6 +40,10 @@ export async function loadClientsFromApiFlow({
   } finally {
     onFinally?.();
   }
+}
+
+export function resetClientsFallbackLoadState() {
+  fallbackClientsLoaded = false;
 }
 
 export async function createClientFlow({
