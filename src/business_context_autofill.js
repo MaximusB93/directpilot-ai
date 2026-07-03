@@ -1,4 +1,5 @@
 import { apiFetch, escapeHtml } from './core/api.js';
+import { getCurrentEmail, scopedStorageKey } from './core/storage.js';
 
 const AUTOFILL_FIELDS = [
   'brandName',
@@ -20,7 +21,9 @@ const AUTOFILL_FIELDS = [
 ];
 
 function getSelectedClientId() {
-  return document.querySelector('[data-client-select]')?.value || '';
+  const selectedFromDom = document.querySelector('[data-client-select]')?.value || '';
+  if (selectedFromDom) return selectedFromDom;
+  return window.localStorage.getItem(scopedStorageKey('directpilot_selected_client_id', getCurrentEmail())) || '';
 }
 
 function parseUrls(value) {

@@ -181,7 +181,6 @@ const aiFeatureState = createAiFeatureState();
 const journalSource = createJournalLocalSource();
 let journalState = createInitialJournalState();
 let journalLoadedFor = '';
-let pendingEditableFocusTarget = null;
 
 function storageKey(key) {
   return scopedStorageKey(key);
@@ -1707,32 +1706,22 @@ function render() {
   }
 }
 
-['pointerdown', 'mousedown', 'mouseup', 'click'].forEach((eventName) => {
-  app.addEventListener(eventName, (event) => {
-    if (isPlainTextInputTarget(event.target) && !isInteractiveActionTarget(event.target)) {
-      event.stopPropagation();
-    }
-  }, true);
-});
-
-['pointerdown', 'mousedown'].forEach((eventName) => {
-  app.addEventListener(eventName, (event) => {
-    if (isInteractiveActionTarget(event.target)) return;
-    pendingEditableFocusTarget = getEditableFieldTarget(event.target);
-  }, true);
-});
-
-app.addEventListener('focusin', (event) => {
-  const target = getEditableFieldTarget(event.target);
-  if (target) pendingEditableFocusTarget = target;
-});
-
 app.addEventListener('input', (event) => {
-  const target = getEditableFieldTarget(event.target);
-  if (target) pendingEditableFocusTarget = target;
   const authInput = event.target.closest('input[name="email"], input[name="code"]');
   if (authInput?.name === 'email') authEmail = authInput.value;
   if (authInput?.name === 'code') authCode = authInput.value;
+  if (event.target.matches('[data-client-form] input')) {
+    const form = event.target.closest('[data-client-form]');
+    if (form) {
+      const formData = new FormData(form);
+      clientDraftName = formData.get('name')?.toString() || '';
+      clientDraftDirectLogin = formData.get('directLogin')?.toString() || '';
+      clientDraftMetricaCounter = formData.get('metricaCounter')?.toString() || '';
+    }
+  }
+  if (event.target.matches('[data-ai-chat-form] textarea[name="message"]')) {
+    aiFeatureState.chat.input = event.target.value;
+  }
   handleAiInputEvent(event, {
     setCustomModel: (value) => {
       aiFeatureState.model.customModel = value;
@@ -1791,22 +1780,6 @@ app.addEventListener('change', (event) => {
 
 function getEditableFieldTarget(target) {
   return target?.closest?.('input, textarea, select, [contenteditable="true"]');
-}
-
-function isPlainTextInputTarget(target) {
-  const field = getEditableFieldTarget(target);
-  if (!field) return false;
-  return !field.closest('[data-client-menu], .clientMenu, .heroActions, .headerActions');
-}
-
-function isInteractiveActionTarget(target) {
-  return Boolean(target?.closest?.('button, a, label, select, option, [data-client-menu], .clientMenu, .heroActions, .headerActions'));
-}
-
-function restorePendingEditableFocus() {
-  if (!pendingEditableFocusTarget || !document.body.contains(pendingEditableFocusTarget)) return;
-  if (document.activeElement === pendingEditableFocusTarget) return;
-  pendingEditableFocusTarget.focus({ preventScroll: true });
 }
 
 app.addEventListener('submit', async (event) => {

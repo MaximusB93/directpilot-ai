@@ -36,6 +36,15 @@ export function createWordstatEventHandlers({
   }
 
   function handleInputEvent(event) {
+    const form = closest(event, '[data-wordstat-form]');
+    if (form && event.target?.name) {
+      const { name, value } = event.target;
+      if (name === 'phrases') state.form.phrases = value;
+      if (name === 'fromDate') state.form.fromDate = value;
+      if (name === 'toDate') state.form.toDate = value;
+      if (name === 'compareFromDate') state.form.compareFromDate = value;
+      if (name === 'compareToDate') state.form.compareToDate = value;
+    }
     if (matches(event, '[data-wordstat-region-custom]')) {
       state.regionDraftCustom = event.target.value;
     }
@@ -44,6 +53,17 @@ export function createWordstatEventHandlers({
   }
 
   function handleChangeEvent(event) {
+    const form = closest(event, '[data-wordstat-form]');
+    if (form && event.target?.name) {
+      const { name, value } = event.target;
+      if (name === 'period') state.form.period = value;
+      if (name === 'devices') state.form.devices = value;
+      if (name === 'forceRefresh') state.form.forceRefresh = value === 'true';
+      if (name === 'fromDate') state.form.fromDate = value;
+      if (name === 'toDate') state.form.toDate = value;
+      if (name === 'compareFromDate') state.form.compareFromDate = value;
+      if (name === 'compareToDate') state.form.compareToDate = value;
+    }
     if (matches(event, '[data-wordstat-region-modal]')) {
       const value = event.target.value;
       state.regionDraftRegions = event.target.checked

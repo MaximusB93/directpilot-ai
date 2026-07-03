@@ -1,3 +1,5 @@
+import { getCurrentEmail, scopedStorageKey } from './core/storage.js';
+
 function resolveApiBase() {
   const custom = window.localStorage.getItem('directpilot_api_base')?.trim();
   if (custom) return custom.replace(/\/$/, '');
@@ -51,7 +53,9 @@ function formatPercent(value) {
 }
 
 function selectedClientId() {
-  return document.querySelector('[data-client-select]')?.value || '';
+  const selectedFromDom = document.querySelector('[data-client-select]')?.value || '';
+  if (selectedFromDom) return selectedFromDom;
+  return window.localStorage.getItem(scopedStorageKey('directpilot_selected_client_id', getCurrentEmail())) || '';
 }
 
 function periodState() {

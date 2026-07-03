@@ -196,12 +196,12 @@ function ensureWordstatNav() {
 }
 
 function setWordstatNavActive(active) {
-  document.querySelectorAll('.sideNavItem').forEach((item) => item.classList.remove('active'));
   const button = document.querySelector('[data-wordstat-view]');
   if (button) button.classList.toggle('active', Boolean(active));
 }
 
 function renderWordstatPage() {
+  if (document.body.dataset.view !== WORDSTAT_VIEW_ID) return;
   const workspace = document.querySelector('.workspace');
   if (!workspace) return;
   wordstatState.active = true;
@@ -314,7 +314,7 @@ function syncFormState(form) {
 async function openWordstatView() {
   await openWordstatFlow({
     state: wordstatState,
-    ensureNav: ensureWordstatNav,
+    ensureNav: () => {},
     render: renderWordstatPage,
     loadConnection: fetchWordstatConnection,
   });
@@ -398,10 +398,9 @@ const wordstatEventHandlers = createWordstatEventHandlers({
 function mountWordstatExtension() {
   if (wordstatState.mounted) return;
   wordstatState.mounted = true;
-  ensureWordstatNav();
 
   const observer = new MutationObserver(() => {
-    ensureWordstatNav();
+    if (document.body.dataset.view !== WORDSTAT_VIEW_ID) return;
     void autoOpenWordstatView();
     if (wordstatState.active && !document.querySelector('[data-wordstat-form]')) renderWordstatPage();
   });
