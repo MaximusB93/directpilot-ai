@@ -31,18 +31,34 @@ export function ensureSelectedClientId(clients, selectedClientId) {
 }
 
 export function normalizeBackendClient(client) {
+  const directLogin = client.directLogin ?? client.direct_login;
+  const metricaCounter = client.metricaCounter ?? client.metrica_counter;
+  const yandexAccountId = client.yandexAccountId ?? client.yandex_account_id;
+  const targetCpa = client.targetCpa ?? client.target_cpa;
+  const mainGoalId = client.mainGoalId ?? client.main_goal_id;
+  const conversionGoalIds = client.conversionGoalIds ?? client.conversion_goal_ids;
+  const lastSync = client.lastSync ?? client.last_sync;
+  const syncStatus = client.syncStatus ?? client.sync_status;
+  const syncError = client.syncError ?? client.sync_error;
+  const lastSyncedAt = client.lastSyncedAt ?? client.last_synced_at;
+  const syncVersion = client.syncVersion ?? client.sync_version;
+
   return {
     id: client.id,
     name: client.name,
     segment: client.segment || 'Клиент',
-    directLogin: client.direct_login || 'Не подключен',
-    metricaCounter: client.metrica_counter || 'Не подключен',
-    yandexAccountId: client.yandex_account_id || '',
-    targetCpa: client.target_cpa ?? '',
-    mainGoalId: client.main_goal_id || '',
-    conversionGoalIds: client.conversion_goal_ids || client.main_goal_id || '',
+    directLogin: directLogin || 'Не подключен',
+    metricaCounter: metricaCounter || 'Не подключен',
+    yandexAccountId: yandexAccountId || '',
+    targetCpa: targetCpa ?? '',
+    mainGoalId: mainGoalId || '',
+    conversionGoalIds: conversionGoalIds || mainGoalId || '',
     notes: client.notes || '',
-    lastSync: client.last_sync || '—',
+    lastSync: lastSync || '—',
+    syncStatus: syncStatus || 'never_synced',
+    syncError: syncError || null,
+    lastSyncedAt: lastSyncedAt || null,
+    syncVersion: syncVersion || 0,
     backend: true,
   };
 }
