@@ -62,6 +62,7 @@ import * as businessContextStore from './stores/business-context-store.js';
 import * as clientsService from './services/clients-service.js';
 import {
   createClientFlow,
+  createClientSettingsPayload,
   createClientSettingsDraftFromForm,
   deleteClientFlow,
   loadClientsFromApiFlow,
@@ -160,6 +161,7 @@ let syncJobsLoading = false;
 let perfSummary = null;
 let perfLoading = false;
 let perfStatus = '';
+let performanceCampaignSearch = '';
 let optimizationPlan = null;
 let optimizationPlanLoading = false;
 let optimizationStatus = '';
@@ -273,7 +275,8 @@ async function logJournalEvent(input = {}) {
 }
 
 function formatNumberSafe(value) {
-  return typeof value === 'number' && Number.isFinite(value) ? new Intl.NumberFormat('ru-RU').format(value) : '0';
+  const numeric = typeof value === 'number' ? value : Number(String(value ?? '').replace(/\s/g, '').replace(',', '.'));
+  return Number.isFinite(numeric) ? new Intl.NumberFormat('ru-RU').format(numeric) : '0';
 }
 
 function formatMoney(value) {
@@ -281,8 +284,13 @@ function formatMoney(value) {
 }
 
 function formatPercent(value) {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return '0%';
-  return `${value.toFixed(1).replace('.', ',')}%`;
+  const numeric = typeof value === 'number' ? value : Number(String(value ?? '').replace(/\s/g, '').replace(',', '.'));
+  if (!Number.isFinite(numeric)) return '0%';
+  return `${numeric.toFixed(1).replace('.', ',')}%`;
+}
+
+function hasConnectedDirectLogin(value) {
+  return Boolean(value && value !== 'Не подключен');
 }
 
 
@@ -448,6 +456,11 @@ function getBoundYandexAccount(integration = clientYandexIntegration) {
 
 function getBoundYandexAccountId(integration = clientYandexIntegration) {
   return getBoundYandexAccount(integration)?.id || integration?.yandex_account_id || integration?.yandexAccountId || '';
+}
+
+function getBoundYandexAccountLogin(integration = clientYandexIntegration) {
+  const account = getBoundYandexAccount(integration);
+  return account?.login || account?.name || account?.display_name || account?.displayName || '';
 }
 
 function renderSettingsPanel() {
@@ -1304,24 +1317,57 @@ function renderYandexDirectAuditPanel(compact = false) {
 function renderPerformanceSummaryPanel() {
   const campaignsData = perfSummary?.campaigns || [];
   const insights = perfSummary?.searchQueryInsights;
+  const period = perfSummary?.period;
+  const campaignName = (campaign, index = 0) => (
+    campaign.name
+    || campaign.campaignName
+    || campaign.campaign_name
+    || campaign.title
+    || (campaign.campaign_id ? `Кампания ${campaign.campaign_id}` : `Кампания ${index + 1}`)
+  );
   const campaignGoalConversions = (campaign) => campaign.goal_conversions ?? campaign.goalConversions ?? campaign.conversions_used ?? campaign.conversionsUsed ?? 0;
   const campaignGoalCpa = (campaign) => campaign.cpa_used ?? campaign.cpaUsed ?? campaign.goal_cpa ?? campaign.goalCpa ?? campaign.cpa ?? 0;
+  const totals = perfSummary?.totals || {};
+  const goals = perfSummary?.selectedGoalIds || [];
+  const periodLabel = period?.from && period?.to ? `${period.from} — ${period.to}` : 'последняя синхронизация';
   return `
     <section class="panel performancePanel">
       <div class="panelHeader">
         <div>
           <h3>Сводка эффективности</h3>
-          <p>Кампании, CPA по целям и поисковые запросы, которые AI использует для рекомендаций.</p>
+          <p>Кампании за период ${escapeHtml(periodLabel)}. AI использует конверсии по выбранным целям${goals.length ? `: ${escapeHtml(goals.join(', '))}` : ''}.</p>
         </div>
         <button class="secondaryButton" data-load-performance ${selectedClientId && !perfLoading ? '' : 'disabled'}>${perfLoading ? 'Загрузка...' : 'Обновить'}</button>
       </div>
       ${campaignsData.length ? `
+        <div class="insightGrid">
+          <article><span>Кампаний</span><strong>${formatNumberSafe(campaignsData.length)}</strong></article>
+          <article><span>Показы</span><strong>${formatNumberSafe(totals.impressions || 0)}</strong></article>
+          <article><span>Клики</span><strong>${formatNumberSafe(totals.clicks || 0)}</strong></article>
+          <article><span>Расход</span><strong>${formatMoney(totals.cost || 0)}</strong></article>
+          <article><span>CTR</span><strong>${formatPercent(totals.impressions ? ((Number(totals.clicks || 0) / Number(totals.impressions || 1)) * 100) : 0)}</strong></article>
+          <article><span>Конверсии по целям</span><strong>${formatNumberSafe(perfSummary?.goalConversionsTotal || totals.conversions || 0)}</strong></article>
+        </div>
+        <label class="authField compactSearchField">
+          <span>Поиск по названию кампании или ID</span>
+          <input data-performance-campaign-search value="${escapeHtml(performanceCampaignSearch)}" placeholder="Например: бренд, поиск, 119001..." autocomplete="off" />
+        </label>
         <div class="dataTableWrap">
           <table class="dataTable">
-            <thead><tr><th>Кампания</th><th>Расход</th><th>Конверсии по целям</th><th>CPA по целям</th></tr></thead>
-            <tbody>${campaignsData.slice(0, 8).map((campaign) => `<tr><td>${escapeHtml(campaign.name)}</td><td>${formatMoney(campaign.cost || 0)}</td><td>${formatNumberSafe(campaignGoalConversions(campaign))}</td><td>${formatMoney(campaignGoalCpa(campaign))}</td></tr>`).join('')}</tbody>
+            <thead><tr><th>Кампания</th><th>Показы</th><th>Клики</th><th>CTR</th><th>Расход</th><th>Конверсии по целям</th><th>CPA по целям</th></tr></thead>
+            <tbody>${campaignsData.slice(0, 50).map((campaign, index) => `<tr data-performance-campaign-row data-search-text="${escapeHtml(`${campaignName(campaign, index)} ${campaign.campaign_id || ''}`.toLowerCase())}">
+              <td><strong>${escapeHtml(campaignName(campaign, index))}</strong>${campaign.campaign_id ? `<br><small>ID: ${escapeHtml(campaign.campaign_id)}</small>` : ''}</td>
+              <td>${formatNumberSafe(campaign.impressions || 0)}</td>
+              <td>${formatNumberSafe(campaign.clicks || 0)}</td>
+              <td>${formatPercent(campaign.ctr || 0)}</td>
+              <td>${formatMoney(campaign.cost || 0)}</td>
+              <td>${formatNumberSafe(campaignGoalConversions(campaign))}</td>
+              <td>${formatMoney(campaignGoalCpa(campaign))}</td>
+            </tr>`).join('')}</tbody>
           </table>
         </div>
+        <div class="authStatus integrationStatus" data-performance-search-empty hidden>По такому запросу кампании не найдены.</div>
+        ${campaignsData.length > 50 ? `<div class="authStatus integrationStatus">Показано 50 из ${formatNumberSafe(campaignsData.length)} кампаний. Используйте поиск, чтобы сузить список.</div>` : ''}
       ` : '<div class="authStatus integrationStatus">Кампаний пока нет. Нужна синхронизация.</div>'}
       ${insights ? `
         <div class="insightGrid">
@@ -1815,6 +1861,19 @@ app.addEventListener('input', (event) => {
     const form = event.target.closest('[data-client-settings-form]');
     if (form) setClientSettingsDraftFromForm(form);
   }
+  if (event.target.matches('[data-performance-campaign-search]')) {
+    performanceCampaignSearch = event.target.value;
+    const search = performanceCampaignSearch.trim().toLowerCase();
+    const rows = [...app.querySelectorAll('[data-performance-campaign-row]')];
+    let visibleRows = 0;
+    rows.forEach((row) => {
+      const isVisible = !search || String(row.dataset.searchText || '').includes(search);
+      row.hidden = !isVisible;
+      if (isVisible) visibleRows += 1;
+    });
+    const empty = app.querySelector('[data-performance-search-empty]');
+    if (empty) empty.hidden = !search || visibleRows > 0;
+  }
 });
 
 app.addEventListener('change', (event) => {
@@ -2244,6 +2303,7 @@ async function bindClientYandexAccount(accountId) {
       accountClients = accountClients.map((client) => client.id === selectedClientId ? { ...client, yandexAccountId: boundAccountId } : client);
       clientsStore.saveStoredClients(accountClients);
       clientYandexStatus = message;
+      void autofillDirectLoginFromYandexBinding(payload);
       void logJournalEvent(createIntegrationStatusJournalEvent({
         action: 'bound',
         client: currentClient(),
@@ -2260,6 +2320,37 @@ async function bindClientYandexAccount(accountId) {
       render();
     },
   });
+}
+
+async function autofillDirectLoginFromYandexBinding(integrationPayload) {
+  const accountLogin = getBoundYandexAccountLogin(integrationPayload);
+  const client = currentClient();
+  if (!selectedClientId || !accountLogin || hasConnectedDirectLogin(client.directLogin)) return;
+
+  const optimisticClient = { ...client, directLogin: accountLogin };
+  accountClients = accountClients.map((item) => (item.id === selectedClientId ? optimisticClient : item));
+  clientsStore.saveStoredClients(accountClients);
+  clientSettingsStatus = 'Логин Директа подтянут из привязанного Яндекс-аккаунта.';
+  render();
+
+  if (!backendClientsAvailable) return;
+
+  try {
+    const payload = await clientsService.updateClient(selectedClientId, createClientSettingsPayload(optimisticClient, optimisticClient));
+    const savedClient = clientsStore.normalizeBackendClient(payload);
+    accountClients = accountClients.map((item) => (item.id === selectedClientId ? savedClient : item));
+    clientsStore.saveStoredClients(accountClients);
+    clientSettingsStatus = 'Логин Директа подтянут из Яндекса и сохранён в карточке клиента.';
+    void logJournalEvent(createClientUpdatedJournalEvent({
+      client: savedClient,
+      actor: currentJournalActor(),
+      metadata: { backend: true, message: clientSettingsStatus },
+    }));
+  } catch (error) {
+    clientSettingsStatus = `${error.message || 'Не удалось сохранить логин Директа в базе.'} Логин оставлен локально, сохраните настройки клиента вручную.`;
+  } finally {
+    render();
+  }
 }
 
 
@@ -2307,6 +2398,7 @@ async function saveClientSettings(form) {
     backendAvailable: backendClientsAvailable,
     clientsService,
     clientsStore,
+    currentClient: currentClient(),
     onStart: ({ draft, message }) => {
       clientSettingsDraft = draft;
       clientSettingsSaving = true;

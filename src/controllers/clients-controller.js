@@ -118,11 +118,12 @@ export function createLocalClientSettingsUpdate(draft) {
   };
 }
 
-export function createClientSettingsPayload(draft) {
+export function createClientSettingsPayload(draft, currentClient = {}) {
   return {
     name: draft.name,
     direct_login: draft.directLogin || null,
     metrica_counter: draft.metricaCounter || null,
+    yandex_account_id: draft.yandexAccountId || currentClient.yandexAccountId || null,
     target_cpa: draft.targetCpa ? Number(draft.targetCpa) : null,
     main_goal_id: draft.mainGoalId || null,
     conversion_goal_ids: draft.conversionGoalIds || null,
@@ -140,6 +141,7 @@ export async function saveClientSettingsFlow({
   onSuccess,
   onError,
   onFinally,
+  currentClient,
 }) {
   if (!selectedClientId) return { status: 'skipped' };
 
@@ -150,7 +152,7 @@ export async function saveClientSettingsFlow({
 
   try {
     if (backendAvailable) {
-      const payload = await clientsService.updateClient(selectedClientId, createClientSettingsPayload(draft));
+      const payload = await clientsService.updateClient(selectedClientId, createClientSettingsPayload(draft, currentClient));
       const client = clientsStore.normalizeBackendClient(payload);
       const message = 'Настройки клиента сохранены в базе.';
       onSuccess?.({ client, localUpdate, message, backend: true });
