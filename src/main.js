@@ -116,12 +116,9 @@ const navItems = [
   { id: 'integrations', label: 'Интеграции', icon: '🔌' },
   { id: 'ai', label: 'AI-аналитик', icon: '🧠' },
   { id: 'optimization', label: 'Оптимизация', icon: '🎯' },
-];
-const utilityNavItems = [
   { id: 'wordstat', label: 'Wordstat', icon: '📈' },
   { id: 'journal', label: 'Журнал', icon: '🕘' },
 ];
-const allNavItems = [...navItems, ...utilityNavItems];
 function normalizeAppView(view) {
   return page === 'app' ? normalizeAppRouteId(view) : view;
 }
@@ -390,19 +387,13 @@ function renderShell(content) {
           ${showClientSelector ? `<small>${escapeHtml(client.directLogin || 'Direct не подключен')}</small>` : ''}
         </div>
         <nav>${navItems.map((item) => `<button class="${activeView === item.id ? 'active' : ''}" data-view="${item.id}"><span>${item.icon}</span>${item.label}</button>`).join('')}</nav>
-        <details class="sidebarUtility">
-          <summary>Дополнительно</summary>
-          <div class="sidebarUtilityNav">
-            ${utilityNavItems.map((item) => `<button class="${activeView === item.id ? 'active' : ''}" data-view="${item.id}"><span>${item.icon}</span>${item.label}</button>`).join('')}
-          </div>
-        </details>
         <button class="logoutButton" data-logout>Выйти</button>
       </aside>
       <main class="dashboard">
         <header class="dashboardHeader">
           <div>
             <span class="eyebrow">Кабинет</span>
-            <h1>${escapeHtml(activeView === 'dashboard' ? 'Обзор проекта' : allNavItems.find((item) => item.id === activeView)?.label || 'DirectPilot')}</h1>
+            <h1>${escapeHtml(activeView === 'dashboard' ? 'Обзор проекта' : navItems.find((item) => item.id === activeView)?.label || 'DirectPilot')}</h1>
           </div>
           <div class="headerActions">
             ${showClientSelector ? renderClientSelector() : ''}

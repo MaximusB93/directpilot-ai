@@ -657,25 +657,6 @@ body[data-page="app"] pre {
   line-height: 1.45 !important;
 }
 
-body[data-page="app"] .sidebarUtility {
-  display: grid !important;
-  gap: 8px !important;
-  margin-top: -6px !important;
-}
-
-body[data-page="app"] .sidebarUtility summary {
-  padding: 8px 10px !important;
-  border-radius: 10px !important;
-  color: #64748b !important;
-  font-size: 12px !important;
-  font-weight: 950 !important;
-}
-
-body[data-page="app"] .sidebarUtilityNav {
-  display: grid !important;
-  gap: 6px !important;
-}
-
 body[data-page="app"] .clientContextStrip {
   display: grid !important;
   grid-template-columns: repeat(6, minmax(0, 1fr)) !important;
