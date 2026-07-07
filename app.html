@@ -19,8 +19,13 @@
   </head>
   <body data-page="app">
     <main id="app"></main>
-    <script type="module" src="src/app/hash-route-bridge.js?v=20260707-1"></script>
-    <script type="module" src="src/main.js?v=20260707-5"></script>
+    <script>
+      if (window.location.protocol === 'file:') {
+        document.getElementById('app').innerHTML = '<section style="max-width:720px;margin:48px auto;padding:24px;border:1px solid #dbe5f2;border-radius:16px;font-family:Inter,Arial,sans-serif;background:#fff;color:#0f172a"><h1>DirectPilot AI нужно открыть через локальный сервер</h1><p>Браузер блокирует ES modules при открытии app.html через file://, поэтому кабинет не запускается напрямую из файла.</p><p>Запустите из папки проекта:</p><pre style="padding:12px;border-radius:10px;background:#0f172a;color:#e2e8f0;overflow:auto">python -m http.server 5173</pre><p>Затем откройте: <strong>http://127.0.0.1:5173/app.html</strong></p></section>';
+      }
+    </script>
+    <script type="module" src="src/app/hash-route-bridge.js?v=20260707-3"></script>
+    <script type="module" src="src/main.js?v=20260707-6"></script>
     <script type="module" src="src/wordstat-nav-dedupe.js?v=20260707-1"></script>
     <script type="module" src="src/business_context_autofill.js?v=20260707-1"></script>
     <script type="module" src="src/performance_range_panel.js?v=20260707-1"></script>

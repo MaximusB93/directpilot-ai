@@ -1886,6 +1886,10 @@ function getCabinetActionClickTarget(target) {
   return target?.closest?.(CABINET_ACTION_CLICK_SELECTOR) || null;
 }
 
+function getRouteClickTarget(target) {
+  return target?.closest?.('button[data-view], a[data-view], button[data-go-view], a[data-go-view], [role="button"][data-view], [role="button"][data-go-view]') || null;
+}
+
 async function handleCabinetActionClick(event) {
   if (event.target.closest('[data-journal-apply-filters], [data-journal-reset-filters], [data-journal-refresh], [data-journal-load-more]')) {
     await journalEventHandlers.handleJournalClickEvent(event);
@@ -2159,17 +2163,10 @@ app.addEventListener('click', async (event) => {
   if (getEditableFieldTarget(event.target)) {
     return;
   }
-  const viewButton = event.target.closest('[data-view]');
+  const viewButton = getRouteClickTarget(event.target);
   if (viewButton) {
     event.preventDefault();
-    activeView = normalizeAppView(viewButton.dataset.view);
-    render();
-    return;
-  }
-  const goViewButton = event.target.closest('[data-go-view]');
-  if (goViewButton) {
-    event.preventDefault();
-    activeView = normalizeAppView(goViewButton.dataset.goView);
+    activeView = normalizeAppView(viewButton.dataset.view || viewButton.dataset.goView);
     render();
     return;
   }
