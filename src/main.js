@@ -1779,7 +1779,10 @@ app.addEventListener('change', (event) => {
 });
 
 function getEditableFieldTarget(target) {
-  return target?.closest?.('input, textarea, select, [contenteditable="true"]');
+  const editable = target?.closest?.('input, textarea, select, [contenteditable="true"]');
+  if (editable) return editable;
+  const label = target?.closest?.('label');
+  return label?.querySelector?.('input, textarea, select, [contenteditable="true"]') || null;
 }
 
 app.addEventListener('submit', async (event) => {
@@ -1893,6 +1896,9 @@ app.addEventListener('submit', async (event) => {
 });
 
 app.addEventListener('click', async (event) => {
+  if (getEditableFieldTarget(event.target)) {
+    return;
+  }
   const viewButton = event.target.closest('[data-view]');
   if (viewButton) {
     activeView = normalizeAppView(viewButton.dataset.view);
