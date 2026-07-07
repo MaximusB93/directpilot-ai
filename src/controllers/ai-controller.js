@@ -68,8 +68,8 @@ export function createAiChatRequestPayload({
   });
 }
 
-export function createAiPromptDebugParams(modelState, selectedCampaignName = '') {
-  return aiStore.createAiPromptDebugParams(modelState, selectedCampaignName);
+export function createAiPromptDebugParams(modelState, selectedCampaignName = '', chatState = null) {
+  return aiStore.createAiPromptDebugParams(modelState, selectedCampaignName, chatState);
 }
 
 export async function loadAiStatusFlow({

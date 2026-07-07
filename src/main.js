@@ -643,7 +643,7 @@ function aiChatRequestPayload(message) {
 }
 
 function aiPromptDebugParams() {
-  return createAiPromptDebugParams(currentAiModelState(), aiFeatureState.chat.selectedCampaignName);
+  return createAiPromptDebugParams(currentAiModelState(), aiFeatureState.chat.selectedCampaignName, currentAiChatState());
 }
 
 

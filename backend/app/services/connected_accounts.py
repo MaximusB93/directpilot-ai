@@ -135,14 +135,15 @@ def list_yandex_accounts(db: Session, organization_id: str | None = None) -> lis
     return [_account_to_schema(account) for account in accounts]
 
 
-def get_latest_yandex_access_token(db: Session) -> str | None:
-    token = db.scalar(
+def get_latest_yandex_access_token(db: Session, organization_id: str | None = None) -> str | None:
+    query = (
         select(OAuthToken)
         .join(ConnectedAccount)
         .where(ConnectedAccount.provider == "yandex", ConnectedAccount.status == "connected")
-        .order_by(OAuthToken.created_at.desc())
-        .limit(1)
     )
+    if organization_id:
+        query = query.where(ConnectedAccount.organization_id == organization_id)
+    token = db.scalar(query.order_by(OAuthToken.created_at.desc()).limit(1))
     return decrypt_secret(token.access_token_encrypted) if token else None
 
 

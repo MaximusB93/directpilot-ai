@@ -138,9 +138,16 @@ export function createAiChatRequestPayload({
   };
 }
 
-export function createAiPromptDebugParams(modelState, selectedCampaignName = '') {
+export function createAiPromptDebugParams(modelState, selectedCampaignName = '', chatState = null) {
+  const budget = activeAiBudget(modelState);
+  const message = String(chatState?.input || '').trim();
+  const history = aiConversationForRequest(chatState?.messages, modelState?.chatHistoryLimit);
   const params = new URLSearchParams({
+    mode: 'chat',
+    model: activeAiModel(modelState),
+    max_tokens: String(budget.maxTokens),
     preset: modelState?.preset || 'economy',
+    ai_preset: modelState?.preset || 'economy',
     max_tokens_mode: modelState?.maxTokensMode || 'compact',
     compact_context: modelState?.compactContext !== false ? 'true' : 'false',
     tool_results_mode: modelState?.toolResultsMode || 'summary',
@@ -149,7 +156,9 @@ export function createAiPromptDebugParams(modelState, selectedCampaignName = '')
     include_business_context: 'true',
   });
 
-  if (selectedCampaignName) params.set('campaign_name', selectedCampaignName);
+  if (message) params.set('message', message);
+  if (history.length) params.set('history_json', JSON.stringify(history));
+  if (selectedCampaignName) params.set('selected_campaign_name', selectedCampaignName);
   return params;
 }
 

@@ -63,8 +63,8 @@ class WordstatAiChatRequest(BaseModel):
     max_tokens: int | None = Field(default=None, ge=500, le=5000)
 
 
-def _wordstat_connector(db: Session) -> YandexWordstatConnector:
-    token = get_latest_yandex_access_token(db)
+def _wordstat_connector(db: Session, organization_id: str | None = None) -> YandexWordstatConnector:
+    token = get_latest_yandex_access_token(db, organization_id=organization_id)
     return YandexWordstatConnector(
         api_key=settings.yandex_search_api_key,
         access_token=token,
@@ -165,7 +165,7 @@ def check_wordstat_connection(
     db: Session = Depends(get_db),
     current: CurrentUser = Depends(get_current_session_user),
 ) -> WordstatConnectionCheck:
-    token = get_latest_yandex_access_token(db)
+    token = get_latest_yandex_access_token(db, organization_id=current.organization.id)
     configured = bool(settings.yandex_search_api_key or token)
     folder_note = " Folder ID is configured." if settings.yandex_search_folder_id else " Folder ID is not configured; API may reject requests if your Search API setup requires it."
     return WordstatConnectionCheck(
@@ -186,7 +186,7 @@ def debug_wordstat_connection(
     db: Session = Depends(get_db),
     current: CurrentUser = Depends(get_current_session_user),
 ) -> dict[str, Any]:
-    token = get_latest_yandex_access_token(db)
+    token = get_latest_yandex_access_token(db, organization_id=current.organization.id)
     connector = YandexWordstatConnector(
         api_key=settings.yandex_search_api_key,
         access_token=token,
@@ -306,7 +306,7 @@ def get_wordstat_dynamics_batch(
     db: Session = Depends(get_db),
     current: CurrentUser = Depends(get_current_session_user),
 ) -> dict[str, Any]:
-    connector = _wordstat_connector(db)
+    connector = _wordstat_connector(db, organization_id=current.organization.id)
     if not connector.is_configured:
         raise HTTPException(status_code=404, detail="Connect a Yandex account or set YANDEX_SEARCH_API_KEY before requesting Wordstat data.")
     try:
