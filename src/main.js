@@ -1850,6 +1850,201 @@ function getEditableFieldTarget(target) {
   return label?.querySelector?.('input, textarea, select, [contenteditable="true"]') || null;
 }
 
+const CABINET_ACTION_CLICK_SELECTOR = [
+  '[data-journal-apply-filters]',
+  '[data-journal-reset-filters]',
+  '[data-journal-refresh]',
+  '[data-journal-load-more]',
+  '[data-logout]',
+  '[data-auth-back]',
+  '[data-open-settings]',
+  '[data-client-menu-toggle]',
+  '[data-client-id]',
+  '[data-select-client]',
+  '[data-sync-client]',
+  '[data-load-performance]',
+  '[data-load-optimization-plan]',
+  '[data-load-optimization-actions]',
+  '[data-create-optimization-drafts]',
+  '[data-update-optimization-action]',
+  '[data-preview-optimization-action]',
+  '[data-refresh-client-yandex]',
+  '[data-bind-yandex-account]',
+  '[data-unbind-yandex]',
+  '[data-reset-business-context]',
+  '[data-copy-text]',
+  '[data-reset-client-settings]',
+  '[data-delete-client]',
+  '[data-ai-prompt-debug]',
+  '[data-client-ai-recommendations]',
+  '[data-ai-chat-sample]',
+  '[data-ai-prompt]',
+  '[data-integration="yandex-direct"]',
+].join(',');
+
+function getCabinetActionClickTarget(target) {
+  return target?.closest?.(CABINET_ACTION_CLICK_SELECTOR) || null;
+}
+
+async function handleCabinetActionClick(event) {
+  if (event.target.closest('[data-journal-apply-filters], [data-journal-reset-filters], [data-journal-refresh], [data-journal-load-more]')) {
+    await journalEventHandlers.handleJournalClickEvent(event);
+    return true;
+  }
+  if (event.target.closest('[data-logout]')) {
+    clearSession();
+    window.location.href = 'login.html';
+    return true;
+  }
+  if (event.target.closest('[data-auth-back]')) {
+    authStep = 'email';
+    authStatus = '';
+    authCode = '';
+    render();
+    return true;
+  }
+  if (event.target.closest('[data-open-settings]')) {
+    const panel = app.querySelector('[data-settings-panel]');
+    if (panel) panel.hidden = !panel.hidden;
+    return true;
+  }
+  if (event.target.closest('[data-client-menu-toggle]')) {
+    const menu = app.querySelector('[data-client-menu]');
+    if (menu) menu.hidden = !menu.hidden;
+    return true;
+  }
+  const clientButton = event.target.closest('[data-client-id], [data-select-client]');
+  if (clientButton) {
+    selectedClientId = clientButton.dataset.clientId || clientButton.dataset.selectClient;
+    saveSelectedClientId(selectedClientId);
+    applyClientScopeResetPatch((patch) => {
+      businessContext = patch.businessContext;
+      businessContextDraft = patch.businessContextDraft;
+      businessContextLoadedFor = '';
+      clientYandexIntegration = patch.clientYandexIntegration;
+      syncJobs = patch.syncJobs;
+      perfSummary = patch.perfSummary;
+      optimizationPlan = patch.optimizationPlan;
+      optimizationActions = patch.optimizationActions;
+      optimizationActionsLoadedFor = patch.optimizationActionsLoadedFor;
+      optimizationExecutionPreviews = patch.optimizationExecutionPreviews;
+      journalState = createInitialJournalState();
+      journalState.filters = createDefaultJournalFilters({ clientId: selectedClientId || null });
+      journalLoadedFor = patch.journalLoadedFor;
+      activeView = patch.activeView;
+    }, createClientScopeResetPatch());
+    resetAiClientScopedState(aiFeatureState);
+    void logJournalEvent(createClientSelectedJournalEvent({
+      client: currentClient(),
+      actor: currentJournalActor(),
+    }));
+    render();
+    return true;
+  }
+  if (event.target.closest('[data-sync-client]')) {
+    await startSync();
+    return true;
+  }
+  if (event.target.closest('[data-load-performance]')) {
+    await loadPerformanceSummary();
+    return true;
+  }
+  if (event.target.closest('[data-load-optimization-plan]')) {
+    await loadOptimizationPlan();
+    return true;
+  }
+  if (event.target.closest('[data-load-optimization-actions]')) {
+    await loadOptimizationActions(true);
+    return true;
+  }
+  if (event.target.closest('[data-create-optimization-drafts]')) {
+    await createOptimizationDraftsFromPlan();
+    return true;
+  }
+  const updateActionButton = event.target.closest('[data-update-optimization-action]');
+  if (updateActionButton) {
+    await updateOptimizationActionStatus(updateActionButton.dataset.updateOptimizationAction, updateActionButton.dataset.status);
+    return true;
+  }
+  const previewActionButton = event.target.closest('[data-preview-optimization-action]');
+  if (previewActionButton) {
+    await loadOptimizationExecutionPreview(previewActionButton.dataset.previewOptimizationAction);
+    return true;
+  }
+  if (event.target.closest('[data-refresh-client-yandex]')) {
+    await loadClientYandexIntegration(true);
+    return true;
+  }
+  const bindYandexButton = event.target.closest('[data-bind-yandex-account]');
+  if (bindYandexButton) {
+    await bindClientYandexAccount(bindYandexButton.dataset.bindYandexAccount);
+    return true;
+  }
+  if (event.target.closest('[data-unbind-yandex]')) {
+    await unbindClientYandexAccount();
+    return true;
+  }
+  if (event.target.closest('[data-reset-business-context]')) {
+    businessContextDraft = businessContext || defaultBusinessContext();
+    render();
+    return true;
+  }
+  const copyButton = event.target.closest('[data-copy-text]');
+  if (copyButton) {
+    await navigator.clipboard?.writeText(copyButton.dataset.copyText || '');
+    return true;
+  }
+  if (event.target.closest('[data-reset-client-settings]')) {
+    clientSettingsDraft = null;
+    render();
+    return true;
+  }
+  const deleteButton = event.target.closest('[data-delete-client]');
+  if (deleteButton) {
+    await deleteClient(deleteButton.dataset.deleteClient);
+    return true;
+  }
+  if (await handleAiClickEvent(event, {
+    loadPromptDebug: loadAiPromptDebug,
+    requestRecommendations: requestAiRecommendations,
+    setChatInput: (value) => {
+      aiFeatureState.chat.input = value;
+    },
+    generateInsight: generateAiInsight,
+    promptFor: aiPromptFor,
+    render,
+  })) return true;
+  const integrationButton = event.target.closest('[data-integration="yandex-direct"]');
+  if (integrationButton) {
+    await startYandexOAuthFlow({
+      integrationsService,
+      onStart: (message) => {
+        integrationStatus.message = message;
+        render();
+      },
+      onRedirect: (authUrl) => {
+        window.location.href = authUrl;
+      },
+      onError: (message) => {
+        integrationStatus = { ...integrationStatus, message };
+        render();
+      },
+    });
+    return true;
+  }
+  return false;
+}
+
+document.addEventListener('click', (event) => {
+  const actionTarget = getCabinetActionClickTarget(event.target);
+  if (!actionTarget || !app.contains(actionTarget) || getEditableFieldTarget(event.target)) {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  void handleCabinetActionClick(event);
+}, true);
+
 app.addEventListener('submit', async (event) => {
   if (event.target.closest('[data-journal-create-form]')) {
     await journalEventHandlers.handleJournalSubmitEvent(event);
@@ -1978,150 +2173,7 @@ app.addEventListener('click', async (event) => {
     render();
     return;
   }
-  if (event.target.closest('[data-journal-apply-filters], [data-journal-reset-filters], [data-journal-refresh], [data-journal-load-more]')) {
-    await journalEventHandlers.handleJournalClickEvent(event);
-    return;
-  }
-  if (event.target.closest('[data-logout]')) {
-    clearSession();
-    window.location.href = 'login.html';
-    return;
-  }
-  if (event.target.closest('[data-auth-back]')) {
-    authStep = 'email';
-    authStatus = '';
-    authCode = '';
-    render();
-    return;
-  }
-  if (event.target.closest('[data-open-settings]')) {
-    const panel = app.querySelector('[data-settings-panel]');
-    if (panel) panel.hidden = !panel.hidden;
-    return;
-  }
-  if (event.target.closest('[data-client-menu-toggle]')) {
-    const menu = app.querySelector('[data-client-menu]');
-    if (menu) menu.hidden = !menu.hidden;
-    return;
-  }
-  const clientButton = event.target.closest('[data-client-id], [data-select-client]');
-  if (clientButton) {
-    selectedClientId = clientButton.dataset.clientId || clientButton.dataset.selectClient;
-    saveSelectedClientId(selectedClientId);
-    applyClientScopeResetPatch((patch) => {
-      businessContext = patch.businessContext;
-      businessContextDraft = patch.businessContextDraft;
-      businessContextLoadedFor = '';
-      clientYandexIntegration = patch.clientYandexIntegration;
-      syncJobs = patch.syncJobs;
-      perfSummary = patch.perfSummary;
-      optimizationPlan = patch.optimizationPlan;
-      optimizationActions = patch.optimizationActions;
-      optimizationActionsLoadedFor = patch.optimizationActionsLoadedFor;
-      optimizationExecutionPreviews = patch.optimizationExecutionPreviews;
-      journalState = createInitialJournalState();
-      journalState.filters = createDefaultJournalFilters({ clientId: selectedClientId || null });
-      journalLoadedFor = patch.journalLoadedFor;
-      activeView = patch.activeView;
-    }, createClientScopeResetPatch());
-    resetAiClientScopedState(aiFeatureState);
-    void logJournalEvent(createClientSelectedJournalEvent({
-      client: currentClient(),
-      actor: currentJournalActor(),
-    }));
-    render();
-    return;
-  }
-  if (event.target.closest('[data-sync-client]')) {
-    await startSync();
-    return;
-  }
-  if (event.target.closest('[data-load-performance]')) {
-    await loadPerformanceSummary();
-    return;
-  }
-  if (event.target.closest('[data-load-optimization-plan]')) {
-    await loadOptimizationPlan();
-    return;
-  }
-  if (event.target.closest('[data-load-optimization-actions]')) {
-    await loadOptimizationActions(true);
-    return;
-  }
-  if (event.target.closest('[data-create-optimization-drafts]')) {
-    await createOptimizationDraftsFromPlan();
-    return;
-  }
-  const updateActionButton = event.target.closest('[data-update-optimization-action]');
-  if (updateActionButton) {
-    await updateOptimizationActionStatus(updateActionButton.dataset.updateOptimizationAction, updateActionButton.dataset.status);
-    return;
-  }
-  const previewActionButton = event.target.closest('[data-preview-optimization-action]');
-  if (previewActionButton) {
-    await loadOptimizationExecutionPreview(previewActionButton.dataset.previewOptimizationAction);
-    return;
-  }
-  if (event.target.closest('[data-refresh-client-yandex]')) {
-    await loadClientYandexIntegration(true);
-    return;
-  }
-  const bindYandexButton = event.target.closest('[data-bind-yandex-account]');
-  if (bindYandexButton) {
-    await bindClientYandexAccount(bindYandexButton.dataset.bindYandexAccount);
-    return;
-  }
-  if (event.target.closest('[data-unbind-yandex]')) {
-    await unbindClientYandexAccount();
-    return;
-  }
-  if (event.target.closest('[data-reset-business-context]')) {
-    businessContextDraft = businessContext || defaultBusinessContext();
-    render();
-    return;
-  }
-  const copyButton = event.target.closest('[data-copy-text]');
-  if (copyButton) {
-    await navigator.clipboard?.writeText(copyButton.dataset.copyText || '');
-    return;
-  }
-  if (event.target.closest('[data-reset-client-settings]')) {
-    clientSettingsDraft = null;
-    render();
-    return;
-  }
-  const deleteButton = event.target.closest('[data-delete-client]');
-  if (deleteButton) {
-    await deleteClient(deleteButton.dataset.deleteClient);
-    return;
-  }
-  if (await handleAiClickEvent(event, {
-    loadPromptDebug: loadAiPromptDebug,
-    requestRecommendations: requestAiRecommendations,
-    setChatInput: (value) => {
-      aiFeatureState.chat.input = value;
-    },
-    generateInsight: generateAiInsight,
-    promptFor: aiPromptFor,
-    render,
-  })) return;
-  const integrationButton = event.target.closest('[data-integration="yandex-direct"]');
-  if (integrationButton) {
-    await startYandexOAuthFlow({
-      integrationsService,
-      onStart: (message) => {
-        integrationStatus.message = message;
-        render();
-      },
-      onRedirect: (authUrl) => {
-        window.location.href = authUrl;
-      },
-      onError: (message) => {
-        integrationStatus = { ...integrationStatus, message };
-        render();
-      },
-    });
-  }
+  if (await handleCabinetActionClick(event)) return;
 });
 async function loadIntegrationStatus() {
   await loadIntegrationStatusFlow({
