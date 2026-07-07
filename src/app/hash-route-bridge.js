@@ -57,6 +57,12 @@ function syncInitialRoute() {
 
 function bindRouteClicks() {
   document.addEventListener('click', (event) => {
+    const editableTarget = event.target.closest?.('input, textarea, select, [contenteditable="true"]');
+    const editableLabel = event.target.closest?.('label')?.querySelector?.('input, textarea, select, [contenteditable="true"]');
+    if (editableTarget || editableLabel) {
+      event.stopPropagation();
+      return;
+    }
     const routeLink = event.target.closest?.(ROUTE_LINK_SELECTOR);
     if (!routeLink || routeLink.closest?.('[data-page="landing"]')) {
       return;
