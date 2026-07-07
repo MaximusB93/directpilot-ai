@@ -3,7 +3,7 @@ export const CLIENTS_PAGE_ID = 'clients';
 export const clientsPage = {
   id: CLIENTS_PAGE_ID,
   title: 'Клиенты',
-  description: 'Карточки клиентов, выбранный клиент, настройки Direct login, Метрики, целей и fallback-режим.',
+  description: 'Карточки клиентов, выбранный клиент, настройки Direct login, Метрики и целей.',
 };
 
 export function clientsPageContract() {
@@ -54,7 +54,7 @@ export function renderClientCreatePanel({
     <section class="panel clientConnectPanel">
       <div>
         <h3>Добавить клиента</h3>
-        <p>При доступном backend клиенты сохраняются в API и загружаются оттуда при каждом обновлении страницы. Если backend недоступен — включается fallback режим c localStorage.</p>
+        <p>Создайте отдельную карточку под каждый рекламный аккаунт или проект.</p>
       </div>
       <form class="clientConnectForm" data-client-form>
         <input name="name" value="${escapeHtml(clientDraftName)}" placeholder="Название клиента" autocomplete="organization" required />
@@ -62,7 +62,10 @@ export function renderClientCreatePanel({
         <input name="metricaCounter" value="${escapeHtml(clientDraftMetricaCounter)}" placeholder="ID счётчика Метрики" inputmode="numeric" autocomplete="off" />
         <button class="approveButton" type="submit">Добавить клиента</button>
       </form>
-      <div class="authStatus integrationStatus">${escapeHtml(backendClientsStatus)}</div>
+      <details class="quietDetails">
+        <summary>Технический статус хранения</summary>
+        <div class="authStatus integrationStatus">${escapeHtml(backendClientsStatus)}</div>
+      </details>
       ${clientFormStatus ? `<div class="authStatus integrationStatus">${escapeHtml(clientFormStatus)}</div>` : ''}
     </section>
   `;
@@ -105,6 +108,15 @@ export function renderClientSettingsPanel({
 }
 
 export function renderClientGrid({ accountClients, selectedClientId, escapeHtml }) {
+  if (!accountClients.length) {
+    return `
+      <section class="panel emptyStatePanel">
+        <h3>Клиентов пока нет</h3>
+        <p>Добавьте первого клиента выше. После этого появятся настройки Direct, Метрики, целей и интеграций.</p>
+      </section>
+    `;
+  }
+
   return `
     <div class="clientGrid">${accountClients.map((client) => `<article class="clientCard ${client.id === selectedClientId ? 'selected' : ''}"><span>${escapeHtml(client.segment || 'Клиент')}</span><h3>${escapeHtml(client.name)}</h3><p>Direct: ${escapeHtml(client.directLogin || 'Не подключен')}</p><p>Метрика: ${escapeHtml(client.metricaCounter || 'Не подключен')}</p><button data-select-client="${escapeHtml(client.id)}">${client.id === selectedClientId ? 'Выбран' : 'Выбрать'}</button></article>`).join('')}</div>
   `;

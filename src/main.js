@@ -116,9 +116,12 @@ const navItems = [
   { id: 'integrations', label: 'Интеграции', icon: '🔌' },
   { id: 'ai', label: 'AI-аналитик', icon: '🧠' },
   { id: 'optimization', label: 'Оптимизация', icon: '🎯' },
+];
+const utilityNavItems = [
   { id: 'wordstat', label: 'Wordstat', icon: '📈' },
   { id: 'journal', label: 'Журнал', icon: '🕘' },
 ];
+const allNavItems = [...navItems, ...utilityNavItems];
 function normalizeAppView(view) {
   return page === 'app' ? normalizeAppRouteId(view) : view;
 }
@@ -387,13 +390,19 @@ function renderShell(content) {
           ${showClientSelector ? `<small>${escapeHtml(client.directLogin || 'Direct не подключен')}</small>` : ''}
         </div>
         <nav>${navItems.map((item) => `<button class="${activeView === item.id ? 'active' : ''}" data-view="${item.id}"><span>${item.icon}</span>${item.label}</button>`).join('')}</nav>
+        <details class="sidebarUtility">
+          <summary>Дополнительно</summary>
+          <div class="sidebarUtilityNav">
+            ${utilityNavItems.map((item) => `<button class="${activeView === item.id ? 'active' : ''}" data-view="${item.id}"><span>${item.icon}</span>${item.label}</button>`).join('')}
+          </div>
+        </details>
         <button class="logoutButton" data-logout>Выйти</button>
       </aside>
       <main class="dashboard">
         <header class="dashboardHeader">
           <div>
             <span class="eyebrow">Кабинет</span>
-            <h1>${escapeHtml(activeView === 'dashboard' ? 'Обзор проекта' : navItems.find((item) => item.id === activeView)?.label || 'DirectPilot')}</h1>
+            <h1>${escapeHtml(activeView === 'dashboard' ? 'Обзор проекта' : allNavItems.find((item) => item.id === activeView)?.label || 'DirectPilot')}</h1>
           </div>
           <div class="headerActions">
             ${showClientSelector ? renderClientSelector() : ''}
@@ -401,9 +410,40 @@ function renderShell(content) {
           </div>
         </header>
         ${renderSettingsPanel()}
+        ${showClientSelector ? renderClientContextStrip(client) : ''}
         ${content}
       </main>
     </div>
+  `;
+}
+
+function renderClientContextStrip(client = currentClient()) {
+  const hasClient = Boolean(client?.id);
+  const directReady = Boolean(client?.directLogin && client.directLogin !== 'Не подключен');
+  const metricaReady = Boolean(client?.metricaCounter && client.metricaCounter !== 'Не подключен');
+  const goals = client?.conversionGoalIds || client?.mainGoalId || '';
+  const goalsReady = Boolean(goals);
+  const yandexReady = Boolean(client?.yandexAccountId || clientYandexIntegration?.selected_account?.id || clientYandexIntegration?.yandex_account_id);
+  const latestJob = syncJobs[0];
+  const syncReady = latestJob?.status === 'completed' || hasPerformanceData();
+  const syncStatus = syncLoading ? 'loading' : latestJob?.status === 'failed' ? 'error' : syncReady ? 'ready' : 'pending';
+  const item = (label, value, status) => `
+    <article class="clientContextItem ${badgeClassForStatus(status)}">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value)}</strong>
+      <em>${escapeHtml(compactStatusLabel(status))}</em>
+    </article>
+  `;
+
+  return `
+    <section class="clientContextStrip" aria-label="Рабочий контекст клиента">
+      ${item('Клиент', hasClient ? client.name || 'Без названия' : 'Не выбран', hasClient ? 'ready' : 'action_needed')}
+      ${item('Direct', directReady ? client.directLogin : 'укажите логин', directReady ? 'ready' : 'action_needed')}
+      ${item('Метрика', metricaReady ? client.metricaCounter : 'укажите счётчик', metricaReady ? 'ready' : 'action_needed')}
+      ${item('Цели', goalsReady ? goals : 'укажите цели', goalsReady ? 'ready' : 'action_needed')}
+      ${item('Яндекс', yandexReady ? 'аккаунт привязан' : 'не привязан', yandexReady ? 'ready' : 'action_needed')}
+      ${item('Sync', latestJob ? syncJobStatusLabel(latestJob.status) : 'нет запусков', syncStatus)}
+    </section>
   `;
 }
 
@@ -604,6 +644,7 @@ function currentAiModelState() {
     selectedAiModel: aiFeatureState.model.selectedModel,
     customAiModel: aiFeatureState.model.customModel,
     selectedAiPreset: aiFeatureState.model.selectedPreset,
+    aiResolvedMaxTokens: activeAiBudget().maxTokens,
     aiMaxTokensMode: aiFeatureState.model.maxTokensMode,
     aiCompactContext: aiFeatureState.model.compactContext,
     aiToolResultsMode: aiFeatureState.model.toolResultsMode,
@@ -826,6 +867,10 @@ function aiPromptFor(type) {
     recommendations: `Сформируй практический план оптимизации Яндекс.Директа. ${base} Раздели рекомендации на быстрые правки, гипотезы и риски.`,
     report: `Подготовь управленческий отчёт для клиента. ${base} Опиши результаты, проблемы, следующие шаги и вопросы к клиенту.`,
     questions: `Составь список уточняющих вопросов к клиенту, чтобы улучшить аналитику и рекомендации. ${base}`,
+    critical: `Найди критичные проблемы по выбранному клиенту. ${base} Сфокусируйся на расходе без конверсий по целям, высоком CPA, низком CTR и рисках трекинга.`,
+    search_queries: `Проанализируй поисковые запросы. ${base} Найди нерелевантный интент, кандидатов в минус-слова и объясни риски исключения запросов.`,
+    quick_wins: `Покажи quick wins по проекту. ${base} Дай короткий список действий, которые можно проверить без глубокой перестройки кампаний.`,
+    yesterday: `Разбери вчерашний день по кампаниям. ${base} Не делай выводы о динамике, если нет данных для сравнения; сфокусируйся на расходе, CTR, CPA и конверсиях по целям.`,
   };
   return prompts[type] || prompts.audit;
 }
@@ -1151,17 +1196,20 @@ function renderSyncCenter() {
       <div class="syncStatusGrid">
         <article><span>Готовность</span><strong>${canRunSync() ? 'Можно запускать' : 'Нужен Direct login'}</strong></article>
         <article><span>Последний статус</span><strong>${syncJobs[0] ? syncJobStatusLabel(syncJobs[0].status) : 'Нет запусков'}</strong></article>
-        <article><span>Backend</span><strong>${backendClientsAvailable ? 'Доступен' : 'Fallback'}</strong></article>
+        <article><span>Данные кабинета</span><strong>${backendClientsAvailable ? 'API доступен' : 'локальный режим'}</strong></article>
       </div>
       ${syncStatusMessage ? `<div class="authStatus integrationStatus">${escapeHtml(syncStatusMessage)}</div>` : ''}
-      <div class="syncJobs">
-        ${syncJobsLoading ? '<p>Загружаем историю...</p>' : syncJobs.length ? syncJobs.slice(0, 5).map((job) => `
-          <article>
-            <div><strong>${syncJobStatusLabel(job.status)}</strong><span>${escapeHtml(job.message || 'Без сообщения')}</span></div>
-            <small>${normalizeDate(job.created_at)}</small>
-          </article>
-        `).join('') : '<p>Истории синхронизаций пока нет.</p>'}
-      </div>
+      <details class="quietDetails">
+        <summary>История синхронизаций</summary>
+        <div class="syncJobs">
+          ${syncJobsLoading ? '<p>Загружаем историю...</p>' : syncJobs.length ? syncJobs.slice(0, 5).map((job) => `
+            <article>
+              <div><strong>${syncJobStatusLabel(job.status)}</strong><span>${escapeHtml(job.message || 'Без сообщения')}</span></div>
+              <small>${normalizeDate(job.created_at)}</small>
+            </article>
+          `).join('') : '<p>Истории синхронизаций пока нет.</p>'}
+        </div>
+      </details>
     </section>
   `;
 }
@@ -1196,7 +1244,8 @@ function renderSyncDiagnosticsPanel(compact = false) {
 function renderYesterdaySummaryPanel() {
   const campaignsCount = perfSummary?.campaigns?.length || 0;
   const totalSpend = perfSummary?.totalSpend || 0;
-  const totalConversions = perfSummary?.totalConversions || 0;
+  const goalConversions = perfSummary?.goalConversionsTotal ?? perfSummary?.syncDiagnostics?.goalConversionsTotal ?? 0;
+  const selectedGoals = perfSummary?.selectedGoalIds?.length ? perfSummary.selectedGoalIds.join(', ') : currentClient().conversionGoalIds || currentClient().mainGoalId || '';
   const candidateNegatives = perfSummary?.searchQueryInsights?.candidateNegativeKeywords || 0;
   return `
     <section class="panel summaryPanel">
@@ -1211,9 +1260,10 @@ function renderYesterdaySummaryPanel() {
       <div class="kpiGrid">
         <article class="kpi"><span>Кампаний</span><strong>${formatNumberSafe(campaignsCount)}</strong></article>
         <article class="kpi"><span>Расход</span><strong>${formatMoney(totalSpend)}</strong></article>
-        <article class="kpi"><span>Конверсий</span><strong>${formatNumberSafe(totalConversions)}</strong></article>
+        <article class="kpi"><span>Конверсии по целям</span><strong>${formatNumberSafe(goalConversions)}</strong></article>
         <article class="kpi"><span>Минус-слова</span><strong>${formatNumberSafe(candidateNegatives)}</strong></article>
       </div>
+      ${selectedGoals ? `<div class="authStatus integrationStatus"><strong>Цели:</strong> ${escapeHtml(selectedGoals)}</div>` : '<div class="authStatus integrationStatus">Укажите ID целей Метрики/Директа, чтобы считать CPA по целям.</div>'}
       ${!hasPerformanceData() ? '<div class="authStatus integrationStatus">Данных пока нет. Запустите синхронизацию или проверьте настройки клиента.</div>' : ''}
     </section>
   `;
@@ -1251,20 +1301,22 @@ function renderYandexDirectAuditPanel(compact = false) {
 function renderPerformanceSummaryPanel() {
   const campaignsData = perfSummary?.campaigns || [];
   const insights = perfSummary?.searchQueryInsights;
+  const campaignGoalConversions = (campaign) => campaign.goal_conversions ?? campaign.goalConversions ?? campaign.conversions_used ?? campaign.conversionsUsed ?? 0;
+  const campaignGoalCpa = (campaign) => campaign.cpa_used ?? campaign.cpaUsed ?? campaign.goal_cpa ?? campaign.goalCpa ?? campaign.cpa ?? 0;
   return `
     <section class="panel performancePanel">
       <div class="panelHeader">
         <div>
-          <h3>Performance summary</h3>
-          <p>Кампании, CPA и поисковые запросы, которые AI использует для рекомендаций.</p>
+          <h3>Сводка эффективности</h3>
+          <p>Кампании, CPA по целям и поисковые запросы, которые AI использует для рекомендаций.</p>
         </div>
         <button class="secondaryButton" data-load-performance ${selectedClientId && !perfLoading ? '' : 'disabled'}>${perfLoading ? 'Загрузка...' : 'Обновить'}</button>
       </div>
       ${campaignsData.length ? `
         <div class="dataTableWrap">
           <table class="dataTable">
-            <thead><tr><th>Кампания</th><th>Расход</th><th>Конверсии</th><th>CPA</th></tr></thead>
-            <tbody>${campaignsData.slice(0, 8).map((campaign) => `<tr><td>${escapeHtml(campaign.name)}</td><td>${formatMoney(campaign.cost || 0)}</td><td>${formatNumberSafe(campaign.conversions || 0)}</td><td>${formatMoney(campaign.cpa || 0)}</td></tr>`).join('')}</tbody>
+            <thead><tr><th>Кампания</th><th>Расход</th><th>Конверсии по целям</th><th>CPA по целям</th></tr></thead>
+            <tbody>${campaignsData.slice(0, 8).map((campaign) => `<tr><td>${escapeHtml(campaign.name)}</td><td>${formatMoney(campaign.cost || 0)}</td><td>${formatNumberSafe(campaignGoalConversions(campaign))}</td><td>${formatMoney(campaignGoalCpa(campaign))}</td></tr>`).join('')}</tbody>
           </table>
         </div>
       ` : '<div class="authStatus integrationStatus">Кампаний пока нет. Нужна синхронизация.</div>'}

@@ -657,9 +657,171 @@ body[data-page="app"] pre {
   line-height: 1.45 !important;
 }
 
+body[data-page="app"] .sidebarUtility {
+  display: grid !important;
+  gap: 8px !important;
+  margin-top: -6px !important;
+}
+
+body[data-page="app"] .sidebarUtility summary {
+  padding: 8px 10px !important;
+  border-radius: 10px !important;
+  color: #64748b !important;
+  font-size: 12px !important;
+  font-weight: 950 !important;
+}
+
+body[data-page="app"] .sidebarUtilityNav {
+  display: grid !important;
+  gap: 6px !important;
+}
+
+body[data-page="app"] .clientContextStrip {
+  display: grid !important;
+  grid-template-columns: repeat(6, minmax(0, 1fr)) !important;
+  gap: 10px !important;
+  margin: 0 0 16px !important;
+}
+
+body[data-page="app"] .clientContextItem {
+  display: grid !important;
+  gap: 4px !important;
+  min-width: 0 !important;
+  padding: 12px !important;
+  border: 1px solid #dfe7f2 !important;
+  border-radius: 14px !important;
+  background: #ffffff !important;
+}
+
+body[data-page="app"] .clientContextItem.ready {
+  border-color: #bbf7d0 !important;
+  background: #f7fffb !important;
+}
+
+body[data-page="app"] .clientContextItem.pending,
+body[data-page="app"] .clientContextItem.action_needed,
+body[data-page="app"] .clientContextItem.blocked {
+  border-color: #fde68a !important;
+  background: #fffbeb !important;
+}
+
+body[data-page="app"] .clientContextItem span,
+body[data-page="app"] .clientContextItem em {
+  color: #64748b !important;
+  font-size: 11px !important;
+  line-height: 1.25 !important;
+  font-style: normal !important;
+  font-weight: 900 !important;
+}
+
+body[data-page="app"] .clientContextItem strong {
+  color: #0f172a !important;
+  font-size: 13px !important;
+  line-height: 1.25 !important;
+  font-weight: 950 !important;
+  overflow-wrap: anywhere !important;
+}
+
+body[data-page="app"] .nextStepFocus {
+  display: grid !important;
+  gap: 6px !important;
+  margin: 14px 0 !important;
+  padding: 16px !important;
+  border: 1px solid #bfdbfe !important;
+  border-radius: 16px !important;
+  background: #eff6ff !important;
+}
+
+body[data-page="app"] .nextStepFocus span,
+body[data-page="app"] .aiModelSummary span,
+body[data-page="app"] .previewList strong {
+  color: #475569 !important;
+  font-size: 12px !important;
+  font-weight: 950 !important;
+}
+
+body[data-page="app"] .nextStepFocus strong {
+  color: #0f172a !important;
+  font-size: clamp(20px, 1.8vw, 28px) !important;
+  line-height: 1.15 !important;
+  font-weight: 950 !important;
+  letter-spacing: -0.035em !important;
+}
+
+body[data-page="app"] .quietDetails {
+  margin-top: 12px !important;
+  padding: 12px !important;
+  border: 1px solid #e2e8f0 !important;
+  border-radius: 14px !important;
+  background: #f8fafc !important;
+}
+
+body[data-page="app"] .quietDetails summary {
+  color: #1d4ed8 !important;
+  font-size: 13px !important;
+  font-weight: 950 !important;
+  cursor: pointer !important;
+}
+
+body[data-page="app"] .aiModelSummary,
+body[data-page="app"] .methodologyList,
+body[data-page="app"] .executionPreviewCard,
+body[data-page="app"] .previewList {
+  display: grid !important;
+  gap: 10px !important;
+}
+
+body[data-page="app"] .aiModelSummary {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)) !important;
+}
+
+body[data-page="app"] .aiModelSummary article {
+  min-width: 0 !important;
+  padding: 14px !important;
+  border: 1px solid #dfe7f2 !important;
+  border-radius: 14px !important;
+  background: #ffffff !important;
+}
+
+body[data-page="app"] .aiModelSummary strong {
+  display: block !important;
+  margin-top: 6px !important;
+  color: #0f172a !important;
+  font-size: 14px !important;
+  line-height: 1.35 !important;
+  font-weight: 950 !important;
+  overflow-wrap: anywhere !important;
+}
+
+body[data-page="app"] .methodologyList {
+  margin: 0 !important;
+  padding-left: 22px !important;
+  color: #334155 !important;
+  font-size: 14px !important;
+  line-height: 1.55 !important;
+  font-weight: 700 !important;
+}
+
+body[data-page="app"] .executionPreviewCard {
+  margin-top: 10px !important;
+}
+
+body[data-page="app"] .previewList ul {
+  margin: 0 !important;
+  padding-left: 18px !important;
+  color: #334155 !important;
+  font-size: 13px !important;
+  line-height: 1.5 !important;
+  font-weight: 700 !important;
+}
+
 @media (max-width: 1100px) {
   body[data-page="app"] .appShell {
     grid-template-columns: 220px minmax(0, 1fr) !important;
+  }
+
+  body[data-page="app"] .clientContextStrip {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
   }
 
   body[data-page="app"] .dashboard {
@@ -680,6 +842,10 @@ body[data-page="app"] pre {
 
   body[data-page="app"] .sidebar nav {
     grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)) !important;
+  }
+
+  body[data-page="app"] .clientContextStrip {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
   }
 
   body[data-page="app"] .dashboardHeader,
@@ -714,6 +880,10 @@ body[data-page="app"] pre {
   body[data-page="app"] .formGrid,
   body[data-page="app"] .integrationGrid,
   body[data-page="app"] .optimizationGrid {
+    grid-template-columns: 1fr !important;
+  }
+
+  body[data-page="app"] .clientContextStrip {
     grid-template-columns: 1fr !important;
   }
 }

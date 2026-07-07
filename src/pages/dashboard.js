@@ -39,7 +39,7 @@ export function renderDashboardIntro({ clientName, hasClient, escapeHtml }) {
     <div class="pageIntro">
       <span class="eyebrow">📊 Обзор</span>
       <h2>${hasClient ? escapeHtml(clientName) : 'Подготовьте первого клиента к анализу'}</h2>
-      <p>${hasClient ? 'Здесь видно, что уже готово, что мешает синхронизации и какой следующий шаг даст максимум пользы.' : 'Создайте клиента, чтобы подключить данные, запустить синхронизацию и открыть AI-анализ.'}</p>
+      <p>${hasClient ? 'Операционный экран: следующий шаг, качество данных, сводка и что требует внимания.' : 'Создайте клиента, чтобы подключить данные, запустить синхронизацию и открыть AI-анализ.'}</p>
     </div>
   `;
 }
@@ -70,7 +70,7 @@ export function renderDashboardNextStepPanel({
         </div>
         <span class="aiStatusBadge ${badgeClassForStatus(nextAction.status)}">${escapeHtml(compactStatusLabel(nextAction.status))}</span>
       </div>
-      <div class="authStatus integrationStatus"><strong>${escapeHtml(nextAction.nextAction)}</strong></div>
+      <div class="nextStepFocus"><span>Сейчас важнее всего</span><strong>${escapeHtml(nextAction.nextAction)}</strong></div>
       <div class="kpiGrid">
         <article class="kpi green"><span>Готовность</span><strong>${formatNumberSafe(readyCount)} / ${formatNumberSafe(readinessLength)}</strong></article>
         <article class="kpi blue"><span>Клиент</span><strong>${hasClient ? 'Готово' : 'Нужно действие'}</strong></article>
@@ -78,11 +78,10 @@ export function renderDashboardNextStepPanel({
         <article class="kpi orange"><span>Кандидаты в минус-слова</span><strong>${formatNumberSafe(candidateNegativeKeywords || 0)}</strong></article>
       </div>
       <div class="heroActions">
-        ${renderActionButton('Клиенты', 'data-go-view="clients"')}
-        ${renderActionButton('Контекст бизнеса', 'data-go-view="business-context"')}
-        ${renderActionButton('Интеграции', 'data-go-view="integrations"')}
-        ${renderActionButton(syncLoading ? 'Синхронизация...' : 'Запустить синхронизацию', `data-sync-client ${canRunSync && !syncLoading ? '' : 'disabled'}`, 'primary')}
         ${renderActionButton('Перейти к шагу', `data-go-view="${escapeHtml(nextTarget)}"`, 'primary')}
+        ${renderActionButton(syncLoading ? 'Синхронизация...' : 'Запустить синхронизацию', `data-sync-client ${canRunSync && !syncLoading ? '' : 'disabled'}`)}
+        ${renderActionButton('Клиенты', 'data-go-view="clients"')}
+        ${renderActionButton('Интеграции', 'data-go-view="integrations"')}
       </div>
       ${syncStatusMessage ? `<div class="authStatus integrationStatus">${escapeHtml(syncStatusMessage)}</div>` : ''}
     </section>
@@ -109,11 +108,11 @@ export function renderDashboardConnectedPanels({
 }) {
   return `
     ${renderSyncCenter()}
+    ${renderYesterdaySummaryPanel()}
+    ${renderPerformanceSummaryPanel()}
+    ${renderYandexDirectAuditPanel(true)}
     ${renderBusinessContextPanel(true)}
     ${renderSyncDiagnosticsPanel(true)}
-    ${renderYesterdaySummaryPanel()}
-    ${renderYandexDirectAuditPanel(true)}
-    ${renderPerformanceSummaryPanel()}
   `;
 }
 
