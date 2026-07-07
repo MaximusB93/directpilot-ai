@@ -38,8 +38,8 @@ def _int(value: str | None) -> int:
     return int(float(str(value).replace(",", ".")))
 
 
-def _connector(db: Session, client_login: str | None = None) -> YandexDirectConnector:
-    token = get_latest_yandex_access_token(db)
+def _connector(db: Session, organization_id: str, client_login: str | None = None) -> YandexDirectConnector:
+    token = get_latest_yandex_access_token(db, organization_id=organization_id)
     if not token:
         raise HTTPException(status_code=404, detail="Connect a Yandex account before requesting Direct data.")
     return YandexDirectConnector(access_token=token, client_login=client_login)
@@ -50,7 +50,7 @@ def check_yandex_direct_connection(
     db: Session = Depends(get_db),
     current: CurrentUser = Depends(get_current_session_user),
 ) -> YandexDirectConnectionCheck:
-    token = get_latest_yandex_access_token(db)
+    token = get_latest_yandex_access_token(db, organization_id=current.organization.id)
     return YandexDirectConnectionCheck(
         configured=bool(token),
         can_call_api=bool(token),
@@ -66,7 +66,7 @@ def list_yandex_direct_campaigns(
     current: CurrentUser = Depends(get_current_session_user),
 ) -> list[YandexDirectCampaign]:
     try:
-        campaigns = _connector(db, client_login).list_campaigns(limit=limit)
+        campaigns = _connector(db, current.organization.id, client_login).list_campaigns(limit=limit)
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except Exception as exc:
@@ -124,7 +124,7 @@ def get_yandex_campaign_report(
         )
 
     try:
-        rows = _connector(db, client_login).get_campaign_report(
+        rows = _connector(db, current.organization.id, client_login).get_campaign_report(
             date_from=date_from,
             date_to=date_to,
             days=days,
