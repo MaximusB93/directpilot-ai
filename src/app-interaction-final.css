@@ -10,7 +10,14 @@ body[data-page="app"] .appHeader,
 body[data-page="app"] .panel,
 body[data-page="app"] .pageIntro,
 body[data-page="app"] .settingsPanel,
-body[data-page="app"] .emptyState {
+body[data-page="app"] .emptyState,
+body[data-page="app"] .clientContextStrip,
+body[data-page="app"] .quietDetails,
+body[data-page="app"] .aiModelSummary,
+body[data-page="app"] .aiChatToolbar,
+body[data-page="app"] .aiChatForm,
+body[data-page="app"] .actionList,
+body[data-page="app"] .executionPreviewCard {
   position: relative;
 }
 
@@ -41,6 +48,22 @@ body[data-page="app"] .integrationGrid,
 body[data-page="app"] .optimizationGrid,
 body[data-page="app"] .journalTimeline {
   z-index: 1 !important;
+  pointer-events: auto !important;
+}
+
+body[data-page="app"] .dashboard > *,
+body[data-page="app"] .panel > *,
+body[data-page="app"] .clientContextStrip,
+body[data-page="app"] .clientContextItem,
+body[data-page="app"] .quietDetails,
+body[data-page="app"] .aiModelSummary,
+body[data-page="app"] .aiChatToolbar,
+body[data-page="app"] .aiChatForm,
+body[data-page="app"] .actionList,
+body[data-page="app"] .optimizationAction,
+body[data-page="app"] .executionPreviewCard {
+  position: relative !important;
+  z-index: 2 !important;
   pointer-events: auto !important;
 }
 
@@ -88,7 +111,23 @@ body[data-page="app"] [data-copy-text],
 body[data-page="app"] [data-journal-apply-filters],
 body[data-page="app"] [data-journal-reset-filters],
 body[data-page="app"] [data-journal-refresh],
-body[data-page="app"] [data-journal-load-more] {
+body[data-page="app"] [data-journal-load-more],
+body[data-page="app"] [data-ai-model],
+body[data-page="app"] [data-ai-custom-model],
+body[data-page="app"] [data-ai-preset],
+body[data-page="app"] [data-ai-max-tokens-mode],
+body[data-page="app"] [data-ai-tool-results-mode],
+body[data-page="app"] [data-ai-chat-history-limit],
+body[data-page="app"] [data-ai-search-query-limit],
+body[data-page="app"] [data-ai-compact-context],
+body[data-page="app"] [data-ai-prompt-debug],
+body[data-page="app"] [data-ai-chat-campaign],
+body[data-page="app"] [data-ai-chat-sample],
+body[data-page="app"] [data-ai-prompt],
+body[data-page="app"] [data-client-ai-recommendations],
+body[data-page="app"] [data-load-ai-status],
+body[data-page="app"] [data-reset-ai-chat],
+body[data-page="app"] [data-save-ai-memory] {
   position: relative !important;
   z-index: 5 !important;
   pointer-events: auto !important;
