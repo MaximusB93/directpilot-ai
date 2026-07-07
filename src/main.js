@@ -414,7 +414,7 @@ function renderClientContextStrip(client = currentClient()) {
   const metricaReady = Boolean(client?.metricaCounter && client.metricaCounter !== 'Не подключен');
   const goals = client?.conversionGoalIds || client?.mainGoalId || '';
   const goalsReady = Boolean(goals);
-  const yandexReady = Boolean(client?.yandexAccountId || clientYandexIntegration?.selected_account?.id || clientYandexIntegration?.yandex_account_id);
+  const yandexReady = Boolean(client?.yandexAccountId || getBoundYandexAccountId());
   const latestJob = syncJobs[0];
   const syncReady = latestJob?.status === 'completed' || hasPerformanceData();
   const syncStatus = syncLoading ? 'loading' : latestJob?.status === 'failed' ? 'error' : syncReady ? 'ready' : 'pending';
@@ -436,6 +436,18 @@ function renderClientContextStrip(client = currentClient()) {
       ${item('Sync', latestJob ? syncJobStatusLabel(latestJob.status) : 'нет запусков', syncStatus)}
     </section>
   `;
+}
+
+function getBoundYandexAccount(integration = clientYandexIntegration) {
+  return integration?.bound_account
+    || integration?.selected_account
+    || integration?.boundAccount
+    || integration?.selectedAccount
+    || null;
+}
+
+function getBoundYandexAccountId(integration = clientYandexIntegration) {
+  return getBoundYandexAccount(integration)?.id || integration?.yandex_account_id || integration?.yandexAccountId || '';
 }
 
 function renderSettingsPanel() {
@@ -518,7 +530,7 @@ function getReadinessState() {
   const hasClient = Boolean(client.id);
   const hasDirectLogin = Boolean(client.directLogin && client.directLogin !== 'Не подключен');
   const hasMetrica = Boolean(client.metricaCounter && client.metricaCounter !== 'Не подключен');
-  const hasYandexBinding = Boolean(client.yandexAccountId || clientYandexIntegration?.selected_account?.id || clientYandexIntegration?.yandex_account_id);
+  const hasYandexBinding = Boolean(client.yandexAccountId || getBoundYandexAccountId());
   const hasSync = syncJobs.some((job) => job.status === 'completed') || hasPerformanceData();
   const hasGoals = Boolean(client.mainGoalId || client.conversionGoalIds);
   const hasContext = hasBusinessContextData(businessContext);
@@ -1212,7 +1224,7 @@ function renderSyncDiagnosticsPanel(compact = false) {
   if (!client.directLogin || client.directLogin === 'Не подключен') issues.push(['Direct login', 'Укажите логин Яндекс.Директа в карточке клиента.']);
   if (!client.metricaCounter || client.metricaCounter === 'Не подключен') issues.push(['Метрика', 'Укажите ID счётчика Метрики.']);
   if (!client.mainGoalId) issues.push(['Цель', 'Заполните основную цель, чтобы считать CPA.']);
-  if (!clientYandexIntegration?.selected_account && !client.yandexAccountId) issues.push(['Привязка Яндекса', 'Выберите аккаунт из OAuth-доступов во вкладке Интеграции.']);
+  if (!getBoundYandexAccount() && !client.yandexAccountId) issues.push(['Привязка Яндекса', 'Выберите аккаунт из OAuth-доступов во вкладке Интеграции.']);
   const hasProblems = issues.length > 0;
   return `
     <section class="panel diagnosticsPanel">

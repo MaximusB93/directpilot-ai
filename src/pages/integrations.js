@@ -89,7 +89,12 @@ export function renderClientYandexAccountPanel({
   escapeHtml,
 }) {
   const accounts = integrationStatus.accounts || [];
-  const selectedAccountId = String(clientYandexIntegration?.selected_account?.id || selectedClient.yandexAccountId || '');
+  const boundAccount = clientYandexIntegration?.bound_account
+    || clientYandexIntegration?.selected_account
+    || clientYandexIntegration?.boundAccount
+    || clientYandexIntegration?.selectedAccount
+    || null;
+  const selectedAccountId = String(boundAccount?.id || selectedClient.yandexAccountId || '');
   const selectedAccountBadge = renderStatusBadge({
     label: selectedAccountId ? 'Аккаунт привязан' : 'Аккаунт не выбран',
     tone: selectedAccountId ? 'success' : 'warning',
@@ -113,7 +118,7 @@ export function renderClientYandexAccountPanel({
       ${renderIntegrationStatusMessage(clientYandexStatus, { escapeHtml })}
       ${clientYandexLoading ? renderIntegrationStatusMessage('Загружаем доступные аккаунты...', { escapeHtml }) : ''}
       ${accounts.length ? `<div class="accountList">${accountCards}</div>` : renderEmptyState({ title: 'Нет доступных аккаунтов', description: 'Сначала подключите Яндекс, затем выберите аккаунт для активного клиента.' })}
-      ${clientYandexIntegration?.selected_account ? `<button class="dangerButton" data-unbind-yandex ${selectedClient.id ? '' : 'disabled'}>Отвязать аккаунт</button>` : ''}
+      ${boundAccount ? `<button class="dangerButton" data-unbind-yandex ${selectedClient.id ? '' : 'disabled'}>Отвязать аккаунт</button>` : ''}
     `,
   });
 }

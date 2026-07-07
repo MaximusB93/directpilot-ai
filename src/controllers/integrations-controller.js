@@ -62,8 +62,9 @@ export async function loadClientYandexIntegrationFlow({
 
   try {
     const payload = await integrationsService.fetchClientYandexIntegration(selectedClientId);
-    const selectedAccountId = payload.selected_account?.id || '';
-    const message = payload.selected_account ? 'Аккаунт Яндекса привязан к клиенту.' : 'Выберите аккаунт Яндекса для клиента.';
+    const selectedAccount = payload.bound_account || payload.selected_account || payload.boundAccount || payload.selectedAccount || null;
+    const selectedAccountId = selectedAccount?.id || '';
+    const message = selectedAccount ? 'Аккаунт Яндекса привязан к клиенту.' : 'Выберите аккаунт Яндекса для клиента.';
     onSuccess?.({ payload, selectedAccountId, message });
     return { status: 'success', integration: payload, selectedAccountId };
   } catch (error) {
@@ -89,9 +90,12 @@ export async function bindClientYandexAccountFlow({
   onStart?.('Привязываем аккаунт Яндекса к клиенту...');
 
   try {
-    const payload = await integrationsService.bindClientYandexIntegration(selectedClientId, accountId);
-    onSuccess?.({ payload, accountId, message: 'Аккаунт Яндекса привязан к клиенту.' });
-    return { status: 'success', integration: payload, accountId };
+    await integrationsService.bindClientYandexIntegration(selectedClientId, accountId);
+    const payload = await integrationsService.fetchClientYandexIntegration(selectedClientId);
+    const selectedAccount = payload.bound_account || payload.selected_account || payload.boundAccount || payload.selectedAccount || null;
+    const selectedAccountId = selectedAccount?.id || accountId;
+    onSuccess?.({ payload, accountId: selectedAccountId, message: 'Аккаунт Яндекса привязан к клиенту.' });
+    return { status: 'success', integration: payload, accountId: selectedAccountId };
   } catch (error) {
     const message = error.message || 'Не удалось привязать аккаунт.';
     onError?.(message, error);
@@ -114,7 +118,8 @@ export async function unbindClientYandexAccountFlow({
   onStart?.('Отвязываем аккаунт Яндекса...');
 
   try {
-    const payload = await integrationsService.unbindClientYandexIntegration(selectedClientId);
+    await integrationsService.unbindClientYandexIntegration(selectedClientId);
+    const payload = await integrationsService.fetchClientYandexIntegration(selectedClientId);
     onSuccess?.({ payload, message: 'Аккаунт отвязан от клиента.' });
     return { status: 'success', integration: payload };
   } catch (error) {
