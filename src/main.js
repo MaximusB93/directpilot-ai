@@ -1749,6 +1749,28 @@ function render() {
   }
 }
 
+let routeRenderTimer = 0;
+
+function scheduleRouteRender(routeId) {
+  if (page !== 'app') return;
+  const nextView = normalizeAppView(routeId);
+  if (activeView === nextView) return;
+  activeView = nextView;
+  if (routeRenderTimer) window.clearTimeout(routeRenderTimer);
+  routeRenderTimer = window.setTimeout(() => {
+    routeRenderTimer = 0;
+    render();
+  }, 0);
+}
+
+window.addEventListener('directpilot:route-change', (event) => {
+  scheduleRouteRender(event.detail?.routeId);
+});
+
+window.addEventListener('hashchange', () => {
+  scheduleRouteRender(window.location.hash || 'dashboard');
+});
+
 app.addEventListener('input', (event) => {
   const authInput = event.target.closest('input[name="email"], input[name="code"]');
   if (authInput?.name === 'email') authEmail = authInput.value;
@@ -1944,12 +1966,14 @@ app.addEventListener('click', async (event) => {
   }
   const viewButton = event.target.closest('[data-view]');
   if (viewButton) {
+    event.preventDefault();
     activeView = normalizeAppView(viewButton.dataset.view);
     render();
     return;
   }
   const goViewButton = event.target.closest('[data-go-view]');
   if (goViewButton) {
+    event.preventDefault();
     activeView = normalizeAppView(goViewButton.dataset.goView);
     render();
     return;
