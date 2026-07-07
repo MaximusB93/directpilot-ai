@@ -100,7 +100,7 @@ export function renderClientYandexAccountPanel({
     const selected = accountId === selectedAccountId;
     const buttonClass = selected ? 'secondaryButton' : 'approveButton';
     const buttonText = selected ? 'Привязан' : 'Привязать';
-    const selectedBadge = selected ? renderStatusBadge({ label: 'selected', tone: 'success' }) : '';
+    const selectedBadge = selected ? renderStatusBadge({ label: 'выбран', tone: 'success' }) : '';
     return `<article class="accountCard ${selected ? 'selected' : ''}"><div><strong>${escapeHtml(account.login || account.name || account.id)}</strong><span>${escapeHtml(account.id)}</span>${selectedBadge}</div><button class="${buttonClass}" data-bind-yandex-account="${escapeHtml(account.id)}" ${selected ? 'disabled' : ''}>${buttonText}</button></article>`;
   }).join('');
 

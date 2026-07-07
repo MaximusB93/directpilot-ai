@@ -86,6 +86,27 @@ export function renderBusinessContextPanel({
   });
   const emptyContext = !hasBusinessContextData(context);
 
+  if (compact) {
+    return renderPanel({
+      title: 'Контекст бизнеса',
+      subtitle: emptyContext
+        ? 'AI пока не знает нишу, офферы, ограничения и нерелевантные темы.'
+        : 'Бизнес-контекст заполнен и используется в AI-анализе.',
+      className: 'businessContextPanel compactBusinessContext',
+      actions: `<div class="panelActionsInline">${scoreBadge}<button class="secondaryButton" data-go-view="business-context">Открыть</button></div>`,
+      children: `
+        ${renderBusinessContextStatus(businessContextStatus, { escapeHtml })}
+        ${emptyContext
+          ? renderEmptyState({ title: 'Контекст не заполнен', description: 'Добавьте нишу, продукт, аудиторию, географию и ограничения, чтобы AI давал не общие советы, а рекомендации по проекту.' })
+          : `<div class="insightGrid">
+              <article><span>Ниша</span><strong>${escapeHtml(context.industry || 'не указана')}</strong></article>
+              <article><span>География</span><strong>${escapeHtml(context.geography || 'не указана')}</strong></article>
+              <article><span>Ограничения</span><strong>${escapeHtml(context.businessConstraints ? 'есть' : 'не указаны')}</strong></article>
+            </div>`}
+      `,
+    });
+  }
+
   return renderPanel({
     title: compact ? 'Контекст бизнеса для AI' : 'Контекст бизнеса',
     subtitle: compact ? 'AI учитывает эти данные при аудите и рекомендациях.' : 'Заполните информацию о бизнесе, чтобы AI не давал generic-рекомендации.',
