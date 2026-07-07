@@ -1,10 +1,10 @@
 import { resolveAppPage } from './page-router.js';
-import { currentHashRoute, navigateToRoute } from './router.js';
+import { currentHashRoute } from './router.js';
 import { normalizeRouteId } from './routes.js';
 import { setRouteId } from './state.js';
 
 const LEGACY_VIEW_PARAM = 'view';
-const ROUTE_LINK_SELECTOR = '[data-view], [data-go-view]';
+const ROUTE_LINK_SELECTOR = 'button[data-view], a[data-view], button[data-go-view], a[data-go-view], [role="button"][data-view], [role="button"][data-go-view]';
 
 function currentViewParam() {
   return new URLSearchParams(window.location.search).get(LEGACY_VIEW_PARAM) || '';
@@ -28,16 +28,16 @@ function markRouteResolution(routeId) {
 function replaceLegacyViewParam(routeId) {
   const url = new URL(window.location.href);
   url.searchParams.set(LEGACY_VIEW_PARAM, routeIdToLegacyView(routeId));
-  url.hash = routeId ? `#${routeId}` : '';
-  window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
+  url.hash = '';
+  window.history.replaceState(null, '', `${url.pathname}${url.search}`);
 }
 
 function navigateLegacyAppToRoute(routeId) {
   const normalizedRouteId = normalizeRouteId(routeId);
   const url = new URL(window.location.href);
   url.searchParams.set(LEGACY_VIEW_PARAM, routeIdToLegacyView(normalizedRouteId));
-  url.hash = `#${normalizedRouteId}`;
-  window.location.href = `${url.pathname}${url.search}${url.hash}`;
+  url.hash = '';
+  window.location.href = `${url.pathname}${url.search}`;
 }
 
 function initialRouteId() {
@@ -71,7 +71,6 @@ function bindRouteClicks() {
     const routeId = normalizeRouteId(routeLink.dataset.view || routeLink.dataset.goView || '');
     setRouteId(routeId);
     markRouteResolution(routeId);
-    navigateToRoute(routeId);
     replaceLegacyViewParam(routeId);
   }, true);
 }
