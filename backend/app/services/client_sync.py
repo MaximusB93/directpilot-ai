@@ -405,5 +405,11 @@ def run_client_sync(db: Session, client_id: str, days: int = 30) -> SyncJob:
         return job
 
 
-def list_sync_jobs(db: Session, client_id: str) -> list[SyncJob]:
-    return db.scalars(select(SyncJob).where(SyncJob.client_id == client_id).order_by(SyncJob.created_at.desc())).all()
+def list_sync_jobs(db: Session, client_id: str, *, limit: int = 20) -> list[SyncJob]:
+    safe_limit = max(1, min(limit, 50))
+    return db.scalars(
+        select(SyncJob)
+        .where(SyncJob.client_id == client_id)
+        .order_by(SyncJob.created_at.desc())
+        .limit(safe_limit)
+    ).all()

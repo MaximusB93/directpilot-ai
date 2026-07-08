@@ -25,7 +25,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.database_initialized = False
     app.state.database_initialization_error = None
     try:
-        init_db()
+        init_db(run_schema_patch=settings.database_schema_patch_on_startup)
     except Exception as exc:  # pragma: no cover - depends on deployment database availability.
         app.state.database_initialization_error = _safe_startup_error(exc)
         logger.exception(
@@ -77,6 +77,7 @@ def read_root(request: Request) -> dict[str, object]:
         "database": {
             "configured": settings.postgres_configured,
             "initialized": bool(getattr(request.app.state, "database_initialized", False)),
+            "schema_patch_on_startup": settings.database_schema_patch_on_startup,
             "error": database_error,
         },
         "docs_url": "/docs",

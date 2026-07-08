@@ -19,6 +19,7 @@ export const API_BASE = resolveApiBase();
 const API_CACHE_PREFIX = 'directpilot_api_cache_v1:';
 const API_CACHE_MAX_AGE_MS = 2 * 60 * 1000;
 const API_CACHE_STALE_MS = 20 * 60 * 1000;
+const API_REQUEST_TIMEOUT_MS = 25 * 1000;
 const API_CACHEABLE_PATHS = [
   '/clients',
   '/integrations',
@@ -146,9 +147,28 @@ function backgroundRefresh(path, options) {
   const headers = new Headers(options.headers || {});
   const token = getSessionToken();
   if (token) headers.set('Authorization', `Bearer ${token}`);
-  fetch(`${API_BASE}${path}`, { ...options, headers })
+  fetchWithTimeout(`${API_BASE}${path}`, { ...options, headers }, API_REQUEST_TIMEOUT_MS)
     .then((response) => writeApiCache(path, response))
     .catch(() => {});
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = API_REQUEST_TIMEOUT_MS) {
+  if (options.signal || typeof AbortController === 'undefined') {
+    return fetch(url, options);
+  }
+
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw new Error('Backend не ответил за 25 секунд. Попробуйте повторить запрос позже.');
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
 }
 
 export async function apiFetch(path, options = {}) {
@@ -172,7 +192,7 @@ export async function apiFetch(path, options = {}) {
     headers.set('Content-Type', 'application/json');
   }
 
-  const response = await fetch(`${API_BASE}${path}`, { ...options, headers });
+  const response = await fetchWithTimeout(`${API_BASE}${path}`, { ...options, headers });
   if (response.status === 401) {
     clearSession();
     clearApiCache();
