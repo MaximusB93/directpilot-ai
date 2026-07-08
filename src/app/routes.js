@@ -4,6 +4,11 @@ export const APP_ROUTES = Object.freeze({
     hash: '#dashboard',
     label: 'Обзор',
   },
+  diagnostics: {
+    id: 'diagnostics',
+    hash: '#diagnostics',
+    label: 'Диагностика',
+  },
   clients: {
     id: 'clients',
     hash: '#clients',

@@ -7,6 +7,13 @@ export async function startYandexOAuth() {
   return payload;
 }
 
+export async function deleteYandexAccount(clientId, accountId) {
+  const response = await apiFetch(`/clients/${clientId}/integrations/yandex/accounts/${accountId}`, { method: 'DELETE' });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.detail || 'Не удалось удалить Яндекс-аккаунт');
+  return payload;
+}
+
 export async function fetchYandexStatus() {
   const response = await apiFetch('/auth/yandex/status');
   return response.ok ? response.json() : {};
