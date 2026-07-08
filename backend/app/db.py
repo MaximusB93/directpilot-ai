@@ -1,9 +1,13 @@
 from collections.abc import Generator
+import logging
 
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import ArgumentError
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_database_url(url: str) -> str:
@@ -18,11 +22,26 @@ class Base(DeclarativeBase):
     pass
 
 
-engine = create_engine(_normalize_database_url(settings.database_url), pool_pre_ping=True) if settings.database_url else None
+def _safe_database_error(exc: Exception) -> str:
+    message = f"{type(exc).__name__}: {exc}"
+    if settings.database_url:
+        message = message.replace(settings.database_url, "[DATABASE_URL]")
+    return message
+
+
+database_engine_error: str | None = None
+try:
+    engine = create_engine(_normalize_database_url(settings.database_url), pool_pre_ping=True) if settings.database_url else None
+except (ArgumentError, ValueError) as exc:
+    database_engine_error = _safe_database_error(exc)
+    logger.exception("DATABASE_URL is configured but SQLAlchemy could not create an engine.")
+    engine = None
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False) if engine else None
 
 
 def init_db() -> None:
+    if database_engine_error:
+        raise RuntimeError(database_engine_error)
     if engine is None:
         return
     import app.models  # noqa: F401
@@ -262,7 +281,7 @@ def ensure_mvp_schema() -> None:
 
 def get_db() -> Generator[Session, None, None]:
     if SessionLocal is None:
-        raise RuntimeError("DATABASE_URL is not configured")
+        raise RuntimeError(database_engine_error or "DATABASE_URL is not configured")
     db = SessionLocal()
     try:
         yield db
