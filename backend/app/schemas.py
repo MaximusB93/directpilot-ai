@@ -317,6 +317,9 @@ class HealthResponse(BaseModel):
     status: str
     service: str
     environment: str
+    database_configured: bool | None = None
+    database_initialized: bool | None = None
+    database_error: str | None = None
 
 
 class YandexDirectConnectionCheck(BaseModel):

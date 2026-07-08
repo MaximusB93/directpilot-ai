@@ -1,17 +1,39 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+import logging
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routers import ai, approvals, audit, auth, business_context, clients, debug, health, integrations, performance_range, recommendations, wordstat, yandex_direct
 from app.core.config import settings
 from app.db import init_db
 
+logger = logging.getLogger(__name__)
+
+
+def _safe_startup_error(exc: Exception) -> str:
+    message = f"{type(exc).__name__}: {exc}"
+    if settings.database_url:
+        message = message.replace(settings.database_url, "[DATABASE_URL]")
+    return message
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    init_db()
+    app.state.database_configured = settings.postgres_configured
+    app.state.database_initialized = False
+    app.state.database_initialization_error = None
+    try:
+        init_db()
+    except Exception as exc:  # pragma: no cover - depends on deployment database availability.
+        app.state.database_initialization_error = _safe_startup_error(exc)
+        logger.exception(
+            "Database initialization failed during startup. "
+            "Health endpoints will remain available; DB-backed endpoints may fail."
+        )
+    else:
+        app.state.database_initialized = settings.postgres_configured
     yield
 
 
@@ -46,11 +68,17 @@ app.include_router(debug.router, prefix=settings.api_prefix)
 
 
 @app.get("/", tags=["health"])
-def read_root() -> dict[str, object]:
+def read_root(request: Request) -> dict[str, object]:
+    database_error = getattr(request.app.state, "database_initialization_error", None)
     return {
-        "status": "ok",
+        "status": "degraded" if database_error else "ok",
         "service": settings.service_name,
         "message": "DirectPilot AI backend is running.",
+        "database": {
+            "configured": settings.postgres_configured,
+            "initialized": bool(getattr(request.app.state, "database_initialized", False)),
+            "error": database_error,
+        },
         "docs_url": "/docs",
         "health_url": "/health",
         "api_prefix": settings.api_prefix,
