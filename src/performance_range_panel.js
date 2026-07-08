@@ -217,6 +217,7 @@ function renderPeriodPanel() {
 }
 
 function mountPeriodPanel() {
+  if (document.body.dataset.view !== 'dashboard') return;
   const workspace = document.querySelector('.workspace');
   const contextPanel = document.querySelector('.clientSourcePanel');
   if (!workspace || !contextPanel || document.querySelector('[data-performance-range-panel]')) return;
@@ -295,6 +296,7 @@ async function runPeriodAiAnalysis() {
 }
 
 document.addEventListener('change', (event) => {
+  if (!event.target.closest('[data-performance-range-panel]')) return;
   const state = periodState();
   if (event.target.matches('[data-period-preset]')) {
     state.preset = event.target.value;
@@ -308,6 +310,7 @@ document.addEventListener('change', (event) => {
 });
 
 document.addEventListener('click', (event) => {
+  if (!event.target.closest('[data-performance-range-panel]')) return;
   if (event.target.closest('[data-load-period-summary]')) {
     loadPeriodSummary();
   }

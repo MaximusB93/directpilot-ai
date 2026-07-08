@@ -112,6 +112,7 @@ if (page === 'app' && !getSessionToken()) {
 
 const navItems = [
   { id: 'dashboard', label: 'Обзор', icon: '📊' },
+  { id: 'diagnostics', label: 'Диагностика', icon: '🧪' },
   { id: 'clients', label: 'Клиенты и интеграции', icon: '👥' },
   { id: 'business-context', label: 'Контекст бизнеса', icon: '🧭' },
   { id: 'ai', label: 'AI-аналитик', icon: '🧠' },
@@ -1445,6 +1446,38 @@ function renderSyncDiagnosticsPanel(compact = false) {
   `;
 }
 
+function renderPerformanceTrendCharts(summary) {
+  const daily = Array.isArray(summary?.daily) ? summary.daily : [];
+  if (daily.length < 2) return '';
+  const metrics = [
+    ['cost', 'Расход', formatMoney],
+    ['clicks', 'Клики', formatNumberSafe],
+    ['goalConversions', 'Конверсии по целям', formatNumberSafe],
+    ['ctr', 'CTR', formatPercent],
+  ];
+  const charts = metrics.map(([key, label, formatter]) => {
+    const values = daily.map((item) => Number(item?.[key] || 0));
+    const max = Math.max(...values, 0);
+    const min = Math.min(...values, 0);
+    const spread = Math.max(max - min, 1);
+    const points = values.map((value, index) => {
+      const x = daily.length === 1 ? 50 : (index / (daily.length - 1)) * 100;
+      const y = 38 - ((value - min) / spread) * 30;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(' ');
+    const lastValue = values.at(-1) || 0;
+    return `
+      <article class="kpi">
+        <span>${escapeHtml(label)}</span>
+        <strong>${formatter(lastValue)}</strong>
+        <svg viewBox="0 0 100 42" role="img" aria-label="${escapeHtml(label)}" style="width:100%;height:42px;margin-top:8px;overflow:visible">
+          <polyline points="${points}" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></polyline>
+        </svg>
+      </article>
+    `;
+  }).join('');
+  return `<div class="kpiGrid periodTrendCharts">${charts}</div>`;
+}
 function renderYesterdaySummaryPanel() {
   const summary = performanceRangeState.summary;
   const totals = summary?.totals || {};
@@ -1468,7 +1501,7 @@ function renderYesterdaySummaryPanel() {
           <h3>Сводка за период</h3>
           <p>${summary ? escapeHtml(performancePeriodLabel(summary)) : 'Выберите период и загрузите read-only отчёт из Яндекс.Директа.'}</p>
         </div>
-        <button class="secondaryButton" data-load-period-summary ${selectedClientId && !performanceRangeState.loading ? '' : 'disabled'}>${performanceRangeState.loading ? 'Загружаем...' : 'Загрузить данные'}</button>
+        ${performanceRangeState.preset === 'custom' ? `<button class="secondaryButton" data-load-period-summary ${selectedClientId && !performanceRangeState.loading ? '' : 'disabled'}>${performanceRangeState.loading ? 'Загружаем...' : 'Загрузить данные'}</button>` : ''}
       </div>
       <div class="periodQuickControls" data-performance-period-controls>
         ${presets.map(([value, label]) => `<button class="${performanceRangeState.preset === value ? 'approveButton' : 'secondaryButton'}" type="button" data-period-preset="${escapeHtml(value)}">${escapeHtml(label)}</button>`).join('')}
@@ -1490,6 +1523,7 @@ function renderYesterdaySummaryPanel() {
         <article class="kpi"><span>Конверсии по целям</span><strong>${formatNumberSafe(totals.goalConversions || 0)}</strong></article>
         <article class="kpi"><span>CPA по целям</span><strong>${formatMoney(totals.goalCpa || 0)}</strong></article>
       </div>
+      ${renderPerformanceTrendCharts(summary)}
       ${selectedGoals ? `<div class="authStatus integrationStatus"><strong>Цели:</strong> ${escapeHtml(selectedGoals)}</div>` : '<div class="authStatus integrationStatus">Укажите ID целей Метрики/Директа, чтобы считать CPA по целям.</div>'}
       ${!summary ? '<div class="authStatus integrationStatus">Данные за период ещё не загружены. Нажмите «Загрузить данные».</div>' : ''}
     </section>
@@ -1548,7 +1582,6 @@ function renderPerformanceSummaryPanel() {
           <h3>Сводка эффективности</h3>
           <p>Кампании за период ${escapeHtml(periodLabel)}. AI использует конверсии по выбранным целям${goals.length ? `: ${escapeHtml(goals.join(', '))}` : ''}.</p>
         </div>
-        <button class="secondaryButton" data-load-performance ${selectedClientId && !perfLoading ? '' : 'disabled'}>${perfLoading ? 'Загрузка...' : 'Обновить'}</button>
       </div>
       ${campaignsData.length ? `
         <label class="authField compactSearchField">
@@ -1613,6 +1646,48 @@ function renderBusinessContext() {
   }
 
   return renderShell(contentRenderer(businessContextPageContext(false)));
+}
+
+function renderProjectDiagnostics() {
+  const client = currentClient();
+  const hasClient = Boolean(client.id);
+  const readiness = getReadinessState();
+  const nextAction = getNextBestAction();
+  const readyCount = readiness.filter((item) => item.status === 'ready').length;
+  return renderShell(`
+    <div class="pageIntro">
+      <span class="eyebrow">Диагностика</span>
+      <h2>${hasClient ? `Готовность проекта «${escapeHtml(client.name)}»` : 'Диагностика проекта'}</h2>
+      <p>Здесь собраны готовность клиента, интеграции, синхронизация, качество данных и следующий шаг. Обзор оставлен только для статистики Яндекс.Директа.</p>
+    </div>
+    <section class="panel">
+      <div class="panelHeader">
+        <div>
+          <h3>Следующий шаг</h3>
+          <p>${escapeHtml(nextAction.description || nextAction.label || '')}</p>
+        </div>
+        <span class="aiStatusBadge ${badgeClassForStatus(nextAction.status)}">${escapeHtml(compactStatusLabel(nextAction.status))}</span>
+      </div>
+      <div class="nextStepFocus"><span>Сейчас важнее всего</span><strong>${escapeHtml(nextAction.nextAction)}</strong></div>
+      <div class="kpiGrid">
+        <article class="kpi green"><span>Готовность</span><strong>${formatNumberSafe(readyCount)} / ${formatNumberSafe(readiness.length)}</strong></article>
+        <article class="kpi blue"><span>Клиент</span><strong>${hasClient ? 'Готово' : 'Нужно действие'}</strong></article>
+        <article class="kpi orange"><span>Данные</span><strong>${hasPerformanceData() ? 'Готово' : 'Нет данных'}</strong></article>
+        <article class="kpi orange"><span>Минус-слова</span><strong>${formatNumberSafe(perfSummary?.searchQueryInsights?.candidateNegativeKeywords || 0)}</strong></article>
+      </div>
+      <div class="heroActions">
+        ${renderActionButton('Перейти к шагу', `data-go-view="${escapeHtml(nextAction.targetView || 'clients')}"`, 'primary')}
+        ${renderActionButton(syncLoading ? 'Синхронизация...' : 'Запустить синхронизацию', `data-sync-client ${canRunSync() && !syncLoading ? '' : 'disabled'}`)}
+        ${renderActionButton('Клиенты и интеграции', 'data-go-view="clients"')}
+      </div>
+      ${syncStatusMessage ? `<div class="authStatus integrationStatus">${escapeHtml(syncStatusMessage)}</div>` : ''}
+    </section>
+    ${renderReadinessPanel(readiness, nextAction)}
+    ${renderSyncCenter()}
+    ${renderSyncDiagnosticsPanel(false)}
+    ${renderYandexDirectAuditPanel(true)}
+    ${renderBusinessContextPanel(true)}
+  `);
 }
 
 function renderDashboard() {
@@ -1968,6 +2043,7 @@ function render() {
     landing: renderLanding,
     login: renderLogin,
     dashboard: renderDashboardViaPageModule,
+    diagnostics: renderProjectDiagnostics,
     clients: renderClients,
     'business-context': renderBusinessContext,
     audit: renderAudit,
@@ -1995,6 +2071,11 @@ function render() {
     loadClientYandexIntegration();
   }
   if (activeView === 'dashboard' && selectedClientId) {
+    if (!perfSummary && !perfLoading) loadPerformanceSummary();
+    if (!clientYandexIntegration && !clientYandexLoading) loadClientYandexIntegration();
+    if (!businessContext && !businessContextLoading && businessContextLoadedFor !== selectedClientId) loadBusinessContext();
+  }
+  if (activeView === 'diagnostics' && selectedClientId) {
     if (!perfSummary && !perfLoading) loadPerformanceSummary();
     if (!clientYandexIntegration && !clientYandexLoading) loadClientYandexIntegration();
     if (!businessContext && !businessContextLoading && businessContextLoadedFor !== selectedClientId) loadBusinessContext();
@@ -2167,6 +2248,7 @@ const CABINET_ACTION_CLICK_SELECTOR = [
   '[data-refresh-client-yandex]',
   '[data-bind-yandex-account]',
   '[data-unbind-yandex]',
+  '[data-delete-yandex-account]',
   '[data-reset-business-context]',
   '[data-copy-text]',
   '[data-reset-client-settings]',
@@ -2247,6 +2329,9 @@ async function handleCabinetActionClick(event) {
     performanceRangeState.summary = null;
     performanceCampaignSearch = '';
     render();
+    if (performanceRangeState.preset !== 'custom') {
+      await loadPerformanceRangeSummary();
+    }
     return true;
   }
   if (event.target.closest('[data-load-period-summary]')) {
@@ -2286,6 +2371,11 @@ async function handleCabinetActionClick(event) {
   }
   if (event.target.closest('[data-unbind-yandex]')) {
     await unbindClientYandexAccount();
+    return true;
+  }
+  const deleteYandexButton = event.target.closest('[data-delete-yandex-account]');
+  if (deleteYandexButton) {
+    await deleteYandexAccount(deleteYandexButton.dataset.deleteYandexAccount);
     return true;
   }
   if (event.target.closest('[data-reset-business-context]')) {
@@ -2621,6 +2711,43 @@ async function unbindClientYandexAccount() {
       render();
     },
   });
+}
+
+async function deleteYandexAccount(accountId) {
+  if (!selectedClientId || !accountId) return;
+  const confirmed = window.confirm?.('Удалить этот Яндекс-аккаунт из DirectPilot? Привязки к клиентам будут сняты, но в Яндекс.Директ ничего не изменится.');
+  if (confirmed === false) return;
+
+  clientYandexLoading = true;
+  clientYandexStatus = 'Удаляем Яндекс-аккаунт из DirectPilot...';
+  render();
+
+  try {
+    const payload = await integrationsService.deleteYandexAccount(selectedClientId, accountId);
+    const unboundClients = new Set(payload.unbound_client_ids || payload.unboundClientIds || []);
+    accountClients = accountClients.map((client) => (
+      unboundClients.has(client.id) || client.yandexAccountId === accountId
+        ? { ...client, yandexAccountId: '' }
+        : client
+    ));
+    clientsStore.saveStoredClients(accountClients);
+    integrationStatus = null;
+    clientYandexIntegration = null;
+    await loadIntegrationStatus();
+    await loadClientYandexIntegration(true);
+    clientYandexStatus = 'Яндекс-аккаунт удалён из DirectPilot. При необходимости подключите его заново.';
+    void logJournalEvent(createIntegrationStatusJournalEvent({
+      action: 'deleted',
+      client: currentClient(),
+      actor: currentJournalActor(),
+      metadata: { accountId, message: clientYandexStatus },
+    }));
+  } catch (error) {
+    clientYandexStatus = error.message || 'Не удалось удалить Яндекс-аккаунт.';
+  } finally {
+    clientYandexLoading = false;
+    render();
+  }
 }
 
 

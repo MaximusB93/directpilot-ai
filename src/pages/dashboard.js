@@ -35,15 +35,18 @@ export function dashboardPageContract() {
 }
 
 export function renderDashboardIntro({ clientName, hasClient, escapeHtml }) {
+  const title = hasClient ? escapeHtml(clientName) : 'Выберите или создайте клиента';
+  const description = hasClient
+    ? 'Здесь только статистика из Яндекс.Директа: период, кампании, расход, клики, CTR, CPC, конверсии и CPA по выбранным целям.'
+    : 'Создайте клиента и подключите Яндекс, чтобы увидеть статистику кампаний.';
   return `
     <div class="pageIntro">
       <span class="eyebrow">📊 Обзор</span>
-      <h2>${hasClient ? escapeHtml(clientName) : 'Подготовьте первого клиента к анализу'}</h2>
-      <p>${hasClient ? 'Операционный экран: следующий шаг, качество данных, сводка и что требует внимания.' : 'Создайте клиента, чтобы подключить данные, запустить синхронизацию и открыть AI-анализ.'}</p>
+      <h2>${title}</h2>
+      <p>${description}</p>
     </div>
   `;
 }
-
 export function renderDashboardNextStepPanel({
   nextAction,
   readyCount,
@@ -98,20 +101,12 @@ export function renderDashboardEmptyClientPanel() {
 }
 
 export function renderDashboardConnectedPanels({
-  renderSyncCenter,
-  renderBusinessContextPanel,
-  renderSyncDiagnosticsPanel,
   renderYesterdaySummaryPanel,
-  renderYandexDirectAuditPanel,
   renderPerformanceSummaryPanel,
 }) {
   return `
-    ${renderSyncCenter()}
     ${renderYesterdaySummaryPanel()}
     ${renderPerformanceSummaryPanel()}
-    ${renderYandexDirectAuditPanel(true)}
-    ${renderBusinessContextPanel(true)}
-    ${renderSyncDiagnosticsPanel(true)}
   `;
 }
 
@@ -122,7 +117,6 @@ export function renderDashboardContent(context) {
 
   return `
     ${renderDashboardIntro(context)}
-    ${renderDashboardNextStepPanel(context)}
     ${hasClient ? renderDashboardConnectedPanels(context) : renderDashboardEmptyClientPanel(context)}
   `;
 }

@@ -106,7 +106,7 @@ export function renderClientYandexAccountPanel({
     const buttonClass = selected ? 'secondaryButton' : 'approveButton';
     const buttonText = selected ? 'Привязан' : 'Привязать';
     const selectedBadge = selected ? renderStatusBadge({ label: 'выбран', tone: 'success' }) : '';
-    return `<article class="accountCard ${selected ? 'selected' : ''}"><div><strong>${escapeHtml(account.login || account.name || account.id)}</strong><span>${escapeHtml(account.id)}</span>${selectedBadge}</div><button class="${buttonClass}" data-bind-yandex-account="${escapeHtml(account.id)}" ${selected ? 'disabled' : ''}>${buttonText}</button></article>`;
+    return `<article class="accountCard ${selected ? 'selected' : ''}"><div><strong>${escapeHtml(account.login || account.name || account.id)}</strong><span>${escapeHtml(account.id)}</span>${selectedBadge}</div><div class="panelActionsInline"><button class="${buttonClass}" data-bind-yandex-account="${escapeHtml(account.id)}" ${selected ? 'disabled' : ''}>${buttonText}</button><button class="dangerButton" data-delete-yandex-account="${escapeHtml(account.id)}">Удалить</button></div></article>`;
   }).join('');
 
   return renderPanel({

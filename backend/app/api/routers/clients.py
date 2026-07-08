@@ -14,6 +14,7 @@ from app.models import (
     ClientBusinessContext,
     ConnectedAccount,
     DirectCampaignPeriodStat,
+    OAuthToken,
     OptimizationActionDraft as OptimizationActionDraftModel,
     OptimizationActionEvent,
     SyncJob,
@@ -545,6 +546,41 @@ def unbind_client_yandex_account(
     client.yandex_account_id = None
     db.commit()
     return ClientYandexBindingStatus(status="unbound", client_id=client_id, yandex_account_id=None)
+
+
+@router.delete("/{client_id}/integrations/yandex/accounts/{account_id}", response_model=dict[str, object])
+def delete_yandex_account(
+    client_id: str,
+    account_id: str,
+    db: Session | None = Depends(get_optional_db),
+    current: CurrentUser = Depends(get_current_session_user),
+) -> dict[str, object]:
+    db = _require_db(db)
+    _get_owned_client(db, client_id, current)
+    account = db.get(ConnectedAccount, account_id)
+    if not account or account.provider != "yandex" or account.organization_id != current.organization.id:
+        raise HTTPException(status_code=404, detail="Yandex account not found")
+
+    affected_clients = db.scalars(
+        select(ClientAccount).where(
+            ClientAccount.organization_id == current.organization.id,
+            ClientAccount.yandex_account_id == account.id,
+        )
+    ).all()
+    unbound_client_ids: list[str] = []
+    for owned_client in affected_clients:
+        owned_client.yandex_account_id = None
+        unbound_client_ids.append(owned_client.id)
+
+    db.execute(delete(OAuthToken).where(OAuthToken.account_id == account.id))
+    db.delete(account)
+    db.commit()
+    return {
+        "status": "deleted",
+        "account_id": account_id,
+        "unbound_clients": len(unbound_client_ids),
+        "unbound_client_ids": unbound_client_ids,
+    }
 
 
 @router.get("/metrics", response_model=list[AgencyMetric])
