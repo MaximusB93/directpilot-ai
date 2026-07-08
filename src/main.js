@@ -2333,12 +2333,13 @@ async function handleCabinetActionClick(event) {
 
 document.addEventListener('click', (event) => {
   const actionTarget = getCabinetActionClickTarget(event.target);
-  if (!actionTarget || !app.contains(actionTarget) || getEditableFieldTarget(event.target)) {
+  if (!actionTarget || app.contains(actionTarget) || getEditableFieldTarget(event.target)) {
     return;
   }
   event.preventDefault();
-  event.stopPropagation();
-  void handleCabinetActionClick(event);
+  void handleCabinetActionClick(event).catch((error) => {
+    console.error('DirectPilot action failed', error);
+  });
 }, true);
 
 app.addEventListener('submit', async (event) => {
@@ -2464,7 +2465,13 @@ app.addEventListener('click', async (event) => {
     render();
     return;
   }
-  if (await handleCabinetActionClick(event)) return;
+  try {
+    if (await handleCabinetActionClick(event)) return;
+  } catch (error) {
+    console.error('DirectPilot action failed', error);
+    backendClientsStatus = error?.message || 'Действие не выполнено. Проверьте подключение и повторите.';
+    render();
+  }
 });
 async function loadIntegrationStatus() {
   await loadIntegrationStatusFlow({

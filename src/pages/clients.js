@@ -79,6 +79,22 @@ export function renderClientSettingsPanel({
   escapeHtml,
 }) {
   if (!selectedClient?.id) return '';
+  const settingValue = (value) => {
+    const text = String(value ?? '');
+    const normalized = text.trim().toLowerCase();
+    if (
+      !normalized
+      || normalized === 'не подключен'
+      || normalized === 'не подключён'
+      || normalized === 'не указан'
+      || normalized === 'не указана'
+      || normalized === 'вЂ”'
+      || normalized.includes('рќрµ рїрѕрґрєр»сЋс‡рµрЅ')
+    ) {
+      return '';
+    }
+    return text;
+  };
 
   return `
     <section class="panel clientConnectPanel">
@@ -89,11 +105,11 @@ export function renderClientSettingsPanel({
       <form class="clientSettingsForm" data-client-settings-form>
         <div class="settingsGrid">
           <label>Название<input name="name" value="${escapeHtml(clientSettingsDraft?.name ?? selectedClient.name ?? '')}" required /></label>
-          <label>Логин Директа<input name="directLogin" value="${escapeHtml(clientSettingsDraft?.directLogin ?? selectedClient.directLogin ?? '')}" /></label>
-          <label>ID счётчика Метрики<input name="metricaCounter" value="${escapeHtml(clientSettingsDraft?.metricaCounter ?? selectedClient.metricaCounter ?? '')}" /></label>
+          <label>Логин Директа<input name="directLogin" value="${escapeHtml(clientSettingsDraft?.directLogin ?? settingValue(selectedClient.directLogin))}" /></label>
+          <label>ID счётчика Метрики<input name="metricaCounter" value="${escapeHtml(clientSettingsDraft?.metricaCounter ?? settingValue(selectedClient.metricaCounter))}" /></label>
           <label>Целевой CPA<input name="targetCpa" value="${escapeHtml(String(clientSettingsDraft?.targetCpa ?? selectedClient.targetCpa ?? ''))}" inputmode="numeric" /></label>
-          <label>Основная цель<input name="mainGoalId" value="${escapeHtml(clientSettingsDraft?.mainGoalId ?? selectedClient.mainGoalId ?? '')}" /></label>
-          <label>Цели конверсий<input name="conversionGoalIds" value="${escapeHtml(clientSettingsDraft?.conversionGoalIds ?? selectedClient.conversionGoalIds ?? '')}" placeholder="12345,67890" /></label>
+          <label>Основная цель<input name="mainGoalId" value="${escapeHtml(clientSettingsDraft?.mainGoalId ?? settingValue(selectedClient.mainGoalId))}" /></label>
+          <label>Цели конверсий<input name="conversionGoalIds" value="${escapeHtml(clientSettingsDraft?.conversionGoalIds ?? settingValue(selectedClient.conversionGoalIds))}" placeholder="12345,67890" /></label>
         </div>
         <label class="fullWidthLabel">Заметки<textarea name="notes" placeholder="Что важно знать AI о клиенте">${escapeHtml(clientSettingsDraft?.notes ?? selectedClient.notes ?? '')}</textarea></label>
         <div class="heroActions">
