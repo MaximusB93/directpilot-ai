@@ -121,6 +121,10 @@ class Settings:
     service_name: str = "directpilot-ai-backend"
     environment: str = os.getenv("ENVIRONMENT", "development")
     database_url: str | None = os.getenv("DATABASE_URL")
+    database_schema_patch_on_startup: bool = os.getenv(
+        "DATABASE_SCHEMA_PATCH_ON_STARTUP",
+        "false" if os.getenv("ENVIRONMENT", "development").lower() == "production" else "true",
+    ).lower() == "true"
     token_encryption_key: str | None = os.getenv("TOKEN_ENCRYPTION_KEY")
     email_auth_dev_mode: bool = os.getenv("EMAIL_AUTH_DEV_MODE", "false").lower() == "true"
     smtp_host: str | None = os.getenv("SMTP_HOST")
