@@ -157,6 +157,10 @@ let syncLoading = false;
 let syncStatusMessage = '';
 let syncJobs = [];
 let syncJobsLoading = false;
+let syncJobsLoadedFor = '';
+let syncJobsInFlightFor = '';
+let syncJobsLastLoadedAt = 0;
+const SYNC_JOBS_REFRESH_MS = 60 * 1000;
 let perfSummary = null;
 let perfLoading = false;
 let perfStatus = '';
@@ -280,6 +284,9 @@ function resetClientScopedUiState({ nextActiveView = activeView } = {}) {
     clientYandexLoading = false;
     syncJobs = patch.syncJobs;
     syncJobsLoading = false;
+    syncJobsLoadedFor = '';
+    syncJobsInFlightFor = '';
+    syncJobsLastLoadedAt = 0;
     syncStatusMessage = '';
     perfSummary = patch.perfSummary;
     perfLoading = false;
@@ -1167,7 +1174,7 @@ async function startSync() {
       entityId: payload.id || payload.job_id || null,
       metadata: { message: payload.message || syncStatusMessage },
     }));
-    await loadSyncJobs();
+    await loadSyncJobs({ force: true });
     await loadPerformanceSummary();
   } catch (error) {
     syncStatusMessage = error.message || 'Не удалось запустить синхронизацию.';
@@ -1185,16 +1192,29 @@ async function startSync() {
 }
 
 
-async function loadSyncJobs() {
-  if (!selectedClientId || syncJobsLoading) return;
+async function loadSyncJobs({ force = false } = {}) {
+  const clientId = selectedClientId;
+  if (!clientId) return;
+  if (syncJobsLoading && syncJobsInFlightFor === clientId) return;
+  const hasFreshJobs = syncJobsLoadedFor === clientId && Date.now() - syncJobsLastLoadedAt < SYNC_JOBS_REFRESH_MS;
+  if (!force && hasFreshJobs) return;
   syncJobsLoading = true;
+  syncJobsInFlightFor = clientId;
   render();
   try {
-    syncJobs = await syncService.fetchSyncJobs(selectedClientId);
+    const jobs = await syncService.fetchSyncJobs(clientId);
+    if (selectedClientId === clientId) {
+      syncJobs = jobs;
+      syncJobsLoadedFor = clientId;
+      syncJobsLastLoadedAt = Date.now();
+    }
   } catch (error) {
     if (!syncStatusMessage) syncStatusMessage = error.message || 'История синхронизаций недоступна.';
   } finally {
-    syncJobsLoading = false;
+    if (syncJobsInFlightFor === clientId) {
+      syncJobsLoading = false;
+      syncJobsInFlightFor = '';
+    }
     render();
   }
 }
@@ -1986,7 +2006,7 @@ function render() {
     loadClientYandexIntegration();
   }
   if (activeView === 'dashboard' && selectedClientId) {
-    if (!syncJobs.length && !syncJobsLoading) loadSyncJobs();
+    if (syncJobsLoadedFor !== selectedClientId && !syncJobsLoading) loadSyncJobs();
     if (!perfSummary && !perfLoading) loadPerformanceSummary();
     if (!clientYandexIntegration && !clientYandexLoading) loadClientYandexIntegration();
     if (!businessContext && !businessContextLoading && businessContextLoadedFor !== selectedClientId) loadBusinessContext();

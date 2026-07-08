@@ -39,10 +39,22 @@ except (ArgumentError, ValueError) as exc:
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False) if engine else None
 
 
-def init_db() -> None:
+def check_db_connection() -> None:
     if database_engine_error:
         raise RuntimeError(database_engine_error)
     if engine is None:
+        return
+    with engine.connect() as connection:
+        connection.execute(text("SELECT 1"))
+
+
+def init_db(*, run_schema_patch: bool = True) -> None:
+    if database_engine_error:
+        raise RuntimeError(database_engine_error)
+    if engine is None:
+        return
+    if not run_schema_patch:
+        check_db_connection()
         return
     import app.models  # noqa: F401
     import app.models_wordstat  # noqa: F401
