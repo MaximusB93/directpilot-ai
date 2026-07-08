@@ -4,10 +4,12 @@ import logging
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.api.routers import ai, approvals, audit, auth, business_context, clients, debug, health, integrations, performance_range, recommendations, wordstat, yandex_direct
 from app.core.config import settings
 from app.db import init_db
+from app.services.token_crypto import OAuthTokenDecryptionError
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +67,21 @@ app.include_router(yandex_direct.router, prefix=settings.api_prefix)
 app.include_router(wordstat.router, prefix=settings.api_prefix)
 app.include_router(ai.router, prefix=settings.api_prefix)
 app.include_router(debug.router, prefix=settings.api_prefix)
+
+
+@app.exception_handler(OAuthTokenDecryptionError)
+async def oauth_token_decryption_exception_handler(
+    request: Request,
+    exc: OAuthTokenDecryptionError,
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=409,
+        content={
+            "detail": str(exc),
+            "error_code": "oauth_token_decryption_failed",
+            "retryable": False,
+        },
+    )
 
 
 @app.get("/", tags=["health"])
