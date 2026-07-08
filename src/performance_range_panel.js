@@ -5,7 +5,7 @@ function resolveApiBase() {
   if (custom) return custom.replace(/\/$/, '');
   const { hostname, origin } = window.location;
   if (hostname === 'localhost' || hostname === '127.0.0.1') return 'http://localhost:8000/api/v1';
-  if (hostname === 'maximusb93.github.io') return 'https://directpilot-ai.vercel.app/api/v1';
+  if (hostname === 'maximusb93.github.io') return 'https://directpilot-ai-backend-mvp.vercel.app/api/v1';
   return `${origin}/api/v1`;
 }
 
