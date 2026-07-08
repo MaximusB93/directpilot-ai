@@ -580,9 +580,9 @@ function renderClientContextStrip(client = currentClient()) {
   const goals = client?.conversionGoalIds || client?.mainGoalId || '';
   const goalsReady = Boolean(goals);
   const yandexReady = Boolean(client?.yandexAccountId || getBoundYandexAccountId());
-  const latestJob = syncJobs[0];
-  const syncReady = latestJob?.status === 'completed' || hasPerformanceData();
-  const syncStatus = syncLoading ? 'loading' : latestJob?.status === 'failed' ? 'error' : syncReady ? 'ready' : 'pending';
+  const latestJob = { status: client?.syncStatus || 'never_synced' };
+  const syncReady = ['success', 'completed'].includes(latestJob.status) || hasPerformanceData();
+  const syncStatus = syncLoading ? 'loading' : ['error', 'failed'].includes(latestJob.status) ? 'error' : syncReady ? 'ready' : 'pending';
   const item = (label, value, status) => `
     <article class="clientContextItem ${badgeClassForStatus(status)}">
       <span>${escapeHtml(label)}</span>
@@ -701,7 +701,7 @@ function getReadinessState() {
   const hasDirectLogin = Boolean(client.directLogin && client.directLogin !== 'Не подключен');
   const hasMetrica = Boolean(client.metricaCounter && client.metricaCounter !== 'Не подключен');
   const hasYandexBinding = Boolean(client.yandexAccountId || getBoundYandexAccountId());
-  const hasSync = syncJobs.some((job) => job.status === 'completed') || hasPerformanceData();
+  const hasSync = ['success', 'completed'].includes(client.syncStatus) || hasPerformanceData();
   const hasGoals = Boolean(client.mainGoalId || client.conversionGoalIds);
   const hasContext = hasBusinessContextData(businessContext);
   const hasOptimizationDrafts = optimizationActions.length > 0;
@@ -1174,7 +1174,7 @@ async function startSync() {
       entityId: payload.id || payload.job_id || null,
       metadata: { message: payload.message || syncStatusMessage },
     }));
-    await loadSyncJobs({ force: true });
+    await loadClientsFromApi(true);
     await loadPerformanceSummary();
   } catch (error) {
     syncStatusMessage = error.message || 'Не удалось запустить синхронизацию.';
@@ -1410,21 +1410,10 @@ function renderSyncCenter() {
       </div>
       <div class="syncStatusGrid">
         <article><span>Готовность</span><strong>${canRunSync() ? 'Можно запускать' : 'Нужен Direct login'}</strong></article>
-        <article><span>Последний статус</span><strong>${syncJobs[0] ? syncJobStatusLabel(syncJobs[0].status) : 'Нет запусков'}</strong></article>
+        <article><span>Последний статус</span><strong>${syncJobStatusLabel(currentClient().syncStatus || 'never_synced')}</strong></article>
         <article><span>Данные кабинета</span><strong>${backendClientsAvailable ? 'API доступен' : 'локальный режим'}</strong></article>
       </div>
       ${syncStatusMessage ? `<div class="authStatus integrationStatus">${escapeHtml(syncStatusMessage)}</div>` : ''}
-      <details class="quietDetails">
-        <summary>История синхронизаций</summary>
-        <div class="syncJobs">
-          ${syncJobsLoading ? '<p>Загружаем историю...</p>' : syncJobs.length ? syncJobs.slice(0, 5).map((job) => `
-            <article>
-              <div><strong>${syncJobStatusLabel(job.status)}</strong><span>${escapeHtml(job.message || 'Без сообщения')}</span></div>
-              <small>${normalizeDate(job.created_at)}</small>
-            </article>
-          `).join('') : '<p>Истории синхронизаций пока нет.</p>'}
-        </div>
-      </details>
     </section>
   `;
 }
@@ -2006,7 +1995,6 @@ function render() {
     loadClientYandexIntegration();
   }
   if (activeView === 'dashboard' && selectedClientId) {
-    if (syncJobsLoadedFor !== selectedClientId && !syncJobsLoading) loadSyncJobs();
     if (!perfSummary && !perfLoading) loadPerformanceSummary();
     if (!clientYandexIntegration && !clientYandexLoading) loadClientYandexIntegration();
     if (!businessContext && !businessContextLoading && businessContextLoadedFor !== selectedClientId) loadBusinessContext();
