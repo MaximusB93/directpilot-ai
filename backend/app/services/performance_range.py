@@ -23,16 +23,23 @@ def _today() -> date:
 
 
 def _date_from_preset(preset: str) -> tuple[date, date, str]:
-    end = _today() - timedelta(days=1)
+    today = _today()
+    end = today - timedelta(days=1)
     normalized = (preset or "yesterday").strip().lower()
+    if normalized in {"today", "0", "0d"}:
+        return today, today, "today"
     if normalized in {"yesterday", "1", "1d"}:
         return end, end, "yesterday"
+    if normalized in {"3", "3d", "last3"}:
+        return end - timedelta(days=2), end, "3d"
     if normalized in {"7", "7d", "last7"}:
         return end - timedelta(days=6), end, "7d"
     if normalized in {"14", "14d", "last14"}:
         return end - timedelta(days=13), end, "14d"
     if normalized in {"30", "30d", "last30"}:
         return end - timedelta(days=29), end, "30d"
+    if normalized in {"this_month", "month", "current_month"}:
+        return today.replace(day=1), today, "this_month"
     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported period preset")
 
 
@@ -50,8 +57,8 @@ def resolve_period(*, preset: str = "yesterday", date_from: str | None = None, d
         start, end, label = _date_from_preset(preset)
     if end < start:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="date_to must be greater than or equal to date_from")
-    if end >= _today():
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Use only completed days. date_to must be yesterday or earlier")
+    if end > _today():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="date_to cannot be in the future")
     if (end - start).days + 1 > MAX_RANGE_DAYS:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Range is too long. Maximum is {MAX_RANGE_DAYS} days")
     return start, end, label

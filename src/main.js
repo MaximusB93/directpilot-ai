@@ -162,6 +162,14 @@ let perfSummary = null;
 let perfLoading = false;
 let perfStatus = '';
 let performanceCampaignSearch = '';
+let performanceRangeState = {
+  preset: 'yesterday',
+  dateFrom: '',
+  dateTo: '',
+  loading: false,
+  status: '',
+  summary: null,
+};
 let optimizationPlan = null;
 let optimizationPlanLoading = false;
 let optimizationStatus = '';
@@ -287,6 +295,64 @@ function formatPercent(value) {
   const numeric = typeof value === 'number' ? value : Number(String(value ?? '').replace(/\s/g, '').replace(',', '.'));
   if (!Number.isFinite(numeric)) return '0%';
   return `${numeric.toFixed(1).replace('.', ',')}%`;
+}
+
+function performancePeriodPresetLabel(preset) {
+  return {
+    today: 'Сегодня',
+    yesterday: 'Вчера',
+    '3d': '3 дня',
+    '7d': '7 дней',
+    '14d': '14 дней',
+    '30d': '30 дней',
+    this_month: 'Этот месяц',
+    custom: 'Свой период',
+  }[preset] || 'Выбранный период';
+}
+
+function performancePeriodLabel(summary = performanceRangeState.summary) {
+  const period = summary?.period;
+  if (!period) return performancePeriodPresetLabel(performanceRangeState.preset);
+  const label = performancePeriodPresetLabel(period.preset || performanceRangeState.preset);
+  return `${label}: ${period.dateFrom || period.from || '—'} — ${period.dateTo || period.to || '—'}`;
+}
+
+function mapRangeCampaignToSummaryCampaign(campaign = {}) {
+  return {
+    campaign_id: campaign.campaignId || campaign.campaign_id || '',
+    campaign_name: campaign.campaignName || campaign.campaign_name || campaign.name || '',
+    impressions: campaign.impressions || 0,
+    clicks: campaign.clicks || 0,
+    ctr: campaign.ctr || 0,
+    cost: campaign.cost || 0,
+    goal_conversions: campaign.goalConversions ?? campaign.goal_conversions ?? 0,
+    cpa_used: campaign.goalCpa ?? campaign.goal_cpa ?? campaign.cpa_used ?? 0,
+    severity: campaign.severity || '',
+    issue_flags: campaign.issueFlags || campaign.issue_flags || [],
+  };
+}
+
+function performanceTableSummary() {
+  if (performanceRangeState.summary?.campaigns?.length) {
+    const summary = performanceRangeState.summary;
+    return {
+      period: {
+        from: summary.period?.dateFrom,
+        to: summary.period?.dateTo,
+      },
+      selectedGoalIds: summary.selectedGoalIds || [],
+      totals: {
+        cost: summary.totals?.cost || 0,
+        impressions: summary.totals?.impressions || 0,
+        clicks: summary.totals?.clicks || 0,
+        conversions: summary.totals?.goalConversions || 0,
+      },
+      goalConversionsTotal: summary.totals?.goalConversions || 0,
+      campaigns: summary.campaigns.map(mapRangeCampaignToSummaryCampaign),
+      searchQueryInsights: perfSummary?.searchQueryInsights || null,
+    };
+  }
+  return perfSummary;
 }
 
 function hasConnectedDirectLogin(value) {
@@ -923,6 +989,29 @@ async function loadPerformanceSummary() {
   }
 }
 
+async function loadPerformanceRangeSummary() {
+  if (!selectedClientId || performanceRangeState.loading) return;
+  performanceRangeState.loading = true;
+  performanceRangeState.status = 'Загружаем данные из Яндекс.Директа за выбранный период...';
+  render();
+  try {
+    const summary = await performanceService.fetchPerformanceRangeSummary(selectedClientId, {
+      preset: performanceRangeState.preset,
+      dateFrom: performanceRangeState.dateFrom,
+      dateTo: performanceRangeState.dateTo,
+    });
+    performanceRangeState.summary = summary;
+    performanceRangeState.status = 'Данные за выбранный период загружены из Яндекс.Директа.';
+    perfStatus = `Таблица кампаний обновлена: ${performancePeriodLabel(summary)}.`;
+    performanceCampaignSearch = '';
+  } catch (error) {
+    performanceRangeState.status = error.message || 'Не удалось загрузить данные за выбранный период.';
+  } finally {
+    performanceRangeState.loading = false;
+    render();
+  }
+}
+
 
 async function loadBusinessContext(force = false) {
   if (!selectedClientId || businessContextLoading) return;
@@ -1258,29 +1347,52 @@ function renderSyncDiagnosticsPanel(compact = false) {
 }
 
 function renderYesterdaySummaryPanel() {
-  const campaignsCount = perfSummary?.campaigns?.length || 0;
-  const totalSpend = perfSummary?.totalSpend || 0;
-  const goalConversions = perfSummary?.goalConversionsTotal ?? perfSummary?.syncDiagnostics?.goalConversionsTotal ?? 0;
-  const selectedGoals = perfSummary?.selectedGoalIds?.length ? perfSummary.selectedGoalIds.join(', ') : currentClient().conversionGoalIds || currentClient().mainGoalId || '';
-  const candidateNegatives = perfSummary?.searchQueryInsights?.candidateNegativeKeywords || 0;
+  const summary = performanceRangeState.summary;
+  const totals = summary?.totals || {};
+  const selectedGoals = summary?.selectedGoalIds?.length
+    ? summary.selectedGoalIds.join(', ')
+    : currentClient().conversionGoalIds || currentClient().mainGoalId || '';
+  const presets = [
+    ['today', 'Сегодня'],
+    ['yesterday', 'Вчера'],
+    ['3d', '3 дня'],
+    ['7d', '7 дней'],
+    ['14d', '14 дней'],
+    ['30d', '30 дней'],
+    ['this_month', 'Этот месяц'],
+    ['custom', 'Свой период'],
+  ];
   return `
     <section class="panel summaryPanel">
       <div class="panelHeader">
         <div>
-          <h3>Сводка за вчера</h3>
-          <p>Быстрый статус по данным после последней синхронизации.</p>
+          <h3>Сводка за период</h3>
+          <p>${summary ? escapeHtml(performancePeriodLabel(summary)) : 'Выберите период и загрузите read-only отчёт из Яндекс.Директа.'}</p>
         </div>
-        <button class="secondaryButton" data-load-performance ${selectedClientId && !perfLoading ? '' : 'disabled'}>${perfLoading ? 'Загрузка...' : 'Обновить сводку'}</button>
+        <button class="secondaryButton" data-load-period-summary ${selectedClientId && !performanceRangeState.loading ? '' : 'disabled'}>${performanceRangeState.loading ? 'Загружаем...' : 'Загрузить данные'}</button>
       </div>
-      ${perfStatus ? `<div class="authStatus integrationStatus">${escapeHtml(perfStatus)}</div>` : ''}
+      <div class="periodQuickControls" data-performance-period-controls>
+        ${presets.map(([value, label]) => `<button class="${performanceRangeState.preset === value ? 'approveButton' : 'secondaryButton'}" type="button" data-period-preset="${escapeHtml(value)}">${escapeHtml(label)}</button>`).join('')}
+      </div>
+      ${performanceRangeState.preset === 'custom' ? `
+        <div class="settingsRow">
+          <label class="authField"><span>С даты</span><input type="date" data-period-from value="${escapeHtml(performanceRangeState.dateFrom)}" /></label>
+          <label class="authField"><span>По дату</span><input type="date" data-period-to value="${escapeHtml(performanceRangeState.dateTo)}" /></label>
+        </div>
+      ` : ''}
+      ${performanceRangeState.status ? `<div class="authStatus integrationStatus">${escapeHtml(performanceRangeState.status)}</div>` : ''}
       <div class="kpiGrid">
-        <article class="kpi"><span>Кампаний</span><strong>${formatNumberSafe(campaignsCount)}</strong></article>
-        <article class="kpi"><span>Расход</span><strong>${formatMoney(totalSpend)}</strong></article>
-        <article class="kpi"><span>Конверсии по целям</span><strong>${formatNumberSafe(goalConversions)}</strong></article>
-        <article class="kpi"><span>Минус-слова</span><strong>${formatNumberSafe(candidateNegatives)}</strong></article>
+        <article class="kpi"><span>Кампаний</span><strong>${formatNumberSafe(summary?.campaigns?.length || 0)}</strong></article>
+        <article class="kpi"><span>Показы</span><strong>${formatNumberSafe(totals.impressions || 0)}</strong></article>
+        <article class="kpi"><span>Клики</span><strong>${formatNumberSafe(totals.clicks || 0)}</strong></article>
+        <article class="kpi"><span>Расход</span><strong>${formatMoney(totals.cost || 0)}</strong></article>
+        <article class="kpi"><span>CTR</span><strong>${formatPercent(totals.ctr || 0)}</strong></article>
+        <article class="kpi"><span>CPC</span><strong>${formatMoney(totals.avgCpc || 0)}</strong></article>
+        <article class="kpi"><span>Конверсии по целям</span><strong>${formatNumberSafe(totals.goalConversions || 0)}</strong></article>
+        <article class="kpi"><span>CPA по целям</span><strong>${formatMoney(totals.goalCpa || 0)}</strong></article>
       </div>
       ${selectedGoals ? `<div class="authStatus integrationStatus"><strong>Цели:</strong> ${escapeHtml(selectedGoals)}</div>` : '<div class="authStatus integrationStatus">Укажите ID целей Метрики/Директа, чтобы считать CPA по целям.</div>'}
-      ${!hasPerformanceData() ? '<div class="authStatus integrationStatus">Данных пока нет. Запустите синхронизацию или проверьте настройки клиента.</div>' : ''}
+      ${!summary ? '<div class="authStatus integrationStatus">Данные за период ещё не загружены. Нажмите «Загрузить данные».</div>' : ''}
     </section>
   `;
 }
@@ -1315,9 +1427,10 @@ function renderYandexDirectAuditPanel(compact = false) {
 }
 
 function renderPerformanceSummaryPanel() {
-  const campaignsData = perfSummary?.campaigns || [];
-  const insights = perfSummary?.searchQueryInsights;
-  const period = perfSummary?.period;
+  const tableSummary = performanceTableSummary();
+  const campaignsData = tableSummary?.campaigns || [];
+  const insights = tableSummary?.searchQueryInsights;
+  const period = tableSummary?.period;
   const campaignName = (campaign, index = 0) => (
     campaign.name
     || campaign.campaignName
@@ -1327,8 +1440,7 @@ function renderPerformanceSummaryPanel() {
   );
   const campaignGoalConversions = (campaign) => campaign.goal_conversions ?? campaign.goalConversions ?? campaign.conversions_used ?? campaign.conversionsUsed ?? 0;
   const campaignGoalCpa = (campaign) => campaign.cpa_used ?? campaign.cpaUsed ?? campaign.goal_cpa ?? campaign.goalCpa ?? campaign.cpa ?? 0;
-  const totals = perfSummary?.totals || {};
-  const goals = perfSummary?.selectedGoalIds || [];
+  const goals = tableSummary?.selectedGoalIds || [];
   const periodLabel = period?.from && period?.to ? `${period.from} — ${period.to}` : 'последняя синхронизация';
   return `
     <section class="panel performancePanel">
@@ -1340,14 +1452,6 @@ function renderPerformanceSummaryPanel() {
         <button class="secondaryButton" data-load-performance ${selectedClientId && !perfLoading ? '' : 'disabled'}>${perfLoading ? 'Загрузка...' : 'Обновить'}</button>
       </div>
       ${campaignsData.length ? `
-        <div class="insightGrid">
-          <article><span>Кампаний</span><strong>${formatNumberSafe(campaignsData.length)}</strong></article>
-          <article><span>Показы</span><strong>${formatNumberSafe(totals.impressions || 0)}</strong></article>
-          <article><span>Клики</span><strong>${formatNumberSafe(totals.clicks || 0)}</strong></article>
-          <article><span>Расход</span><strong>${formatMoney(totals.cost || 0)}</strong></article>
-          <article><span>CTR</span><strong>${formatPercent(totals.impressions ? ((Number(totals.clicks || 0) / Number(totals.impressions || 1)) * 100) : 0)}</strong></article>
-          <article><span>Конверсии по целям</span><strong>${formatNumberSafe(perfSummary?.goalConversionsTotal || totals.conversions || 0)}</strong></article>
-        </div>
         <label class="authField compactSearchField">
           <span>Поиск по названию кампании или ID</span>
           <input data-performance-campaign-search value="${escapeHtml(performanceCampaignSearch)}" placeholder="Например: бренд, поиск, 119001..." autocomplete="off" />
@@ -1874,6 +1978,12 @@ app.addEventListener('input', (event) => {
     const empty = app.querySelector('[data-performance-search-empty]');
     if (empty) empty.hidden = !search || visibleRows > 0;
   }
+  if (event.target.matches('[data-period-from]')) {
+    performanceRangeState.dateFrom = event.target.value;
+  }
+  if (event.target.matches('[data-period-to]')) {
+    performanceRangeState.dateTo = event.target.value;
+  }
 });
 
 app.addEventListener('change', (event) => {
@@ -1951,6 +2061,8 @@ const CABINET_ACTION_CLICK_SELECTOR = [
   '[data-ai-chat-sample]',
   '[data-ai-prompt]',
   '[data-integration="yandex-direct"]',
+  '[data-period-preset]',
+  '[data-load-period-summary]',
 ].join(',');
 
 function getCabinetActionClickTarget(target) {
@@ -1999,6 +2111,8 @@ async function handleCabinetActionClick(event) {
       clientYandexIntegration = patch.clientYandexIntegration;
       syncJobs = patch.syncJobs;
       perfSummary = patch.perfSummary;
+      performanceRangeState = { ...performanceRangeState, loading: false, status: '', summary: null };
+      performanceCampaignSearch = '';
       optimizationPlan = patch.optimizationPlan;
       optimizationActions = patch.optimizationActions;
       optimizationActionsLoadedFor = patch.optimizationActionsLoadedFor;
@@ -2022,6 +2136,19 @@ async function handleCabinetActionClick(event) {
   }
   if (event.target.closest('[data-load-performance]')) {
     await loadPerformanceSummary();
+    return true;
+  }
+  const periodPresetButton = event.target.closest('[data-period-preset]');
+  if (periodPresetButton) {
+    performanceRangeState.preset = periodPresetButton.dataset.periodPreset || 'yesterday';
+    performanceRangeState.status = '';
+    performanceRangeState.summary = null;
+    performanceCampaignSearch = '';
+    render();
+    return true;
+  }
+  if (event.target.closest('[data-load-period-summary]')) {
+    await loadPerformanceRangeSummary();
     return true;
   }
   if (event.target.closest('[data-load-optimization-plan]')) {
