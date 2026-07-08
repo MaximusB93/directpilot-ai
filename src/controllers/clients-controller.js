@@ -106,6 +106,21 @@ export function createClientSettingsDraftFromForm(form) {
   };
 }
 
+function isDisconnectedPlaceholder(value) {
+  const text = String(value || '').trim().toLowerCase();
+  return !text
+    || text === 'не подключен'
+    || text === 'не подключён'
+    || text === 'не указан'
+    || text === 'не указана'
+    || text === 'вЂ”'
+    || text.includes('рќрµ рїрѕрґрєр»сЋс‡рµрЅ');
+}
+
+function nullableSetting(value) {
+  return isDisconnectedPlaceholder(value) ? null : String(value).trim();
+}
+
 export function createLocalClientSettingsUpdate(draft) {
   return {
     name: draft.name,
@@ -121,13 +136,13 @@ export function createLocalClientSettingsUpdate(draft) {
 export function createClientSettingsPayload(draft, currentClient = {}) {
   return {
     name: draft.name,
-    direct_login: draft.directLogin || null,
-    metrica_counter: draft.metricaCounter || null,
+    direct_login: nullableSetting(draft.directLogin),
+    metrica_counter: nullableSetting(draft.metricaCounter),
     yandex_account_id: draft.yandexAccountId || currentClient.yandexAccountId || null,
     target_cpa: draft.targetCpa ? Number(draft.targetCpa) : null,
-    main_goal_id: draft.mainGoalId || null,
-    conversion_goal_ids: draft.conversionGoalIds || null,
-    notes: draft.notes || null,
+    main_goal_id: nullableSetting(draft.mainGoalId),
+    conversion_goal_ids: nullableSetting(draft.conversionGoalIds),
+    notes: nullableSetting(draft.notes),
   };
 }
 

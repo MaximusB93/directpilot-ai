@@ -2,7 +2,13 @@ import { getCurrentEmail, scopedStorageKey } from './core/storage.js';
 
 function resolveApiBase() {
   const custom = window.localStorage.getItem('directpilot_api_base')?.trim();
-  if (custom) return custom.replace(/\/$/, '');
+  if (custom) {
+    const normalizedCustom = custom.replace(/\/$/, '');
+    if (normalizedCustom !== 'https://directpilot-ai.vercel.app/api/v1') {
+      return normalizedCustom;
+    }
+    window.localStorage.removeItem('directpilot_api_base');
+  }
   const { hostname, origin } = window.location;
   if (hostname === 'localhost' || hostname === '127.0.0.1') return 'http://localhost:8000/api/v1';
   if (hostname === 'maximusb93.github.io') return 'https://directpilot-ai-backend-mvp.vercel.app/api/v1';

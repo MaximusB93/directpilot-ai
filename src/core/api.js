@@ -10,6 +10,10 @@ import {
 export { clearSession, escapeHtml, getSessionToken };
 
 export const DEFAULT_PRODUCTION_API_BASE = 'https://directpilot-ai-backend-mvp.vercel.app/api/v1';
+const OLD_PRODUCTION_API_BASES = new Set([
+  'https://directpilot-ai.vercel.app/api/v1',
+  'https://directpilot-ai.vercel.app/api/v1/',
+]);
 export const API_BASE = resolveApiBase();
 
 const API_CACHE_PREFIX = 'directpilot_api_cache_v1:';
@@ -24,7 +28,13 @@ const API_CACHEABLE_PATHS = [
 
 export function resolveApiBase() {
   const custom = getCustomApiBase();
-  if (custom) return custom.replace(/\/$/, '');
+  if (custom) {
+    const normalizedCustom = custom.replace(/\/$/, '');
+    if (!OLD_PRODUCTION_API_BASES.has(custom) && !OLD_PRODUCTION_API_BASES.has(normalizedCustom)) {
+      return normalizedCustom;
+    }
+    saveCustomApiBase('');
+  }
 
   const { hostname, origin } = window.location;
   if (hostname === 'localhost' || hostname === '127.0.0.1') {
