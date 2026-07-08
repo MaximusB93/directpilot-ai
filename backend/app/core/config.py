@@ -133,7 +133,7 @@ class Settings:
     openrouter_api_key: str | None = os.getenv("OPENROUTER_API_KEY")
     openrouter_default_model: str = os.getenv("OPENROUTER_DEFAULT_MODEL", "openrouter/auto")
     openrouter_allow_custom_models: bool = os.getenv("OPENROUTER_ALLOW_CUSTOM_MODELS", "true").lower() == "true"
-    openrouter_site_url: str = os.getenv("OPENROUTER_SITE_URL", "https://directpilot-ai.vercel.app")
+    openrouter_site_url: str = os.getenv("OPENROUTER_SITE_URL", "https://maximusb93.github.io/directpilot-ai")
     openrouter_app_name: str = os.getenv("OPENROUTER_APP_NAME", "DirectPilot AI")
     openrouter_models: list[str] = field(
         default_factory=lambda: _split_models(
@@ -173,7 +173,7 @@ class Settings:
             "http://localhost:5173",
             "http://127.0.0.1:5173",
             "https://maximusb93.github.io",
-            "https://directpilot-ai.vercel.app",
+            "https://directpilot-ai-backend-mvp.vercel.app",
         ]
     )
 

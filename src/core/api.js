@@ -9,7 +9,7 @@ import {
 
 export { clearSession, escapeHtml, getSessionToken };
 
-export const DEFAULT_PRODUCTION_API_BASE = 'https://directpilot-ai.vercel.app/api/v1';
+export const DEFAULT_PRODUCTION_API_BASE = 'https://directpilot-ai-backend-mvp.vercel.app/api/v1';
 export const API_BASE = resolveApiBase();
 
 const API_CACHE_PREFIX = 'directpilot_api_cache_v1:';
