@@ -112,9 +112,8 @@ if (page === 'app' && !getSessionToken()) {
 
 const navItems = [
   { id: 'dashboard', label: 'Обзор', icon: '📊' },
-  { id: 'clients', label: 'Клиенты', icon: '👥' },
+  { id: 'clients', label: 'Клиенты и интеграции', icon: '👥' },
   { id: 'business-context', label: 'Контекст бизнеса', icon: '🧭' },
-  { id: 'integrations', label: 'Интеграции', icon: '🔌' },
   { id: 'ai', label: 'AI-аналитик', icon: '🧠' },
   { id: 'optimization', label: 'Оптимизация', icon: '🎯' },
   { id: 'wordstat', label: 'Wordstat', icon: '📈' },
@@ -208,6 +207,7 @@ function saveSelectedClientId(clientId) {
 }
 
 async function loadClientsFromApi(force = false) {
+  const selectedClientBeforeLoad = selectedClientId;
   await loadClientsFromApiFlow({
     page,
     force,
@@ -228,12 +228,18 @@ async function loadClientsFromApi(force = false) {
       selectedClientId = nextSelectedClientId;
       if (selectedClientId) saveSelectedClientId(selectedClientId);
       clientsStore.saveStoredClients(accountClients);
+      if (selectedClientId !== selectedClientBeforeLoad) {
+        resetClientScopedUiState({ nextActiveView: activeView });
+      }
       if (shouldResetBusinessContext) businessContext = null;
     },
     onFallback: ({ clients, selectedClientId: fallbackSelectedClientId, message }) => {
       if (!backendClientsLoaded && clients.length) {
         accountClients = clients;
         selectedClientId = fallbackSelectedClientId || '';
+        if (selectedClientId !== selectedClientBeforeLoad) {
+          resetClientScopedUiState({ nextActiveView: activeView });
+        }
       }
       backendClientsAvailable = false;
       backendClientsStatus = message;
@@ -262,6 +268,43 @@ function currentClient() {
 
 function currentClientName() {
   return currentClient().name || 'Клиент не выбран';
+}
+
+function resetClientScopedUiState({ nextActiveView = activeView } = {}) {
+  applyClientScopeResetPatch((patch) => {
+    businessContext = patch.businessContext;
+    businessContextDraft = patch.businessContextDraft;
+    businessContextLoadedFor = '';
+    clientYandexIntegration = patch.clientYandexIntegration;
+    clientYandexStatus = '';
+    clientYandexLoading = false;
+    syncJobs = patch.syncJobs;
+    syncJobsLoading = false;
+    syncStatusMessage = '';
+    perfSummary = patch.perfSummary;
+    perfLoading = false;
+    perfStatus = '';
+    performanceRangeState = {
+      ...performanceRangeState,
+      loading: false,
+      status: '',
+      summary: null,
+    };
+    performanceCampaignSearch = '';
+    optimizationPlan = patch.optimizationPlan;
+    optimizationPlanLoading = false;
+    optimizationStatus = '';
+    optimizationActions = patch.optimizationActions;
+    optimizationActionsLoading = false;
+    optimizationActionsStatus = '';
+    optimizationActionsLoadedFor = patch.optimizationActionsLoadedFor;
+    optimizationExecutionPreviews = patch.optimizationExecutionPreviews;
+    journalState = createInitialJournalState();
+    journalState.filters = createDefaultJournalFilters({ clientId: selectedClientId || null });
+    journalLoadedFor = patch.journalLoadedFor;
+    activeView = nextActiveView;
+  }, createClientScopeResetPatch({ activeView: nextActiveView }));
+  resetAiClientScopedState(aiFeatureState);
 }
 
 function currentJournalActor() {
@@ -451,16 +494,20 @@ function renderLogin() {
 function renderShell(content) {
   const client = currentClient();
   const showClientSelector = page === 'app';
+  const progress = showClientSelector ? readinessProgress() : { ready: 0, total: 0 };
   return `
     <div class="appShell">
       <aside class="sidebar">
         <div class="brand"><span class="logo">D</span><span>DirectPilot AI</span></div>
-        <div class="clientMini">
-          <span>${showClientSelector ? 'Активный клиент' : 'Аккаунт'}</span>
-          <strong>${escapeHtml(showClientSelector ? currentClientName() : currentEmail || 'Гость')}</strong>
-          ${showClientSelector ? `<small>${escapeHtml(client.directLogin || 'Direct не подключен')}</small>` : ''}
-        </div>
+        ${showClientSelector ? renderSidebarClientSwitcher(client, progress) : `
+          <div class="clientMini">
+            <span>Аккаунт</span>
+            <strong>${escapeHtml(currentEmail || 'Гость')}</strong>
+          </div>
+        `}
         <nav>${navItems.map((item) => `<button class="${activeView === item.id ? 'active' : ''}" data-view="${item.id}"><span>${item.icon}</span>${item.label}</button>`).join('')}</nav>
+        ${showClientSelector ? renderProfilePanel() : ''}
+        ${showClientSelector ? '<button class="secondaryButton profileButton" type="button" data-profile-toggle>Настройки профиля</button>' : ''}
         <button class="logoutButton" data-logout>Выйти</button>
       </aside>
       <main class="dashboard">
@@ -470,15 +517,52 @@ function renderShell(content) {
             <h1>${escapeHtml(activeView === 'dashboard' ? 'Обзор проекта' : navItems.find((item) => item.id === activeView)?.label || 'DirectPilot')}</h1>
           </div>
           <div class="headerActions">
-            ${showClientSelector ? renderClientSelector() : ''}
             <button class="secondaryButton" data-open-settings>API</button>
           </div>
         </header>
         ${renderSettingsPanel()}
-        ${showClientSelector ? renderClientContextStrip(client) : ''}
         ${content}
       </main>
     </div>
+  `;
+}
+
+function renderSidebarClientSwitcher(client = currentClient(), progress = readinessProgress()) {
+  if (!accountClients.length) {
+    return `
+      <div class="clientMini sidebarClientSwitcher">
+        <span>Активный клиент</span>
+        <strong>Не выбран</strong>
+        <small>Готовность 0/6</small>
+        <button class="secondaryButton" type="button" data-view="clients">Добавить клиента</button>
+      </div>
+    `;
+  }
+  return `
+    <div class="clientMini sidebarClientSwitcher">
+      <span>Активный клиент</span>
+      <strong>${escapeHtml(client.name || 'Клиент')}</strong>
+      <small>Готовность ${formatNumberSafe(progress.ready)}/${formatNumberSafe(progress.total)}</small>
+      <div class="sidebarClientActions">
+        <button class="secondaryButton" type="button" data-client-menu-toggle>Сменить</button>
+        <button class="secondaryButton" type="button" data-view="clients">Добавить</button>
+      </div>
+      <div class="clientMenu sidebarClientMenu" data-client-menu hidden>
+        ${accountClients.map((item) => `<button type="button" data-client-id="${escapeHtml(item.id)}" class="${item.id === selectedClientId ? 'active' : ''}">${escapeHtml(item.name)}<small>${escapeHtml(item.directLogin || 'Direct не подключен')}</small></button>`).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function renderProfilePanel() {
+  return `
+    <section class="settingsPanel profilePanel" data-profile-panel hidden>
+      <strong>Профиль</strong>
+      <small>Email: ${escapeHtml(currentEmail || 'не указан')}</small>
+      <small>Backend: ${escapeHtml(backendClientsAvailable ? 'подключён' : 'не проверен')}</small>
+      <small>API: ${escapeHtml(API_BASE)}</small>
+      <button class="secondaryButton" type="button" data-open-settings>API URL</button>
+    </section>
   `;
 }
 
@@ -669,7 +753,7 @@ function getNextBestAction() {
   }
   const actions = {
     client: ['Создайте клиента', 'clients'],
-    yandex: ['Привяжите аккаунт Яндекса', 'integrations'],
+    yandex: ['Привяжите аккаунт Яндекса', 'clients'],
     metrica: ['Заполните цели и счётчик', 'clients'],
     context: ['Заполните контекст бизнеса', 'business-context'],
     sync: ['Запустите синхронизацию', 'dashboard'],
@@ -677,6 +761,12 @@ function getNextBestAction() {
   };
   const [nextAction, targetView] = actions[blocking.id] || ['Проверьте настройки', 'dashboard'];
   return { ...blocking, nextAction, targetView };
+}
+
+function readinessProgress() {
+  const readiness = getReadinessState();
+  const ready = readiness.filter((item) => item.status === 'ready').length;
+  return { ready, total: readiness.length };
 }
 
 function hasPerformanceData() {
@@ -1326,7 +1416,7 @@ function renderSyncDiagnosticsPanel(compact = false) {
   if (!client.directLogin || client.directLogin === 'Не подключен') issues.push(['Direct login', 'Укажите логин Яндекс.Директа в карточке клиента.']);
   if (!client.metricaCounter || client.metricaCounter === 'Не подключен') issues.push(['Метрика', 'Укажите ID счётчика Метрики.']);
   if (!client.mainGoalId) issues.push(['Цель', 'Заполните основную цель, чтобы считать CPA.']);
-  if (!getBoundYandexAccount() && !client.yandexAccountId) issues.push(['Привязка Яндекса', 'Выберите аккаунт из OAuth-доступов во вкладке Интеграции.']);
+  if (!getBoundYandexAccount() && !client.yandexAccountId) issues.push(['Привязка Яндекса', 'Выберите аккаунт из OAuth-доступов в разделе клиентов и интеграций.']);
   const hasProblems = issues.length > 0;
   return `
     <section class="panel diagnosticsPanel">
@@ -1577,21 +1667,43 @@ function renderClients() {
     `);
   }
 
-  return renderShell(contentRenderer({
-    selectedClientId,
-    accountClients,
-    backendClientsAvailable,
-    backendClientsStatus,
-    clientFormStatus,
-    clientDraftName,
-    clientDraftDirectLogin,
-    clientDraftMetricaCounter,
-    selectedClient: currentClient(),
-    clientSettingsDraft,
-    clientSettingsSaving,
-    clientSettingsStatus,
-    escapeHtml,
-  }));
+  return renderShell(`
+    ${contentRenderer({
+      selectedClientId,
+      accountClients,
+      backendClientsAvailable,
+      backendClientsStatus,
+      clientFormStatus,
+      clientDraftName,
+      clientDraftDirectLogin,
+      clientDraftMetricaCounter,
+      selectedClient: currentClient(),
+      clientSettingsDraft,
+      clientSettingsSaving,
+      clientSettingsStatus,
+      escapeHtml,
+    })}
+    ${renderClientIntegrationsSection()}
+  `);
+}
+
+function renderClientIntegrationsSection() {
+  const contentRenderer = resolvePageContentRenderer('integrations');
+
+  if (typeof contentRenderer !== 'function') {
+    return `
+      <div class="pageIntro"><span class="eyebrow">Интеграции клиента</span><h2>Интеграции временно недоступны</h2><p>Модуль интеграций не зарегистрирован. Проверьте src/pages/index.js.</p></div>
+    `;
+  }
+
+  return `
+    <div class="pageIntro">
+      <span class="eyebrow">Интеграции клиента</span>
+      <h2>Яндекс-аккаунт для выбранного клиента</h2>
+      <p>Привязка хранится отдельно для каждого клиента. При смене клиента здесь показывается только его статус.</p>
+    </div>
+    ${contentRenderer(integrationsPageContext())}
+  `;
 }
 
 function integrationsPageContext() {
@@ -1608,15 +1720,8 @@ function integrationsPageContext() {
 }
 
 function renderIntegrations() {
-  const contentRenderer = resolvePageContentRenderer('integrations');
-
-  if (typeof contentRenderer !== 'function') {
-    return renderShell(`
-      <div class="pageIntro"><span class="eyebrow">Интеграции</span><h2>Интеграции временно недоступны</h2><p>Модуль интеграций не зарегистрирован. Проверьте src/pages/index.js.</p></div>
-    `);
-  }
-
-  return renderShell(contentRenderer(integrationsPageContext()));
+  activeView = 'clients';
+  return renderClients();
 }
 
 function aiAssistantPageContext() {
@@ -1873,10 +1978,11 @@ function render() {
     const emailInput = app.querySelector('input[name="email"]');
     if (emailInput) emailInput.value = authEmail;
   }
-  if (activeView === 'integrations' && !integrationStatus.message && integrationStatus.connected === undefined) {
+  const isClientWorkspaceView = activeView === 'clients' || activeView === 'integrations';
+  if (isClientWorkspaceView && !integrationStatus.message && integrationStatus.connected === undefined) {
     loadIntegrationStatus();
   }
-  if (activeView === 'integrations' && selectedClientId) {
+  if (isClientWorkspaceView && selectedClientId) {
     loadClientYandexIntegration();
   }
   if (activeView === 'dashboard' && selectedClientId) {
@@ -2039,6 +2145,7 @@ const CABINET_ACTION_CLICK_SELECTOR = [
   '[data-logout]',
   '[data-auth-back]',
   '[data-open-settings]',
+  '[data-profile-toggle]',
   '[data-client-menu-toggle]',
   '[data-client-id]',
   '[data-select-client]',
@@ -2100,29 +2207,16 @@ async function handleCabinetActionClick(event) {
     if (menu) menu.hidden = !menu.hidden;
     return true;
   }
+  if (event.target.closest('[data-profile-toggle]')) {
+    const panel = app.querySelector('[data-profile-panel]');
+    if (panel) panel.hidden = !panel.hidden;
+    return true;
+  }
   const clientButton = event.target.closest('[data-client-id], [data-select-client]');
   if (clientButton) {
     selectedClientId = clientButton.dataset.clientId || clientButton.dataset.selectClient;
     saveSelectedClientId(selectedClientId);
-    applyClientScopeResetPatch((patch) => {
-      businessContext = patch.businessContext;
-      businessContextDraft = patch.businessContextDraft;
-      businessContextLoadedFor = '';
-      clientYandexIntegration = patch.clientYandexIntegration;
-      syncJobs = patch.syncJobs;
-      perfSummary = patch.perfSummary;
-      performanceRangeState = { ...performanceRangeState, loading: false, status: '', summary: null };
-      performanceCampaignSearch = '';
-      optimizationPlan = patch.optimizationPlan;
-      optimizationActions = patch.optimizationActions;
-      optimizationActionsLoadedFor = patch.optimizationActionsLoadedFor;
-      optimizationExecutionPreviews = patch.optimizationExecutionPreviews;
-      journalState = createInitialJournalState();
-      journalState.filters = createDefaultJournalFilters({ clientId: selectedClientId || null });
-      journalLoadedFor = patch.journalLoadedFor;
-      activeView = patch.activeView;
-    }, createClientScopeResetPatch());
-    resetAiClientScopedState(aiFeatureState);
+    resetClientScopedUiState({ nextActiveView: activeView });
     void logJournalEvent(createClientSelectedJournalEvent({
       client: currentClient(),
       actor: currentJournalActor(),
@@ -2309,6 +2403,7 @@ app.addEventListener('submit', async (event) => {
         accountClients = [...accountClients, client];
         selectedClientId = nextSelectedClientId;
         saveSelectedClientId(selectedClientId);
+        resetClientScopedUiState({ nextActiveView: 'clients' });
         clientsStore.saveStoredClients(accountClients);
         clientFormStatus = message;
         if (clearDraft) {
@@ -2325,6 +2420,7 @@ app.addEventListener('submit', async (event) => {
         accountClients = [...accountClients, client];
         selectedClientId = nextSelectedClientId;
         saveSelectedClientId(selectedClientId);
+        resetClientScopedUiState({ nextActiveView: 'clients' });
         clientsStore.saveStoredClients(accountClients);
         clientFormStatus = message;
         void logJournalEvent(createClientCreatedJournalEvent({
@@ -2582,10 +2678,10 @@ async function deleteClient(clientId) {
     onSuccess: ({ clientId: deletedClientId }) => {
       accountClients = accountClients.filter((client) => client.id !== deletedClientId);
       selectedClientId = accountClients[0]?.id || '';
-      if (selectedClientId) saveSelectedClientId(selectedClientId);
+      saveSelectedClientId(selectedClientId);
       clientsStore.saveStoredClients(accountClients);
       clientSettingsStatus = accountClients.length ? 'Клиент удалён.' : 'Клиент удалён. Создайте нового клиента.';
-      activeView = 'clients';
+      resetClientScopedUiState({ nextActiveView: 'clients' });
     },
     onError: (message) => {
       clientSettingsStatus = message;
@@ -2597,11 +2693,11 @@ async function deleteClient(clientId) {
 
 if (oauthReturnStatus === 'connected') {
   integrationStatus = { ...integrationStatus, message: 'Яндекс подключён. Проверяем доступные аккаунты...' };
-  activeView = 'integrations';
+  activeView = 'clients';
 }
 if (oauthReturnStatus === 'error') {
   integrationStatus = { ...integrationStatus, message: 'Яндекс не подключён. Попробуйте повторить OAuth.' };
-  activeView = 'integrations';
+  activeView = 'clients';
 }
 
 render();

@@ -80,8 +80,7 @@ export function renderDashboardNextStepPanel({
       <div class="heroActions">
         ${renderActionButton('Перейти к шагу', `data-go-view="${escapeHtml(nextTarget)}"`, 'primary')}
         ${renderActionButton(syncLoading ? 'Синхронизация...' : 'Запустить синхронизацию', `data-sync-client ${canRunSync && !syncLoading ? '' : 'disabled'}`)}
-        ${renderActionButton('Клиенты', 'data-go-view="clients"')}
-        ${renderActionButton('Интеграции', 'data-go-view="integrations"')}
+        ${renderActionButton('Клиенты и интеграции', 'data-go-view="clients"')}
       </div>
       ${syncStatusMessage ? `<div class="authStatus integrationStatus">${escapeHtml(syncStatusMessage)}</div>` : ''}
     </section>
@@ -119,15 +118,11 @@ export function renderDashboardConnectedPanels({
 export function renderDashboardContent(context) {
   const {
     hasClient,
-    readiness,
-    nextAction,
-    renderReadinessPanel,
   } = context;
 
   return `
     ${renderDashboardIntro(context)}
     ${renderDashboardNextStepPanel(context)}
-    ${renderReadinessPanel(readiness, nextAction)}
     ${hasClient ? renderDashboardConnectedPanels(context) : renderDashboardEmptyClientPanel(context)}
   `;
 }
