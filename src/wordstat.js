@@ -211,10 +211,6 @@ function renderWordstatPage() {
   const connection = wordstatState.connection;
   const connectionReady = Boolean(connection?.configured);
   const selectedRegions = allSelectedRegionIds();
-  const phrasesCount = parsePhrases(wordstatState.form.phrases).length;
-  const totalPoints = result?.series?.reduce((sum, item) => sum + (item.points?.length || 0), 0) || 0;
-  const completed = result?.meta?.completedPhrases ?? 0;
-  const failed = result?.meta?.failedPhrases ?? 0;
   const defaultCompare = previousPeriodRange();
   if (!wordstatState.form.compareFromDate && defaultCompare) wordstatState.form.compareFromDate = defaultCompare.fromDate;
   if (!wordstatState.form.compareToDate && defaultCompare) wordstatState.form.compareToDate = defaultCompare.toDate;
@@ -222,17 +218,11 @@ function renderWordstatPage() {
   workspace.innerHTML = `
     <header class="appHeader">
       <div><span class="muted">Модуль спроса</span><h1>Спрос / Wordstat</h1></div>
-      <div class="clientSelect"><span>Источник</span><strong>${connectionReady ? 'Wordstat готов' : 'Нужно подключение'}</strong><small>${escapeHtml(connection?.provider || 'yandex_search_api')}</small></div>
+      <div class="wordstatConnectionState ${connectionReady ? 'is-ready' : 'is-pending'}">
+        <span class="wordstatConnectionDot" aria-hidden="true"></span>
+        <div><small>Wordstat API</small><strong>${connectionReady ? 'Подключён' : 'Не подключён'}</strong></div>
+      </div>
     </header>
-
-    <section class="panel clientSourcePanel">
-      <div><span class="muted">API</span><strong>${connectionReady ? 'Подключён' : 'Не готов'}</strong><small>${escapeHtml(connection?.message || 'Статус ещё не загружен')}</small></div>
-      <div><span class="muted">Период</span><strong>${escapeHtml(wordstatState.form.period)}</strong><small>${escapeHtml(wordstatState.form.fromDate)} → ${escapeHtml(wordstatState.form.toDate)}</small></div>
-      <div><span class="muted">Регионы</span><strong>${selectedRegions.length ? formatNumber(selectedRegions.length) : 'Все'}</strong><small>${escapeHtml(regionsSummary(selectedRegions))}</small></div>
-      <div><span class="muted">Фразы</span><strong>${formatNumber(phrasesCount)}</strong><small>batch-запрос</small></div>
-      <div><span class="muted">Точки</span><strong>${formatNumber(totalPoints)}</strong><small>из БД или API</small></div>
-      <div><span class="muted">Успешно</span><strong>${formatNumber(completed)}</strong><small>ошибок: ${formatNumber(failed)}</small></div>
-    </section>
 
     <div class="pageIntro">
       <span class="eyebrow">📈 Wordstat Dynamics</span>
@@ -260,7 +250,6 @@ function renderWordstatPage() {
       ${wordstatState.error ? `<div class="authStatus aiError">${escapeHtml(wordstatState.error)}</div>` : ''}
     </section>
 
-    ${renderWordstatLimitsPanel(phrasesCount, selectedRegions.length)}
     ${result ? renderWordstatResult(result) : renderWordstatEmptyState()}
     ${wordstatState.regionModalOpen ? renderRegionModal() : ''}
   `;
@@ -285,7 +274,6 @@ const wordstatPageRenderers = createWordstatPageRenderers({
 
 const {
   renderCompareControls,
-  renderWordstatLimitsPanel,
   renderRegionModal,
   renderWordstatEmptyState,
   renderWordstatResult,

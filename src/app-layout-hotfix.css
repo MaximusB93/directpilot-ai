@@ -231,6 +231,36 @@ body[data-page="app"] [aria-disabled="true"] {
   opacity: 1 !important;
 }
 
+body[data-page="app"] .wordstatRegionBrowser input[type="checkbox"] {
+  width: 16px !important;
+  min-width: 16px !important;
+  height: 16px !important;
+  min-height: 16px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border-radius: 4px !important;
+  accent-color: #2563eb;
+}
+
+body[data-page="app"] button.wordstatRegionToggle {
+  width: 28px !important;
+  min-width: 28px !important;
+  height: 28px !important;
+  min-height: 28px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 6px !important;
+  color: #475569 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  transform: none !important;
+}
+
+body[data-page="app"] button.wordstatRegionToggle:hover {
+  color: #0f172a !important;
+  background: #eef4ff !important;
+}
+
 body[data-page="app"] button svg,
 body[data-page="app"] .primaryButton svg,
 body[data-page="app"] .secondaryButton svg,

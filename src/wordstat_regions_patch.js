@@ -86,6 +86,7 @@ const EXTENDED_REGIONS = [
 const EXTENDED_REGION_BY_ID = new Map(EXTENDED_REGIONS.map(([id, name, type]) => [id, { id, name, type }]));
 let regionSearchQuery = '';
 let selectedExtendedRegionIds = new Set();
+let expandedRegionGroups = new Set();
 
 function patchDefaultWordstatPhrases() {
   const textarea = document.querySelector('[data-wordstat-form] textarea[name="phrases"]');
@@ -107,20 +108,17 @@ function patchRegionModal() {
   const scrollBox = modal.querySelector('[style*="overflow:auto"]');
   if (!scrollBox) return;
 
-  const searchWrap = document.createElement('div');
-  searchWrap.className = 'authField';
-  searchWrap.style.margin = '0 0 12px';
-  searchWrap.innerHTML = `
-    <span>Поиск региона или города</span>
-    <input data-wordstat-region-search value="${escapeHtml(regionSearchQuery)}" placeholder="Например: Казань, Татарстан, Сочи, Московская область" />
-    <small>Справочник расширен: все субъекты РФ и основные города. Для редких населённых пунктов можно использовать ручной ввод кода.</small>
+  scrollBox.querySelectorAll('[data-wordstat-region-modal]:checked').forEach((input) => {
+    selectedExtendedRegionIds.add(input.value);
+  });
+  scrollBox.innerHTML = `
+    <div class="authField" style="margin:0 0 12px;">
+      <span>Поиск страны, субъекта, района или города</span>
+      <input data-wordstat-region-search value="${escapeHtml(regionSearchQuery)}" placeholder="Например: Россия, Татарстан, Сочи, Московская область" />
+      <small>Выберите нужный уровень географии. Если ничего не выбрано, запрос выполняется по всем регионам.</small>
+    </div>
+    <section data-wordstat-extended-regions>${renderExtendedRegions()}</section>
   `;
-  scrollBox.prepend(searchWrap);
-
-  const extended = document.createElement('section');
-  extended.dataset.wordstatExtendedRegions = 'true';
-  extended.innerHTML = renderExtendedRegions();
-  scrollBox.appendChild(extended);
 }
 
 function escapeHtml(value) {
@@ -134,21 +132,71 @@ function escapeHtml(value) {
 
 function renderExtendedRegions() {
   const query = regionSearchQuery.trim().toLowerCase();
-  const filtered = EXTENDED_REGIONS
-    .filter(([id, name, type]) => !query || id.includes(query) || name.toLowerCase().includes(query) || type.toLowerCase().includes(query))
-    .slice(0, 260);
+  const groups = [];
+  let currentGroup = null;
+
+  for (const [id, name, type] of EXTENDED_REGIONS) {
+    if (type === 'страна') continue;
+    if (type === 'субъект') {
+      currentGroup = { id, name, type, children: [] };
+      groups.push(currentGroup);
+      continue;
+    }
+    if (!currentGroup) {
+      currentGroup = { id: 'other', name: 'Другие регионы', type: 'субъект', children: [] };
+      groups.push(currentGroup);
+    }
+    currentGroup.children.push({ id, name, type });
+  }
+
+  const visibleGroups = groups
+    .map((group) => {
+      if (!query) return group;
+      const groupMatches = group.id.includes(query) || group.name.toLowerCase().includes(query);
+      const children = groupMatches
+        ? group.children
+        : group.children.filter((item) => item.id.includes(query) || item.name.toLowerCase().includes(query));
+      return groupMatches || children.length ? { ...group, children } : null;
+    })
+    .filter(Boolean);
 
   return `
-    <hr style="border:0;border-top:1px solid #d8e0ec;margin:14px 0;" />
-    <h4 style="margin:0 0 8px;">Расширенный справочник</h4>
-    <p class="mutedText" style="margin:0 0 10px;">Показано ${filtered.length} из ${EXTENDED_REGIONS.length}. Используй поиск, чтобы быстро найти субъект или город.</p>
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:6px 14px;">
-      ${filtered.map(([id, name, type]) => `
-        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;min-height:28px;">
-          <input type="checkbox" data-wordstat-region-modal value="${escapeHtml(id)}" ${selectedExtendedRegionIds.has(id) ? 'checked' : ''}/>
-          <span>${escapeHtml(name)} <small class="muted">${escapeHtml(id)} · ${escapeHtml(type)}</small></span>
+    <div class="wordstatRegionBrowser">
+      <label class="wordstatRegionCountry">
+        <input type="checkbox" data-wordstat-region-all ${selectedExtendedRegionIds.size ? '' : 'checked'} />
+        <span>Россия</span>
+        <small class="wordstatRegionKind">Страна</small>
+      </label>
+      ${visibleGroups.map(renderRegionGroup).join('')}
+      ${visibleGroups.length ? '' : '<p class="mutedText">Ничего не найдено. Попробуйте другое название или укажите код вручную ниже.</p>'}
+    </div>
+  `;
+}
+
+function renderRegionGroup(group) {
+  const expanded = Boolean(regionSearchQuery.trim()) || expandedRegionGroups.has(group.id);
+  const checked = selectedExtendedRegionIds.has(group.id);
+  return `
+    <div>
+      <div class="wordstatRegionSubject">
+        <button class="wordstatRegionToggle" type="button" data-wordstat-region-group="${escapeHtml(group.id)}" aria-label="${expanded ? 'Свернуть' : 'Раскрыть'} ${escapeHtml(group.name)}">${expanded ? '−' : '+'}</button>
+        <label>
+          <input type="checkbox" data-wordstat-region-modal value="${escapeHtml(group.id)}" ${checked ? 'checked' : ''}/>
+          <span>${escapeHtml(group.name)}</span>
         </label>
-      `).join('')}
+        <small class="wordstatRegionKind">Субъект</small>
+      </div>
+      ${expanded ? `
+        <div class="wordstatRegionChildren">
+          ${group.children.map((item) => `
+            <label class="wordstatRegionChild">
+              <input type="checkbox" data-wordstat-region-modal value="${escapeHtml(item.id)}" ${selectedExtendedRegionIds.has(item.id) ? 'checked' : ''}/>
+              <span>${escapeHtml(item.name)}</span>
+              <small class="wordstatRegionKind">${/район|округ/i.test(item.name) ? 'Район' : 'Город'}</small>
+            </label>
+          `).join('') || '<span class="mutedText">Нет вложенных городов или районов</span>'}
+        </div>
+      ` : ''}
     </div>
   `;
 }
@@ -193,9 +241,20 @@ document.addEventListener('change', (event) => {
     if (event.target.checked) selectedExtendedRegionIds.add(event.target.value);
     else selectedExtendedRegionIds.delete(event.target.value);
   }
+  if (event.target.matches('[data-wordstat-extended-regions] [data-wordstat-region-all]')) {
+    selectedExtendedRegionIds = new Set();
+    refreshExtendedRegions();
+  }
 });
 
 document.addEventListener('click', (event) => {
+  const regionGroup = event.target.closest('[data-wordstat-region-group]');
+  if (regionGroup) {
+    const id = regionGroup.dataset.wordstatRegionGroup;
+    if (expandedRegionGroups.has(id)) expandedRegionGroups.delete(id);
+    else expandedRegionGroups.add(id);
+    refreshExtendedRegions();
+  }
   if (event.target.closest('[data-wordstat-apply-regions]')) {
     setTimeout(replaceCodeSummariesWithNames, 0);
   }
