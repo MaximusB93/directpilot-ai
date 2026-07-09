@@ -37,15 +37,8 @@ const SEVERITY_LABELS = {
 
 export function createJournalPageRenderers({ escapeHtml = fallbackEscapeHtml } = {}) {
   function renderJournalPage(context = {}) {
-    const selectedClient = context.selectedClient || null;
-    const selectedClientName = selectedClient?.name || 'Клиент не выбран';
     return `
       <section class="journalPage" data-journal-page>
-        <div class="pageIntro">
-          <span class="eyebrow">🕘 Журнал</span>
-          <h2>История действий и событий</h2>
-          <p>Показывает важные события по клиенту «${escapeHtml(selectedClientName)}»: AI-рекомендации, оптимизацию, интеграции, синхронизацию и изменения контекста.</p>
-        </div>
         ${renderJournalFilters(context)}
         ${context.state?.error ? `<div class="alert alertError">${escapeHtml(context.state.error)}</div>` : ''}
         ${renderJournalTimeline(context)}

@@ -32,13 +32,7 @@ export function optimizationPageContract() {
 }
 
 export function renderOptimizationIntro({ escapeHtml }) {
-  return `
-    <div class="pageIntro">
-      <span class="eyebrow">Оптимизация</span>
-      <h2>Диагностика → план → согласование</h2>
-      <p>${escapeHtml('DirectPilot формирует черновики действий и безопасный предпросмотр. Изменения в Яндекс.Директ здесь не применяются.')}</p>
-    </div>
-  `;
+  return '';
 }
 
 function renderPreviewList(title, items = [], escapeHtml) {

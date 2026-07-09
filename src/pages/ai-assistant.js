@@ -39,13 +39,7 @@ export function aiAssistantPageContract() {
 }
 
 export function renderAiAssistantIntro({ escapeHtml }) {
-  return `
-    <div class="pageIntro">
-      <span class="eyebrow">AI-аналитик</span>
-      <h2>Один чат для анализа клиента</h2>
-      <p>${escapeHtml('AI использует бизнес-контекст, цели, кампании, поисковые запросы, аудит и черновики действий. Настройки модели и диагностика контекста доступны ниже, но основной сценарий — задавать вопросы по выбранному клиенту.')}</p>
-    </div>
-  `;
+  return '';
 }
 
 export function renderAiMethodologyPanel() {

@@ -50,13 +50,7 @@ function renderIntegrationStatusMessage(message, { escapeHtml, className = 'inte
 }
 
 export function renderIntegrationsIntro({ escapeHtml }) {
-  return `
-    <div class="pageIntro">
-      <span class="eyebrow">Интеграции</span>
-      <h2>Подключите Яндекс.Директ и Метрику</h2>
-      <p>${escapeHtml('Подключение хранится в backend. После подключения выберите аккаунт Яндекса для активного клиента.')}</p>
-    </div>
-  `;
+  return '';
 }
 
 export function renderYandexConnectPanel({ integrationStatus = {}, escapeHtml }) {

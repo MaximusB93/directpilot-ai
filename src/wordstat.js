@@ -217,18 +217,16 @@ function renderWordstatPage() {
 
   workspace.innerHTML = `
     <header class="appHeader">
-      <div><span class="muted">Модуль спроса</span><h1>Спрос / Wordstat</h1></div>
+      <div class="wordstatHeaderCopy">
+        <span class="muted">Анализ спроса</span>
+        <h1>Wordstat: динамика частотности</h1>
+        <p>Ключевые фразы, сезонность и спрос по выбранным регионам и периодам.</p>
+      </div>
       <div class="wordstatConnectionState ${connectionReady ? 'is-ready' : 'is-pending'}">
         <span class="wordstatConnectionDot" aria-hidden="true"></span>
         <div><small>Wordstat API</small><strong>${connectionReady ? 'Подключён' : 'Не подключён'}</strong></div>
       </div>
     </header>
-
-    <div class="pageIntro">
-      <span class="eyebrow">📈 Wordstat Dynamics</span>
-      <h2>Динамика частотности по ключевым фразам</h2>
-      <p>Выберите фразы, период и регион. Для нескольких фраз график рисует несколько линий, а таблицы показывают отдельные значения и сумму.</p>
-    </div>
 
     <section class="panel">
       <form class="clientConnectForm" data-wordstat-form>

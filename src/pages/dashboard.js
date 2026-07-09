@@ -35,17 +35,7 @@ export function dashboardPageContract() {
 }
 
 export function renderDashboardIntro({ clientName, hasClient, escapeHtml }) {
-  const title = hasClient ? escapeHtml(clientName) : 'Выберите или создайте клиента';
-  const description = hasClient
-    ? 'Здесь только статистика из Яндекс.Директа: период, кампании, расход, клики, CTR, CPC, конверсии и CPA по выбранным целям.'
-    : 'Создайте клиента и подключите Яндекс, чтобы увидеть статистику кампаний.';
-  return `
-    <div class="pageIntro">
-      <span class="eyebrow">📊 Обзор</span>
-      <h2>${title}</h2>
-      <p>${description}</p>
-    </div>
-  `;
+  return '';
 }
 export function renderDashboardNextStepPanel({
   nextAction,
