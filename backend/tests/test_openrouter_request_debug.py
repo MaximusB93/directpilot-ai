@@ -81,5 +81,11 @@ def test_openrouter_request_debug_includes_messages_without_credentials(monkeypa
     assert debug["payload"]["max_tokens"] == 900
     assert debug["payload"]["messages"][0]["role"] == "system"
     assert debug["payload"]["messages"][1]["role"] == "user"
+    assert debug["provider"] == "openrouter"
+    assert debug["model"] == "custom/model"
+    assert debug["task"] == "chat"
+    assert debug["system_prompt_version"] == "v1"
+    assert len(debug["system_prompt_hash"]) == 12
+    assert debug["systemPromptMetadata"]["hash"] == debug["system_prompt_hash"]
     assert "secret" not in str(debug)
     assert debug["compactOptions"]["compact_context"] is True

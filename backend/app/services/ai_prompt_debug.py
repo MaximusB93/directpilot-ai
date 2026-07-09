@@ -263,7 +263,11 @@ def build_openrouter_request_debug(
     compact_options: dict[str, Any] | None = None,
     include_preview: bool = True,
 ) -> dict[str, Any]:
-    from app.services.openrouter import build_openrouter_payload, redact_openrouter_debug_payload
+    from app.services.openrouter import (
+        build_openrouter_payload,
+        build_openrouter_trace_metadata,
+        redact_openrouter_debug_payload,
+    )
 
     snapshot = build_prompt_debug_snapshot(
         context=context or {},
@@ -275,10 +279,17 @@ def build_openrouter_request_debug(
     )
     payload = build_openrouter_payload(model, user_prompt, max_tokens=max_tokens)
     safe_payload = redact_openrouter_debug_payload(payload)
+    trace_metadata = build_openrouter_trace_metadata(str(payload["model"]), task=mode)
     return {
         "mode": mode,
         "endpoint": endpoint,
         "source": endpoint,
+        **trace_metadata,
+        "systemPromptMetadata": {
+            "version": trace_metadata["system_prompt_version"],
+            "hash": trace_metadata["system_prompt_hash"],
+            "source": trace_metadata["system_prompt_source"],
+        },
         "payload": safe_payload,
         "systemPrompt": redact_openrouter_debug_payload(system_prompt),
         "userPrompt": redact_openrouter_debug_payload(user_prompt),

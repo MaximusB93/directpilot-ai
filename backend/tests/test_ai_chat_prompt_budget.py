@@ -67,6 +67,9 @@ def test_answer_ai_chat_passes_max_tokens_to_openrouter(monkeypatch):
     assert response.requestDebug is None
     assert response.requestTrace is not None
     assert response.requestTrace["mode"] == "ai_chat"
+    assert response.requestTrace["provider"] == "openrouter"
+    assert response.requestTrace["system_prompt_version"] == "v1"
+    assert len(response.requestTrace["system_prompt_hash"]) == 12
     assert response.requestTrace["openrouterPayload"]["max_tokens"] == 777
 
 
