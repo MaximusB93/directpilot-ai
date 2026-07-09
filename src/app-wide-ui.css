@@ -358,13 +358,13 @@ body[data-page="app"] .wordstatChartPanel.has-hover circle:not(.wordstat-hovered
 body[data-page="app"] .wordstatChartPanel .wordstat-hovered-series {
   stroke-width: 6 !important;
   opacity: 1 !important;
-  filter: drop-shadow(0 7px 12px rgba(15, 23, 42, 0.2));
+  filter: none;
 }
 
 body[data-page="app"] .wordstatChartPanel .wordstat-hovered-point {
   r: 8;
   opacity: 1 !important;
-  filter: drop-shadow(0 5px 10px rgba(15, 23, 42, 0.24));
+  filter: none;
 }
 
 body[data-page="app"] .wordstatChartPanel .wordstat-chart-hit {
@@ -381,12 +381,121 @@ body[data-page="app"] .wordstatChartPanel .wordstat-chart-hit {
   max-width: 320px;
   padding: 12px 14px;
   border: 1px solid rgba(19, 34, 56, 0.1);
-  border-radius: 18px;
+  border-radius: 10px;
   color: #132238;
-  background: rgba(255, 255, 255, 0.96);
-  box-shadow: 0 20px 56px rgba(15, 23, 42, 0.18);
-  backdrop-filter: blur(16px);
+  background: #fff;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
   pointer-events: none;
+}
+
+body[data-page="app"] .wordstatConnectionState {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 150px;
+  padding: 9px 12px;
+  border: 1px solid #d8e0ec;
+  border-radius: 10px;
+  background: #fff;
+}
+
+body[data-page="app"] .wordstatConnectionState div {
+  display: grid;
+  gap: 1px;
+}
+
+body[data-page="app"] .wordstatConnectionState small {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+body[data-page="app"] .wordstatConnectionState strong {
+  font-size: 13px;
+}
+
+body[data-page="app"] .wordstatConnectionDot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #f59e0b;
+}
+
+body[data-page="app"] .wordstatConnectionState.is-ready .wordstatConnectionDot {
+  background: #16a34a;
+}
+
+body[data-page="app"] .wordstatRegionBrowser {
+  display: grid;
+  gap: 8px;
+}
+
+body[data-page="app"] .wordstatRegionCountry,
+body[data-page="app"] .wordstatRegionSubject,
+body[data-page="app"] .wordstatRegionChild {
+  display: flex;
+  align-items: center;
+  min-height: 38px;
+}
+
+body[data-page="app"] .wordstatRegionCountry {
+  padding: 8px 10px;
+  border: 1px solid #d8e0ec;
+  border-radius: 8px;
+  background: #f8fbff;
+  font-weight: 800;
+}
+
+body[data-page="app"] .wordstatRegionSubject {
+  gap: 8px;
+  padding: 7px 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+}
+
+body[data-page="app"] .wordstatRegionSubject label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  cursor: pointer;
+}
+
+body[data-page="app"] .wordstatRegionChildren {
+  display: grid;
+  gap: 4px;
+  margin: 2px 0 8px 30px;
+  padding-left: 14px;
+  border-left: 2px solid #e2e8f0;
+}
+
+body[data-page="app"] .wordstatRegionChild {
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+
+body[data-page="app"] .wordstatRegionChild:hover {
+  background: #f8fbff;
+}
+
+body[data-page="app"] .wordstatRegionToggle {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #475569;
+  font-size: 18px;
+}
+
+body[data-page="app"] .wordstatRegionKind {
+  margin-left: auto;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 700;
 }
 
 .wordstatChartTooltip.visible {

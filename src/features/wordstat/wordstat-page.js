@@ -152,7 +152,7 @@ export function createWordstatPageRenderers({
     }).join('');
     const firstSeries = series[0]?.points || [];
     return `
-      <section class="panel"><div class="panelHeader"><div><h3>График динамики</h3><p>Наведи курсор на точку, чтобы увидеть дату, ключевую фразу и количество запросов.</p></div><span class="aiStatusBadge ready">hover</span></div>
+      <section class="panel"><div class="panelHeader"><div><h3>График динамики</h3><p>Наведите курсор на точку, чтобы увидеть дату, ключевую фразу и количество запросов.</p></div></div>
         <div style="overflow:auto;"><svg viewBox="0 0 ${width} ${height}" style="min-width:860px;width:100%;height:auto;background:#fff;border-radius:18px;">
           ${[0, 0.25, 0.5, 0.75, 1].map((tick) => `<line x1="${padding.left}" y1="${y(maxY * tick)}" x2="${width - padding.right}" y2="${y(maxY * tick)}" stroke="#d8e0ec"/><text x="14" y="${y(maxY * tick) + 4}" font-size="12" fill="#1677ff">${formatNumber(Math.round(maxY * tick))}</text>`).join('')}
           ${firstSeries.map((point, index) => index % Math.ceil(firstSeries.length / 8 || 1) === 0 ? `<text x="${x(index) - 18}" y="${height - 26}" font-size="12" fill="#64748b">${escapeHtml(shortDateLabel(point.date))}</text><line x1="${x(index)}" y1="${height - padding.bottom}" x2="${x(index)}" y2="${height - padding.bottom + 8}" stroke="#94a3b8"/>` : '').join('')}
