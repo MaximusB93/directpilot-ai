@@ -1,0 +1,54 @@
+{
+  "id": "004_good_campaign_do_not_touch",
+  "title": "Эффективная кампания без критичных проблем",
+  "description": "Кампания получает стабильные конверсии по CPA ниже целевого значения.",
+  "task": "generate_campaign_recommendations",
+  "input_data": {
+    "period": {
+      "days": 30,
+      "date_from": "2026-05-01",
+      "date_to": "2026-05-30"
+    },
+    "selected_goal_ids": ["synthetic_purchase_goal"],
+    "target_cpa": 2000,
+    "account_totals": {
+      "cost": 90000,
+      "goal_conversions": 50
+    },
+    "campaigns": [
+      {
+        "campaign_id": "synthetic-campaign-004",
+        "campaign_name": "Поиск | Приоритетный продукт",
+        "cost": 36000,
+        "previous_period_cost": 35000,
+        "impressions": 72000,
+        "clicks": 1800,
+        "ctr": 2.5,
+        "avg_cpc": 20,
+        "goal_conversions": 24,
+        "previous_period_goal_conversions": 23,
+        "goal_cpa": 1500,
+        "conversion_rate": 1.33,
+        "issue_flags": []
+      }
+    ]
+  },
+  "expected": {
+    "should_find": [
+      "CPA ниже целевого значения",
+      "кампания работает стабильно без критичных сигналов"
+    ],
+    "should_recommend": [
+      "наблюдать за кампанией",
+      "рассматривать только осторожное масштабирование после проверки ограничений бюджета"
+    ],
+    "should_not_do": [
+      "искать проблему без доказательств",
+      "рекомендовать отключение кампании",
+      "рекомендовать снижение бюджета"
+    ],
+    "risk_level": "low",
+    "requires_human_approval": true
+  },
+  "tags": ["campaign", "good_performance", "do_not_harm"]
+}

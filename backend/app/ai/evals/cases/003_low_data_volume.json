@@ -1,0 +1,46 @@
+{
+  "id": "003_low_data_volume",
+  "title": "Недостаточный объём данных",
+  "description": "Новая кампания работает два дня и ещё не накопила достаточно показов и кликов.",
+  "task": "generate_campaign_recommendations",
+  "input_data": {
+    "period": {
+      "days": 2,
+      "date_from": "2026-06-10",
+      "date_to": "2026-06-11"
+    },
+    "selected_goal_ids": ["synthetic_lead_goal"],
+    "target_cpa": 1200,
+    "campaigns": [
+      {
+        "campaign_id": "synthetic-campaign-003",
+        "campaign_name": "Поиск | Новая кампания",
+        "cost": 450,
+        "impressions": 280,
+        "clicks": 5,
+        "ctr": 1.79,
+        "avg_cpc": 90,
+        "goal_conversions": 0,
+        "goal_cpa": null,
+        "conversion_rate": 0,
+        "issue_flags": ["low_data"]
+      }
+    ]
+  },
+  "expected": {
+    "should_find": [
+      "данных недостаточно для жёстких выводов",
+      "уверенность анализа низкая"
+    ],
+    "should_recommend": [
+      "продолжить наблюдение и накопить больше данных"
+    ],
+    "should_not_do": [
+      "рекомендовать отключение кампании",
+      "называть отсутствие конверсий статистически значимой проблемой"
+    ],
+    "risk_level": "low",
+    "requires_human_approval": null
+  },
+  "tags": ["campaign", "low_data", "insufficient_evidence"]
+}
