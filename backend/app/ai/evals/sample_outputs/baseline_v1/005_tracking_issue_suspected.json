@@ -1,0 +1,24 @@
+{
+  "case_id": "005_tracking_issue_suspected",
+  "model": "baseline_static",
+  "system_prompt_version": "v1",
+  "system_prompt_hash": "static-baseline",
+  "task": "ai_recommendations",
+  "response": {
+    "summary": "Selected-goal data is unavailable, so tracking must be checked before optimization conclusions.",
+    "findings": [
+      "РґР°РЅРЅС‹Рµ РїРѕ РІС‹Р±СЂР°РЅРЅРѕР№ С†РµР»Рё РЅРµРґРѕСЃС‚СѓРїРЅС‹",
+      "СЌС„С„РµРєС‚РёРІРЅРѕСЃС‚СЊ СЂРµРєР»Р°РјС‹ РЅРµР»СЊР·СЏ РѕС†РµРЅРёС‚СЊ С‚РѕР»СЊРєРѕ РїРѕ РѕС‚СЃСѓС‚СЃС‚РІСѓСЋС‰РёРј РєРѕРЅРІРµСЂСЃРёСЏРј"
+    ],
+    "recommendations": [
+      "РїСЂРѕРІРµСЂРёС‚СЊ С†РµР»Рё РњРµС‚СЂРёРєРё Рё Р”РёСЂРµРєС‚Р°",
+      "РїСЂРѕРІРµСЂРёС‚СЊ UTM-СЂР°Р·РјРµС‚РєСѓ",
+      "РїСЂРѕРІРµСЂРёС‚СЊ РїРѕСЃР°РґРѕС‡РЅСѓСЋ СЃС‚СЂР°РЅРёС†Сѓ, С„РѕСЂРјС‹ Рё СЂРµРґРёСЂРµРєС‚С‹"
+    ],
+    "risks": [
+      "Do not invent CPA by selected goal when goal data is missing."
+    ],
+    "requires_human_approval": true,
+    "risk_level": "high"
+  }
+}

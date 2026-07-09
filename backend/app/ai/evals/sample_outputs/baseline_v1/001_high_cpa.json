@@ -1,0 +1,23 @@
+{
+  "case_id": "001_high_cpa",
+  "model": "baseline_static",
+  "system_prompt_version": "v1",
+  "system_prompt_hash": "static-baseline",
+  "task": "ai_recommendations",
+  "response": {
+    "summary": "Campaign has high CPA by the selected goal and enough data for priority review.",
+    "findings": [
+      "CPA РїРѕ РІС‹Р±СЂР°РЅРЅРѕР№ С†РµР»Рё Р·РЅР°С‡РёС‚РµР»СЊРЅРѕ РІС‹С€Рµ С†РµР»РµРІРѕРіРѕ CPA",
+      "РґР°РЅРЅС‹С… РґРѕСЃС‚Р°С‚РѕС‡РЅРѕ РґР»СЏ РїСЂРёРѕСЂРёС‚РµС‚РЅРѕР№ РїСЂРѕРІРµСЂРєРё РєР°РјРїР°РЅРёРё"
+    ],
+    "recommendations": [
+      "РїСЂРѕРІРµСЂРёС‚СЊ РїРѕРёСЃРєРѕРІС‹Рµ Р·Р°РїСЂРѕСЃС‹ Рё РіСЂСѓРїРїС‹ РѕР±СЉСЏРІР»РµРЅРёР№",
+      "РїСЂРѕРІРµСЂРёС‚СЊ РѕР±СЉСЏРІР»РµРЅРёСЏ Рё РїСѓС‚СЊ РґРѕ РєРѕРЅРІРµСЂСЃРёРё"
+    ],
+    "risks": [
+      "Any budget or strategy change needs manual review first."
+    ],
+    "requires_human_approval": true,
+    "risk_level": "high"
+  }
+}
