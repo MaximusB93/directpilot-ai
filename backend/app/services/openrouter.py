@@ -4,16 +4,13 @@ import httpx
 from fastapi import HTTPException, status
 from typing import Any
 
+from app.ai.prompt_loader import get_system_prompt
 from app.core.config import settings
 from app.services.ai_prompt_debug import clamp_openrouter_max_tokens
 
 OPENROUTER_CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions"
 
-DEFAULT_SYSTEM_PROMPT = """
-Ты senior PPC-стратег DirectPilot AI. Анализируй Яндекс.Директ, Метрику и CRM-данные прагматично.
-Всегда разделяй факты, гипотезы и безопасные следующие шаги. Не предлагай применять изменения без approval/dry-run.
-Пиши по-русски, структурируй ответ списками и указывай, какие данные нужны для проверки вывода.
-""".strip()
+DEFAULT_SYSTEM_PROMPT = get_system_prompt()
 
 SECRET_KEY_PARTS = ("authorization", "api_key", "apikey", "token", "secret", "password", "cookie", "refresh")
 SAFE_DEBUG_KEYS = {
