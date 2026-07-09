@@ -1,0 +1,23 @@
+{
+  "case_id": "002_spend_without_conversions",
+  "model": "baseline_static",
+  "system_prompt_version": "v1",
+  "system_prompt_hash": "static-baseline",
+  "task": "ai_recommendations",
+  "response": {
+    "summary": "Campaign has spend and clicks, but no selected-goal conversions.",
+    "findings": [
+      "СЂР°СЃС…РѕРґ Рё РєР»РёРєРё РµСЃС‚СЊ, Р° РєРѕРЅРІРµСЂСЃРёР№ РїРѕ РІС‹Р±СЂР°РЅРЅРѕР№ С†РµР»Рё РЅРµС‚"
+    ],
+    "recommendations": [
+      "РїСЂРѕРІРµСЂРёС‚СЊ РїРѕРёСЃРєРѕРІС‹Рµ Р·Р°РїСЂРѕСЃС‹",
+      "РїСЂРѕРІРµСЂРёС‚СЊ С†РµР»Рё РњРµС‚СЂРёРєРё Рё Р”РёСЂРµРєС‚Р°",
+      "РїСЂРѕРІРµСЂРёС‚СЊ РїРѕСЃР°РґРѕС‡РЅСѓСЋ СЃС‚СЂР°РЅРёС†Сѓ Рё РїСѓС‚СЊ Рє РєРѕРЅРІРµСЂСЃРёРё"
+    ],
+    "risks": [
+      "Tracking should be checked before judging final efficiency."
+    ],
+    "requires_human_approval": true,
+    "risk_level": "high"
+  }
+}

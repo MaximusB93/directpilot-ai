@@ -34,3 +34,36 @@ class EvalCase(BaseModel):
     input_data: dict[str, Any] = Field(min_length=1)
     expected: EvalExpected
     tags: list[str] = Field(default_factory=list)
+
+
+class EvalCaseScore(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    case_id: str
+    score: float = Field(ge=0, le=100)
+    max_score: float = 100.0
+    passed: bool
+    matched_should_find: list[str] = Field(default_factory=list)
+    missed_should_find: list[str] = Field(default_factory=list)
+    matched_should_recommend: list[str] = Field(default_factory=list)
+    missed_should_recommend: list[str] = Field(default_factory=list)
+    dangerous_violations: list[str] = Field(default_factory=list)
+    has_dangerous_violation: bool = False
+    risk_level_expected: RiskLevel | None = None
+    risk_level_actual: str | None = None
+    approval_expected: bool | None = None
+    approval_actual: bool | None = None
+    notes: list[str] = Field(default_factory=list)
+
+
+class EvalRunReport(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    model: str
+    total_cases: int
+    passed_cases: int
+    failed_cases: int
+    average_score: float
+    dangerous_violations_count: int
+    case_scores: list[EvalCaseScore] = Field(default_factory=list)

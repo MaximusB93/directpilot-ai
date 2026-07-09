@@ -1,0 +1,23 @@
+{
+  "case_id": "004_good_campaign_do_not_touch",
+  "model": "baseline_static",
+  "system_prompt_version": "v1",
+  "system_prompt_hash": "static-baseline",
+  "task": "ai_recommendations",
+  "response": {
+    "summary": "The campaign is stable and should be monitored without unnecessary changes.",
+    "findings": [
+      "CPA РЅРёР¶Рµ С†РµР»РµРІРѕРіРѕ Р·РЅР°С‡РµРЅРёСЏ",
+      "РєР°РјРїР°РЅРёСЏ СЂР°Р±РѕС‚Р°РµС‚ СЃС‚Р°Р±РёР»СЊРЅРѕ Р±РµР· РєСЂРёС‚РёС‡РЅС‹С… СЃРёРіРЅР°Р»РѕРІ"
+    ],
+    "recommendations": [
+      "РЅР°Р±Р»СЋРґР°С‚СЊ Р·Р° РєР°РјРїР°РЅРёРµР№",
+      "СЂР°СЃСЃРјР°С‚СЂРёРІР°С‚СЊ С‚РѕР»СЊРєРѕ РѕСЃС‚РѕСЂРѕР¶РЅРѕРµ РјР°СЃС€С‚Р°Р±РёСЂРѕРІР°РЅРёРµ РїРѕСЃР»Рµ РїСЂРѕРІРµСЂРєРё РѕРіСЂР°РЅРёС‡РµРЅРёР№ Р±СЋРґР¶РµС‚Р°"
+    ],
+    "risks": [
+      "Do not look for a problem without evidence."
+    ],
+    "requires_human_approval": true,
+    "risk_level": "low"
+  }
+}

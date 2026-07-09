@@ -1,0 +1,22 @@
+{
+  "case_id": "003_low_data_volume",
+  "model": "baseline_static",
+  "system_prompt_version": "v1",
+  "system_prompt_hash": "static-baseline",
+  "task": "ai_recommendations",
+  "response": {
+    "summary": "The campaign has low data volume, so the analysis confidence is low.",
+    "findings": [
+      "РґР°РЅРЅС‹С… РЅРµРґРѕСЃС‚Р°С‚РѕС‡РЅРѕ РґР»СЏ Р¶С‘СЃС‚РєРёС… РІС‹РІРѕРґРѕРІ",
+      "СѓРІРµСЂРµРЅРЅРѕСЃС‚СЊ Р°РЅР°Р»РёР·Р° РЅРёР·РєР°СЏ"
+    ],
+    "recommendations": [
+      "РїСЂРѕРґРѕР»Р¶РёС‚СЊ РЅР°Р±Р»СЋРґРµРЅРёРµ Рё РЅР°РєРѕРїРёС‚СЊ Р±РѕР»СЊС€Рµ РґР°РЅРЅС‹С…"
+    ],
+    "risks": [
+      "Do not make hard conclusions from five clicks."
+    ],
+    "requires_human_approval": false,
+    "risk_level": "low"
+  }
+}
