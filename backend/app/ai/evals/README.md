@@ -93,3 +93,53 @@ Baseline scorer намеренно простой:
 ## Почему runner не вызывает AI-модели
 
 Этот слой нужен для regression-оценки сохранённых ответов. Реальные model calls, сравнение Gemma/Qwen/DeepSeek, Google Sheets importer и fine-tuning dataset — отдельные будущие шаги. Offline runner безопасен для CI и бесплатен для запуска на каждом PR.
+
+## Manual Model Runner
+
+`model_runner.py` — ручной инструмент для экспериментов с одной выбранной OpenRouter-моделью. Он не запускается автоматически, не подключён к пользовательскому AI pipeline и нужен только для локального сохранения outputs, которые потом можно оценить offline runner-ом.
+
+Dry-run без вызова OpenRouter:
+
+```bash
+cd backend
+python -m app.ai.evals.model_runner --model google/gemma-3-12b-it --limit 5 --dry-run
+```
+
+Запуск одной модели на одном кейсе:
+
+```bash
+cd backend
+python -m app.ai.evals.model_runner --model google/gemma-3-12b-it --case-id 001_high_cpa
+```
+
+Запуск модели на первых 5 кейсах:
+
+```bash
+cd backend
+python -m app.ai.evals.model_runner --model google/gemma-3-12b-it --limit 5
+```
+
+Полный dataset можно запустить только явно:
+
+```bash
+cd backend
+python -m app.ai.evals.model_runner --model google/gemma-3-12b-it --all
+```
+
+Параметры безопасности:
+
+- `--model` обязателен;
+- без `--limit`, `--case-id` или `--all` runner откажется запускать модель;
+- `--dry-run` не делает API-запросы и не пишет model outputs;
+- существующие output-файлы не перезаписываются без `--overwrite`;
+- реальные outputs сохраняются в `backend/app/ai/evals/model_outputs/<safe_model_name>/`;
+- содержимое `model_outputs` игнорируется git по умолчанию.
+
+После сохранения outputs их можно оценить offline runner-ом:
+
+```bash
+cd backend
+python -m app.ai.evals.runner --outputs-dir app/ai/evals/model_outputs/google_gemma-3-12b-it
+```
+
+`model_runner.py` использует тот же backend OpenRouter wrapper и системный prompt metadata, но не меняет production AI-рекомендации, chat, playbook или JSON-контракт пользовательских ответов.
