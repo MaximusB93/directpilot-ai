@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -84,8 +85,16 @@ def run_offline_eval(outputs_dir: Path | None = None) -> EvalRunReport:
     )
 
 
-def main() -> None:
-    report = run_offline_eval()
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Run DirectPilot AI offline eval scoring for saved outputs.")
+    parser.add_argument(
+        "--outputs-dir",
+        type=Path,
+        default=None,
+        help="Directory with saved model outputs. Defaults to sample_outputs/baseline_v1.",
+    )
+    args = parser.parse_args(argv)
+    report = run_offline_eval(outputs_dir=args.outputs_dir)
     print(render_eval_report_markdown(report))
 
 
