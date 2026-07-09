@@ -4,7 +4,7 @@ import httpx
 from fastapi import HTTPException, status
 from typing import Any
 
-from app.ai.prompt_loader import get_system_prompt
+from app.ai.prompt_loader import get_system_prompt, get_system_prompt_metadata
 from app.core.config import settings
 from app.services.ai_prompt_debug import clamp_openrouter_max_tokens
 
@@ -47,6 +47,20 @@ def build_openrouter_payload(model: str, prompt: str, max_tokens: int | None = N
         "temperature": 0.2,
         "max_tokens": clamp_openrouter_max_tokens(max_tokens),
     }
+
+
+def build_openrouter_trace_metadata(model: str, task: str | None = None) -> dict[str, str]:
+    prompt_metadata = get_system_prompt_metadata()
+    metadata = {
+        "provider": "openrouter",
+        "model": _validate_openrouter_model(model),
+        "system_prompt_version": prompt_metadata["version"],
+        "system_prompt_hash": prompt_metadata["hash"][:12],
+        "system_prompt_source": prompt_metadata["source"],
+    }
+    if task:
+        metadata["task"] = task
+    return metadata
 
 
 def redact_openrouter_debug_payload(value: Any) -> Any:

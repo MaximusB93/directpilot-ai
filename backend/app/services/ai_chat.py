@@ -1036,6 +1036,11 @@ def _build_request_trace(
     }
     trace = {
         "mode": "ai_chat",
+        "provider": (request_debug or {}).get("provider", "openrouter"),
+        "system_prompt_version": (request_debug or {}).get("system_prompt_version"),
+        "system_prompt_hash": (request_debug or {}).get("system_prompt_hash"),
+        "system_prompt_source": (request_debug or {}).get("system_prompt_source"),
+        "task": (request_debug or {}).get("task", "chat"),
         "clientId": client_id,
         "userMessage": user_message,
         "analysisPlan": intent_plan or detect_analysis_intent(user_message),
