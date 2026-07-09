@@ -53,13 +53,7 @@ function renderBusinessContextStatus(message, { escapeHtml } = {}) {
 }
 
 export function renderBusinessContextIntro({ escapeHtml }) {
-  return `
-    <div class="pageIntro">
-      <span class="eyebrow">🧭 Контекст бизнеса</span>
-      <h2>Память проекта для AI-аналитика</h2>
-      <p>${escapeHtml('Заполните бизнес-контекст один раз, чтобы AI учитывал бренд, нишу, офферы, ограничения и нерелевантные темы при анализе кампаний и поисковых запросов.')}</p>
-    </div>
-  `;
+  return '';
 }
 
 export function renderBusinessContextPanel({

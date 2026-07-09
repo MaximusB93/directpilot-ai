@@ -37,9 +37,7 @@ export function clientsPageContract() {
 }
 
 export function renderClientsIntro() {
-  return `
-    <div class="pageIntro"><span class="eyebrow">👥 Клиенты</span><h2>Клиенты как отдельные сущности</h2><p>Создайте отдельную карточку клиента для каждого аккаунта/проекта и укажите логин Яндекс.Директа и счётчик Метрики.</p></div>
-  `;
+  return '';
 }
 
 export function renderClientCreatePanel({

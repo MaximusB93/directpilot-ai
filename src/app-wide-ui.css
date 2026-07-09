@@ -425,6 +425,19 @@ body[data-page="app"] .wordstatConnectionState.is-ready .wordstatConnectionDot {
   background: #16a34a;
 }
 
+body[data-page="app"] .wordstatHeaderCopy {
+  display: grid;
+  gap: 4px;
+}
+
+body[data-page="app"] .wordstatHeaderCopy p {
+  max-width: 720px;
+  margin: 0;
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
 body[data-page="app"] .wordstatRegionBrowser {
   display: grid;
   gap: 8px;

@@ -25,16 +25,9 @@ export function wordstatPageContract() {
 }
 
 export function renderWordstatContent({ selectedClient, escapeHtml }) {
-  const clientName = selectedClient?.name || 'Клиент не выбран';
   return `
     <section class="wordstatModuleShell" data-wordstat-module-shell>
-      <div class="workspace" data-wordstat-workspace>
-        <div class="pageIntro">
-          <span class="eyebrow">📈 Wordstat</span>
-          <h2>Готовим модуль спроса</h2>
-          <p>Wordstat загружается для клиента «${escapeHtml(clientName)}». Если данные не появились автоматически, обновите страницу или проверьте подключение.</p>
-        </div>
-      </div>
+      <div class="workspace" data-wordstat-workspace></div>
     </section>
   `;
 }

@@ -1655,11 +1655,6 @@ function renderProjectDiagnostics() {
   const nextAction = getNextBestAction();
   const readyCount = readiness.filter((item) => item.status === 'ready').length;
   return renderShell(`
-    <div class="pageIntro">
-      <span class="eyebrow">Диагностика</span>
-      <h2>${hasClient ? `Готовность проекта «${escapeHtml(client.name)}»` : 'Диагностика проекта'}</h2>
-      <p>Здесь собраны готовность клиента, интеграции, синхронизация, качество данных и следующий шаг. Обзор оставлен только для статистики Яндекс.Директа.</p>
-    </div>
     <section class="panel">
       <div class="panelHeader">
         <div>
@@ -1781,11 +1776,6 @@ function renderClientIntegrationsSection() {
   }
 
   return `
-    <div class="pageIntro">
-      <span class="eyebrow">Интеграции клиента</span>
-      <h2>Яндекс-аккаунт для выбранного клиента</h2>
-      <p>Привязка хранится отдельно для каждого клиента. При смене клиента здесь показывается только его статус.</p>
-    </div>
     ${contentRenderer(integrationsPageContext())}
   `;
 }
