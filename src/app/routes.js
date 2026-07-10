@@ -46,6 +46,11 @@ export const APP_ROUTES = Object.freeze({
     label: 'Журнал',
     mode: 'module',
   },
+  settings: {
+    id: 'settings',
+    hash: '#settings',
+    label: 'Настройки',
+  },
 });
 
 export const DEFAULT_ROUTE_ID = APP_ROUTES.dashboard.id;
@@ -57,8 +62,9 @@ export const LEGACY_ROUTE_REDIRECTS = Object.freeze({
   autopilot: 'optimization',
   context: 'business-context',
   memory: 'business-context',
-  'ai-models': 'ai',
-  models: 'ai',
+  'ai-models': 'settings',
+  models: 'settings',
+  profile: 'settings',
 });
 
 export const APP_ROUTE_IDS = Object.freeze(Object.keys(APP_ROUTES));

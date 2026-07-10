@@ -9,6 +9,7 @@ from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.connectors.yandex_direct import YandexDirectConnector
+from app.core.config import DEFAULT_PRODUCTION_AI_MODEL, normalize_ai_request_options, production_ai_model_ids
 from app.models import ClientAccount
 from app.services.connected_accounts import get_yandex_access_token_for_account
 from app.services.openrouter import generate_openrouter_response
@@ -409,13 +410,22 @@ async def build_live_period_ai_analysis(db: Session, client_id: str, *, preset: 
         search_rows = []
     search_drilldown = _build_search_query_drilldown(search_rows, goal_ids)
     prompt = _build_ai_prompt(summary, search_drilldown)
-    result = await generate_openrouter_response(model or "openrouter/auto", prompt, max_tokens=max_tokens)
+    ai_options = normalize_ai_request_options(
+        model=model,
+        ai_preset="advanced",
+        max_tokens=max_tokens,
+        models=production_ai_model_ids(),
+        configured_default=DEFAULT_PRODUCTION_AI_MODEL,
+        production_only=True,
+    )
+    selected_model = str(ai_options["model"])
+    result = await generate_openrouter_response(selected_model, prompt, max_tokens=int(ai_options["max_tokens"]))
     return {
         "source": "openrouter_with_live_yandex_direct_range",
         "period": summary["period"],
         "summary": summary,
         "searchQueryDrilldown": search_drilldown,
         "answer": result.get("content") or "",
-        "model": result.get("model") or model or "openrouter/auto",
+        "model": result.get("model") or selected_model,
         "safety": {"readOnly": True, "canApplyAutomatically": False, "message": "Yandex Direct write API was not called."},
     }

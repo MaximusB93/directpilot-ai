@@ -61,89 +61,34 @@ export function renderAiMethodologyPanel() {
 
 export function renderAiStatusPanel({
   aiStatus = {},
-  selectedAiModel = 'openrouter/auto',
-  customAiModel = '',
-  customModelValue,
+  selectedAiModel = '',
   selectedAiPreset = 'balanced',
   aiResolvedMaxTokens = 900,
-  aiMaxTokensMode = 'compact',
-  aiToolResultsMode = 'summary',
-  aiChatHistoryLimit = 3,
-  aiSearchQueryLimit = '',
-  aiCompactContext = true,
   escapeHtml,
 }) {
   const models = aiStatus.models || [];
-  const selectedModelExists = models.some((model) => model.id === selectedAiModel);
-  const customActive = selectedAiModel === customModelValue || (!selectedModelExists && selectedAiModel !== 'openrouter/auto');
-  const resolvedModel = customActive ? (customAiModel || 'укажите свою модель') : selectedAiModel;
+  const selectedModel = models.find((model) => model.id === selectedAiModel);
+  const resolvedModel = selectedModel?.name || selectedModel?.label || selectedAiModel || 'Qwen3 14B · Баланс';
   const presetLabel = {
     economy: 'Эконом',
     balanced: 'Баланс',
     deep: 'Максимум',
     advanced: 'Максимум',
   }[selectedAiPreset] || selectedAiPreset;
-  const modelOptions = [
-    '<option value="openrouter/auto">openrouter/auto</option>',
-    ...models.map((model) => `<option value="${escapeHtml(model.id)}" ${selectedAiModel === model.id ? 'selected' : ''}>${escapeHtml(model.name || model.id)}</option>`),
-    `<option value="${customModelValue}" ${customActive ? 'selected' : ''}>Своя модель OpenRouter</option>`,
-  ].join('');
 
   return `
     <section class="panel aiStatusPanel">
       <div class="panelHeader">
-        <div><h3>Модель AI</h3><p>${escapeHtml(aiStatus.message || 'Статус OpenRouter неизвестен')}</p></div>
+        <div><h3>Модель AI</h3><p>Настройки модели вынесены в отдельный раздел, чтобы чат оставался рабочей областью аналитика.</p></div>
         <span class="aiStatusBadge ${aiStatus.configured ? 'ready' : 'pending'}">${aiStatus.configured ? 'Готов' : 'Нет ключа'}</span>
       </div>
       <div class="aiModelSummary">
-        <article><span>Режим</span><strong>${escapeHtml(presetLabel)}</strong></article>
-        <article><span>Фактическая модель</span><strong>${escapeHtml(resolvedModel)}</strong></article>
+        <article><span>Модель</span><strong>${escapeHtml(resolvedModel)}</strong></article>
+        <article><span>Профиль</span><strong>${escapeHtml(presetLabel)}</strong></article>
         <article><span>Лимит ответа</span><strong>${escapeHtml(String(aiResolvedMaxTokens))} токенов</strong></article>
       </div>
-      ${customActive ? `<div class="authStatus integrationStatus">Своя/free модель может быть нестабильной: возможны лимиты, 429 и временная недоступность.</div>` : ''}
-      <details class="quietDetails">
-        <summary>Настройки модели</summary>
-        <p class="muted">Режимы DirectPilot влияют на модель по умолчанию, лимит ответа и подробность. OpenRouter получает конкретный ID модели и лимит токенов.</p>
-        <div class="aiModelSettings">
-          <label>Модель
-            <select data-ai-model>${modelOptions}</select>
-          </label>
-          ${customActive ? `<label>Своя модель
-            <input data-ai-custom-model value="${escapeHtml(customAiModel)}" placeholder="openai/gpt-4o" />
-          </label>` : '<div class="authStatus integrationStatus">Своя модель не используется, пока не выбран пункт «Своя модель OpenRouter».</div>'}
-          <label>Профиль токенов
-            <select data-ai-preset>
-              <option value="economy" ${selectedAiPreset === 'economy' ? 'selected' : ''}>Эконом · быстрые регулярные проверки</option>
-              <option value="balanced" ${selectedAiPreset === 'balanced' ? 'selected' : ''}>Баланс · основной анализ кампаний</option>
-              <option value="deep" ${selectedAiPreset === 'deep' ? 'selected' : ''}>Максимум · глубокий разбор</option>
-            </select>
-          </label>
-          <label>AI-context
-            <select data-ai-max-tokens-mode>
-              <option value="compact" ${aiMaxTokensMode === 'compact' ? 'selected' : ''}>Компактный</option>
-              <option value="deep" ${aiMaxTokensMode === 'deep' ? 'selected' : ''}>Расширенный</option>
-            </select>
-          </label>
-          <label>Результаты инструментов
-            <select data-ai-tool-results-mode>
-              <option value="summary" ${aiToolResultsMode === 'summary' ? 'selected' : ''}>Сводка</option>
-              <option value="raw" ${aiToolResultsMode === 'raw' ? 'selected' : ''}>Сырые данные</option>
-            </select>
-          </label>
-          <label>История чата
-            <select data-ai-chat-history-limit>
-              <option value="1" ${Number(aiChatHistoryLimit) === 1 ? 'selected' : ''}>1 сообщение</option>
-              <option value="3" ${Number(aiChatHistoryLimit) === 3 ? 'selected' : ''}>3 сообщения</option>
-              <option value="6" ${Number(aiChatHistoryLimit) === 6 ? 'selected' : ''}>6 сообщений</option>
-            </select>
-          </label>
-          <label>Лимит поисковых запросов
-            <input data-ai-search-query-limit value="${escapeHtml(aiSearchQueryLimit)}" inputmode="numeric" />
-          </label>
-          <label class="checkboxLabel"><input type="checkbox" data-ai-compact-context ${aiCompactContext ? 'checked' : ''} /> Сжимать контекст</label>
-        </div>
-        <p class="muted"><a href="https://openrouter.ai/models" target="_blank" rel="noreferrer">Каталог моделей OpenRouter</a></p>
-      </details>
+      <button class="secondaryButton" type="button" data-view="settings">Открыть настройки</button>
+      ${aiStatus.configured ? '' : `<div class="authStatus integrationStatus">${escapeHtml(aiStatus.message || 'OpenRouter не настроен.')}</div>`}
     </section>
   `;
 }
@@ -206,7 +151,7 @@ export function renderAiChat({
         <button class="secondaryButton" data-ai-chat-sample="Разбери вчерашний день по кампаниям и конверсиям по целям.">Вчера</button>
         <button class="secondaryButton" data-ai-chat-sample="Проанализируй поисковые запросы и предложи минус-слова с рисками.">Запросы</button>
       </div>
-      <div class="aiChatMessages">
+      <div class="aiChatMessages" data-ai-chat-messages>
         ${aiChatMessages.map((message) => `<article class="aiChatMessage ${message.role}"><span>${message.role === 'user' ? 'Вы' : 'AI'}</span><p>${escapeHtml(message.content)}</p></article>`).join('')}
       </div>
       ${aiChatError ? `<div class="authStatus integrationStatus">${escapeHtml(aiChatError)}${aiChatErrorDetails?.retry_suggestion ? `<br>${escapeHtml(aiChatErrorDetails.retry_suggestion)}` : ''}</div>` : ''}
@@ -267,9 +212,9 @@ export function renderAiAssistantContent(context) {
   return `
     ${renderAiAssistantIntro(context)}
     ${renderAiMethodologyPanel(context)}
+    ${renderAiStatusPanel(context)}
     ${renderAiChat(context)}
     ${renderAiQuickActions(context)}
-    ${renderAiStatusPanel(context)}
     ${renderAiPromptDebugPanel(context)}
     ${renderClientAiRecommendations(context)}
   `;

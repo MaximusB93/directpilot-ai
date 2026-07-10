@@ -119,6 +119,7 @@ const navItems = [
   { id: 'optimization', label: 'Оптимизация', icon: '🎯' },
   { id: 'wordstat', label: 'Wordstat', icon: '📈' },
   { id: 'journal', label: 'Журнал', icon: '🕘' },
+  { id: 'settings', label: 'Настройки', icon: '⚙️' },
 ];
 function normalizeAppView(view) {
   return page === 'app' ? normalizeAppRouteId(view) : view;
@@ -195,9 +196,72 @@ const aiFeatureState = createAiFeatureState();
 const journalSource = createJournalLocalSource();
 let journalState = createInitialJournalState();
 let journalLoadedFor = '';
+let aiChatShouldScrollToBottom = false;
 
 function storageKey(key) {
   return scopedStorageKey(key);
+}
+
+function normalizeAiModelState() {
+  aiFeatureState.model.selectedModel = aiStore.normalizeProductionAiModel(aiFeatureState.model.selectedModel);
+  if (!['economy', 'balanced', 'advanced', 'deep'].includes(aiFeatureState.model.selectedPreset)) {
+    aiFeatureState.model.selectedPreset = 'balanced';
+  }
+  if (aiFeatureState.model.selectedPreset === 'deep') {
+    aiFeatureState.model.selectedPreset = 'advanced';
+  }
+  if (!['compact', 'deep'].includes(aiFeatureState.model.maxTokensMode)) {
+    aiFeatureState.model.maxTokensMode = 'compact';
+  }
+  if (!['summary', 'raw'].includes(aiFeatureState.model.toolResultsMode)) {
+    aiFeatureState.model.toolResultsMode = 'summary';
+  }
+  aiFeatureState.model.chatHistoryLimit = [1, 3, 6].includes(Number(aiFeatureState.model.chatHistoryLimit))
+    ? Number(aiFeatureState.model.chatHistoryLimit)
+    : 3;
+  aiFeatureState.model.searchQueryLimit = String(Number(aiFeatureState.model.searchQueryLimit) || 20);
+  aiFeatureState.model.compactContext = aiFeatureState.model.compactContext !== false;
+  aiFeatureState.model.customModel = '';
+}
+
+function loadAiModelSettings() {
+  try {
+    const raw = window.localStorage.getItem(storageKey('directpilot_ai_model_settings'));
+    if (!raw) {
+      normalizeAiModelState();
+      return;
+    }
+    const saved = JSON.parse(raw);
+    if (saved && typeof saved === 'object') {
+      aiFeatureState.model.selectedModel = saved.selectedModel || saved.model || aiFeatureState.model.selectedModel;
+      aiFeatureState.model.selectedPreset = saved.selectedPreset || saved.preset || aiFeatureState.model.selectedPreset;
+      aiFeatureState.model.maxTokensMode = saved.maxTokensMode || aiFeatureState.model.maxTokensMode;
+      aiFeatureState.model.compactContext = saved.compactContext !== undefined ? Boolean(saved.compactContext) : aiFeatureState.model.compactContext;
+      aiFeatureState.model.toolResultsMode = saved.toolResultsMode || aiFeatureState.model.toolResultsMode;
+      aiFeatureState.model.chatHistoryLimit = Number(saved.chatHistoryLimit) || aiFeatureState.model.chatHistoryLimit;
+      aiFeatureState.model.searchQueryLimit = saved.searchQueryLimit || aiFeatureState.model.searchQueryLimit;
+    }
+  } catch (error) {
+    console.warn('Could not load AI model settings', error);
+  }
+  normalizeAiModelState();
+}
+
+function saveAiModelSettings() {
+  normalizeAiModelState();
+  window.localStorage.setItem(storageKey('directpilot_ai_model_settings'), JSON.stringify({
+    selectedModel: aiFeatureState.model.selectedModel,
+    selectedPreset: aiFeatureState.model.selectedPreset,
+    maxTokensMode: aiFeatureState.model.maxTokensMode,
+    compactContext: aiFeatureState.model.compactContext,
+    toolResultsMode: aiFeatureState.model.toolResultsMode,
+    chatHistoryLimit: aiFeatureState.model.chatHistoryLimit,
+    searchQueryLimit: aiFeatureState.model.searchQueryLimit,
+  }));
+}
+
+if (page === 'app') {
+  loadAiModelSettings();
 }
 
 const clientsStore = clientStore.createClientStore(storageKey);
@@ -514,8 +578,6 @@ function renderShell(content) {
           </div>
         `}
         <nav>${navItems.map((item) => `<button class="${activeView === item.id ? 'active' : ''}" data-view="${item.id}"><span>${item.icon}</span>${item.label}</button>`).join('')}</nav>
-        ${showClientSelector ? renderProfilePanel() : ''}
-        ${showClientSelector ? '<button class="secondaryButton profileButton" type="button" data-profile-toggle>Настройки профиля</button>' : ''}
         <button class="logoutButton" data-logout>Выйти</button>
       </aside>
       <main class="dashboard">
@@ -524,11 +586,8 @@ function renderShell(content) {
             <span class="eyebrow">Кабинет</span>
             <h1>${escapeHtml(activeView === 'dashboard' ? 'Обзор проекта' : navItems.find((item) => item.id === activeView)?.label || 'DirectPilot')}</h1>
           </div>
-          <div class="headerActions">
-            <button class="secondaryButton" data-open-settings>API</button>
-          </div>
+          <div class="headerActions"></div>
         </header>
-        ${renderSettingsPanel()}
         ${content}
       </main>
     </div>
@@ -866,6 +925,17 @@ function aiPromptDebugParams() {
   return createAiPromptDebugParams(currentAiModelState(), aiFeatureState.chat.selectedCampaignName, currentAiChatState());
 }
 
+function requestAiChatScrollToBottom() {
+  aiChatShouldScrollToBottom = true;
+}
+
+function scrollAiChatToBottom() {
+  const chatMessages = app.querySelector('[data-ai-chat-messages]');
+  if (chatMessages) {
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+  }
+  aiChatShouldScrollToBottom = false;
+}
 
 async function loadAiPromptDebug() {
   await loadAiPromptDebugFlow({
@@ -951,11 +1021,13 @@ async function sendAiChatMessage(message) {
       aiFeatureState.chat.loading = true;
       aiFeatureState.chat.error = '';
       aiFeatureState.chat.errorDetails = null;
+      requestAiChatScrollToBottom();
       render();
     },
     onSuccess: ({ messages, toolTraces }) => {
       aiFeatureState.chat.messages = messages;
       aiFeatureState.chat.toolTraces = toolTraces;
+      requestAiChatScrollToBottom();
     },
     onError: ({ message: errorMessage, payload, messages }) => {
       aiFeatureState.chat.error = errorMessage;
@@ -963,6 +1035,7 @@ async function sendAiChatMessage(message) {
       if (messages) {
         aiFeatureState.chat.messages = messages;
       }
+      requestAiChatScrollToBottom();
     },
     onFinally: () => {
       aiFeatureState.chat.loading = false;
@@ -1798,6 +1871,7 @@ function renderIntegrations() {
 }
 
 function aiAssistantPageContext() {
+  const budget = activeAiBudget();
   return createAiAssistantPageContext({
     selectedClientId,
     selectedClient: currentClient(),
@@ -1806,6 +1880,7 @@ function aiAssistantPageContext() {
     customAiModel: aiFeatureState.model.customModel,
     customModelValue: CUSTOM_MODEL_VALUE,
     selectedAiPreset: aiFeatureState.model.selectedPreset,
+    aiResolvedMaxTokens: budget.maxTokens,
     aiMaxTokensMode: aiFeatureState.model.maxTokensMode,
     aiToolResultsMode: aiFeatureState.model.toolResultsMode,
     aiChatHistoryLimit: aiFeatureState.model.chatHistoryLimit,
@@ -1846,6 +1921,38 @@ function renderAiAssistant() {
   }
 
   return renderShell(contentRenderer(aiAssistantPageContext()));
+}
+
+function settingsPageContext() {
+  const budget = activeAiBudget();
+  return {
+    currentEmail,
+    apiBaseDraft,
+    apiBase: API_BASE,
+    backendClientsAvailable,
+    aiStatus: aiFeatureState.model.status,
+    selectedAiModel: aiFeatureState.model.selectedModel,
+    selectedAiPreset: aiFeatureState.model.selectedPreset,
+    aiResolvedMaxTokens: budget.maxTokens,
+    aiMaxTokensMode: aiFeatureState.model.maxTokensMode,
+    aiToolResultsMode: aiFeatureState.model.toolResultsMode,
+    aiChatHistoryLimit: aiFeatureState.model.chatHistoryLimit,
+    aiSearchQueryLimit: aiFeatureState.model.searchQueryLimit,
+    aiCompactContext: aiFeatureState.model.compactContext,
+    escapeHtml,
+  };
+}
+
+function renderSettings() {
+  const contentRenderer = resolvePageContentRenderer('settings');
+
+  if (typeof contentRenderer !== 'function') {
+    return renderShell(`
+      <div class="pageIntro"><span class="eyebrow">Настройки</span><h2>Настройки временно недоступны</h2><p>Модуль настроек не зарегистрирован. Проверьте src/pages/index.js.</p></div>
+    `);
+  }
+
+  return renderShell(contentRenderer(settingsPageContext()));
 }
 
 function optimizationPageContext() {
@@ -2044,6 +2151,7 @@ function render() {
     optimization: renderOptimization,
     wordstat: renderWordstat,
     journal: renderJournal,
+    settings: renderSettings,
   };
   const renderView = views[activeView] || renderDashboard;
   app.innerHTML = renderView();
@@ -2080,7 +2188,7 @@ function render() {
     if (!optimizationPlan && !optimizationPlanLoading) loadOptimizationPlan();
     if (optimizationActionsLoadedFor !== selectedClientId && !optimizationActionsLoading) loadOptimizationActions();
   }
-  if (activeView === 'ai' && aiFeatureState.model.status.message === 'Статус OpenRouter ещё не загружен.') {
+  if ((activeView === 'ai' || activeView === 'settings') && aiFeatureState.model.status.message === 'Статус OpenRouter ещё не загружен.') {
     loadAiStatus();
   }
   if (activeView === 'ai' && selectedClientId && !businessContextLoading && businessContextLoadedFor !== selectedClientId) {
@@ -2089,6 +2197,9 @@ function render() {
   if (activeView === 'journal' && (selectedClientId || !journalState.loading)) {
     const expectedJournalKey = selectedClientId || 'system';
     if (journalLoadedFor !== expectedJournalKey && !journalState.loading) loadJournalEntries();
+  }
+  if (aiChatShouldScrollToBottom) {
+    window.requestAnimationFrame(scrollAiChatToBottom);
   }
   if (activeView !== 'landing' && activeView !== 'login') {
     loadClientsFromApi();
@@ -2139,6 +2250,7 @@ app.addEventListener('input', (event) => {
     },
     setSearchQueryLimit: (value) => {
       aiFeatureState.model.searchQueryLimit = value;
+      saveAiModelSettings();
     },
   });
   if (event.target.matches('[data-business-context-form] textarea')) {
@@ -2178,23 +2290,29 @@ app.addEventListener('change', (event) => {
   if (handleAiChangeEvent(event, {
     customModelValue: CUSTOM_MODEL_VALUE,
     setModel: (value, customValue) => {
-      aiFeatureState.model.selectedModel = value;
+      aiFeatureState.model.selectedModel = aiStore.normalizeProductionAiModel(value);
       if (customValue !== undefined) aiFeatureState.model.customModel = customValue;
+      saveAiModelSettings();
     },
     setPreset: (value) => {
       aiFeatureState.model.selectedPreset = value;
+      saveAiModelSettings();
     },
     setMaxTokensMode: (value) => {
       aiFeatureState.model.maxTokensMode = value;
+      saveAiModelSettings();
     },
     setToolResultsMode: (value) => {
       aiFeatureState.model.toolResultsMode = value;
+      saveAiModelSettings();
     },
     setChatHistoryLimit: (value) => {
       aiFeatureState.model.chatHistoryLimit = value;
+      saveAiModelSettings();
     },
     setCompactContext: (value) => {
       aiFeatureState.model.compactContext = value;
+      saveAiModelSettings();
     },
     setChatCampaign: (value) => {
       aiFeatureState.chat.selectedCampaignName = value;
@@ -2277,8 +2395,8 @@ async function handleCabinetActionClick(event) {
     return true;
   }
   if (event.target.closest('[data-open-settings]')) {
-    const panel = app.querySelector('[data-settings-panel]');
-    if (panel) panel.hidden = !panel.hidden;
+    activeView = 'settings';
+    render();
     return true;
   }
   if (event.target.closest('[data-client-menu-toggle]')) {

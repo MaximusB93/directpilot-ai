@@ -28,7 +28,6 @@ export function handleAiInputEvent(event, {
 }
 
 export function handleAiChangeEvent(event, {
-  customModelValue,
   setModel,
   setPreset,
   setMaxTokensMode,
@@ -40,7 +39,7 @@ export function handleAiChangeEvent(event, {
 }) {
   if (event.target.matches('[data-ai-model]')) {
     const value = event.target.value;
-    setModel?.(value, value !== customModelValue ? value : undefined);
+    setModel?.(value);
     render?.();
     return true;
   }

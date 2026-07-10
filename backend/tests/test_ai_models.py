@@ -1,15 +1,32 @@
 from fastapi import HTTPException
 
 from app.api.routers.ai import _ai_status_payload, _normalized_ai_error
-from app.core.config import normalize_ai_request_options
+from app.core.config import (
+    DEFAULT_PRODUCTION_AI_MODEL,
+    PRODUCTION_AI_MODELS,
+    normalize_ai_request_options,
+    production_ai_model_ids,
+)
+
+
+def test_production_model_registry_has_three_unique_models() -> None:
+    model_ids = production_ai_model_ids()
+
+    assert len(PRODUCTION_AI_MODELS) == 3
+    assert len(model_ids) == 3
+    assert len(set(model_ids)) == 3
+    assert DEFAULT_PRODUCTION_AI_MODEL in model_ids
 
 
 def test_ai_status_exposes_presets_and_safe_default() -> None:
     payload = _ai_status_payload()
 
-    assert payload["recommended_default_preset"] == "economy"
-    assert payload["recommended_default_model"]
-    assert payload["recommended_default_model"] != "anthropic/claude-3.5-sonnet"
+    assert payload["recommended_default_preset"] == "balanced"
+    assert payload["recommended_default_model"] == DEFAULT_PRODUCTION_AI_MODEL
+    assert payload["default_model"] == DEFAULT_PRODUCTION_AI_MODEL
+    assert [model["id"] for model in payload["models"]] == production_ai_model_ids()
+    assert "openrouter/auto" not in {model["id"] for model in payload["models"]}
+    assert payload["allow_custom_models"] is False
     preset_ids = {item["id"] for item in payload["presets"]}
     assert {"economy", "balanced", "advanced"}.issubset(preset_ids)
     advanced = next(item for item in payload["presets"] if item["id"] == "advanced")
@@ -25,9 +42,36 @@ def test_missing_model_uses_recommended_default() -> None:
         configured_default="anthropic/claude-3.5-sonnet",
     )
 
-    assert options["ai_preset"] == "economy"
+    assert options["ai_preset"] == "balanced"
     assert options["model"] == "openai/gpt-4o-mini"
-    assert options["max_tokens"] <= 1200
+    assert options["max_tokens"] <= 2500
+
+
+def test_unknown_production_model_falls_back_to_qwen() -> None:
+    options = normalize_ai_request_options(
+        model="openrouter/auto",
+        ai_preset="balanced",
+        max_tokens=None,
+        models=production_ai_model_ids(),
+        configured_default=DEFAULT_PRODUCTION_AI_MODEL,
+        production_only=True,
+    )
+
+    assert options["model"] == DEFAULT_PRODUCTION_AI_MODEL
+    assert options["is_custom_model"] is False
+
+
+def test_qwen_production_model_is_accepted() -> None:
+    options = normalize_ai_request_options(
+        model=DEFAULT_PRODUCTION_AI_MODEL,
+        ai_preset="balanced",
+        max_tokens=None,
+        models=production_ai_model_ids(),
+        configured_default=DEFAULT_PRODUCTION_AI_MODEL,
+        production_only=True,
+    )
+
+    assert options["model"] == DEFAULT_PRODUCTION_AI_MODEL
 
 
 def test_max_tokens_are_capped_by_preset() -> None:

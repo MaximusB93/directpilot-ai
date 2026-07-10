@@ -1,4 +1,39 @@
 export const CUSTOM_MODEL_VALUE = '__custom_openrouter_model__';
+export const DEFAULT_PRODUCTION_AI_MODEL = 'qwen/qwen3-14b';
+export const PRODUCTION_AI_MODELS = [
+  {
+    id: 'mistralai/mistral-small-3.2-24b-instruct',
+    name: 'Mistral Small 3.2 · Эконом',
+    tier: 'economy',
+    description: 'Быстрые регулярные проверки и короткие ответы.',
+  },
+  {
+    id: DEFAULT_PRODUCTION_AI_MODEL,
+    name: 'Qwen3 14B · Баланс',
+    tier: 'balanced',
+    description: 'Основной режим для анализа кампаний, запросов и CPA.',
+  },
+  {
+    id: 'deepseek/deepseek-chat-v3.1',
+    name: 'DeepSeek V3.1 · Глубокий анализ',
+    tier: 'advanced',
+    description: 'Глубокий разбор сложных аудитов и спорных выводов.',
+  },
+];
+
+export function productionAiModelIds() {
+  return PRODUCTION_AI_MODELS.map((model) => model.id);
+}
+
+export function normalizeProductionAiModel(modelId) {
+  const model = String(modelId || '').trim();
+  return productionAiModelIds().includes(model) ? model : DEFAULT_PRODUCTION_AI_MODEL;
+}
+
+export function productionAiModelsFromStatus(models = []) {
+  const byId = new Map((Array.isArray(models) ? models : []).map((model) => [model.id, model]));
+  return PRODUCTION_AI_MODELS.map((fallback) => ({ ...fallback, ...(byId.get(fallback.id) || {}) }));
+}
 
 export const DEFAULT_AI_CHAT_MESSAGE = {
   role: 'assistant',
@@ -46,9 +81,9 @@ export function createInitialAiChatState() {
 export function createInitialAiModelState() {
   return {
     status: { ...DEFAULT_AI_STATUS },
-    model: 'openrouter/auto',
-    customModel: 'openai/gpt-4o',
-    preset: 'economy',
+    model: DEFAULT_PRODUCTION_AI_MODEL,
+    customModel: '',
+    preset: 'balanced',
     maxTokensMode: 'compact',
     compactContext: true,
     toolResultsMode: 'summary',
@@ -78,17 +113,15 @@ export function normalizeAiStatus(payload) {
   }
 
   return {
-    models: Array.isArray(payload.models) ? payload.models : [],
+    models: productionAiModelsFromStatus(payload.models),
     configured: Boolean(payload.configured),
     message: payload.message || DEFAULT_AI_STATUS.message,
   };
 }
 
 export function activeAiModel(modelState) {
-  if (!modelState) return 'openrouter/auto';
-  return modelState.model === CUSTOM_MODEL_VALUE
-    ? modelState.customModel?.trim() || 'openrouter/auto'
-    : modelState.model || 'openrouter/auto';
+  if (!modelState) return DEFAULT_PRODUCTION_AI_MODEL;
+  return normalizeProductionAiModel(modelState.model);
 }
 
 export function activeAiBudget(modelState) {
