@@ -12,11 +12,12 @@ from app.connectors.yandex_direct import YandexDirectConnector
 from app.core.config import (
     AI_MODEL_PRESETS,
     AI_RECOMMENDED_DEFAULT_PRESET,
+    DEFAULT_PRODUCTION_AI_MODEL,
     ai_model_cost_tier,
     ai_model_label,
     ai_model_recommended_for,
-    ai_recommended_default_model,
     normalize_ai_request_options,
+    production_ai_model_ids,
     settings,
 )
 from app.db import get_optional_db
@@ -78,11 +79,15 @@ def _ai_status_payload() -> dict[str, object]:
                 "recommended_for": ai_model_recommended_for(model_id),
             }
         )
-    recommended_model = ai_recommended_default_model(settings.openrouter_models, settings.openrouter_default_model)
+    recommended_model = DEFAULT_PRODUCTION_AI_MODEL
     presets = [
         {
             **preset,
-            "default_model": recommended_model if preset_id == "economy" else settings.openrouter_default_model,
+            "default_model": {
+                "economy": "mistralai/mistral-small-3.2-24b-instruct",
+                "balanced": DEFAULT_PRODUCTION_AI_MODEL,
+                "advanced": "deepseek/deepseek-chat-v3.1",
+            }.get(preset_id, recommended_model),
         }
         for preset_id, preset in AI_MODEL_PRESETS.items()
     ]
@@ -101,8 +106,9 @@ def _resolved_ai_options(model: str | None, ai_preset: str | None, max_tokens: i
         model=model,
         ai_preset=ai_preset,
         max_tokens=max_tokens,
-        models=settings.openrouter_models,
-        configured_default=settings.openrouter_default_model,
+        models=production_ai_model_ids(),
+        configured_default=DEFAULT_PRODUCTION_AI_MODEL,
+        production_only=True,
     )
 
 

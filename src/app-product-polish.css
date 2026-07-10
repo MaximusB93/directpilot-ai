@@ -309,6 +309,10 @@ body[data-page="app"] .aiGrid {
 }
 
 body[data-page="app"] .aiChatMessages {
+  max-height: clamp(520px, 58vh, 600px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   border-color: var(--dp-polish-border-soft);
   border-radius: 16px;
   background: #f8fafc;

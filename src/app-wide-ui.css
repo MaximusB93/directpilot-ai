@@ -262,6 +262,9 @@ body[data-page="app"] .aiChatPanel {
 
 body[data-page="app"] .aiChatMessages {
   max-height: min(64vh, 720px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   padding: 6px;
   border: 1px solid rgba(19, 34, 56, 0.06);
   border-radius: 22px;
@@ -270,6 +273,8 @@ body[data-page="app"] .aiChatMessages {
 
 body[data-page="app"] .aiChatMessage {
   width: min(100%, 980px);
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 body[data-page="app"] .aiChatMessage.assistant {

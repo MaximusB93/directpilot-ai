@@ -14,7 +14,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 from fastapi import HTTPException, status
 
-from app.core.config import settings
+from app.core.config import DEFAULT_PRODUCTION_AI_MODEL, settings
 from app.services.openrouter import generate_openrouter_response
 
 MAX_URLS = 5
@@ -402,7 +402,7 @@ async def build_business_context_autofill(client_name: str, urls: list[str]) -> 
 
     prompt = _build_prompt(client_name, pages)
     try:
-        ai_result = await generate_openrouter_response(settings.openrouter_default_model, prompt, max_tokens=2200)
+        ai_result = await generate_openrouter_response(DEFAULT_PRODUCTION_AI_MODEL, prompt, max_tokens=2200)
         parsed = _parse_json_object(str(ai_result.get("content") or ""))
     except HTTPException:
         raise

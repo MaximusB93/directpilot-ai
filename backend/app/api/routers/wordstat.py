@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import CurrentUser, get_current_session_user
 from app.connectors.yandex_wordstat import YandexWordstatConnector
-from app.core.config import normalize_ai_request_options, settings
+from app.core.config import DEFAULT_PRODUCTION_AI_MODEL, normalize_ai_request_options, production_ai_model_ids, settings
 from app.db import get_db
 from app.services.connected_accounts import get_latest_yandex_access_token
 from app.services.openrouter import generate_openrouter_response
@@ -260,8 +260,9 @@ async def chat_with_wordstat_ai(
         model=payload.model,
         ai_preset=payload.ai_preset,
         max_tokens=payload.max_tokens,
-        models=settings.openrouter_models,
-        configured_default=settings.openrouter_default_model,
+        models=production_ai_model_ids(),
+        configured_default=DEFAULT_PRODUCTION_AI_MODEL,
+        production_only=True,
     )
     prompt = _build_wordstat_ai_prompt(payload)
     selected_model = str(ai_options["model"])

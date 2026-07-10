@@ -5,7 +5,7 @@ from fastapi import HTTPException, status
 from typing import Any
 
 from app.ai.prompt_loader import get_system_prompt, get_system_prompt_metadata
-from app.core.config import settings
+from app.core.config import DEFAULT_PRODUCTION_AI_MODEL, PRODUCTION_AI_MODELS, production_ai_model_ids, settings
 from app.services.ai_prompt_debug import clamp_openrouter_max_tokens
 
 OPENROUTER_CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -24,7 +24,7 @@ SAFE_DEBUG_KEYS = {
 
 
 def _validate_openrouter_model(model: str | None) -> str:
-    allowed_models = set(settings.openrouter_models)
+    allowed_models = set(settings.openrouter_models) | set(production_ai_model_ids())
     selected_model = (model or settings.openrouter_default_model).strip()
     if not selected_model or len(selected_model) > 200 or any(char.isspace() for char in selected_model):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Некорректный идентификатор модели OpenRouter.")
@@ -92,19 +92,14 @@ def redact_openrouter_debug_payload(value: Any) -> Any:
 
 
 def configured_models() -> list[dict[str, str]]:
-    descriptions = {
-        "openrouter/auto": "Автовыбор OpenRouter для быстрых прототипов и fallback-маршрутизации.",
-        "openai/gpt-4o-mini": "Быстрые и недорогие продуктовые тексты, классификация и черновики рекомендаций.",
-        "anthropic/claude-3.5-sonnet": "Сильная модель для глубокого анализа, ревью стратегий и сложных объяснений.",
-        "google/gemini-flash-1.5": "Быстрая модель для сводок, коротких отчётов и массовой обработки карточек.",
-    }
     return [
         {
-            "id": model_id,
-            "name": model_id,
-            "description": descriptions.get(model_id, "Модель OpenRouter из OPENROUTER_MODELS."),
+            "id": str(model["id"]),
+            "name": str(model["name"]),
+            "description": str(model["description"]),
+            "tier": str(model["tier"]),
         }
-        for model_id in settings.openrouter_models
+        for model in PRODUCTION_AI_MODELS
     ]
 
 
@@ -112,9 +107,9 @@ def openrouter_status() -> dict[str, object]:
     configured = settings.openrouter_configured
     return {
         "configured": configured,
-        "default_model": settings.openrouter_default_model,
+        "default_model": DEFAULT_PRODUCTION_AI_MODEL,
         "models": configured_models(),
-        "allow_custom_models": settings.openrouter_allow_custom_models,
+        "allow_custom_models": False,
         "message": (
             "OpenRouter подключён через backend. Ключ хранится только в переменных окружения сервера."
             if configured
@@ -130,7 +125,7 @@ async def generate_openrouter_response(model: str, prompt: str, max_tokens: int 
             detail="OpenRouter не настроен: добавьте OPENROUTER_API_KEY в окружение backend.",
         )
 
-    allowed_models = set(settings.openrouter_models)
+    allowed_models = set(settings.openrouter_models) | set(production_ai_model_ids())
     selected_model = (model or settings.openrouter_default_model).strip()
     if not selected_model or len(selected_model) > 200 or any(char.isspace() for char in selected_model):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Некорректный идентификатор модели OpenRouter.")

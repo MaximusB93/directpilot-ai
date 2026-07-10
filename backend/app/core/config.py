@@ -44,12 +44,50 @@ AI_MODEL_PRESETS: dict[str, dict[str, object]] = {
     },
 }
 
-AI_RECOMMENDED_DEFAULT_PRESET = "economy"
+AI_RECOMMENDED_DEFAULT_PRESET = "balanced"
 AI_FALLBACK_ECONOMY_MODEL = "openai/gpt-4o-mini"
+PRODUCTION_AI_MODELS: tuple[dict[str, str], ...] = (
+    {
+        "id": "mistralai/mistral-small-3.2-24b-instruct",
+        "name": "Mistral Small 3.2 · Эконом",
+        "tier": "economy",
+        "description": "Быстрые регулярные проверки и короткие ответы с контролем стоимости.",
+    },
+    {
+        "id": "qwen/qwen3-14b",
+        "name": "Qwen3 14B · Баланс",
+        "tier": "balanced",
+        "description": "Основной режим для анализа кампаний, запросов и CPA.",
+    },
+    {
+        "id": "deepseek/deepseek-chat-v3.1",
+        "name": "DeepSeek V3.1 · Глубокий анализ",
+        "tier": "advanced",
+        "description": "Более глубокий разбор сложных аудитов и спорных выводов.",
+    },
+)
+DEFAULT_PRODUCTION_AI_MODEL = "qwen/qwen3-14b"
+
+
+def production_ai_model_ids() -> list[str]:
+    return [item["id"] for item in PRODUCTION_AI_MODELS]
+
+
+def production_ai_model_map() -> dict[str, dict[str, str]]:
+    return {item["id"]: dict(item) for item in PRODUCTION_AI_MODELS}
+
+
+def normalize_production_ai_model(model: str | None) -> str:
+    selected_model = (model or DEFAULT_PRODUCTION_AI_MODEL).strip()
+    return selected_model if selected_model in set(production_ai_model_ids()) else DEFAULT_PRODUCTION_AI_MODEL
 
 
 def ai_model_cost_tier(model_id: str) -> str:
     normalized = model_id.lower()
+    production_model = production_ai_model_map().get(model_id)
+    if production_model:
+        tier = production_model.get("tier")
+        return {"economy": "low", "balanced": "medium", "advanced": "medium", "deep": "medium"}.get(tier, "unknown")
     if "mini" in normalized or "flash" in normalized or "haiku" in normalized:
         return "low"
     if "sonnet" in normalized or "opus" in normalized or ("gpt-4" in normalized and "mini" not in normalized):
@@ -60,6 +98,9 @@ def ai_model_cost_tier(model_id: str) -> str:
 
 
 def ai_model_label(model_id: str) -> str:
+    production_model = production_ai_model_map().get(model_id)
+    if production_model:
+        return production_model["name"]
     labels = {
         "openrouter/auto": "OpenRouter Auto",
         "openai/gpt-4o-mini": "GPT-4o mini",
@@ -70,6 +111,14 @@ def ai_model_label(model_id: str) -> str:
 
 
 def ai_model_recommended_for(model_id: str) -> list[str]:
+    production_model = production_ai_model_map().get(model_id)
+    if production_model:
+        tier = production_model.get("tier")
+        if tier == "economy":
+            return ["Быстрые вопросы", "Регулярные проверки", "Короткие сводки"]
+        if tier == "balanced":
+            return ["Анализ кампаний", "Поисковые запросы", "CPA и цели"]
+        return ["Глубокий аудит", "Сложные рекомендации", "Разбор спорных выводов"]
     tier = ai_model_cost_tier(model_id)
     if tier == "low":
         return ["Быстрые вопросы", "Первичный анализ", "Короткие сводки"]
@@ -99,9 +148,14 @@ def normalize_ai_request_options(
     max_tokens: int | None,
     models: list[str],
     configured_default: str,
+    production_only: bool = False,
 ) -> dict[str, object]:
     preset_id = ai_preset if ai_preset in AI_MODEL_PRESETS else AI_RECOMMENDED_DEFAULT_PRESET
-    selected_model = (model or ai_recommended_default_model(models, configured_default)).strip()
+    allowed_models = production_ai_model_ids() if production_only else models
+    default_model = DEFAULT_PRODUCTION_AI_MODEL if production_only else ai_recommended_default_model(models, configured_default)
+    selected_model = (model or default_model).strip()
+    if production_only:
+        selected_model = normalize_production_ai_model(selected_model)
     cap = ai_preset_cap(preset_id)
     requested_tokens = max_tokens if max_tokens is not None else cap
     effective_tokens = max(1, min(int(requested_tokens), cap))
@@ -110,7 +164,7 @@ def normalize_ai_request_options(
         "ai_preset": preset_id,
         "max_tokens": effective_tokens,
         "max_tokens_cap": cap,
-        "is_custom_model": bool(selected_model and selected_model not in set(models)),
+        "is_custom_model": bool(selected_model and selected_model not in set(allowed_models)),
         "cost_tier": ai_model_cost_tier(selected_model),
     }
 

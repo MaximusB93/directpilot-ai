@@ -4,7 +4,7 @@ from typing import Any
 from fastapi import HTTPException
 from sqlalchemy import select
 
-from app.core.config import normalize_ai_request_options, settings
+from app.core.config import DEFAULT_PRODUCTION_AI_MODEL, normalize_ai_request_options, production_ai_model_ids, settings
 from app.db import SessionLocal
 from app.models import ClientAccount, ClientBusinessContext, ConnectedAccount, OptimizationActionDraft, SyncJob
 from app.schemas import AiGeneratedRecommendation, AiRecommendationResponse
@@ -425,8 +425,9 @@ def build_recommendation_prompt_debug_snapshot(
         model=model,
         ai_preset=ai_preset,
         max_tokens=max_tokens,
-        models=settings.openrouter_models,
-        configured_default=settings.openrouter_default_model,
+        models=production_ai_model_ids(),
+        configured_default=DEFAULT_PRODUCTION_AI_MODEL,
+        production_only=True,
     )
     context_with_model = {
         **context,
@@ -613,8 +614,9 @@ async def generate_client_recommendations_from_context(
         model=model,
         ai_preset=ai_preset,
         max_tokens=max_tokens,
-        models=settings.openrouter_models,
-        configured_default=settings.openrouter_default_model,
+        models=production_ai_model_ids(),
+        configured_default=DEFAULT_PRODUCTION_AI_MODEL,
+        production_only=True,
     )
     context = {
         **context,
