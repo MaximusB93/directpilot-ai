@@ -79,6 +79,12 @@ function lacks(file, values) {
   return values.every((value) => !files[file].includes(value));
 }
 
+function functionBody(file, functionName) {
+  const source = files[file];
+  const match = source.match(new RegExp(`function\\s+${functionName}\\s*\\(\\)\\s*\\{([\\s\\S]*?)\\n\\}`));
+  return match ? match[1] : '';
+}
+
 const checks = [
   ['app shells', has('index.html', 'id="app"') && has('login.html', 'data-page="login"') && has('app.html', 'data-page="app"')],
   ['routes module modes', has('src/app/routes.js', 'wordstat') && has('src/app/routes.js', 'journal') && has('src/app/routes.js', "mode: 'module'") && !has('src/app/routes.js', "mode: 'reserved'")],
@@ -94,6 +100,7 @@ const checks = [
   ['journal auto logging wired', has('src/main.js', 'function logJournalEvent') && has('src/main.js', 'createClientSelectedJournalEvent') && has('src/main.js', 'createClientCreatedJournalEvent') && has('src/main.js', 'createClientUpdatedJournalEvent') && has('src/main.js', 'createOptimizationActionStatusJournalEvent') && has('src/main.js', 'createSyncStatusJournalEvent') && has('src/main.js', 'createIntegrationStatusJournalEvent')],
   ['journal client scoped reset', has('src/app/client-scope-reset.js', 'journalLoadedFor') && has('src/main.js', 'journalState = createInitialJournalState();') && has('src/main.js', 'journalState.filters = createDefaultJournalFilters')],
   ['main no direct api helper calls', lacks('src/main.js', ['apiFetch('])],
+  ['ai model state is non-recursive', functionBody('src/main.js', 'currentAiModelState') && !functionBody('src/main.js', 'currentAiModelState').includes('activeAiBudget(')],
   ['no seeded account data', has('src/data.js', 'export const clients = []')],
   ['docs updated', has('docs/journal-domain-model.md', 'details UI: done') && has('docs/frontend-architecture.md', 'Journal details UI wired')],
 ];
