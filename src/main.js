@@ -824,7 +824,6 @@ function currentAiModelState() {
     selectedAiModel: aiFeatureState.model.selectedModel,
     customAiModel: aiFeatureState.model.customModel,
     selectedAiPreset: aiFeatureState.model.selectedPreset,
-    aiResolvedMaxTokens: activeAiBudget().maxTokens,
     aiMaxTokensMode: aiFeatureState.model.maxTokensMode,
     aiCompactContext: aiFeatureState.model.compactContext,
     aiToolResultsMode: aiFeatureState.model.toolResultsMode,
