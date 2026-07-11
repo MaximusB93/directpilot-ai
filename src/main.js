@@ -972,7 +972,7 @@ async function requestAiRecommendations() {
     selectedClientId,
     params: {
       model: activeAiModel(),
-      preset: aiFeatureState.model.selectedPreset,
+      ai_preset: aiFeatureState.model.selectedPreset === 'deep' ? 'advanced' : aiFeatureState.model.selectedPreset,
       max_tokens: budget.maxTokens,
       target_context_tokens: budget.targetContextTokens,
       include_business_context: true,

@@ -44,23 +44,24 @@ export const DEFAULT_AI_CHAT_INPUT = 'Почему растёт CPA и что п
 
 export const DEFAULT_AI_STATUS = {
   models: [],
+  presets: [],
   configured: false,
   message: 'Статус OpenRouter ещё не загружен.',
 };
 
 export const AI_PRESETS = {
   economy: {
-    maxTokens: 2500,
+    maxTokens: 1200,
     targetContextTokens: 3500,
     includeRawToolResults: false,
   },
   balanced: {
-    maxTokens: 5000,
+    maxTokens: 2500,
     targetContextTokens: 9000,
     includeRawToolResults: false,
   },
-  deep: {
-    maxTokens: 9000,
+  advanced: {
+    maxTokens: 5000,
     targetContextTokens: 18000,
     includeRawToolResults: true,
   },
@@ -114,6 +115,7 @@ export function normalizeAiStatus(payload) {
 
   return {
     models: productionAiModelsFromStatus(payload.models),
+    presets: Array.isArray(payload.presets) ? payload.presets : [],
     configured: Boolean(payload.configured),
     message: payload.message || DEFAULT_AI_STATUS.message,
   };
@@ -125,11 +127,14 @@ export function activeAiModel(modelState) {
 }
 
 export function activeAiBudget(modelState) {
-  const preset = modelState?.preset || 'economy';
+  const preset = modelState?.preset === 'deep' ? 'advanced' : (modelState?.preset || 'economy');
   const base = AI_PRESETS[preset] || AI_PRESETS.economy;
+  const backendPreset = (modelState?.status?.presets || []).find((item) => item.id === preset);
+  const backendMaxTokens = Number(backendPreset?.max_tokens ?? backendPreset?.maxTokens);
 
   return {
     ...base,
+    maxTokens: Number.isFinite(backendMaxTokens) && backendMaxTokens > 0 ? backendMaxTokens : base.maxTokens,
     includeRawToolResults: preset === 'balanced'
       ? modelState?.toolResultsMode === 'raw'
       : base.includeRawToolResults,
@@ -154,11 +159,13 @@ export function createAiChatRequestPayload({
   businessContext,
 }) {
   const budget = activeAiBudget(modelState);
+  const preset = modelState?.preset === 'deep' ? 'advanced' : (modelState?.preset || 'economy');
 
   return {
     client_id: clientId || null,
     message,
     model: activeAiModel(modelState),
+    ai_preset: preset,
     max_tokens: budget.maxTokens,
     target_context_tokens: modelState?.maxTokensMode === 'deep' ? 18000 : budget.targetContextTokens,
     include_raw_tool_results: modelState?.toolResultsMode === 'raw' || budget.includeRawToolResults,

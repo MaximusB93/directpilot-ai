@@ -2,6 +2,7 @@ import copy
 import json
 import re
 from datetime import UTC, date, datetime
+from time import perf_counter
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -574,6 +575,15 @@ def _is_rate_limit_error(exc: HTTPException) -> bool:
 
 
 def _normalized_ai_error(exc: HTTPException, model: str) -> dict[str, object] | None:
+    if exc.status_code == 504 or (isinstance(exc.detail, dict) and exc.detail.get("error_code") == "openrouter_timeout"):
+        return {
+            "error": True,
+            "error_code": "openrouter_timeout",
+            "message": "Выбранная модель не успела сформировать ответ. Повторите запрос или временно выберите Mistral Small 3.2 · Эконом.",
+            "model": model,
+            "retryable": True,
+            "suggested_preset": "economy",
+        }
     if not _is_rate_limit_error(exc):
         return None
     return {
@@ -639,6 +649,7 @@ async def chat_with_ai(
     db: Session | None = Depends(get_optional_db),
     current: CurrentUser = Depends(get_current_session_user),
 ) -> AiChatResponse:
+    request_started_at = perf_counter()
     requested_date = _parse_specific_date_request(payload.message)
     chat_message = _single_day_prompt_message(payload.message, requested_date) if requested_date else payload.message
     ai_options = _apply_specific_date_token_floor(
@@ -652,13 +663,17 @@ async def chat_with_ai(
     )
     server_context = payload.client_context
     specific_date_analysis: dict[str, Any] | None = None
+    context_started_at = perf_counter()
+    specific_date_fetch_ms = 0
     if db is not None:
         client = db.get(ClientAccount, payload.client_id)
         if not client or client.organization_id != current.organization.id:
             raise HTTPException(status_code=404, detail="Client not found")
         server_context = build_client_ai_context_from_db(db, payload.client_id, selected_campaign_name=payload.selected_campaign_name)
         if requested_date:
+            specific_date_started_at = perf_counter()
             specific_date_analysis = _fetch_specific_date_analysis(db, client, requested_date)
+            specific_date_fetch_ms = round((perf_counter() - specific_date_started_at) * 1000)
             server_context = _apply_specific_date_analysis_to_context(server_context, specific_date_analysis)
     compacted_context = compact_client_context_for_chat(
         server_context,
@@ -666,6 +681,7 @@ async def chat_with_ai(
         search_query_limit=payload.search_query_limit,
         selected_campaign_name=payload.selected_campaign_name,
     )
+    context_build_ms = round((perf_counter() - context_started_at) * 1000)
     selected_model = str(ai_options["model"])
     try:
         response = await answer_ai_chat(
@@ -681,6 +697,11 @@ async def chat_with_ai(
             search_query_limit=payload.search_query_limit,
             selected_campaign_name=payload.selected_campaign_name,
             inspect_request=payload.inspect_request,
+            initial_timings={
+                "contextBuildMs": context_build_ms,
+                "specificDateFetchMs": specific_date_fetch_ms,
+            },
+            request_started_at=request_started_at,
         )
         return _decorate_specific_date_response_trace(
             response,
@@ -691,12 +712,13 @@ async def chat_with_ai(
     except HTTPException as exc:
         normalized = _normalized_ai_error(exc, selected_model)
         if normalized:
+            normalized_response = {key: value for key, value in normalized.items() if key != "model"}
             return AiChatResponse(
                 client_id=payload.client_id,
                 model=selected_model,
                 source="openrouter_error_normalized",
                 answer=str(normalized["message"]),
                 tool_traces=[],
-                **normalized,
+                **normalized_response,
             )
         raise

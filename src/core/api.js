@@ -19,7 +19,8 @@ export const API_BASE = resolveApiBase();
 const API_CACHE_PREFIX = 'directpilot_api_cache_v1:';
 const API_CACHE_MAX_AGE_MS = 2 * 60 * 1000;
 const API_CACHE_STALE_MS = 20 * 60 * 1000;
-const API_REQUEST_TIMEOUT_MS = 25 * 1000;
+export const DEFAULT_API_REQUEST_TIMEOUT_MS = 25 * 1000;
+export const AI_API_REQUEST_TIMEOUT_MS = 70 * 1000;
 const API_CACHEABLE_PATHS = [
   '/clients',
   '/integrations',
@@ -147,12 +148,22 @@ function backgroundRefresh(path, options) {
   const headers = new Headers(options.headers || {});
   const token = getSessionToken();
   if (token) headers.set('Authorization', `Bearer ${token}`);
-  fetchWithTimeout(`${API_BASE}${path}`, { ...options, headers }, API_REQUEST_TIMEOUT_MS)
+  fetchWithTimeout(`${API_BASE}${path}`, { ...options, headers }, DEFAULT_API_REQUEST_TIMEOUT_MS)
     .then((response) => writeApiCache(path, response))
     .catch(() => {});
 }
 
-async function fetchWithTimeout(url, options = {}, timeoutMs = API_REQUEST_TIMEOUT_MS) {
+export class ApiTimeoutError extends Error {
+  constructor(message, { code = 'api_request_timeout', timeoutMs, path } = {}) {
+    super(message);
+    this.name = 'ApiTimeoutError';
+    this.code = code;
+    this.timeoutMs = timeoutMs;
+    this.path = path;
+  }
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = DEFAULT_API_REQUEST_TIMEOUT_MS, timeoutContext = {}) {
   if (options.signal || typeof AbortController === 'undefined') {
     return fetch(url, options);
   }
@@ -163,7 +174,15 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = API_REQUEST_TIMEO
     return await fetch(url, { ...options, signal: controller.signal });
   } catch (error) {
     if (error?.name === 'AbortError') {
-      throw new Error('Backend не ответил за 25 секунд. Попробуйте повторить запрос позже.');
+      const seconds = Math.round(timeoutMs / 1000);
+      throw new ApiTimeoutError(
+        timeoutContext.message || `Backend не ответил за ${seconds} секунд. Попробуйте повторить запрос позже.`,
+        {
+          code: timeoutContext.code,
+          timeoutMs,
+          path: timeoutContext.path,
+        },
+      );
     }
     throw error;
   } finally {
@@ -172,27 +191,38 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = API_REQUEST_TIMEO
 }
 
 export async function apiFetch(path, options = {}) {
-  const method = requestMethod(options);
-  const cacheable = isCacheableGet(path, options);
+  const {
+    timeoutMs = DEFAULT_API_REQUEST_TIMEOUT_MS,
+    timeoutErrorCode = 'api_request_timeout',
+    timeoutMessage = '',
+    ...fetchOptions
+  } = options;
+  const method = requestMethod(fetchOptions);
+  const cacheable = isCacheableGet(path, fetchOptions);
   if (cacheable) {
     const cached = readApiCache(path);
     if (cached?.fresh) {
       return makeJsonResponse(cached.payload);
     }
     if (cached) {
-      backgroundRefresh(path, options);
+      backgroundRefresh(path, fetchOptions);
       return makeJsonResponse(cached.payload, { stale: true });
     }
   }
 
-  const headers = new Headers(options.headers || {});
+  const headers = new Headers(fetchOptions.headers || {});
   const token = getSessionToken();
   if (token) headers.set('Authorization', `Bearer ${token}`);
-  if (options.body && !headers.has('Content-Type')) {
+  if (fetchOptions.body && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json');
   }
 
-  const response = await fetchWithTimeout(`${API_BASE}${path}`, { ...options, headers });
+  const response = await fetchWithTimeout(
+    `${API_BASE}${path}`,
+    { ...fetchOptions, headers },
+    timeoutMs,
+    { code: timeoutErrorCode, message: timeoutMessage, path },
+  );
   if (response.status === 401) {
     clearSession();
     clearApiCache();

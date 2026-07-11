@@ -145,7 +145,7 @@ export async function generateAiInsightFlow({
       prompt,
       model,
       max_tokens: maxTokens,
-      preset,
+      ai_preset: preset === 'deep' ? 'advanced' : preset,
       business_context: businessContext,
     });
     onSuccess?.(result);

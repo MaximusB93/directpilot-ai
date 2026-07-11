@@ -9,6 +9,7 @@ from app.core.config import DEFAULT_PRODUCTION_AI_MODEL, PRODUCTION_AI_MODELS, p
 from app.services.ai_prompt_debug import clamp_openrouter_max_tokens
 
 OPENROUTER_CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_TIMEOUT = httpx.Timeout(connect=10.0, read=55.0, write=10.0, pool=10.0)
 
 DEFAULT_SYSTEM_PROMPT = get_system_prompt()
 
@@ -145,10 +146,20 @@ async def generate_openrouter_response(model: str, prompt: str, max_tokens: int 
     }
 
     try:
-        async with httpx.AsyncClient(timeout=45) as client:
+        async with httpx.AsyncClient(timeout=OPENROUTER_TIMEOUT) as client:
             response = await client.post(OPENROUTER_CHAT_COMPLETIONS_URL, json=payload, headers=headers)
             response.raise_for_status()
             data = response.json()
+    except httpx.TimeoutException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail={
+                "error_code": "openrouter_timeout",
+                "message": "OpenRouter не завершил генерацию за установленное время.",
+                "retryable": True,
+                "suggested_model": "mistralai/mistral-small-3.2-24b-instruct",
+            },
+        ) from exc
     except httpx.HTTPStatusError as exc:
         detail = exc.response.text[:500]
         raise HTTPException(

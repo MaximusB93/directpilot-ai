@@ -1,5 +1,7 @@
 import copy
 import json
+import logging
+from time import perf_counter
 from typing import Any
 
 from fastapi import HTTPException
@@ -11,6 +13,8 @@ from app.services.ai_prompt_debug import build_openrouter_request_debug, build_p
 from app.services.direct_analyst_playbook import build_direct_analyst_instructions
 from app.services.openrouter import DEFAULT_SYSTEM_PROMPT, generate_openrouter_response, redact_openrouter_debug_payload
 
+logger = logging.getLogger(__name__)
+
 BASE_TOOL_PLAN = [
     ("get_client", lambda client_id: {"client_id": client_id}),
     ("list_campaigns", lambda client_id: {"client_id": client_id}),
@@ -18,8 +22,23 @@ BASE_TOOL_PLAN = [
     ("list_recommendations", lambda client_id: {"client_id": client_id}),
 ]
 
+MODEL_META_QUESTION_MARKERS = (
+    "какая ты модель",
+    "какой ты модель",
+    "что ты умеешь",
+    "как ты работаешь",
+    "кто ты",
+)
+
+
+def _is_model_meta_question(message: str) -> bool:
+    normalized = " ".join(message.lower().replace("?", " ").split())
+    return any(marker in normalized for marker in MODEL_META_QUESTION_MARKERS)
+
 
 def _select_mcp_tools(message: str) -> list[tuple[str, Any]]:
+    if _is_model_meta_question(message):
+        return []
     normalized = message.lower()
     tool_plan = list(BASE_TOOL_PLAN)
     if any(token in normalized for token in ["метрик", "metrica", "цель", "конверси"]):
@@ -1022,6 +1041,7 @@ def _build_request_trace(
     response_status: str = "success",
     error_code: str | None = None,
     error_message: str | None = None,
+    timings: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     size = (prompt_debug or {}).get("size") or (request_debug or {}).get("size") or {}
     payload = (request_debug or {}).get("payload") or {}
@@ -1097,8 +1117,37 @@ def _build_request_trace(
             "errorCode": error_code,
             "errorMessage": error_message,
         },
+        "timings": timings or {},
     }
     return redact_openrouter_debug_payload(trace)
+
+
+def _elapsed_ms(started_at: float) -> int:
+    return max(0, round((perf_counter() - started_at) * 1000))
+
+
+def _finalize_ai_chat_timings(
+    timings: dict[str, int],
+    *,
+    request_started_at: float,
+    model: str | None,
+    intent: str,
+    status: str,
+) -> None:
+    timings["totalMs"] = _elapsed_ms(request_started_at)
+    logger.info(
+        "AI_CHAT_TIMING model=%s intent=%s context_build_ms=%s specific_date_fetch_ms=%s "
+        "mcp_tools_ms=%s prompt_build_ms=%s openrouter_ms=%s total_ms=%s status=%s",
+        model or "fallback",
+        intent,
+        timings.get("contextBuildMs", 0),
+        timings.get("specificDateFetchMs", 0),
+        timings.get("mcpToolsMs", 0),
+        timings.get("promptBuildMs", 0),
+        timings.get("openrouterMs", 0),
+        timings["totalMs"],
+        status,
+    )
 
 
 def build_chat_prompt_debug_snapshot(
@@ -1264,9 +1313,21 @@ async def answer_ai_chat(
     search_query_limit: int | None = 20,
     selected_campaign_name: str | None = None,
     inspect_request: bool = False,
+    initial_timings: dict[str, int] | None = None,
+    request_started_at: float | None = None,
 ) -> AiChatResponse:
+    request_started_at = request_started_at or perf_counter()
+    timings = {
+        "contextBuildMs": int((initial_timings or {}).get("contextBuildMs", 0)),
+        "specificDateFetchMs": int((initial_timings or {}).get("specificDateFetchMs", 0)),
+        "mcpToolsMs": 0,
+        "promptBuildMs": 0,
+        "openrouterMs": 0,
+        "totalMs": 0,
+    }
     selected_model = model or settings.openrouter_default_model
     safe_max_tokens = max_tokens or 900
+    context_started_at = perf_counter()
     compacted_context = compact_client_context_for_chat(
         client_context,
         compact_context=compact_context,
@@ -1280,7 +1341,11 @@ async def answer_ai_chat(
         {"search_query_limit": search_query_limit},
     )
     data_fetch = _build_data_fetch_trace(compact_prompt_context)
+    timings["contextBuildMs"] += _elapsed_ms(context_started_at)
+    tools_started_at = perf_counter()
     traces = _run_mcp_tools(client_id, message, client_context=compact_prompt_context)
+    timings["mcpToolsMs"] = _elapsed_ms(tools_started_at)
+    prompt_started_at = perf_counter()
     prompt = _build_chat_prompt(
         client_id=client_id,
         message=message,
@@ -1353,9 +1418,18 @@ async def answer_ai_chat(
         "chat_history_limit": chat_history_limit,
         "search_query_limit": search_query_limit,
         "selected_campaign_name": selected_campaign_name,
+        "timings": timings,
     }
+    timings["promptBuildMs"] = _elapsed_ms(prompt_started_at)
 
     if not settings.openrouter_configured:
+        _finalize_ai_chat_timings(
+            timings,
+            request_started_at=request_started_at,
+            model=None,
+            intent=str(intent_plan.get("intent") or "unknown"),
+            status="fallback",
+        )
         return AiChatResponse(
             client_id=client_id,
             model=None,
@@ -1369,6 +1443,13 @@ async def answer_ai_chat(
         )
 
     if prompt_debug["size"]["isTooLarge"]:
+        _finalize_ai_chat_timings(
+            timings,
+            request_started_at=request_started_at,
+            model=selected_model,
+            intent=str(intent_plan.get("intent") or "unknown"),
+            status="blocked",
+        )
         return AiChatResponse(
             client_id=client_id,
             model=selected_model,
@@ -1394,6 +1475,7 @@ async def answer_ai_chat(
                 error_code="ai_prompt_too_large",
             ),
         )
+    openrouter_started_at = perf_counter()
     try:
         response = await generate_openrouter_response(
             model=selected_model,
@@ -1401,19 +1483,35 @@ async def answer_ai_chat(
             max_tokens=safe_max_tokens,
         )
     except HTTPException as exc:
+        timings["openrouterMs"] = _elapsed_ms(openrouter_started_at)
         detail_text = json.dumps(exc.detail, ensure_ascii=False) if isinstance(exc.detail, (dict, list)) else str(exc.detail)
-        is_rate_limited = (
+        detail_code = str(exc.detail.get("error_code") or "") if isinstance(exc.detail, dict) else ""
+        is_timeout = exc.status_code == 504 or detail_code == "openrouter_timeout"
+        is_rate_limited = not is_timeout and (
             exc.status_code == 429
             or "429" in detail_text
             or "rate limit" in detail_text.lower()
             or "rate-limited" in detail_text.lower()
             or "temporarily rate" in detail_text.lower()
         )
-        error_code = "openrouter_rate_limited" if is_rate_limited else "openrouter_error"
-        message_text = (
-            "Р’С‹Р±СЂР°РЅРЅР°СЏ AI-РјРѕРґРµР»СЊ РІСЂРµРјРµРЅРЅРѕ РїРµСЂРµРіСЂСѓР¶РµРЅР° РёР»Рё РѕРіСЂР°РЅРёС‡РµРЅР° РїРѕ Р»РёРјРёС‚Р°Рј. Р’С‹Р±РµСЂРёС‚Рµ РґСЂСѓРіСѓСЋ РјРѕРґРµР»СЊ РёР»Рё РїРѕРІС‚РѕСЂРёС‚Рµ РїРѕР·Р¶Рµ."
-            if is_rate_limited
-            else "OpenRouter РЅРµ РІРµСЂРЅСѓР» РѕС‚РІРµС‚ РґР»СЏ AI-С‡Р°С‚Р°."
+        if is_timeout:
+            error_code = "openrouter_timeout"
+            message_text = (
+                "Выбранная модель не успела сформировать ответ. Повторите запрос или временно выберите "
+                "Mistral Small 3.2 · Эконом."
+            )
+        elif is_rate_limited:
+            error_code = "openrouter_rate_limited"
+            message_text = "Выбранная AI-модель временно перегружена или ограничена по лимитам. Выберите другую модель или повторите позже."
+        else:
+            error_code = "openrouter_error"
+            message_text = "OpenRouter не вернул ответ для AI-чата."
+        _finalize_ai_chat_timings(
+            timings,
+            request_started_at=request_started_at,
+            model=selected_model,
+            intent=str(intent_plan.get("intent") or "unknown"),
+            status="timeout" if is_timeout else "error",
         )
         return AiChatResponse(
             client_id=client_id,
@@ -1424,8 +1522,8 @@ async def answer_ai_chat(
             error=True,
             error_code=error_code,
             message=message_text,
-            retryable=is_rate_limited,
-            suggested_preset="economy" if is_rate_limited else None,
+            retryable=is_rate_limited or is_timeout,
+            suggested_preset="economy" if is_rate_limited or is_timeout else None,
             requestDebug=request_debug if inspect_request else None,
             requestTrace=_build_request_trace(
                 **base_trace_kwargs,
@@ -1434,6 +1532,14 @@ async def answer_ai_chat(
                 error_message=message_text,
             ),
         )
+    timings["openrouterMs"] = _elapsed_ms(openrouter_started_at)
+    _finalize_ai_chat_timings(
+        timings,
+        request_started_at=request_started_at,
+        model=selected_model,
+        intent=str(intent_plan.get("intent") or "unknown"),
+        status="success",
+    )
     return AiChatResponse(
         client_id=client_id,
         model=str(response.get("model") or selected_model),

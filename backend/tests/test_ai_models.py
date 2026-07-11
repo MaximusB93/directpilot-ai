@@ -29,6 +29,8 @@ def test_ai_status_exposes_presets_and_safe_default() -> None:
     assert payload["allow_custom_models"] is False
     preset_ids = {item["id"] for item in payload["presets"]}
     assert {"economy", "balanced", "advanced"}.issubset(preset_ids)
+    preset_tokens = {item["id"]: item["max_tokens"] for item in payload["presets"]}
+    assert preset_tokens == {"economy": 1200, "balanced": 2500, "advanced": 5000}
     advanced = next(item for item in payload["presets"] if item["id"] == "advanced")
     assert advanced["warning"] == "Может быть дороже"
 
