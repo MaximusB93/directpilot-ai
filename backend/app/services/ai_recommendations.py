@@ -583,6 +583,15 @@ def _is_rate_limit_error(exc: HTTPException) -> bool:
 
 
 def normalize_openrouter_error(exc: HTTPException, model: str) -> dict[str, object] | None:
+    if exc.status_code == 504 or (isinstance(exc.detail, dict) and exc.detail.get("error_code") == "openrouter_timeout"):
+        return {
+            "error": True,
+            "error_code": "openrouter_timeout",
+            "message": "Выбранная модель не успела сформировать рекомендации. Повторите запрос или временно выберите Mistral Small 3.2 · Эконом.",
+            "model": model,
+            "retryable": True,
+            "suggested_preset": "economy",
+        }
     if not _is_rate_limit_error(exc):
         return None
     return {
@@ -654,13 +663,14 @@ async def generate_client_recommendations_from_context(
     except HTTPException as exc:
         normalized = normalize_openrouter_error(exc, selected_model)
         if normalized:
+            normalized_response = {key: value for key, value in normalized.items() if key != "model"}
             return AiRecommendationResponse(
                 client_id=context["client"]["id"],
                 source="openrouter_error_normalized",
                 model=selected_model,
                 summary=str(normalized["message"]),
                 recommendations=[],
-                **normalized,
+                **normalized_response,
             )
         raise
     raw_content = str(response.get("content", ""))
