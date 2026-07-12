@@ -152,7 +152,7 @@ export function renderAiChat({
         <button class="secondaryButton" data-ai-chat-sample="Проанализируй поисковые запросы и предложи минус-слова с рисками.">Запросы</button>
       </div>
       <div class="aiChatMessages" data-ai-chat-messages>
-        ${aiChatMessages.map((message) => `<article class="aiChatMessage ${message.role}"><span>${message.role === 'user' ? 'Вы' : 'AI'}</span><p>${escapeHtml(message.content)}</p></article>`).join('')}
+        ${aiChatMessages.map((message) => `<article class="aiChatMessage ${message.role}"><span>${message.role === 'user' ? 'Вы' : 'AI'}</span>${message.role === 'user' ? `<p>${escapeHtml(message.content)}</p>` : renderSafeMarkdown(message.content)}</article>`).join('')}
       </div>
       ${aiChatError ? `<div class="authStatus integrationStatus">${escapeHtml(aiChatError)}${aiChatErrorDetails?.retry_suggestion ? `<br>${escapeHtml(aiChatErrorDetails.retry_suggestion)}` : ''}</div>` : ''}
       <form class="aiChatForm" data-ai-chat-form>
@@ -206,10 +206,11 @@ export function renderAiAuditJob({
           ${stages.map(([, label], index) => `<li class="${index < stageIndex || aiAuditJob.status === 'completed' ? 'done' : index === stageIndex && !terminal ? 'active' : ''}">${index < stageIndex || aiAuditJob.status === 'completed' ? '✓' : index === stageIndex && !terminal ? '•' : '○'} ${escapeHtml(label)}</li>`).join('')}
         </ol>
         ${aiAuditJob.error_message ? `<div class="authStatus integrationStatus">${escapeHtml(aiAuditJob.error_message)}</div>` : ''}
-        ${aiAuditJob.answer ? `<div class="aiAuditResult"><h4>Результат аудита</h4><p>${escapeHtml(aiAuditJob.answer)}</p></div>` : ''}
+        ${aiAuditJob.answer || aiAuditJob.result ? `<div><h4>Результат аудита</h4>${renderAiAuditResult(aiAuditJob.result, aiAuditJob.answer, escapeHtml, aiAuditJob)}</div>` : ''}
         <div class="heroActions">
           ${!terminal && aiAuditJob.status !== 'generating' ? '<button class="secondaryButton" data-ai-audit-cancel>Отменить</button>' : ''}
           ${aiAuditJob.status === 'failed' && aiAuditJob.retryable ? '<button class="approveButton" data-ai-audit-retry>Повторить этап</button>' : ''}
+          ${aiAuditJob.result?.truncated ? '<button class="approveButton" data-ai-audit-compact-retry>Повторить в более компактном формате</button>' : ''}
           ${terminal ? '<button class="secondaryButton" data-ai-audit-new>Новый аудит</button>' : ''}
         </div>
       ` : `<button class="approveButton" data-ai-audit-start="full_account" ${selectedClientId && !aiAuditLoading ? '' : 'disabled'}>${aiAuditLoading ? 'Создаём...' : 'Запустить полный аудит'}</button>`}
@@ -270,4 +271,56 @@ export function renderAiAssistantContent(context) {
     ${renderAiPromptDebugPanel(context)}
     ${renderClientAiRecommendations(context)}
   `;
+}
+import { renderSafeMarkdown } from '../core/markdown.js';
+
+function auditCoverageLabel(key) {
+  return {
+    account: 'Аккаунт', campaigns: 'Кампании', adGroups: 'Группы', keywords: 'Ключи',
+    searchQueries: 'Запросы', placements: 'Площадки', audiences: 'Аудитории',
+    adsAndCreatives: 'Объявления и креативы', demographics: 'Демография', devices: 'Устройства',
+    geo: 'География', goals: 'Цели', crmLeadQuality: 'CRM и качество лидов',
+  }[key] || key;
+}
+
+function formatAuditDate(value) {
+  if (!value) return '—';
+  const [year, month, day] = String(value).slice(0, 10).split('-');
+  return year && month && day ? `${day}.${month}.${year}` : String(value);
+}
+
+function renderFinding(item, escapeHtml) {
+  return `<article class="aiAuditFinding">
+    <div class="panelHeader"><div><span>${escapeHtml(item.campaign_name || 'Аккаунт')}</span><h4>${escapeHtml(item.problem || 'Проблема')}</h4></div><span class="aiStatusBadge ${item.risk === 'high' ? 'pending' : 'ready'}">Риск: ${escapeHtml(item.risk || 'не указан')}</span></div>
+    <p><strong>Факт:</strong> ${escapeHtml(item.fact || '—')}</p>
+    ${item.evidence?.length ? `<details><summary>Доказательства</summary><ul>${item.evidence.map((value) => `<li>${escapeHtml(value)}</li>`).join('')}</ul></details>` : ''}
+    ${item.hypothesis ? `<p><strong>Гипотеза:</strong> ${escapeHtml(item.hypothesis)}</p>` : ''}
+    <p><strong>Рекомендация:</strong> ${escapeHtml(item.recommendation || '—')}</p>
+    <small>Тип: ${escapeHtml(item.campaign_type || 'unknown')} · Уровень: ${escapeHtml(item.analysis_level || 'campaign')} · Уверенность: ${escapeHtml(item.confidence || 'low')} · Требуется подтверждение: ${item.requires_human_approval === false ? 'нет' : 'да'}</small>
+  </article>`;
+}
+
+export function renderAiAuditResult(result, fallbackAnswer, escapeHtml, job = {}) {
+  const structured = result?.structured;
+  const period = structured?.meta?.period || result?.analysisPeriod || job.context_metadata?.analysisPeriod || {};
+  const coverage = structured?.meta?.data_coverage || result?.dataCoverage || job.context_metadata?.dataCoverage || {};
+  const periodLine = `Период анализа: ${formatAuditDate(period.date_from || period.dateFrom)}–${formatAuditDate(period.date_to || period.dateTo)}, ${escapeHtml(String(period.days || '—'))} дней.`;
+  if (!structured) {
+    return `<div class="aiAuditResult"><p class="aiAuditPeriod">${periodLine}</p>${result?.warnings?.map((warning) => `<div class="authStatus integrationStatus">${escapeHtml(warning)}</div>`).join('') || ''}${renderSafeMarkdown(result?.fallbackMarkdown || fallbackAnswer || '')}</div>`;
+  }
+  const coverageRows = Object.entries(coverage).map(([key, item]) => `<tr><th>${escapeHtml(auditCoverageLabel(key))}</th><td><span class="aiStatusBadge ${item.available ? 'ready' : 'pending'}">${item.available ? 'Доступно' : 'Не собрано'}</span></td><td>${escapeHtml(String(item.analyzed || 0))}${item.total === null || item.total === undefined ? '' : ` / ${escapeHtml(String(item.total))}`}</td><td>${escapeHtml(item.reason || item.source || '—')}</td></tr>`).join('');
+  return `<div class="aiAuditResult">
+    <p class="aiAuditPeriod">${periodLine}</p>
+    <div class="aiAuditMeta"><span>Сравнение: ${formatAuditDate(period.comparison_date_from)}–${formatAuditDate(period.comparison_date_to)}</span><span>Модель: ${escapeHtml(structured.meta?.model || job.returned_model || job.model || '—')}</span><span>Лимит: ${escapeHtml(String(structured.meta?.output_budget_tokens || job.max_tokens || '—'))} токенов</span><span>Полнота: ${escapeHtml(result?.completeness || 'structured')}</span><span>Качество данных: ${escapeHtml(structured.data_quality?.status || 'partial')}</span><span>Время: ${escapeHtml(String(job.timings?.totalElapsedMs || '—'))} мс</span></div>
+    ${result?.warnings?.filter((warning) => !String(warning).includes('достиг лимита')).map((warning) => `<div class="authStatus integrationStatus">${escapeHtml(warning)}</div>`).join('') || ''}
+    ${result?.truncated ? '<div class="authStatus integrationStatus"><strong>Ответ модели достиг лимита и мог быть обрезан.</strong></div>' : ''}
+    <section><h4>Итог</h4><p>${escapeHtml(structured.executive_summary || '')}</p></section>
+    <details open><summary>Что проанализировано</summary><div class="markdownTableWrap"><table><thead><tr><th>Уровень</th><th>Статус</th><th>Проанализировано</th><th>Источник / причина</th></tr></thead><tbody>${coverageRows}</tbody></table></div></details>
+    ${structured.critical_findings?.length ? `<section><h4>Критические проблемы</h4><div class="aiAuditFindingGrid">${structured.critical_findings.map((item) => renderFinding(item, escapeHtml)).join('')}</div></section>` : ''}
+    ${structured.opportunities?.length ? `<section><h4>Возможности</h4><div class="aiAuditFindingGrid">${structured.opportunities.map((item) => renderFinding(item, escapeHtml)).join('')}</div></section>` : ''}
+    ${structured.action_plan?.length ? `<section><h4>План действий</h4><ol>${[...structured.action_plan].sort((a, b) => Number(a.priority) - Number(b.priority)).map((item) => `<li><strong>${escapeHtml(item.action)}</strong> — ${escapeHtml(item.reason)} <small>Объект: ${escapeHtml(item.scope)} · ${escapeHtml(item.mode)} · подтверждение обязательно</small></li>`).join('')}</ol></section>` : ''}
+    ${structured.prohibited_actions?.length ? `<aside class="aiAuditNotice"><h4>Запрещённые автоматические действия</h4><ul>${structured.prohibited_actions.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul></aside>` : ''}
+    <aside class="aiAuditNotice"><h4>Ограничения</h4><ul>${(structured.limitations || []).map((item) => `<li>${escapeHtml(item)}</li>`).join('') || '<li>Не указаны.</li>'}</ul></aside>
+    <section><h4>Вывод</h4><p>${escapeHtml(structured.conclusion || '')}</p></section>
+  </div>`;
 }

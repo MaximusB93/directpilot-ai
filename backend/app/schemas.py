@@ -537,12 +537,89 @@ class AiAuditCreateRequest(BaseModel):
     selected_campaign_name: str | None = None
     model: str | None = None
     ai_preset: str | None = None
-    max_tokens: int | None = Field(default=None, ge=1, le=5000)
+    max_tokens: int | None = Field(default=None, ge=1, le=10000)
     options: AiAuditOptions = Field(default_factory=AiAuditOptions)
 
 
 class AiAuditAdvanceRequest(BaseModel):
     retry: bool = False
+    compact_retry: bool = False
+
+
+class AiAuditPeriod(BaseModel):
+    date_from: str | None = None
+    date_to: str | None = None
+    days: int | None = None
+    comparison_date_from: str | None = None
+    comparison_date_to: str | None = None
+
+
+class AiAuditCoverageItem(BaseModel):
+    available: bool = False
+    total: int | None = None
+    analyzed: int = 0
+    source: str | None = None
+    period: dict | None = None
+    reason: str | None = None
+    limitations: list[str] = Field(default_factory=list)
+
+
+class AiAuditMeta(BaseModel):
+    period: AiAuditPeriod = Field(default_factory=AiAuditPeriod)
+    data_coverage: dict[str, AiAuditCoverageItem] = Field(default_factory=dict)
+    model: str | None = None
+    output_budget_tokens: int = 10000
+
+
+class AiAuditDataQuality(BaseModel):
+    status: str = "partial"
+    facts: list[str] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+
+
+class AiAuditFinding(BaseModel):
+    campaign_name: str | None = None
+    campaign_type: str = "unknown"
+    analysis_level: str = "campaign"
+    problem: str
+    fact: str
+    evidence: list[str] = Field(default_factory=list, max_length=5)
+    hypothesis: str | None = None
+    confidence: str = "low"
+    risk: str = "medium"
+    recommendation: str
+    requires_human_approval: bool = True
+    next_data_needed: list[str] = Field(default_factory=list, max_length=5)
+
+
+class AiAuditAction(BaseModel):
+    priority: int
+    action: str
+    scope: str
+    reason: str
+    mode: str = "manual_review"
+    requires_human_approval: bool = True
+
+
+class AiAuditDrilldownSummary(BaseModel):
+    analyzed_levels: list[str] = Field(default_factory=list)
+    not_analyzed_levels: list[str] = Field(default_factory=list)
+    next_data_needed: list[str] = Field(default_factory=list)
+
+
+class AiAuditResult(BaseModel):
+    meta: AiAuditMeta = Field(default_factory=AiAuditMeta)
+    executive_summary: str
+    data_quality: AiAuditDataQuality = Field(default_factory=AiAuditDataQuality)
+    critical_findings: list[AiAuditFinding] = Field(default_factory=list, max_length=5)
+    opportunities: list[AiAuditFinding] = Field(default_factory=list, max_length=5)
+    insufficient_data_campaigns: list[str] = Field(default_factory=list)
+    tracking_and_goals: dict = Field(default_factory=dict)
+    drilldown_summary: AiAuditDrilldownSummary = Field(default_factory=AiAuditDrilldownSummary)
+    action_plan: list[AiAuditAction] = Field(default_factory=list, max_length=10)
+    prohibited_actions: list[str] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+    conclusion: str
 
 
 class AiAuditJobResponse(BaseModel):

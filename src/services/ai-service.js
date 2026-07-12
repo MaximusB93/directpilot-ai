@@ -1,13 +1,14 @@
 import { AI_API_REQUEST_TIMEOUT_MS, apiFetch, API_BASE } from '../core/api.js';
 
 const AI_TIMEOUT_MESSAGE = `AI-модель не успела завершить ответ за ${AI_API_REQUEST_TIMEOUT_MS / 1000} секунд. Запрос мог быть обработан backend, но ответ не был получен вовремя. Повторите запрос или выберите экономичную модель.`;
+const AI_AUDIT_GENERATION_TIMEOUT_MS = 150 * 1000;
 
 function aiRequestOptions(options) {
   return {
     ...options,
-    timeoutMs: AI_API_REQUEST_TIMEOUT_MS,
-    timeoutErrorCode: 'ai_request_timeout',
-    timeoutMessage: AI_TIMEOUT_MESSAGE,
+    timeoutMs: options?.timeoutMs ?? AI_API_REQUEST_TIMEOUT_MS,
+    timeoutErrorCode: options?.timeoutErrorCode ?? 'ai_request_timeout',
+    timeoutMessage: options?.timeoutMessage ?? AI_TIMEOUT_MESSAGE,
   };
 }
 
@@ -101,10 +102,13 @@ export function fetchAiAuditJob(jobId) {
   return auditJobRequest(`/ai/audits/${jobId}`);
 }
 
-export function advanceAiAuditJob(jobId, retry = false) {
+export function advanceAiAuditJob(jobId, retry = false, compactRetry = false) {
   return auditJobRequest(`/ai/audits/${jobId}/advance`, {
     method: 'POST',
-    body: JSON.stringify({ retry }),
+    body: JSON.stringify({ retry, compact_retry: compactRetry }),
+    timeoutMs: AI_AUDIT_GENERATION_TIMEOUT_MS,
+    timeoutErrorCode: 'ai_audit_generation_timeout',
+    timeoutMessage: 'Этап AI-аудита не завершился за 150 секунд. Задача сохранена: обновите статус позднее.',
   });
 }
 

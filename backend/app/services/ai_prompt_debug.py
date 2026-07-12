@@ -23,14 +23,21 @@ def context_limit_for_model(model: str | None) -> int:
     return MODEL_CONTEXT_LIMITS.get((model or "").strip(), DEFAULT_CONTEXT_LIMIT)
 
 
-def clamp_openrouter_max_tokens(max_tokens: int | None) -> int:
+def clamp_openrouter_max_tokens(max_tokens: int | None, *, cap: int = 8000) -> int:
     if max_tokens is None:
         return 900
-    return max(256, min(int(max_tokens), 8000))
+    return max(256, min(int(max_tokens), int(cap)))
 
 
-def summarize_prompt_size(system_prompt: str, user_prompt: str, model: str, max_tokens: int) -> dict[str, Any]:
-    safe_max_tokens = clamp_openrouter_max_tokens(max_tokens)
+def summarize_prompt_size(
+    system_prompt: str,
+    user_prompt: str,
+    model: str,
+    max_tokens: int,
+    *,
+    max_tokens_cap: int = 8000,
+) -> dict[str, Any]:
+    safe_max_tokens = clamp_openrouter_max_tokens(max_tokens, cap=max_tokens_cap)
     input_tokens = estimate_tokens(f"{system_prompt or ''}\n{user_prompt or ''}")
     total_tokens = input_tokens + safe_max_tokens
     context_limit = context_limit_for_model(model)
@@ -234,10 +241,17 @@ def build_prompt_debug_snapshot(
     model: str,
     max_tokens: int,
     include_preview: bool = False,
+    max_tokens_cap: int = 8000,
 ) -> dict[str, Any]:
     sections = build_context_size_breakdown(context)
     snapshot = {
-        "size": summarize_prompt_size(system_prompt, user_prompt, model, max_tokens),
+        "size": summarize_prompt_size(
+            system_prompt,
+            user_prompt,
+            model,
+            max_tokens,
+            max_tokens_cap=max_tokens_cap,
+        ),
         "sections": sections,
         "reductionHints": build_reduction_hints(sections),
         "preview": None,
