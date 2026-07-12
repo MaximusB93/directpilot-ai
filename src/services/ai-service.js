@@ -77,3 +77,37 @@ export async function fetchAiPromptDebug(clientId, params) {
   if (!response.ok) throw new Error(payload.detail || 'Не удалось проверить размер AI-контекста');
   return payload;
 }
+
+async function auditJobRequest(path, options = {}) {
+  const response = await apiFetch(path, aiRequestOptions(options));
+  const payload = await response.json();
+  if (!response.ok) {
+    const error = new Error(apiErrorMessage(payload, 'Не удалось выполнить этап AI-аудита'));
+    error.payload = payload;
+    error.status = response.status;
+    throw error;
+  }
+  return payload;
+}
+
+export function createAiAuditJob(request) {
+  return auditJobRequest('/ai/audits', {
+    method: 'POST',
+    body: JSON.stringify(request),
+  });
+}
+
+export function fetchAiAuditJob(jobId) {
+  return auditJobRequest(`/ai/audits/${jobId}`);
+}
+
+export function advanceAiAuditJob(jobId, retry = false) {
+  return auditJobRequest(`/ai/audits/${jobId}/advance`, {
+    method: 'POST',
+    body: JSON.stringify({ retry }),
+  });
+}
+
+export function cancelAiAuditJob(jobId) {
+  return auditJobRequest(`/ai/audits/${jobId}/cancel`, { method: 'POST' });
+}

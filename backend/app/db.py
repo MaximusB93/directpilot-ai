@@ -38,6 +38,49 @@ except (ArgumentError, ValueError) as exc:
     engine = None
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False) if engine else None
 
+AI_AUDIT_JOB_SCHEMA_STATEMENTS = (
+    """
+    CREATE TABLE IF NOT EXISTS ai_audit_jobs (
+        id VARCHAR(36) PRIMARY KEY,
+        organization_id VARCHAR(36) NOT NULL,
+        client_id VARCHAR(64) NOT NULL,
+        created_by_user_id VARCHAR(36),
+        created_by_email VARCHAR(255),
+        status VARCHAR(32) NOT NULL DEFAULT 'queued',
+        current_stage VARCHAR(32) NOT NULL DEFAULT 'collect_context',
+        progress_percent INTEGER NOT NULL DEFAULT 0,
+        requested_scope VARCHAR(64) NOT NULL DEFAULT 'full_account',
+        requested_period VARCHAR(64) NOT NULL DEFAULT 'last_30_days',
+        selected_campaign_name VARCHAR(255),
+        model VARCHAR(255) NOT NULL,
+        returned_model VARCHAR(255),
+        ai_preset VARCHAR(32) NOT NULL DEFAULT 'balanced',
+        max_tokens INTEGER NOT NULL DEFAULT 2500,
+        system_prompt_version VARCHAR(64) NOT NULL,
+        system_prompt_hash VARCHAR(128) NOT NULL,
+        input_options_json TEXT NOT NULL DEFAULT '{}',
+        context_snapshot_json TEXT,
+        prompt_snapshot_json TEXT,
+        result_json TEXT,
+        answer_text TEXT,
+        error_code VARCHAR(128),
+        error_message TEXT,
+        retryable BOOLEAN NOT NULL DEFAULT FALSE,
+        timings_json TEXT NOT NULL DEFAULT '{}',
+        stage_version INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        started_at TIMESTAMPTZ,
+        completed_at TIMESTAMPTZ,
+        expires_at TIMESTAMPTZ
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_ai_audit_jobs_organization_id ON ai_audit_jobs (organization_id)",
+    "CREATE INDEX IF NOT EXISTS ix_ai_audit_jobs_client_id ON ai_audit_jobs (client_id)",
+    "CREATE INDEX IF NOT EXISTS ix_ai_audit_jobs_status ON ai_audit_jobs (status)",
+    "CREATE INDEX IF NOT EXISTS ix_ai_audit_jobs_expires_at ON ai_audit_jobs (expires_at)",
+)
+
 
 def check_db_connection() -> None:
     if database_engine_error:
@@ -55,6 +98,7 @@ def init_db(*, run_schema_patch: bool = True) -> None:
         return
     if not run_schema_patch:
         check_db_connection()
+        ensure_ai_audit_job_schema()
         return
     import app.models  # noqa: F401
     import app.models_wordstat  # noqa: F401
@@ -62,6 +106,14 @@ def init_db(*, run_schema_patch: bool = True) -> None:
 
     Base.metadata.create_all(bind=engine)
     ensure_mvp_schema()
+
+
+def ensure_ai_audit_job_schema() -> None:
+    if engine is None:
+        return
+    with engine.begin() as connection:
+        for statement in AI_AUDIT_JOB_SCHEMA_STATEMENTS:
+            connection.execute(text(statement))
 
 
 def ensure_mvp_schema() -> None:
@@ -211,6 +263,7 @@ def ensure_mvp_schema() -> None:
         )
         """,
         "CREATE INDEX IF NOT EXISTS ix_client_business_contexts_client_id ON client_business_contexts (client_id)",
+        *AI_AUDIT_JOB_SCHEMA_STATEMENTS,
         """
         CREATE TABLE IF NOT EXISTS wordstat_query_batches (
             id VARCHAR(36) PRIMARY KEY,

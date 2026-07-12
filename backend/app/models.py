@@ -292,3 +292,42 @@ class OptimizationActionEvent(Base):
     to_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class AiAuditJob(Base):
+    __tablename__ = "ai_audit_jobs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    client_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    created_by_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_by_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued", index=True)
+    current_stage: Mapped[str] = mapped_column(String(32), nullable=False, default="collect_context")
+    progress_percent: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    requested_scope: Mapped[str] = mapped_column(String(64), nullable=False, default="full_account")
+    requested_period: Mapped[str] = mapped_column(String(64), nullable=False, default="last_30_days")
+    selected_campaign_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    model: Mapped[str] = mapped_column(String(255), nullable=False)
+    returned_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    ai_preset: Mapped[str] = mapped_column(String(32), nullable=False, default="balanced")
+    max_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=2500)
+    system_prompt_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    system_prompt_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    input_options_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    context_snapshot_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    prompt_snapshot_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    answer_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    retryable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    timings_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    stage_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)

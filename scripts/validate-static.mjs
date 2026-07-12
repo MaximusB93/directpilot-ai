@@ -113,6 +113,10 @@ const checks = [
   ['ai endpoints use extended timeout', ['generateAiInsight', 'requestAiChat', 'fetchClientAiRecommendations'].every((name) => has('src/services/ai-service.js', name)) && has('src/services/ai-service.js', 'timeoutMs: AI_API_REQUEST_TIMEOUT_MS') && has('src/services/ai-service.js', "timeoutErrorCode: 'ai_request_timeout'")],
   ['frontend token budgets match backend', has('src/stores/ai-store.js', 'maxTokens: 1200') && has('src/stores/ai-store.js', 'maxTokens: 2500') && has('src/stores/ai-store.js', 'maxTokens: 5000') && has('src/stores/ai-store.js', 'status?.presets')],
   ['ai preset travels with requests', has('src/stores/ai-store.js', 'ai_preset: preset') && has('src/controllers/ai-controller.js', 'ai_preset: preset') && has('src/main.js', 'ai_preset: aiFeatureState.model.selectedPreset')],
+  ['staged audit quick actions', has('src/pages/ai-assistant.js', 'data-ai-audit-start="full_account"') && has('src/pages/ai-assistant.js', 'data-ai-audit-start="critical_issues"') && lacks('src/pages/ai-assistant.js', ['data-ai-prompt="audit"', 'data-ai-prompt="critical"'])],
+  ['heavy audit bypasses chat request', has('src/main.js', 'aiStore.requiresStagedAudit(text)') && has('src/main.js', "await startAiAudit('full_account', text)")],
+  ['staged audit persistence and polling', has('src/main.js', 'directpilot_ai_audit_job_') && has('src/main.js', 'Math.max(1500') && has('src/main.js', 'isTerminalAiAuditStatus') && has('src/main.js', 'restoreAiAuditJob')],
+  ['staged audit result UI', has('src/pages/ai-assistant.js', 'Результат аудита') && has('src/pages/ai-assistant.js', 'data-ai-audit-retry') && has('src/pages/ai-assistant.js', 'data-ai-audit-cancel')],
   ['no seeded account data', has('src/data.js', 'export const clients = []')],
   ['docs updated', has('docs/journal-domain-model.md', 'details UI: done') && has('docs/frontend-architecture.md', 'Journal details UI wired')],
 ];

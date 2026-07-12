@@ -5,7 +5,7 @@ from datetime import UTC, date, datetime
 from time import perf_counter
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import CurrentUser, get_current_session_user
@@ -21,9 +21,26 @@ from app.core.config import (
     production_ai_model_ids,
     settings,
 )
-from app.db import get_optional_db
+from app.db import get_db, get_optional_db
 from app.models import ClientAccount
-from app.schemas import AiChatRequest, AiChatResponse, AiPromptRequest, AiPromptResponse, AiStatusResponse
+from app.schemas import (
+    AiAuditAdvanceRequest,
+    AiAuditCreateRequest,
+    AiAuditJobResponse,
+    AiChatRequest,
+    AiChatResponse,
+    AiPromptRequest,
+    AiPromptResponse,
+    AiStatusResponse,
+)
+from app.services.ai_audit_jobs import (
+    advance_audit_job,
+    audit_job_response,
+    cancel_audit_job,
+    create_audit_job,
+    get_audit_job,
+    requires_staged_audit,
+)
 from app.services.ai_chat import answer_ai_chat, compact_client_context_for_chat, detect_analysis_intent
 from app.services.ai_recommendations import build_client_ai_context_from_db
 from app.services.ai_prompt_debug import build_openrouter_request_debug
@@ -601,6 +618,56 @@ def get_openrouter_status() -> dict[str, object]:
     return _ai_status_payload()
 
 
+@router.post("/audits", response_model=AiAuditJobResponse, status_code=status.HTTP_202_ACCEPTED)
+def create_staged_audit(
+    payload: AiAuditCreateRequest,
+    db: Session = Depends(get_db),
+    current: CurrentUser = Depends(get_current_session_user),
+) -> AiAuditJobResponse:
+    job = create_audit_job(
+        db,
+        payload,
+        organization_id=current.organization.id,
+        user_id=current.user.id,
+        user_email=current.email,
+    )
+    return audit_job_response(job)
+
+
+@router.get("/audits/{job_id}", response_model=AiAuditJobResponse)
+def read_staged_audit(
+    job_id: str,
+    db: Session = Depends(get_db),
+    current: CurrentUser = Depends(get_current_session_user),
+) -> AiAuditJobResponse:
+    return audit_job_response(get_audit_job(db, job_id, organization_id=current.organization.id))
+
+
+@router.post("/audits/{job_id}/advance", response_model=AiAuditJobResponse)
+async def advance_staged_audit(
+    job_id: str,
+    payload: AiAuditAdvanceRequest | None = None,
+    db: Session = Depends(get_db),
+    current: CurrentUser = Depends(get_current_session_user),
+) -> AiAuditJobResponse:
+    job = await advance_audit_job(
+        db,
+        job_id,
+        organization_id=current.organization.id,
+        retry=bool(payload and payload.retry),
+    )
+    return audit_job_response(job)
+
+
+@router.post("/audits/{job_id}/cancel", response_model=AiAuditJobResponse)
+def cancel_staged_audit(
+    job_id: str,
+    db: Session = Depends(get_db),
+    current: CurrentUser = Depends(get_current_session_user),
+) -> AiAuditJobResponse:
+    return audit_job_response(cancel_audit_job(db, job_id, organization_id=current.organization.id))
+
+
 @router.post("/openrouter/generate", response_model=AiPromptResponse)
 async def generate_ai_response(
     payload: AiPromptRequest,
@@ -650,6 +717,19 @@ async def chat_with_ai(
     current: CurrentUser = Depends(get_current_session_user),
 ) -> AiChatResponse:
     request_started_at = perf_counter()
+    if requires_staged_audit(payload.message):
+        return AiChatResponse(
+            client_id=payload.client_id,
+            model=payload.model or DEFAULT_PRODUCTION_AI_MODEL,
+            source="staged_audit_router",
+            answer="Полный аудит выполняется как отдельная поэтапная задача.",
+            tool_traces=[],
+            error=True,
+            error_code="staged_audit_required",
+            message="Полный аудит выполняется как отдельная поэтапная задача.",
+            retryable=False,
+            suggested_action="create_audit_job",
+        )
     requested_date = _parse_specific_date_request(payload.message)
     chat_message = _single_day_prompt_message(payload.message, requested_date) if requested_date else payload.message
     ai_options = _apply_specific_date_token_floor(

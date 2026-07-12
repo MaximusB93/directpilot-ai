@@ -4,6 +4,7 @@ export function createAiFeatureState() {
   const modelState = aiStore.createInitialAiModelState();
   const generationState = aiStore.createInitialAiGenerationState();
   const chatState = aiStore.createInitialAiChatState();
+  const auditState = aiStore.createInitialAiAuditState();
 
   return {
     model: {
@@ -38,9 +39,11 @@ export function createAiFeatureState() {
       toolTraces: chatState.toolTraces,
       selectedCampaignName: chatState.selectedCampaignName,
     },
+    audit: { ...auditState },
   };
 }
 
 export function resetAiClientScopedState(aiFeatureState) {
   aiFeatureState.generation.clientRecommendations = null;
+  aiFeatureState.audit = aiStore.createInitialAiAuditState();
 }

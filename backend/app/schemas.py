@@ -520,6 +520,58 @@ class AiChatResponse(BaseModel):
     suggested_preset: str | None = None
     requestDebug: dict | None = None
     requestTrace: dict | None = None
+    suggested_action: str | None = None
+
+
+class AiAuditOptions(BaseModel):
+    include_search_queries: bool = True
+    include_dynamics: bool = True
+    include_tracking: bool = True
+    include_recommendations: bool = True
+
+
+class AiAuditCreateRequest(BaseModel):
+    client_id: str
+    scope: str = "full_account"
+    period: str = "last_30_days"
+    selected_campaign_name: str | None = None
+    model: str | None = None
+    ai_preset: str | None = None
+    max_tokens: int | None = Field(default=None, ge=1, le=5000)
+    options: AiAuditOptions = Field(default_factory=AiAuditOptions)
+
+
+class AiAuditAdvanceRequest(BaseModel):
+    retry: bool = False
+
+
+class AiAuditJobResponse(BaseModel):
+    job_id: str
+    client_id: str
+    status: str
+    current_stage: str
+    progress_percent: int
+    poll_after_ms: int = 1800
+    requested_scope: str
+    requested_period: str
+    selected_campaign_name: str | None = None
+    model: str
+    returned_model: str | None = None
+    ai_preset: str
+    max_tokens: int
+    system_prompt_version: str
+    system_prompt_hash: str
+    context_metadata: dict = Field(default_factory=dict)
+    timings: dict = Field(default_factory=dict)
+    result: dict | None = None
+    answer: str | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+    retryable: bool = False
+    created_at: str | None = None
+    updated_at: str | None = None
+    completed_at: str | None = None
+    expires_at: str | None = None
 
 
 class AiPromptResponse(BaseModel):

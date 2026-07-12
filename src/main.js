@@ -42,6 +42,8 @@ import {
   createAiChatStateSnapshot,
   createAiModelStateSnapshot,
   createAiPromptDebugParams,
+  createAiAuditJobFlow,
+  advanceAiAuditJobFlow,
   generateAiInsightFlow,
   loadAiPromptDebugFlow,
   loadAiStatusFlow,
@@ -197,9 +199,19 @@ const journalSource = createJournalLocalSource();
 let journalState = createInitialJournalState();
 let journalLoadedFor = '';
 let aiChatShouldScrollToBottom = false;
+let aiAuditPollTimer = 0;
 
 function storageKey(key) {
   return scopedStorageKey(key);
+}
+
+function aiAuditStorageKey(clientId = selectedClientId) {
+  return storageKey(`directpilot_ai_audit_job_${clientId || 'none'}`);
+}
+
+function stopAiAuditPolling() {
+  if (aiAuditPollTimer) window.clearTimeout(aiAuditPollTimer);
+  aiAuditPollTimer = 0;
 }
 
 function normalizeAiModelState() {
@@ -340,6 +352,7 @@ function currentClientName() {
 }
 
 function resetClientScopedUiState({ nextActiveView = activeView } = {}) {
+  stopAiAuditPolling();
   applyClientScopeResetPatch((patch) => {
     businessContext = patch.businessContext;
     businessContextDraft = patch.businessContextDraft;
@@ -1007,8 +1020,13 @@ async function requestAiRecommendations() {
 
 
 async function sendAiChatMessage(message) {
+  const text = String(message || aiFeatureState.chat.input || '').trim();
+  if (aiStore.requiresStagedAudit(text)) {
+    await startAiAudit('full_account', text);
+    return;
+  }
   await sendAiChatMessageFlow({
-    message: message || aiFeatureState.chat.input,
+    message: text,
     loading: aiFeatureState.chat.loading,
     currentChatState: currentAiChatState,
     createRequestPayload: aiChatRequestPayload,
@@ -1042,6 +1060,142 @@ async function sendAiChatMessage(message) {
       render();
     },
   });
+}
+
+
+function persistAiAuditJob(job) {
+  if (!selectedClientId) return;
+  if (job?.job_id) window.localStorage.setItem(aiAuditStorageKey(), job.job_id);
+  else window.localStorage.removeItem(aiAuditStorageKey());
+}
+
+function showCompletedAiAudit(job) {
+  if (!job?.answer || aiFeatureState.audit.completedShownJobId === job.job_id) return;
+  aiFeatureState.audit.completedShownJobId = job.job_id;
+  aiFeatureState.chat.messages = aiStore.addAiChatMessage(currentAiChatState(), {
+    role: 'assistant',
+    content: job.answer,
+  }).messages;
+  requestAiChatScrollToBottom();
+}
+
+function applyAiAuditJob(job) {
+  aiFeatureState.audit.job = job;
+  aiFeatureState.audit.error = '';
+  persistAiAuditJob(job);
+  if (job?.status === 'completed') showCompletedAiAudit(job);
+}
+
+function scheduleAiAuditAdvance(delayMs = 1800) {
+  stopAiAuditPolling();
+  const job = aiFeatureState.audit.job;
+  if (activeView !== 'ai' || !job?.job_id || aiStore.isTerminalAiAuditStatus(job.status)) return;
+  aiAuditPollTimer = window.setTimeout(() => {
+    aiAuditPollTimer = 0;
+    void advanceActiveAiAudit();
+  }, Math.max(1500, Number(delayMs) || 1800));
+}
+
+async function startAiAudit(scope = 'full_account', requestedMessage = '') {
+  if (!selectedClientId || aiFeatureState.audit.loading) return;
+  stopAiAuditPolling();
+  if (requestedMessage) {
+    aiFeatureState.chat.messages = aiStore.addAiChatMessage(currentAiChatState(), {
+      role: 'user',
+      content: requestedMessage,
+    }).messages;
+    aiFeatureState.chat.input = '';
+  }
+  const budget = activeAiBudget();
+  await createAiAuditJobFlow({
+    request: {
+      client_id: selectedClientId,
+      scope,
+      period: 'last_30_days',
+      selected_campaign_name: aiFeatureState.chat.selectedCampaignName || null,
+      model: activeAiModel(),
+      ai_preset: aiFeatureState.model.selectedPreset,
+      max_tokens: budget.maxTokens,
+      options: {
+        include_search_queries: true,
+        include_dynamics: true,
+        include_tracking: true,
+        include_recommendations: true,
+      },
+    },
+    aiService,
+    onStart: () => {
+      aiFeatureState.audit.loading = true;
+      aiFeatureState.audit.error = '';
+      render();
+    },
+    onSuccess: (job) => applyAiAuditJob(job),
+    onError: (message) => { aiFeatureState.audit.error = message; },
+    onFinally: () => {
+      aiFeatureState.audit.loading = false;
+      render();
+    },
+  });
+  if (aiFeatureState.audit.job) scheduleAiAuditAdvance(0);
+}
+
+async function advanceActiveAiAudit(retry = false) {
+  const jobId = aiFeatureState.audit.job?.job_id;
+  if (!jobId || aiFeatureState.audit.loading || activeView !== 'ai') return;
+  await advanceAiAuditJobFlow({
+    jobId,
+    retry,
+    aiService,
+    onStart: () => {
+      aiFeatureState.audit.loading = true;
+      aiFeatureState.audit.error = '';
+    },
+    onSuccess: (job) => applyAiAuditJob(job),
+    onError: (message) => { aiFeatureState.audit.error = message; },
+    onFinally: () => {
+      aiFeatureState.audit.loading = false;
+      render();
+    },
+  });
+  const job = aiFeatureState.audit.job;
+  if (job && !aiStore.isTerminalAiAuditStatus(job.status)) scheduleAiAuditAdvance(job.poll_after_ms);
+}
+
+async function restoreAiAuditJob() {
+  if (!selectedClientId || aiFeatureState.audit.loadedFor === selectedClientId) return;
+  aiFeatureState.audit.loadedFor = selectedClientId;
+  const jobId = window.localStorage.getItem(aiAuditStorageKey());
+  if (!jobId) return;
+  try {
+    const job = await aiService.fetchAiAuditJob(jobId);
+    applyAiAuditJob(job);
+    render();
+    if (!aiStore.isTerminalAiAuditStatus(job.status)) scheduleAiAuditAdvance(job.poll_after_ms);
+  } catch (error) {
+    window.localStorage.removeItem(aiAuditStorageKey());
+    aiFeatureState.audit.error = error.message || 'Не удалось восстановить AI-аудит.';
+    render();
+  }
+}
+
+async function cancelActiveAiAudit() {
+  const jobId = aiFeatureState.audit.job?.job_id;
+  if (!jobId) return;
+  stopAiAuditPolling();
+  try {
+    applyAiAuditJob(await aiService.cancelAiAuditJob(jobId));
+  } catch (error) {
+    aiFeatureState.audit.error = error.message || 'Не удалось отменить AI-аудит.';
+  }
+  render();
+}
+
+function clearActiveAiAudit() {
+  stopAiAuditPolling();
+  persistAiAuditJob(null);
+  aiFeatureState.audit = aiStore.createInitialAiAuditState();
+  aiFeatureState.audit.loadedFor = selectedClientId;
+  render();
 }
 
 
@@ -1906,6 +2060,9 @@ function aiAssistantPageContext() {
     performanceSummary: perfSummary,
     businessContext,
     optimizationActions,
+    aiAuditJob: aiFeatureState.audit.job,
+    aiAuditLoading: aiFeatureState.audit.loading,
+    aiAuditError: aiFeatureState.audit.error,
     formatNumberSafe,
     escapeHtml,
   });
@@ -2135,6 +2292,7 @@ const journalEventHandlers = createJournalEventHandlers({
 
 function render() {
   activeView = normalizeAppView(activeView);
+  if (activeView !== 'ai') stopAiAuditPolling();
   const views = {
     landing: renderLanding,
     login: renderLogin,
@@ -2193,6 +2351,9 @@ function render() {
   }
   if (activeView === 'ai' && selectedClientId && !businessContextLoading && businessContextLoadedFor !== selectedClientId) {
     loadBusinessContext();
+  }
+  if (activeView === 'ai' && selectedClientId) {
+    void restoreAiAuditJob();
   }
   if (activeView === 'journal' && (selectedClientId || !journalState.loading)) {
     const expectedJournalKey = selectedClientId || 'system';
@@ -2364,6 +2525,10 @@ const CABINET_ACTION_CLICK_SELECTOR = [
   '[data-client-ai-recommendations]',
   '[data-ai-chat-sample]',
   '[data-ai-prompt]',
+  '[data-ai-audit-start]',
+  '[data-ai-audit-cancel]',
+  '[data-ai-audit-retry]',
+  '[data-ai-audit-new]',
   '[data-integration="yandex-direct"]',
   '[data-period-preset]',
   '[data-load-period-summary]',
@@ -2383,6 +2548,7 @@ async function handleCabinetActionClick(event) {
     return true;
   }
   if (event.target.closest('[data-logout]')) {
+    stopAiAuditPolling();
     clearSession();
     window.location.href = 'login.html';
     return true;
@@ -2503,6 +2669,23 @@ async function handleCabinetActionClick(event) {
   const deleteButton = event.target.closest('[data-delete-client]');
   if (deleteButton) {
     await deleteClient(deleteButton.dataset.deleteClient);
+    return true;
+  }
+  const auditStartButton = event.target.closest('[data-ai-audit-start]');
+  if (auditStartButton) {
+    await startAiAudit(auditStartButton.dataset.aiAuditStart || 'full_account');
+    return true;
+  }
+  if (event.target.closest('[data-ai-audit-cancel]')) {
+    await cancelActiveAiAudit();
+    return true;
+  }
+  if (event.target.closest('[data-ai-audit-retry]')) {
+    await advanceActiveAiAudit(true);
+    return true;
+  }
+  if (event.target.closest('[data-ai-audit-new]')) {
+    clearActiveAiAudit();
     return true;
   }
   if (await handleAiClickEvent(event, {

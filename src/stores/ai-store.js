@@ -108,6 +108,37 @@ export function createInitialAiGenerationState() {
   };
 }
 
+export const TERMINAL_AI_AUDIT_STATUSES = new Set(['completed', 'failed', 'cancelled']);
+
+export function createInitialAiAuditState() {
+  return {
+    job: null,
+    loading: false,
+    error: '',
+    loadedFor: '',
+    completedShownJobId: '',
+  };
+}
+
+export function isTerminalAiAuditStatus(status) {
+  return TERMINAL_AI_AUDIT_STATUSES.has(String(status || ''));
+}
+
+export function requiresStagedAudit(message) {
+  const normalized = String(message || '').toLowerCase().replaceAll('ё', 'е').replace(/\s+/g, ' ').trim();
+  return [
+    'полный аудит',
+    'аудит всего аккаунта',
+    'аудит по чеклисту',
+    'аудит по чек-листу',
+    'проведи аудит',
+    'все критические проблемы',
+    'покажи критические проблемы',
+    'комплексный анализ',
+    'полный разбор кампаний',
+  ].some((marker) => normalized.includes(marker));
+}
+
 export function normalizeAiStatus(payload) {
   if (!payload || typeof payload !== 'object') {
     return { ...DEFAULT_AI_STATUS };
