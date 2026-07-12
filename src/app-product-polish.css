@@ -407,7 +407,7 @@ body[data-page="app"] .wordstatChartPanel svg {
 
 .aiAuditStages {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 8px;
   padding: 0;
   list-style: none;
@@ -416,6 +416,8 @@ body[data-page="app"] .wordstatChartPanel svg {
 .aiAuditStages li { color: #64748b; }
 .aiAuditStages li.done { color: #15803d; }
 .aiAuditStages li.active { color: #1d4ed8; font-weight: 700; }
+.aiAuditInvestigation { display: grid; gap: 4px; margin: 10px 0; padding: 12px; border: 1px solid #dbeafe; border-radius: 8px; background: #eff6ff; }
+.aiAuditInvestigation small { color: #475569; }
 .aiAuditResult { display: grid; gap: 16px; margin-top: 12px; }
 .aiAuditPeriod { margin: 0; font-size: 16px; font-weight: 800; }
 .aiAuditMeta { display: flex; flex-wrap: wrap; gap: 8px; color: #475569; font-size: 13px; }

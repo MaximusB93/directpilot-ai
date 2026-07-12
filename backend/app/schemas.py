@@ -1,4 +1,6 @@
-from pydantic import BaseModel, Field
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ClientSummary(BaseModel):
@@ -578,6 +580,8 @@ class AiAuditDataQuality(BaseModel):
 
 
 class AiAuditFinding(BaseModel):
+    hypothesis_id: str | None = None
+    verification_status: Literal["confirmed", "partially_confirmed", "rejected", "unverified", "not_applicable"] | None = None
     campaign_name: str | None = None
     campaign_type: str = "unknown"
     analysis_level: str = "campaign"
@@ -594,6 +598,7 @@ class AiAuditFinding(BaseModel):
 
 class AiAuditAction(BaseModel):
     priority: int
+    hypothesis_id: str | None = None
     action: str
     scope: str
     reason: str
@@ -620,6 +625,82 @@ class AiAuditResult(BaseModel):
     prohibited_actions: list[str] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
     conclusion: str
+
+
+class AuditDataRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str
+    hypothesis_id: str
+    campaign_name: str
+    campaign_family: Literal["search", "yan", "unknown"]
+    campaign_subtype: Literal["search", "brand_search", "yan_prospecting", "yan_retargeting", "unknown"]
+    dimension: Literal[
+        "ad_groups", "keywords", "search_queries", "ads", "landing_pages", "placements",
+        "audiences", "retargeting_segments", "audience_exclusions", "devices", "geo",
+        "demographics", "frequency", "goals", "conversion_sources", "lead_quality",
+    ]
+    reason: str
+    period: AiAuditPeriod = Field(default_factory=AiAuditPeriod)
+    filters: dict = Field(default_factory=dict)
+    metrics: list[str] = Field(default_factory=list)
+    priority: Literal["low", "medium", "high"] = "medium"
+    required_for_conclusion: bool = False
+
+
+class AuditDataRequestResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str
+    hypothesis_id: str
+    dimension: str
+    status: Literal[
+        "collected", "not_applicable", "unavailable", "unsupported", "insufficient_data",
+        "failed", "skipped_budget_limit",
+    ]
+    source: str | None = None
+    rows_analyzed: int = 0
+    data: list[dict] = Field(default_factory=list)
+    summary: str = ""
+    limitations: list[str] = Field(default_factory=list)
+    error_code: str | None = None
+
+
+class AuditInvestigationHypothesis(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    hypothesis_id: str
+    campaign_name: str
+    campaign_family: Literal["search", "yan", "unknown"]
+    campaign_subtype: Literal["search", "brand_search", "yan_prospecting", "yan_retargeting", "unknown"]
+    observed_fact: str
+    hypothesis: str
+    current_status: Literal["unverified"] = "unverified"
+    data_requests: list[AuditDataRequest] = Field(default_factory=list, max_length=4)
+
+
+class AuditInvestigationPlan(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    hypotheses: list[AuditInvestigationHypothesis] = Field(default_factory=list, max_length=5)
+
+
+class AuditHypothesisVerification(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    hypothesis_id: str
+    status: Literal["confirmed", "partially_confirmed", "rejected", "unverified", "not_applicable"]
+    verification_summary: str
+    supporting_evidence: list[str] = Field(default_factory=list)
+    contradicting_evidence: list[str] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+    remaining_data_needed: list[str] = Field(default_factory=list)
+
+
+class AuditHypothesisVerificationSet(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    verifications: list[AuditHypothesisVerification] = Field(default_factory=list, max_length=5)
 
 
 class AiAuditJobResponse(BaseModel):

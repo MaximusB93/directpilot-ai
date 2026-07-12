@@ -177,9 +177,13 @@ export function renderAiAuditJob({
 }) {
   const stages = [
     ['collect_context', 'Данные клиента'],
-    ['build_prompt', 'Подготовка контекста'],
-    ['generate_answer', 'Анализ AI'],
-    ['finalize', 'Формирование результата'],
+    ['classify_campaigns', 'Классификация кампаний'],
+    ['create_investigation_plan', 'План проверок'],
+    ['validate_data_requests', 'Проверка запросов'],
+    ['collect_drilldowns', 'Дополнительные данные'],
+    ['verify_hypotheses', 'Проверка гипотез'],
+    ['generate_answer', 'Формирование результата'],
+    ['finalize', 'Готово'],
   ];
   const foundStageIndex = stages.findIndex(([id]) => id === aiAuditJob?.current_stage);
   const stageIndex = foundStageIndex < 0 ? 0 : foundStageIndex;
@@ -193,6 +197,9 @@ export function renderAiAuditJob({
     failed: 'Ошибка',
     cancelled: 'Отменено',
   }[aiAuditJob?.status] || 'Не запущен';
+  const investigation = aiAuditJob?.context_metadata?.investigation || {};
+  const requestedDimensions = investigation.requestedDimensions || [];
+  const runtime = aiAuditJob?.context_metadata?.runtime || {};
   return `
     <section class="panel aiAuditJobPanel">
       <div class="panelHeader">
@@ -205,6 +212,7 @@ export function renderAiAuditJob({
         <ol class="aiAuditStages">
           ${stages.map(([, label], index) => `<li class="${index < stageIndex || aiAuditJob.status === 'completed' ? 'done' : index === stageIndex && !terminal ? 'active' : ''}">${index < stageIndex || aiAuditJob.status === 'completed' ? '✓' : index === stageIndex && !terminal ? '•' : '○'} ${escapeHtml(label)}</li>`).join('')}
         </ol>
+        ${requestedDimensions.length ? `<div class="aiAuditInvestigation"><strong>AI запросил дополнительные данные:</strong> ${requestedDimensions.map((value) => escapeHtml({ ad_groups: 'группы', search_queries: 'поисковые запросы', goals: 'цели', placements: 'площадки', audiences: 'аудитории', retargeting_segments: 'сегменты ретаргетинга', devices: 'устройства', geo: 'география', demographics: 'демография', frequency: 'частота', lead_quality: 'качество лидов' }[value] || value)).join(', ')}.<small>Раунд ${escapeHtml(String(runtime.investigationRound || 1))} из 2 · запросов ${escapeHtml(String(runtime.requestsCount || 0))} · AI-вызовов ${escapeHtml(String(runtime.providerCallsCount || 0))} · Direct API ${escapeHtml(String(runtime.directApiCallsCount || 0))}</small></div>` : ''}
         ${aiAuditJob.error_message ? `<div class="authStatus integrationStatus">${escapeHtml(aiAuditJob.error_message)}</div>` : ''}
         ${aiAuditJob.answer || aiAuditJob.result ? `<div><h4>Результат аудита</h4>${renderAiAuditResult(aiAuditJob.result, aiAuditJob.answer, escapeHtml, aiAuditJob)}</div>` : ''}
         <div class="heroActions">
@@ -296,7 +304,7 @@ function renderFinding(item, escapeHtml) {
     ${item.evidence?.length ? `<details><summary>Доказательства</summary><ul>${item.evidence.map((value) => `<li>${escapeHtml(value)}</li>`).join('')}</ul></details>` : ''}
     ${item.hypothesis ? `<p><strong>Гипотеза:</strong> ${escapeHtml(item.hypothesis)}</p>` : ''}
     <p><strong>Рекомендация:</strong> ${escapeHtml(item.recommendation || '—')}</p>
-    <small>Тип: ${escapeHtml(item.campaign_type || 'unknown')} · Уровень: ${escapeHtml(item.analysis_level || 'campaign')} · Уверенность: ${escapeHtml(item.confidence || 'low')} · Требуется подтверждение: ${item.requires_human_approval === false ? 'нет' : 'да'}</small>
+    <small>Тип: ${escapeHtml(item.campaign_type || 'unknown')} · Уровень: ${escapeHtml(item.analysis_level || 'campaign')} · Проверка: ${escapeHtml(item.verification_status || 'unverified')} · Уверенность: ${escapeHtml(item.confidence || 'low')} · Требуется подтверждение: ${item.requires_human_approval === false ? 'нет' : 'да'}</small>
   </article>`;
 }
 

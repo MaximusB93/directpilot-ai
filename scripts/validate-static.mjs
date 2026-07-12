@@ -122,6 +122,7 @@ const checks = [
   ['staged audit persistence and polling', has('src/main.js', 'directpilot_ai_audit_job_') && has('src/main.js', 'Math.max(1500') && has('src/main.js', 'isTerminalAiAuditStatus') && has('src/main.js', 'restoreAiAuditJob')],
   ['staged audit result UI', has('src/pages/ai-assistant.js', 'Результат аудита') && has('src/pages/ai-assistant.js', 'data-ai-audit-retry') && has('src/pages/ai-assistant.js', 'data-ai-audit-cancel')],
   ['staged audit structured result', has('src/pages/ai-assistant.js', 'renderAiAuditResult') && has('src/pages/ai-assistant.js', 'Что проанализировано') && has('src/pages/ai-assistant.js', 'data-ai-audit-compact-retry')],
+  ['adaptive audit progress', ['classify_campaigns', 'create_investigation_plan', 'collect_drilldowns', 'verify_hypotheses'].every((stage) => has('src/pages/ai-assistant.js', stage)) && has('src/pages/ai-assistant.js', 'AI запросил дополнительные данные:')],
   ['assistant safe markdown', has('src/pages/ai-assistant.js', 'renderSafeMarkdown(message.content)') && has('src/pages/ai-assistant.js', '`<p>${escapeHtml(message.content)}</p>`') && has('src/core/markdown.js', 'export function renderSafeMarkdown') && has('src/core/markdown.js', 'noreferrer noopener')],
   ['staged audit timeout isolated', has('src/services/ai-service.js', 'AI_AUDIT_GENERATION_TIMEOUT_MS = 150 * 1000') && has('src/services/ai-service.js', 'options?.timeoutMs ?? AI_API_REQUEST_TIMEOUT_MS')],
   ['no seeded account data', has('src/data.js', 'export const clients = []')],
