@@ -269,6 +269,34 @@ export async function sendAiChatMessageFlow({
   }
 }
 
+export async function createAiAuditJobFlow({ request, aiService, onStart, onSuccess, onError, onFinally }) {
+  onStart?.();
+  try {
+    const job = await aiService.createAiAuditJob(request);
+    onSuccess?.(job);
+    return { status: 'success', job };
+  } catch (error) {
+    onError?.(error.message || 'Не удалось создать AI-аудит', error);
+    return { status: 'error', error };
+  } finally {
+    onFinally?.();
+  }
+}
+
+export async function advanceAiAuditJobFlow({ jobId, retry = false, aiService, onStart, onSuccess, onError, onFinally }) {
+  onStart?.();
+  try {
+    const job = await aiService.advanceAiAuditJob(jobId, retry);
+    onSuccess?.(job);
+    return { status: 'success', job };
+  } catch (error) {
+    onError?.(error.message || 'Не удалось продолжить AI-аудит', error);
+    return { status: 'error', error };
+  } finally {
+    onFinally?.();
+  }
+}
+
 export function createAiAssistantPageContext({
   selectedClientId,
   selectedClient,
@@ -303,6 +331,9 @@ export function createAiAssistantPageContext({
   performanceSummary,
   businessContext,
   optimizationActions,
+  aiAuditJob,
+  aiAuditLoading,
+  aiAuditError,
   formatNumberSafe,
   escapeHtml,
 }) {
@@ -340,6 +371,9 @@ export function createAiAssistantPageContext({
     performanceSummary,
     businessContext,
     optimizationActions,
+    aiAuditJob,
+    aiAuditLoading,
+    aiAuditError,
     formatNumberSafe,
     escapeHtml,
   };

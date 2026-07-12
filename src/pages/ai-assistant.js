@@ -147,7 +147,7 @@ export function renderAiChat({
             ${campaignOptions.map((name) => `<option value="${escapeHtml(name)}" ${aiChatSelectedCampaignName === name ? 'selected' : ''}>${escapeHtml(name)}</option>`).join('')}
           </select>
         </label>
-        <button class="secondaryButton" data-ai-chat-sample="Проведи аудит Яндекс.Директа по чеклисту и покажи критичные проблемы.">Аудит</button>
+        <button class="secondaryButton" data-ai-audit-start="full_account">Аудит</button>
         <button class="secondaryButton" data-ai-chat-sample="Разбери вчерашний день по кампаниям и конверсиям по целям.">Вчера</button>
         <button class="secondaryButton" data-ai-chat-sample="Проанализируй поисковые запросы и предложи минус-слова с рисками.">Запросы</button>
       </div>
@@ -167,6 +167,57 @@ export function renderAiChat({
     </section>
   `;
 }
+
+export function renderAiAuditJob({
+  selectedClientId,
+  aiAuditJob = null,
+  aiAuditLoading = false,
+  aiAuditError = '',
+  escapeHtml,
+}) {
+  const stages = [
+    ['collect_context', 'Данные клиента'],
+    ['build_prompt', 'Подготовка контекста'],
+    ['generate_answer', 'Анализ AI'],
+    ['finalize', 'Формирование результата'],
+  ];
+  const foundStageIndex = stages.findIndex(([id]) => id === aiAuditJob?.current_stage);
+  const stageIndex = foundStageIndex < 0 ? 0 : foundStageIndex;
+  const terminal = ['completed', 'failed', 'cancelled'].includes(aiAuditJob?.status);
+  const statusLabel = {
+    queued: 'В очереди',
+    collecting_context: 'Собираем данные',
+    context_ready: 'Контекст готов',
+    generating: 'AI анализирует',
+    completed: 'Готово',
+    failed: 'Ошибка',
+    cancelled: 'Отменено',
+  }[aiAuditJob?.status] || 'Не запущен';
+  return `
+    <section class="panel aiAuditJobPanel">
+      <div class="panelHeader">
+        <div><h3>Аудит аккаунта</h3><p>Полный аудит выполняется по этапам и сохраняется в проекте. Можно обновить страницу без потери задачи.</p></div>
+        <span class="aiStatusBadge ${aiAuditJob?.status === 'completed' ? 'ready' : 'pending'}">${escapeHtml(statusLabel)}</span>
+      </div>
+      ${aiAuditJob ? `
+        <div class="aiAuditProgress"><span style="width:${Math.max(0, Math.min(100, Number(aiAuditJob.progress_percent) || 0))}%"></span></div>
+        <strong>Прогресс: ${escapeHtml(String(aiAuditJob.progress_percent || 0))}%</strong>
+        <ol class="aiAuditStages">
+          ${stages.map(([, label], index) => `<li class="${index < stageIndex || aiAuditJob.status === 'completed' ? 'done' : index === stageIndex && !terminal ? 'active' : ''}">${index < stageIndex || aiAuditJob.status === 'completed' ? '✓' : index === stageIndex && !terminal ? '•' : '○'} ${escapeHtml(label)}</li>`).join('')}
+        </ol>
+        ${aiAuditJob.error_message ? `<div class="authStatus integrationStatus">${escapeHtml(aiAuditJob.error_message)}</div>` : ''}
+        ${aiAuditJob.answer ? `<div class="aiAuditResult"><h4>Результат аудита</h4><p>${escapeHtml(aiAuditJob.answer)}</p></div>` : ''}
+        <div class="heroActions">
+          ${!terminal && aiAuditJob.status !== 'generating' ? '<button class="secondaryButton" data-ai-audit-cancel>Отменить</button>' : ''}
+          ${aiAuditJob.status === 'failed' && aiAuditJob.retryable ? '<button class="approveButton" data-ai-audit-retry>Повторить этап</button>' : ''}
+          ${terminal ? '<button class="secondaryButton" data-ai-audit-new>Новый аудит</button>' : ''}
+        </div>
+      ` : `<button class="approveButton" data-ai-audit-start="full_account" ${selectedClientId && !aiAuditLoading ? '' : 'disabled'}>${aiAuditLoading ? 'Создаём...' : 'Запустить полный аудит'}</button>`}
+      ${aiAuditError ? `<div class="authStatus integrationStatus">${escapeHtml(aiAuditError)}</div>` : ''}
+    </section>
+  `;
+}
+
 
 export function renderClientAiRecommendations({
   selectedClientId,
@@ -199,8 +250,8 @@ export function renderAiQuickActions({
 }) {
   return `
     <section class="panel aiQuickActions"><h3>Быстрые действия AI</h3><div class="heroActions">
-      <button class="secondaryButton" data-ai-prompt="audit" ${aiLoading ? 'disabled' : ''}>Аудит по чеклисту</button>
-      <button class="secondaryButton" data-ai-prompt="critical" ${aiLoading ? 'disabled' : ''}>Критичные проблемы</button>
+      <button class="secondaryButton" data-ai-audit-start="full_account" ${aiLoading ? 'disabled' : ''}>Аудит по чеклисту</button>
+      <button class="secondaryButton" data-ai-audit-start="critical_issues" ${aiLoading ? 'disabled' : ''}>Критичные проблемы</button>
       <button class="secondaryButton" data-ai-prompt="search_queries" ${aiLoading ? 'disabled' : ''}>Поисковые запросы</button>
       <button class="secondaryButton" data-ai-prompt="quick_wins" ${aiLoading ? 'disabled' : ''}>Quick wins</button>
       <button class="secondaryButton" data-ai-prompt="yesterday" ${aiLoading ? 'disabled' : ''}>Вчерашний день</button>
@@ -213,6 +264,7 @@ export function renderAiAssistantContent(context) {
     ${renderAiAssistantIntro(context)}
     ${renderAiMethodologyPanel(context)}
     ${renderAiStatusPanel(context)}
+    ${renderAiAuditJob(context)}
     ${renderAiChat(context)}
     ${renderAiQuickActions(context)}
     ${renderAiPromptDebugPanel(context)}
