@@ -120,6 +120,48 @@ def _structured_answer() -> str:
     )
 
 
+def _investigation_answer() -> str:
+    return json.dumps({
+        "hypotheses": [{
+            "hypothesis_id": "model-id-is-replaced",
+            "campaign_name": "Search",
+            "campaign_family": "search",
+            "campaign_subtype": "search",
+            "observed_fact": "Расход без выбранных конверсий",
+            "hypothesis": "Поисковые запросы могут быть нерелевантны",
+            "current_status": "unverified",
+            "data_requests": [{
+                "request_id": "model-request-id-is-replaced",
+                "hypothesis_id": "model-id-is-replaced",
+                "campaign_name": "Search",
+                "campaign_family": "search",
+                "campaign_subtype": "search",
+                "dimension": "search_queries",
+                "reason": "Проверить интент запросов",
+                "period": {"date_from": "2026-06-10", "date_to": "2026-07-09", "days": 30},
+                "filters": {"campaign_name": "Search"},
+                "metrics": ["query", "clicks", "cost", "conversions", "cpa"],
+                "priority": "high",
+                "required_for_conclusion": True,
+            }],
+        }]
+    }, ensure_ascii=False)
+
+
+def _verification_answer() -> str:
+    return json.dumps({
+        "verifications": [{
+            "hypothesis_id": "hyp_001",
+            "status": "confirmed",
+            "verification_summary": "Запросы подтверждают гипотезу",
+            "supporting_evidence": ["Высокий расход"],
+            "contradicting_evidence": [],
+            "limitations": [],
+            "remaining_data_needed": [],
+        }]
+    }, ensure_ascii=False)
+
+
 def test_job_creation_and_organization_isolation():
     db = _db()
     job = _create(db)
@@ -181,7 +223,7 @@ def test_staged_audit_has_separate_10000_token_budget_and_regular_cap_is_unchang
     assert regular["max_tokens"] == 5000
 
 
-def test_full_staged_flow_completes_and_calls_openrouter_once(monkeypatch):
+def test_full_staged_flow_runs_planning_verification_and_final_answer(monkeypatch):
     db = _db()
     job = _create(db)
     monkeypatch.setattr(audit_jobs, "build_client_ai_context_from_db", lambda *args, **kwargs: _context())
@@ -189,34 +231,48 @@ def test_full_staged_flow_completes_and_calls_openrouter_once(monkeypatch):
 
     async def fake_generate(model, prompt, max_tokens, **kwargs):
         calls["count"] += 1
+        assert kwargs["max_tokens_cap"] == 10000
+        assert kwargs["timeout"] is audit_jobs.OPENROUTER_AUDIT_TIMEOUT
+        if "Сформируй только investigation plan" in prompt:
+            return {"model": model, "content": _investigation_answer(), "usage": {"total_tokens": 100}, "id": "or-plan", "finish_reason": "stop"}
+        if "Проверь гипотезы только" in prompt:
+            assert "search_queries" in prompt
+            return {"model": model, "content": _verification_answer(), "usage": {"total_tokens": 100}, "id": "or-verify", "finish_reason": "stop"}
         assert "10000 токенов" not in prompt  # explicit test job uses 2500
         assert "не обрывай разделы" in prompt.lower()
         assert "не выводи campaignid" in prompt.lower()
-        assert kwargs["max_tokens_cap"] == 10000
-        assert kwargs["timeout"] is audit_jobs.OPENROUTER_AUDIT_TIMEOUT
         return {"model": model, "content": _structured_answer(), "usage": {"total_tokens": 500}, "id": "or-1", "finish_reason": "stop"}
 
     monkeypatch.setattr(audit_jobs, "generate_openrouter_response", fake_generate)
 
     job = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
-    assert (job.status, job.current_stage, job.progress_percent) == ("context_ready", "build_prompt", 35)
+    assert (job.status, job.current_stage, job.progress_percent) == ("context_ready", "classify_campaigns", 15)
     assert "must-not-be-stored" not in (job.context_snapshot_json or "")
     assert audit_jobs._json_load(job.prompt_snapshot_json, {})["internalCampaignIds"] == ["1"]
 
-    job = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
-    assert (job.status, job.current_stage) == ("context_ready", "generate_answer")
-    assert audit_jobs._json_load(job.prompt_snapshot_json, {})["fullPromptStored"] is False
-
-    job = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
-    assert (job.status, job.current_stage) == ("context_ready", "finalize")
-    assert calls["count"] == 1
-
-    job = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
+    stages = []
+    for _ in range(10):
+        job = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
+        stages.append(job.current_stage)
+        if job.status == "completed":
+            break
     assert job.status == "completed"
+    assert stages[:9] == [
+        "create_investigation_plan", "validate_data_requests", "collect_drilldowns",
+        "verify_hypotheses", "collect_drilldowns", "verify_hypotheses", "generate_answer", "finalize", "finalize",
+    ]
+    assert audit_jobs._json_load(job.prompt_snapshot_json, {})["fullPromptStored"] is False
     assert job.answer_text.startswith("Период анализа: 10.06.2026–09.07.2026, 30 дней.")
     assert audit_jobs.audit_job_response(job).result["structured"]["critical_findings"][0]["campaign_name"] == "Search"
     assert audit_jobs.audit_job_response(job).result["safety"]["appliedToYandexDirect"] is False
-    assert calls["count"] == 1
+    runtime = audit_jobs.audit_job_response(job).context_metadata["runtime"]
+    assert calls["count"] == 4
+    assert runtime["providerCallsCount"] == 4
+    assert runtime["investigationRound"] == 2
+    assert runtime["requestsCount"] == 2
+    snapshot = audit_jobs._json_load(job.context_snapshot_json, {})
+    assert snapshot["investigationPlan"]["hypotheses"][0]["data_requests"][0]["request_id"] == "req_001_01"
+    assert snapshot["verifiedHypotheses"][0]["status"] == "unverified"
 
 
 def test_generating_status_prevents_duplicate_openrouter_call(monkeypatch):
@@ -232,6 +288,31 @@ def test_generating_status_prevents_duplicate_openrouter_call(monkeypatch):
     monkeypatch.setattr(audit_jobs, "generate_openrouter_response", forbidden_generate)
     same_job = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
     assert same_job.status == "generating"
+
+
+def test_final_result_does_not_turn_rejected_or_unverified_hypotheses_into_actions():
+    result = {
+        "critical_findings": [
+            {"hypothesis_id": "hyp-rejected", "hypothesis": "Wrong", "recommendation": "Pause campaign"},
+            {"hypothesis_id": "hyp-unverified", "hypothesis": "Possible", "recommendation": "Raise budget", "next_data_needed": ["placements"]},
+        ],
+        "opportunities": [],
+        "action_plan": [
+            {"hypothesis_id": "hyp-rejected", "action": "Pause", "reason": "Wrong", "mode": "dry_run"},
+            {"hypothesis_id": "hyp-unverified", "action": "Raise budget", "reason": "Possible", "mode": "dry_run"},
+        ],
+    }
+    snapshot = {"verifiedHypotheses": [
+        {"hypothesis_id": "hyp-rejected", "status": "rejected"},
+        {"hypothesis_id": "hyp-unverified", "status": "unverified", "remaining_data_needed": ["placements"]},
+    ]}
+
+    safe = audit_jobs._enforce_verified_result(result, snapshot)
+
+    assert safe["critical_findings"][0]["recommendation"].startswith("Не выполнять")
+    assert safe["critical_findings"][1]["recommendation"] == "Собрать недостающие данные: placements"
+    assert len(safe["action_plan"]) == 1
+    assert safe["action_plan"][0]["action"].startswith("Собрать дополнительные данные")
 
 
 def test_timeout_is_saved_as_retryable_failure(monkeypatch):
@@ -299,7 +380,7 @@ def test_finish_reason_length_marks_result_truncated_and_allows_compact_retry(mo
     assert result["truncated"] is True
     assert result["completeness"] == "truncated"
     retrying = asyncio.run(audit_jobs.advance_audit_job(db, generated.id, organization_id="org-a", compact_retry=True))
-    assert (retrying.status, retrying.current_stage) == ("context_ready", "build_prompt")
+    assert (retrying.status, retrying.current_stage) == ("context_ready", "generate_answer")
     assert audit_jobs._json_load(retrying.input_options_json, {})["compact_retry"] is True
 
 

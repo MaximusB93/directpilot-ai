@@ -15,7 +15,21 @@ from app.core.config import (
     normalize_ai_audit_request_options,
 )
 from app.models import AiAuditJob, ClientAccount
-from app.schemas import AiAuditCreateRequest, AiAuditJobResponse, AiAuditResult
+from app.schemas import (
+    AiAuditCreateRequest,
+    AiAuditJobResponse,
+    AiAuditResult,
+    AuditDataRequest,
+    AuditHypothesisVerification,
+    AuditHypothesisVerificationSet,
+    AuditInvestigationHypothesis,
+    AuditInvestigationPlan,
+)
+from app.services.audit_data_tools import (
+    collect_audit_data_requests,
+    public_audit_tool_manifest,
+    validate_audit_data_requests,
+)
 from app.services.ai_prompt_debug import build_prompt_debug_snapshot, estimate_tokens
 from app.services.ai_recommendations import build_client_ai_context_from_db
 from app.services.direct_analyst_playbook import build_direct_analyst_instructions
@@ -27,6 +41,7 @@ logger = logging.getLogger(__name__)
 TERMINAL_AUDIT_STATUSES = {"completed", "failed", "cancelled"}
 POLL_AFTER_MS = 1800
 CONTEXT_TOKEN_TARGET = 12000
+DRILLDOWN_TOKEN_TARGET = 18000
 HEAVY_AUDIT_MARKERS = (
     "полный аудит",
     "аудит всего аккаунта",
@@ -267,6 +282,272 @@ def _query_snapshot(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _campaign_classification(name: str, explicit_type: str | None = None) -> dict[str, str]:
+    normalized = f"{explicit_type or ''} {name}".lower().replace("ё", "е")
+    is_retargeting = any(marker in normalized for marker in ("ретарг", "retarget", "ремаркет"))
+    is_yan = any(marker in normalized for marker in ("рся", "yan", "сети", "network"))
+    is_brand = any(marker in normalized for marker in ("бренд", "brand"))
+    if is_yan:
+        return {"campaign_name": name, "campaign_family": "yan", "campaign_subtype": "yan_retargeting" if is_retargeting else "yan_prospecting"}
+    if any(marker in normalized for marker in ("поиск", "search")) or is_brand:
+        return {"campaign_name": name, "campaign_family": "search", "campaign_subtype": "brand_search" if is_brand else "search"}
+    return {"campaign_name": name, "campaign_family": "unknown", "campaign_subtype": "unknown"}
+
+
+def classify_audit_campaigns(snapshot: dict[str, Any]) -> list[dict[str, str]]:
+    result = []
+    seen = set()
+    for items in (snapshot.get("campaignGroups") or {}).values():
+        for item in items or []:
+            name = str(item.get("name") or "Кампания без названия")
+            if name in seen:
+                continue
+            seen.add(name)
+            result.append(_campaign_classification(name, item.get("type")))
+    return result
+
+
+def _request(
+    hypothesis_id: str,
+    classification: dict[str, str],
+    dimension: str,
+    reason: str,
+    period: dict[str, Any],
+    *,
+    priority: str = "medium",
+    required: bool = False,
+) -> AuditDataRequest:
+    metrics_by_dimension = {
+        "search_queries": ["query", "impressions", "clicks", "cost", "conversions", "cpa"],
+        "ad_groups": ["ad_group_name", "impressions", "clicks", "cost", "conversions", "cpa"],
+        "goals": ["goal_ids", "clicks", "cost", "conversions", "cpa", "conversion_rate"],
+        "placements": ["impressions", "clicks", "cost", "conversions", "cpa"],
+        "audiences": ["impressions", "clicks", "cost", "conversions", "cpa"],
+        "retargeting_segments": ["impressions", "clicks", "cost", "conversions", "cpa"],
+    }
+    return AuditDataRequest(
+        request_id=f"req_{hypothesis_id}_{dimension}",
+        hypothesis_id=hypothesis_id,
+        campaign_name=classification["campaign_name"],
+        campaign_family=classification["campaign_family"],
+        campaign_subtype=classification["campaign_subtype"],
+        dimension=dimension,
+        reason=reason,
+        period={
+            "date_from": period.get("dateFrom"), "date_to": period.get("dateTo"), "days": period.get("days"),
+            "comparison_date_from": period.get("comparisonDateFrom"), "comparison_date_to": period.get("comparisonDateTo"),
+        },
+        filters={"campaign_name": classification["campaign_name"]},
+        metrics=metrics_by_dimension.get(dimension, ["impressions", "clicks", "cost", "conversions", "cpa"]),
+        priority=priority,
+        required_for_conclusion=required,
+    )
+
+
+def build_rule_based_investigation_plan(snapshot: dict[str, Any]) -> AuditInvestigationPlan:
+    classifications = {item["campaign_name"]: item for item in classify_audit_campaigns(snapshot)}
+    candidates = []
+    for group_name in ("critical", "warning"):
+        candidates.extend((snapshot.get("campaignGroups") or {}).get(group_name) or [])
+    period = snapshot.get("analysisPeriod") or {}
+    hypotheses = []
+    for index, item in enumerate(candidates[:5], start=1):
+        name = str(item.get("name") or "Кампания без названия")
+        classification = classifications[name]
+        flags = item.get("flags") or []
+        fact = str(item.get("diagnostic") or f"Сигналы: {', '.join(flags) or 'требуется проверка'}")[:700]
+        hypothesis_id = f"hyp_{index:03d}"
+        requests = [_request(hypothesis_id, classification, "goals", "Проверить выбранные цели и CPA по ним.", period, priority="high", required=True)]
+        if classification["campaign_subtype"] in {"search", "brand_search"}:
+            requests.extend([
+                _request(hypothesis_id, classification, "search_queries", "Проверить интент и расход поисковых запросов.", period, priority="high", required=True),
+                _request(hypothesis_id, classification, "ad_groups", "Локализовать проблему по группам объявлений.", period),
+            ])
+            hypothesis = "Качество поискового трафика или отдельных групп может объяснять отклонение метрик."
+        elif classification["campaign_subtype"] == "yan_retargeting":
+            requests.extend([
+                _request(hypothesis_id, classification, "retargeting_segments", "Сравнить сегменты и окна ретаргетинга.", period, priority="high", required=True),
+                _request(hypothesis_id, classification, "placements", "Проверить площадки с расходом без целевых конверсий.", period),
+            ])
+            hypothesis = "Сегменты ретаргетинга или площадки могут снижать эффективность кампании."
+        elif classification["campaign_family"] == "yan":
+            requests.extend([
+                _request(hypothesis_id, classification, "placements", "Проверить площадки с неэффективным расходом.", period, priority="high", required=True),
+                _request(hypothesis_id, classification, "audiences", "Сравнить доступные аудитории.", period),
+            ])
+            hypothesis = "Качество площадок или аудиторий может объяснять отклонение метрик."
+        else:
+            hypothesis = "Тип кампании не определён; сначала нужны безопасные данные по целям."
+        hypotheses.append(AuditInvestigationHypothesis(
+            hypothesis_id=hypothesis_id,
+            campaign_name=name,
+            campaign_family=classification["campaign_family"],
+            campaign_subtype=classification["campaign_subtype"],
+            observed_fact=fact,
+            hypothesis=hypothesis,
+            data_requests=requests[:4],
+        ))
+    return AuditInvestigationPlan(hypotheses=hypotheses)
+
+
+def build_investigation_plan_prompt(snapshot: dict[str, Any], base_plan: AuditInvestigationPlan) -> str:
+    return f"""Сформируй только investigation plan для read-only аудита, без финальных рекомендаций.
+Backend уже построил базовый план. Можно убрать лишний запрос или добавить только dimension из allowlist.
+Не передавай campaign ID, endpoint, token или credentials. Максимум 5 гипотез, 4 запроса на кампанию, 15 запросов всего.
+Для каждого запроса полностью заполни AuditDataRequest. Используй campaign_family/subtype только из campaignClassifications.
+Верни только JSON объекта AuditInvestigationPlan без Markdown.
+
+Доступные read-only tools:
+{json.dumps(public_audit_tool_manifest(), ensure_ascii=False)}
+
+Campaign classifications:
+{json.dumps(snapshot.get('campaignClassifications') or [], ensure_ascii=False)}
+
+Базовый rule-based план:
+{base_plan.model_dump_json()}
+
+Фактический период и campaign-level snapshot:
+{json.dumps({'analysisPeriod': snapshot.get('analysisPeriod'), 'campaignGroups': snapshot.get('campaignGroups'), 'dataCoverage': snapshot.get('dataCoverage')}, ensure_ascii=False)}"""
+
+
+def _normalized_investigation_plan(answer: str, snapshot: dict[str, Any], fallback: AuditInvestigationPlan) -> AuditInvestigationPlan:
+    try:
+        proposed = AuditInvestigationPlan.model_validate_json(answer)
+    except ValueError:
+        return fallback
+    classifications = {item["campaign_name"]: item for item in (snapshot.get("campaignClassifications") or [])}
+    normalized = []
+    for index, hypothesis in enumerate(proposed.hypotheses[:5], start=1):
+        classification = classifications.get(hypothesis.campaign_name)
+        if not classification:
+            continue
+        hypothesis_id = f"hyp_{index:03d}"
+        requests = []
+        for request_index, request in enumerate(hypothesis.data_requests[:4], start=1):
+            payload = request.model_dump()
+            payload.update({
+                "request_id": f"req_{index:03d}_{request_index:02d}",
+                "hypothesis_id": hypothesis_id,
+                "campaign_name": hypothesis.campaign_name,
+                "campaign_family": classification["campaign_family"],
+                "campaign_subtype": classification["campaign_subtype"],
+                "filters": {"campaign_name": hypothesis.campaign_name},
+            })
+            requests.append(AuditDataRequest.model_validate(payload))
+        normalized.append(AuditInvestigationHypothesis(
+            hypothesis_id=hypothesis_id,
+            campaign_name=hypothesis.campaign_name,
+            campaign_family=classification["campaign_family"],
+            campaign_subtype=classification["campaign_subtype"],
+            observed_fact=hypothesis.observed_fact,
+            hypothesis=hypothesis.hypothesis,
+            data_requests=requests,
+        ))
+    return AuditInvestigationPlan(hypotheses=normalized) if normalized else fallback
+
+
+def build_verification_prompt(snapshot: dict[str, Any]) -> str:
+    return f"""Проверь гипотезы только по собранным read-only данным. Верни только JSON объекта
+{{"verifications":[{{"hypothesis_id":"hyp_001","status":"confirmed|partially_confirmed|rejected|unverified|not_applicable","verification_summary":"...","supporting_evidence":[],"contradicting_evidence":[],"limitations":[],"remaining_data_needed":[]}}]}}.
+Не подтверждай гипотезу из-за правдоподобия. unavailable/insufficient_data означает unverified; все not_applicable означает not_applicable.
+Investigation plan: {json.dumps(snapshot.get('investigationPlan') or {}, ensure_ascii=False)}
+Data request results: {json.dumps(snapshot.get('drilldownResults') or [], ensure_ascii=False)}"""
+
+
+def _verification_fallback(snapshot: dict[str, Any]) -> AuditHypothesisVerificationSet:
+    results = snapshot.get("drilldownResults") or []
+    verifications = []
+    for hypothesis in (snapshot.get("investigationPlan") or {}).get("hypotheses", []):
+        related = [item for item in results if item.get("hypothesis_id") == hypothesis.get("hypothesis_id")]
+        statuses = {item.get("status") for item in related}
+        status_value = "not_applicable" if statuses == {"not_applicable"} else "unverified"
+        verifications.append(AuditHypothesisVerification(
+            hypothesis_id=hypothesis.get("hypothesis_id"), status=status_value,
+            verification_summary="AI verification contract was unavailable; hypothesis was not treated as confirmed.",
+            limitations=[item.get("summary") for item in related if item.get("status") != "collected" and item.get("summary")][:5],
+            remaining_data_needed=[item.get("dimension") for item in related if item.get("status") != "collected"][:5],
+        ))
+    return AuditHypothesisVerificationSet(verifications=verifications)
+
+
+def _normalized_verifications(answer: str, snapshot: dict[str, Any]) -> AuditHypothesisVerificationSet:
+    try:
+        parsed = AuditHypothesisVerificationSet.model_validate_json(answer)
+    except ValueError:
+        return _verification_fallback(snapshot)
+    hypotheses = (snapshot.get("investigationPlan") or {}).get("hypotheses", [])
+    expected = {item.get("hypothesis_id") for item in hypotheses}
+    request_required = {
+        request.get("request_id"): bool(request.get("required_for_conclusion"))
+        for hypothesis in hypotheses
+        for request in hypothesis.get("data_requests", [])
+    }
+    safe = []
+    for item in parsed.verifications:
+        if item.hypothesis_id not in expected:
+            continue
+        related = [result for result in (snapshot.get("drilldownResults") or []) if result.get("hypothesis_id") == item.hypothesis_id]
+        collected = [result for result in related if result.get("status") == "collected"]
+        missing_required = any(
+            request_required.get(result.get("request_id")) and result.get("status") != "collected"
+            for result in related
+        )
+        if not collected:
+            item.status = "not_applicable" if related and all(result.get("status") == "not_applicable" for result in related) else "unverified"
+        elif item.status == "confirmed" and missing_required:
+            item.status = "partially_confirmed"
+            item.limitations.append("Backend не получил все обязательные data requests; статус понижен до partially_confirmed.")
+        safe.append(item)
+    return AuditHypothesisVerificationSet(verifications=safe) if safe else _verification_fallback(snapshot)
+
+
+def _second_round_requests(snapshot: dict[str, Any]) -> list[AuditDataRequest]:
+    runtime = _audit_runtime(snapshot)
+    if int(runtime.get("investigationRound") or 1) >= 2 or int(runtime.get("requestsCount") or 0) >= 15:
+        return []
+    critical_names = {str(item.get("name")) for item in (snapshot.get("campaignGroups") or {}).get("critical", [])}
+    required_request_ids = {
+        request.get("request_id")
+        for hypothesis in (snapshot.get("investigationPlan") or {}).get("hypotheses", [])
+        for request in hypothesis.get("data_requests", [])
+        if request.get("required_for_conclusion")
+    }
+    insufficient_hypotheses = {
+        item.get("hypothesis_id")
+        for item in (snapshot.get("drilldownResults") or [])
+        if item.get("status") == "insufficient_data" and item.get("request_id") in required_request_ids
+    }
+    plan_hypotheses = {
+        item.get("hypothesis_id"): item
+        for item in (snapshot.get("investigationPlan") or {}).get("hypotheses", [])
+    }
+    eligible_campaigns = {
+        item.get("campaign_name")
+        for hypothesis_id, item in plan_hypotheses.items()
+        if hypothesis_id in insufficient_hypotheses and item.get("campaign_name") in critical_names
+    }
+    if not eligible_campaigns:
+        return []
+    existing = {
+        (item.get("campaign_name"), item.get("dimension"))
+        for item in (snapshot.get("validatedDataRequests") or [])
+    }
+    candidates = []
+    for hypothesis in (snapshot.get("ruleBasedInvestigationPlan") or {}).get("hypotheses", []):
+        if hypothesis.get("campaign_name") not in eligible_campaigns:
+            continue
+        for request in hypothesis.get("data_requests", []):
+            key = (request.get("campaign_name"), request.get("dimension"))
+            if key in existing or not (request.get("required_for_conclusion") or request.get("priority") == "high"):
+                continue
+            candidates.append(AuditDataRequest.model_validate(request))
+    remaining = max(0, 15 - int(runtime.get("requestsCount") or 0))
+    accepted, rejected = validate_audit_data_requests(candidates[:remaining])
+    if rejected:
+        snapshot["drilldownResults"] = (snapshot.get("drilldownResults") or []) + [item.model_dump(mode="json") for item in rejected]
+    return accepted
+
+
 def build_compact_audit_context(
     context: dict[str, Any],
     *,
@@ -407,6 +688,8 @@ def build_compact_audit_context(
 
 def _audit_result_contract(output_budget_tokens: int) -> dict[str, Any]:
     finding = {
+        "hypothesis_id": "hyp_001 или null для чистого факта",
+        "verification_status": "confirmed|partially_confirmed|rejected|unverified|not_applicable",
         "campaign_name": "Название кампании или null",
         "campaign_type": "search|yan|retargeting|master_campaign|unknown",
         "analysis_level": "campaign|ad_group|keyword|query|placement|audience|device|geo|demographic|tracking",
@@ -429,7 +712,7 @@ def _audit_result_contract(output_budget_tokens: int) -> dict[str, Any]:
         "insufficient_data_campaigns": [],
         "tracking_and_goals": {},
         "drilldown_summary": {"analyzed_levels": [], "not_analyzed_levels": [], "next_data_needed": []},
-        "action_plan": [{"priority": 1, "action": "...", "scope": "...", "reason": "...", "mode": "manual_review|dry_run", "requires_human_approval": True}],
+        "action_plan": [{"priority": 1, "hypothesis_id": "hyp_001 или null", "action": "...", "scope": "...", "reason": "...", "mode": "manual_review|dry_run", "requires_human_approval": True}],
         "prohibited_actions": [],
         "limitations": [],
         "conclusion": "Итоговый вывод",
@@ -481,6 +764,9 @@ Compact audit snapshot:
 Если название отсутствует, используй «Кампания без названия». Если уровень данных не собран, укажи «не анализировался».
 Одна проблема — один finding. Не повторяй одинаковые цифры и safety-ограничения в разных finding.
 Факт и evidence должны содержать конкретные метрики; hypothesis не должна повторять problem; recommendation должна быть конкретной.
+Причину называй установленной только при verified status confirmed или partially_confirmed.
+Rejected hypothesis не включай в recommendation. Unverified явно подпиши как неподтверждённую и предлагай только безопасный сбор данных.
+Not_applicable не показывай как проблему. Action plan основывай только на фактах и подтверждённых/частично подтверждённых причинах.
 Не выдумывай отсутствующие данные. Все действия — dry-run черновики; изменения в Яндекс.Директ не применялись."""
 
 
@@ -512,9 +798,42 @@ def _validate_structured_result(
         if not isinstance(parsed, dict):
             return None
         parsed["meta"] = _trusted_result_meta(snapshot, job, response)
-        return AiAuditResult.model_validate(parsed).model_dump(mode="json")
+        validated = AiAuditResult.model_validate(parsed).model_dump(mode="json")
+        return _enforce_verified_result(validated, snapshot)
     except (TypeError, ValueError):
         return None
+
+
+def _enforce_verified_result(result: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any]:
+    verification = {item.get("hypothesis_id"): item for item in (snapshot.get("verifiedHypotheses") or [])}
+    for key in ("critical_findings", "opportunities"):
+        for finding in result.get(key) or []:
+            hypothesis_id = finding.get("hypothesis_id")
+            verified = verification.get(hypothesis_id) if hypothesis_id else None
+            status_value = str((verified or {}).get("status") or "unverified")
+            finding["verification_status"] = status_value
+            if status_value in {"rejected", "not_applicable"}:
+                finding["hypothesis"] = None
+                finding["recommendation"] = "Не выполнять действие по отклонённой или неприменимой гипотезе."
+            elif status_value == "unverified":
+                remaining = (verified or {}).get("remaining_data_needed") or finding.get("next_data_needed") or []
+                finding["hypothesis"] = f"Неподтверждённая гипотеза: {finding.get('hypothesis') or 'причина не установлена'}"
+                finding["recommendation"] = "Собрать недостающие данные: " + (", ".join(remaining) if remaining else "проверить гипотезу вручную")
+            finding["requires_human_approval"] = True
+    safe_actions = []
+    for action in result.get("action_plan") or []:
+        hypothesis_id = action.get("hypothesis_id")
+        status_value = str((verification.get(hypothesis_id) or {}).get("status") or "") if hypothesis_id else "fact_based"
+        if status_value in {"rejected", "not_applicable"}:
+            continue
+        if status_value == "unverified":
+            action["action"] = f"Собрать дополнительные данные для проверки {hypothesis_id}."
+            action["reason"] = "Причина не подтверждена собранными данными."
+            action["mode"] = "manual_review"
+        action["requires_human_approval"] = True
+        safe_actions.append(action)
+    result["action_plan"] = safe_actions[:10]
+    return result
 
 
 def _format_period_line(period: dict[str, Any]) -> str:
@@ -539,13 +858,13 @@ def build_audit_answer_markdown(structured: dict[str, Any], snapshot: dict[str, 
     return "\n".join(lines)
 
 
-def _prompt_metadata(prompt: str, job: AiAuditJob) -> dict[str, Any]:
+def _prompt_metadata(prompt: str, job: AiAuditJob, *, max_tokens: int | None = None) -> dict[str, Any]:
     debug = build_prompt_debug_snapshot(
         context={"auditContextMetadata": (_json_load(job.context_snapshot_json, {}).get("metadata") or {})},
         system_prompt=DEFAULT_SYSTEM_PROMPT,
         user_prompt=prompt,
         model=job.model,
-        max_tokens=job.max_tokens,
+        max_tokens=max_tokens or job.max_tokens,
         include_preview=False,
         max_tokens_cap=AI_AUDIT_MAX_OUTPUT_TOKENS,
     )
@@ -558,6 +877,65 @@ def _prompt_metadata(prompt: str, job: AiAuditJob) -> dict[str, Any]:
         "isTooLarge": debug["size"]["isTooLarge"],
         "fullPromptStored": False,
     }
+
+
+def _audit_runtime(snapshot: dict[str, Any]) -> dict[str, Any]:
+    return snapshot.setdefault("auditRuntime", {
+        "investigationRound": 1,
+        "maxInvestigationRounds": 2,
+        "requestsCount": 0,
+        "providerCallsCount": 0,
+        "directApiCallsCount": 0,
+        "tokenUsage": {"prompt": 0, "completion": 0, "total": 0},
+    })
+
+
+def _record_provider_call(snapshot: dict[str, Any], response: dict[str, Any]) -> None:
+    runtime = _audit_runtime(snapshot)
+    runtime["providerCallsCount"] = int(runtime.get("providerCallsCount") or 0) + 1
+    usage = response.get("usage") if isinstance(response.get("usage"), dict) else {}
+    token_usage = runtime.setdefault("tokenUsage", {"prompt": 0, "completion": 0, "total": 0})
+    prompt_tokens = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
+    completion_tokens = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
+    total_tokens = int(usage.get("total_tokens") or (prompt_tokens + completion_tokens))
+    token_usage["prompt"] = int(token_usage.get("prompt") or 0) + prompt_tokens
+    token_usage["completion"] = int(token_usage.get("completion") or 0) + completion_tokens
+    token_usage["total"] = int(token_usage.get("total") or 0) + total_tokens
+
+
+def _cap_drilldown_results(results: list[dict[str, Any]], token_target: int = DRILLDOWN_TOKEN_TARGET) -> list[dict[str, Any]]:
+    compact: list[dict[str, Any]] = []
+    used = 0
+    for original in results:
+        item = dict(original)
+        rows = list(item.pop("data", []) or [])
+        base_tokens = estimate_tokens(_json_dump(item))
+        if used + base_tokens > token_target:
+            item["data"] = []
+            item["limitations"] = list(item.get("limitations") or []) + ["Данные исключены из AI-контекста из-за общего token budget."]
+            compact.append(item)
+            continue
+        included = []
+        used += base_tokens
+        for row in rows:
+            row_tokens = estimate_tokens(_json_dump(row))
+            if used + row_tokens > token_target:
+                break
+            included.append(row)
+            used += row_tokens
+        item["data"] = included
+        if len(included) < len(rows):
+            item["limitations"] = list(item.get("limitations") or []) + [f"В AI-контекст включено {len(included)} из {len(rows)} строк."]
+        compact.append(item)
+    return compact
+
+
+def _save_stage_prompt_metadata(job: AiAuditJob, stage: str, prompt: str, *, max_tokens: int) -> None:
+    stored = _json_load(job.prompt_snapshot_json, {}) or {}
+    stages = stored.setdefault("stages", {})
+    stages[stage] = _prompt_metadata(prompt, job, max_tokens=max_tokens)
+    stored["fullPromptStored"] = False
+    job.prompt_snapshot_json = _json_dump(stored)
 
 
 def _locked_job(db: Session, job_id: str, organization_id: str) -> AiAuditJob:
@@ -582,10 +960,26 @@ def get_audit_job(db: Session, job_id: str, *, organization_id: str) -> AiAuditJ
 
 def _context_metadata(job: AiAuditJob) -> dict[str, Any]:
     snapshot = _json_load(job.context_snapshot_json, {}) or {}
+    drilldowns = snapshot.get("drilldownResults") or []
+    requested_dimensions = sorted({str(item.get("dimension")) for item in drilldowns if item.get("dimension")})
+    status_counts: dict[str, int] = {}
+    for item in drilldowns:
+        value = str(item.get("status") or "unknown")
+        status_counts[value] = status_counts.get(value, 0) + 1
     return {
         **(snapshot.get("metadata") or {}),
         "analysisPeriod": snapshot.get("analysisPeriod") or {},
         "dataCoverage": snapshot.get("dataCoverage") or {},
+        "investigation": {
+            "hypothesesCount": len((snapshot.get("investigationPlan") or {}).get("hypotheses", [])),
+            "requestedDimensions": requested_dimensions,
+            "requestStatusCounts": status_counts,
+            "verifiedStatusCounts": {
+                status_name: sum(1 for item in (snapshot.get("verifiedHypotheses") or []) if item.get("status") == status_name)
+                for status_name in ("confirmed", "partially_confirmed", "rejected", "unverified", "not_applicable")
+            },
+        },
+        "runtime": snapshot.get("auditRuntime") or {},
     }
 
 
@@ -714,8 +1108,8 @@ async def advance_audit_job(
             options["compact_retry"] = True
             job.input_options_json = _json_dump(options)
             job.status = "context_ready"
-            job.current_stage = "build_prompt"
-            job.progress_percent = 35
+            job.current_stage = "generate_answer"
+            job.progress_percent = 78
             job.completed_at = None
             job.result_json = None
             job.answer_text = None
@@ -729,15 +1123,11 @@ async def advance_audit_job(
     if job.status == "failed":
         if not retry or not job.retryable:
             return job
-        if job.prompt_snapshot_json:
-            job.status = "context_ready"
-            job.current_stage = "generate_answer"
-        elif job.context_snapshot_json:
-            job.status = "context_ready"
-            job.current_stage = "build_prompt"
-        else:
+        if not job.context_snapshot_json:
             job.status = "queued"
             job.current_stage = "collect_context"
+        else:
+            job.status = "context_ready"
         job.error_code = None
         job.error_message = None
         job.retryable = False
@@ -767,6 +1157,14 @@ async def advance_audit_job(
                 options=_json_load(job.input_options_json, {}),
             )
             snapshot["requestedScope"] = job.requested_scope
+            snapshot["auditRuntime"] = {
+                "investigationRound": 1,
+                "maxInvestigationRounds": 2,
+                "requestsCount": 0,
+                "providerCallsCount": 0,
+                "directApiCallsCount": 0,
+                "tokenUsage": {"prompt": 0, "completion": 0, "total": 0},
+            }
             snapshot["metadata"]["estimatedTokens"] = estimate_tokens(_json_dump(snapshot))
             timings["compactContextMs"] = _elapsed_ms(compact_started_at)
             job.context_snapshot_json = _json_dump(snapshot)
@@ -777,52 +1175,126 @@ async def advance_audit_job(
             ]
             job.prompt_snapshot_json = _json_dump({"internalCampaignIds": internal_ids[:100]})
             job.status = "context_ready"
-            job.current_stage = "build_prompt"
-            job.progress_percent = 35
-        elif stage == "build_prompt":
+            job.current_stage = "classify_campaigns"
+            job.progress_percent = 15
+        elif stage == "classify_campaigns":
             snapshot = _json_load(job.context_snapshot_json, {})
-            input_options = _json_load(job.input_options_json, {}) or {}
-            prompt = build_full_audit_prompt(
-                snapshot,
-                output_budget_tokens=job.max_tokens,
-                compact_retry=bool(input_options.get("compact_retry")),
-            )
-            metadata = _prompt_metadata(prompt, job)
-            metadata["internalCampaignIds"] = (_json_load(job.prompt_snapshot_json, {}) or {}).get("internalCampaignIds", [])
-            if metadata["isTooLarge"]:
-                raise HTTPException(
-                    status_code=413,
-                    detail={"error_code": "ai_prompt_too_large", "message": "Compact audit prompt exceeds model context.", "retryable": False},
-                )
-            job.prompt_snapshot_json = _json_dump(metadata)
+            snapshot["campaignClassifications"] = classify_audit_campaigns(snapshot)
+            base_plan = build_rule_based_investigation_plan(snapshot)
+            snapshot["ruleBasedInvestigationPlan"] = base_plan.model_dump(mode="json")
+            job.context_snapshot_json = _json_dump(snapshot)
             job.status = "context_ready"
-            job.current_stage = "generate_answer"
-            job.progress_percent = 55
-            timings["buildPromptMs"] = _elapsed_ms(started_at)
-        elif stage == "generate_answer":
+            job.current_stage = "create_investigation_plan"
+            job.progress_percent = 25
+            timings["classifyCampaignsMs"] = _elapsed_ms(started_at)
+        elif stage == "create_investigation_plan":
             job.status = "generating"
-            job.progress_percent = 65
+            job.progress_percent = 30
             job.stage_version += 1
             db.commit()
             snapshot = _json_load(job.context_snapshot_json, {})
-            input_options = _json_load(job.input_options_json, {}) or {}
-            prompt = build_full_audit_prompt(
-                snapshot,
-                output_budget_tokens=job.max_tokens,
-                compact_retry=bool(input_options.get("compact_retry")),
-            )
-            expected_hash = (_json_load(job.prompt_snapshot_json, {}) or {}).get("promptHash")
-            if expected_hash and hashlib.sha256(prompt.encode("utf-8")).hexdigest() != expected_hash:
-                raise RuntimeError("Audit prompt snapshot changed between stages")
+            base_plan = AuditInvestigationPlan.model_validate(snapshot.get("ruleBasedInvestigationPlan") or {})
+            prompt = build_investigation_plan_prompt(snapshot, base_plan)
+            planner_tokens = min(job.max_tokens, 3500)
+            _save_stage_prompt_metadata(job, stage, prompt, max_tokens=planner_tokens)
+            db.commit()
             openrouter_started_at = perf_counter()
             response = await generate_openrouter_response(
                 job.model,
                 prompt,
-                max_tokens=job.max_tokens,
+                max_tokens=planner_tokens,
                 max_tokens_cap=AI_AUDIT_MAX_OUTPUT_TOKENS,
                 timeout=OPENROUTER_AUDIT_TIMEOUT,
             )
-            timings["openrouterMs"] = _elapsed_ms(openrouter_started_at)
+            timings["investigationPlanOpenrouterMs"] = _elapsed_ms(openrouter_started_at)
+            _record_provider_call(snapshot, response)
+            answer = str(response.get("content") or "")
+            plan = _normalized_investigation_plan(answer, snapshot, base_plan)
+            snapshot["investigationPlan"] = plan.model_dump(mode="json")
+            job.context_snapshot_json = _json_dump(snapshot)
+            job.returned_model = str(response.get("model") or job.model)
+            job.status = "context_ready"
+            job.current_stage = "validate_data_requests"
+            job.progress_percent = 40
+        elif stage == "validate_data_requests":
+            snapshot = _json_load(job.context_snapshot_json, {})
+            plan = AuditInvestigationPlan.model_validate(snapshot.get("investigationPlan") or {})
+            requests = [request for hypothesis in plan.hypotheses for request in hypothesis.data_requests]
+            accepted, rejected = validate_audit_data_requests(requests)
+            runtime = _audit_runtime(snapshot)
+            runtime["requestsCount"] = len(requests)
+            snapshot["validatedDataRequests"] = [item.model_dump(mode="json") for item in accepted]
+            snapshot["drilldownResults"] = [item.model_dump(mode="json") for item in rejected]
+            job.context_snapshot_json = _json_dump(snapshot)
+            job.status = "context_ready"
+            job.current_stage = "collect_drilldowns"
+            job.progress_percent = 50
+            timings["validateDataRequestsMs"] = _elapsed_ms(started_at)
+        elif stage == "collect_drilldowns":
+            snapshot = _json_load(job.context_snapshot_json, {})
+            requests = [AuditDataRequest.model_validate(item) for item in (snapshot.get("validatedDataRequests") or [])]
+            collected, direct_api_calls = collect_audit_data_requests(db, job.client_id, requests)
+            snapshot["drilldownResults"] = _cap_drilldown_results(
+                (snapshot.get("drilldownResults") or []) + [item.model_dump(mode="json") for item in collected]
+            )
+            runtime = _audit_runtime(snapshot)
+            runtime["directApiCallsCount"] = int(runtime.get("directApiCallsCount") or 0) + direct_api_calls
+            job.context_snapshot_json = _json_dump(snapshot)
+            job.status = "context_ready"
+            job.current_stage = "verify_hypotheses"
+            job.progress_percent = 65
+            timings["collectDrilldownsMs"] = _elapsed_ms(started_at)
+        elif stage == "verify_hypotheses":
+            job.status = "generating"
+            job.progress_percent = 70
+            job.stage_version += 1
+            db.commit()
+            snapshot = _json_load(job.context_snapshot_json, {})
+            prompt = build_verification_prompt(snapshot)
+            verification_tokens = min(job.max_tokens, 3500)
+            _save_stage_prompt_metadata(job, stage, prompt, max_tokens=verification_tokens)
+            db.commit()
+            openrouter_started_at = perf_counter()
+            response = await generate_openrouter_response(
+                job.model, prompt, max_tokens=verification_tokens,
+                max_tokens_cap=AI_AUDIT_MAX_OUTPUT_TOKENS, timeout=OPENROUTER_AUDIT_TIMEOUT,
+            )
+            timings["verificationOpenrouterMs"] = _elapsed_ms(openrouter_started_at)
+            _record_provider_call(snapshot, response)
+            verification = _normalized_verifications(str(response.get("content") or ""), snapshot)
+            snapshot["verifiedHypotheses"] = verification.model_dump(mode="json")["verifications"]
+            second_round = _second_round_requests(snapshot)
+            if second_round:
+                runtime = _audit_runtime(snapshot)
+                runtime["investigationRound"] = 2
+                runtime["requestsCount"] = int(runtime.get("requestsCount") or 0) + len(second_round)
+                snapshot["validatedDataRequests"] = [item.model_dump(mode="json") for item in second_round]
+            job.context_snapshot_json = _json_dump(snapshot)
+            job.returned_model = str(response.get("model") or job.returned_model or job.model)
+            job.status = "context_ready"
+            job.current_stage = "collect_drilldowns" if second_round else "generate_answer"
+            job.progress_percent = 68 if second_round else 78
+        elif stage == "generate_answer":
+            job.status = "generating"
+            job.progress_percent = 82
+            job.stage_version += 1
+            db.commit()
+            snapshot = _json_load(job.context_snapshot_json, {})
+            input_options = _json_load(job.input_options_json, {}) or {}
+            prompt = build_full_audit_prompt(snapshot, output_budget_tokens=job.max_tokens, compact_retry=bool(input_options.get("compact_retry")))
+            metadata = _prompt_metadata(prompt, job)
+            if metadata["isTooLarge"]:
+                raise HTTPException(status_code=413, detail={"error_code": "ai_prompt_too_large", "message": "Adaptive audit prompt exceeds model context.", "retryable": False})
+            _save_stage_prompt_metadata(job, stage, prompt, max_tokens=job.max_tokens)
+            db.commit()
+            openrouter_started_at = perf_counter()
+            response = await generate_openrouter_response(
+                job.model, prompt, max_tokens=job.max_tokens,
+                max_tokens_cap=AI_AUDIT_MAX_OUTPUT_TOKENS, timeout=OPENROUTER_AUDIT_TIMEOUT,
+            )
+            timings["finalAnswerOpenrouterMs"] = _elapsed_ms(openrouter_started_at)
+            _record_provider_call(snapshot, response)
+            job.context_snapshot_json = _json_dump(snapshot)
             answer = str(response.get("content") or "")
             structured = _validate_structured_result(answer, snapshot=snapshot, job=job, response=response)
             finish_reason = str(response.get("finish_reason") or "") or None
@@ -854,12 +1326,13 @@ async def advance_audit_job(
                     "systemPromptVersion": job.system_prompt_version,
                     "systemPromptHash": job.system_prompt_hash[:12],
                     "context": _context_metadata(job),
+                    "runtime": snapshot.get("auditRuntime") or {},
                 },
                 "safety": {"readOnly": True, "appliedToYandexDirect": False, "requiresHumanApproval": True},
             })
             job.status = "context_ready"
             job.current_stage = "finalize"
-            job.progress_percent = 90
+            job.progress_percent = 95
         elif stage == "finalize":
             finalize_started_at = perf_counter()
             job.status = "completed"
