@@ -416,4 +416,23 @@ body[data-page="app"] .wordstatChartPanel svg {
 .aiAuditStages li { color: #64748b; }
 .aiAuditStages li.done { color: #15803d; }
 .aiAuditStages li.active { color: #1d4ed8; font-weight: 700; }
-.aiAuditResult { margin-top: 12px; white-space: pre-wrap; }
+.aiAuditResult { display: grid; gap: 16px; margin-top: 12px; }
+.aiAuditPeriod { margin: 0; font-size: 16px; font-weight: 800; }
+.aiAuditMeta { display: flex; flex-wrap: wrap; gap: 8px; color: #475569; font-size: 13px; }
+.aiAuditMeta span { padding: 6px 9px; border: 1px solid #e2e8f0; border-radius: 6px; background: #f8fafc; }
+.aiAuditFindingGrid { display: grid; gap: 10px; }
+.aiAuditFinding { padding: 14px; border: 1px solid #e2e8f0; border-radius: 8px; background: #fff; }
+.aiAuditFinding p { margin: 8px 0; }
+.aiAuditNotice { padding: 14px; border-left: 4px solid #f59e0b; background: #fffbeb; }
+.safeMarkdown { color: inherit; line-height: 1.55; }
+.safeMarkdown > :first-child { margin-top: 0; }
+.safeMarkdown > :last-child { margin-bottom: 0; }
+.safeMarkdown h2, .safeMarkdown h3, .safeMarkdown h4 { margin: 18px 0 8px; }
+.safeMarkdown p, .safeMarkdown ul, .safeMarkdown ol, .safeMarkdown blockquote { margin: 8px 0; }
+.safeMarkdown blockquote { padding: 8px 12px; border-left: 3px solid #94a3b8; color: #475569; background: #f8fafc; }
+.safeMarkdown pre { overflow-x: auto; padding: 12px; border-radius: 6px; color: #e2e8f0; background: #0f172a; }
+.safeMarkdown code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.safeMarkdown :not(pre) > code { padding: 2px 4px; border-radius: 4px; background: #eef2f7; }
+.safeMarkdown a { color: #1d4ed8; text-decoration: underline; }
+.markdownTableWrap { max-width: 100%; overflow-x: auto; }
+.markdownTableWrap table { width: 100%; min-width: 620px; }

@@ -45,6 +45,7 @@ AI_MODEL_PRESETS: dict[str, dict[str, object]] = {
 }
 
 AI_RECOMMENDED_DEFAULT_PRESET = "balanced"
+AI_AUDIT_MAX_OUTPUT_TOKENS = 10_000
 AI_FALLBACK_ECONOMY_MODEL = "openai/gpt-4o-mini"
 PRODUCTION_AI_MODELS: tuple[dict[str, str], ...] = (
     {
@@ -165,6 +166,29 @@ def normalize_ai_request_options(
         "max_tokens": effective_tokens,
         "max_tokens_cap": cap,
         "is_custom_model": bool(selected_model and selected_model not in set(allowed_models)),
+        "cost_tier": ai_model_cost_tier(selected_model),
+    }
+
+
+def normalize_ai_audit_request_options(
+    *,
+    model: str | None,
+    ai_preset: str | None,
+    max_tokens: int | None,
+    scope: str = "full_account",
+) -> dict[str, object]:
+    """Normalize staged-audit options without widening regular AI request limits."""
+
+    preset_id = ai_preset if ai_preset in AI_MODEL_PRESETS else AI_RECOMMENDED_DEFAULT_PRESET
+    selected_model = normalize_production_ai_model(model)
+    default_tokens = AI_AUDIT_MAX_OUTPUT_TOKENS if scope == "full_account" else 5_000
+    requested_tokens = default_tokens if max_tokens is None else int(max_tokens)
+    return {
+        "model": selected_model,
+        "ai_preset": preset_id,
+        "max_tokens": max(1, min(requested_tokens, AI_AUDIT_MAX_OUTPUT_TOKENS)),
+        "max_tokens_cap": AI_AUDIT_MAX_OUTPUT_TOKENS,
+        "is_custom_model": False,
         "cost_tier": ai_model_cost_tier(selected_model),
     }
 

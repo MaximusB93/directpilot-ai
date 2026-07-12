@@ -1106,7 +1106,6 @@ async function startAiAudit(scope = 'full_account', requestedMessage = '') {
     }).messages;
     aiFeatureState.chat.input = '';
   }
-  const budget = activeAiBudget();
   await createAiAuditJobFlow({
     request: {
       client_id: selectedClientId,
@@ -1115,7 +1114,6 @@ async function startAiAudit(scope = 'full_account', requestedMessage = '') {
       selected_campaign_name: aiFeatureState.chat.selectedCampaignName || null,
       model: activeAiModel(),
       ai_preset: aiFeatureState.model.selectedPreset,
-      max_tokens: budget.maxTokens,
       options: {
         include_search_queries: true,
         include_dynamics: true,
@@ -1139,12 +1137,13 @@ async function startAiAudit(scope = 'full_account', requestedMessage = '') {
   if (aiFeatureState.audit.job) scheduleAiAuditAdvance(0);
 }
 
-async function advanceActiveAiAudit(retry = false) {
+async function advanceActiveAiAudit(retry = false, compactRetry = false) {
   const jobId = aiFeatureState.audit.job?.job_id;
   if (!jobId || aiFeatureState.audit.loading || activeView !== 'ai') return;
   await advanceAiAuditJobFlow({
     jobId,
     retry,
+    compactRetry,
     aiService,
     onStart: () => {
       aiFeatureState.audit.loading = true;
@@ -2528,6 +2527,7 @@ const CABINET_ACTION_CLICK_SELECTOR = [
   '[data-ai-audit-start]',
   '[data-ai-audit-cancel]',
   '[data-ai-audit-retry]',
+  '[data-ai-audit-compact-retry]',
   '[data-ai-audit-new]',
   '[data-integration="yandex-direct"]',
   '[data-period-preset]',
@@ -2682,6 +2682,10 @@ async function handleCabinetActionClick(event) {
   }
   if (event.target.closest('[data-ai-audit-retry]')) {
     await advanceActiveAiAudit(true);
+    return true;
+  }
+  if (event.target.closest('[data-ai-audit-compact-retry]')) {
+    await advanceActiveAiAudit(false, true);
     return true;
   }
   if (event.target.closest('[data-ai-audit-new]')) {

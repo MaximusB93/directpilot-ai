@@ -49,7 +49,11 @@ def test_generate_openrouter_response_clamps_max_tokens(monkeypatch):
             return None
 
         def json(self):
-            return {"model": "openrouter/auto", "choices": [{"message": {"content": "ok"}}]}
+            return {
+                "model": "openrouter/auto",
+                "choices": [{"message": {"content": "ok"}, "finish_reason": "length"}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 8000},
+            }
 
     class AsyncClient:
         def __init__(self, timeout):
@@ -77,5 +81,23 @@ def test_generate_openrouter_response_clamps_max_tokens(monkeypatch):
     )
 
     assert response["content"] == "ok"
+    assert response["finish_reason"] == "length"
+    assert response["usage"]["completion_tokens"] == 8000
     assert captured["payload"]["max_tokens"] == 8000
     assert captured["headers"]["Authorization"] == "Bearer test-key"
+
+
+def test_openrouter_audit_cap_does_not_change_default_cap(monkeypatch):
+    test_settings = replace(base_settings, openrouter_api_key="test-key", openrouter_allow_custom_models=True)
+    monkeypatch.setattr(openrouter_module, "settings", test_settings)
+
+    regular = openrouter_module.build_openrouter_payload("openrouter/auto", "prompt", max_tokens=10000)
+    audit = openrouter_module.build_openrouter_payload(
+        "openrouter/auto",
+        "prompt",
+        max_tokens=10000,
+        max_tokens_cap=10000,
+    )
+
+    assert regular["max_tokens"] == 8000
+    assert audit["max_tokens"] == 10000

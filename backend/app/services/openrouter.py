@@ -10,6 +10,7 @@ from app.services.ai_prompt_debug import clamp_openrouter_max_tokens
 
 OPENROUTER_CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_TIMEOUT = httpx.Timeout(connect=10.0, read=55.0, write=10.0, pool=10.0)
+OPENROUTER_AUDIT_TIMEOUT = httpx.Timeout(connect=10.0, read=115.0, write=10.0, pool=10.0)
 
 DEFAULT_SYSTEM_PROMPT = get_system_prompt()
 
@@ -37,7 +38,13 @@ def _validate_openrouter_model(model: str | None) -> str:
     return selected_model
 
 
-def build_openrouter_payload(model: str, prompt: str, max_tokens: int | None = None) -> dict[str, Any]:
+def build_openrouter_payload(
+    model: str,
+    prompt: str,
+    max_tokens: int | None = None,
+    *,
+    max_tokens_cap: int = 8000,
+) -> dict[str, Any]:
     selected_model = _validate_openrouter_model(model)
     return {
         "model": selected_model,
@@ -46,7 +53,7 @@ def build_openrouter_payload(model: str, prompt: str, max_tokens: int | None = N
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.2,
-        "max_tokens": clamp_openrouter_max_tokens(max_tokens),
+        "max_tokens": clamp_openrouter_max_tokens(max_tokens, cap=max_tokens_cap),
     }
 
 
@@ -119,7 +126,14 @@ def openrouter_status() -> dict[str, object]:
     }
 
 
-async def generate_openrouter_response(model: str, prompt: str, max_tokens: int | None = None) -> dict[str, object]:
+async def generate_openrouter_response(
+    model: str,
+    prompt: str,
+    max_tokens: int | None = None,
+    *,
+    max_tokens_cap: int = 8000,
+    timeout: httpx.Timeout | None = None,
+) -> dict[str, object]:
     if not settings.openrouter_configured:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -136,7 +150,12 @@ async def generate_openrouter_response(model: str, prompt: str, max_tokens: int 
             detail=f"Модель {selected_model} не разрешена. Добавьте её в OPENROUTER_MODELS или включите OPENROUTER_ALLOW_CUSTOM_MODELS=true.",
         )
 
-    payload = build_openrouter_payload(selected_model, prompt, max_tokens=max_tokens)
+    payload = build_openrouter_payload(
+        selected_model,
+        prompt,
+        max_tokens=max_tokens,
+        max_tokens_cap=max_tokens_cap,
+    )
     selected_model = str(payload["model"])
     headers = {
         "Authorization": f"Bearer {settings.openrouter_api_key}",
@@ -146,7 +165,7 @@ async def generate_openrouter_response(model: str, prompt: str, max_tokens: int 
     }
 
     try:
-        async with httpx.AsyncClient(timeout=OPENROUTER_TIMEOUT) as client:
+        async with httpx.AsyncClient(timeout=timeout or OPENROUTER_TIMEOUT) as client:
             response = await client.post(OPENROUTER_CHAT_COMPLETIONS_URL, json=payload, headers=headers)
             response.raise_for_status()
             data = response.json()
@@ -172,10 +191,12 @@ async def generate_openrouter_response(model: str, prompt: str, max_tokens: int 
             detail="Не удалось выполнить запрос к OpenRouter.",
         ) from exc
 
-    content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+    choice = data.get("choices", [{}])[0]
+    content = choice.get("message", {}).get("content", "")
     return {
         "model": data.get("model", selected_model),
         "content": content,
         "usage": data.get("usage"),
         "id": data.get("id"),
+        "finish_reason": choice.get("finish_reason"),
     }

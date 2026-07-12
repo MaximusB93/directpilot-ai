@@ -655,6 +655,7 @@ async def advance_staged_audit(
         job_id,
         organization_id=current.organization.id,
         retry=bool(payload and payload.retry),
+        compact_retry=bool(payload and payload.compact_retry),
     )
     return audit_job_response(job)
 

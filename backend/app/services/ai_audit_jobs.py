@@ -11,17 +11,16 @@ from sqlalchemy.orm import Session
 
 from app.ai.prompt_loader import get_system_prompt_metadata
 from app.core.config import (
-    DEFAULT_PRODUCTION_AI_MODEL,
-    normalize_ai_request_options,
-    production_ai_model_ids,
+    AI_AUDIT_MAX_OUTPUT_TOKENS,
+    normalize_ai_audit_request_options,
 )
 from app.models import AiAuditJob, ClientAccount
-from app.schemas import AiAuditCreateRequest, AiAuditJobResponse
+from app.schemas import AiAuditCreateRequest, AiAuditJobResponse, AiAuditResult
 from app.services.ai_prompt_debug import build_prompt_debug_snapshot, estimate_tokens
 from app.services.ai_recommendations import build_client_ai_context_from_db
 from app.services.direct_analyst_playbook import build_direct_analyst_instructions
 from app.services.knowledge_base import select_knowledge_snippets
-from app.services.openrouter import DEFAULT_SYSTEM_PROMPT, generate_openrouter_response
+from app.services.openrouter import DEFAULT_SYSTEM_PROMPT, OPENROUTER_AUDIT_TIMEOUT, generate_openrouter_response
 
 logger = logging.getLogger(__name__)
 
@@ -131,8 +130,8 @@ def _draft_action_snapshot(item: Any) -> dict[str, Any] | None:
 
 def _campaign_snapshot(item: dict[str, Any]) -> dict[str, Any]:
     return {
-        "id": item.get("campaign_id") or item.get("id"),
-        "name": item.get("campaign_name") or item.get("name"),
+        "name": item.get("campaign_name") or item.get("campaignName") or item.get("name") or "Кампания без названия",
+        "type": item.get("campaign_type") or item.get("campaignType") or "unknown",
         "severity": item.get("severity") or "ok",
         "cost": _number(item.get("cost")),
         "impressions": _number(item.get("impressions")),
@@ -145,6 +144,111 @@ def _campaign_snapshot(item: dict[str, Any]) -> dict[str, Any]:
         "flags": _flags(item.get("issue_flags")),
         "diagnostic": item.get("diagnostic_explanation"),
         "recommendedFocus": item.get("recommended_focus"),
+    }
+
+
+def _parse_iso_date(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _analysis_period(context: dict[str, Any], requested_period: str) -> dict[str, Any]:
+    dynamics = context.get("campaign_dynamics_analysis") if isinstance(context.get("campaign_dynamics_analysis"), dict) else {}
+    dynamics_period = dynamics.get("period") if isinstance(dynamics.get("period"), dict) else {}
+    windows = dynamics_period.get("windows") if isinstance(dynamics_period.get("windows"), dict) else {}
+    requested_key = {"last_7_days": "last7", "last_14_days": "last14", "last_30_days": "last30"}.get(requested_period, "last30")
+    comparison_key = {"last7": "previous7", "last14": "previous14"}.get(requested_key)
+    selected = windows.get(requested_key) if isinstance(windows.get(requested_key), dict) else {}
+    comparison = windows.get(comparison_key) if comparison_key and isinstance(windows.get(comparison_key), dict) else {}
+    summary = context.get("summary") if isinstance(context.get("summary"), dict) else {}
+    summary_period = summary.get("period") if isinstance(summary.get("period"), dict) else {}
+    date_from = selected.get("dateFrom") or summary_period.get("from")
+    date_to = selected.get("dateTo") or summary_period.get("to")
+    parsed_from = _parse_iso_date(date_from)
+    parsed_to = _parse_iso_date(date_to)
+    days = (parsed_to.date() - parsed_from.date()).days + 1 if parsed_from and parsed_to else None
+    comparison_from = comparison.get("dateFrom")
+    comparison_to = comparison.get("dateTo")
+    if not comparison_from and parsed_from and days:
+        comparison_to_date = parsed_from.date() - timedelta(days=1)
+        comparison_from_date = comparison_to_date - timedelta(days=days - 1)
+        comparison_from = comparison_from_date.isoformat()
+        comparison_to = comparison_to_date.isoformat()
+    expected_days = {"last_7_days": 7, "last_14_days": 14, "last_30_days": 30}.get(requested_period)
+    data_quality = dynamics.get("dataQuality") or {}
+    data_rows = int(data_quality.get("rows") or 0)
+    missing_days = data_quality.get("missingDays") or []
+    latest_sync = context.get("latest_sync_job") if isinstance(context.get("latest_sync_job"), dict) else {}
+    client = context.get("client") if isinstance(context.get("client"), dict) else {}
+    return {
+        "preset": requested_period,
+        "dateFrom": str(date_from)[:10] if date_from else None,
+        "dateTo": str(date_to)[:10] if date_to else None,
+        "days": days,
+        "comparisonDateFrom": str(comparison_from)[:10] if comparison_from else None,
+        "comparisonDateTo": str(comparison_to)[:10] if comparison_to else None,
+        "source": "synced_campaign_daily_stats" if data_rows else ("synced_campaign_period_stats" if date_from else "unavailable"),
+        "lastSyncedAt": client.get("last_synced_at") or latest_sync.get("finished_at") or latest_sync.get("created_at"),
+        "requestedMatchesAvailableData": bool(
+            date_from
+            and date_to
+            and (expected_days is None or days == expected_days)
+            and not missing_days
+        ),
+    }
+
+
+def _coverage_item(
+    *,
+    available: bool,
+    total: int | None = None,
+    analyzed: int = 0,
+    source: str | None = None,
+    period: dict[str, Any] | None = None,
+    reason: str | None = None,
+    limitations: list[str] | None = None,
+) -> dict[str, Any]:
+    return {
+        "available": available,
+        "total": total,
+        "analyzed": analyzed,
+        "source": source,
+        "period": period,
+        "reason": reason,
+        "limitations": limitations or [],
+    }
+
+
+def _data_coverage(
+    context: dict[str, Any],
+    *,
+    analysis_period: dict[str, Any],
+    campaigns_total: int,
+    campaigns_analyzed: int,
+    search_total: int,
+    search_analyzed: int,
+) -> dict[str, Any]:
+    period = {"dateFrom": analysis_period.get("dateFrom"), "dateTo": analysis_period.get("dateTo")}
+    goals = context.get("goals") if isinstance(context.get("goals"), dict) else {}
+    not_collected = lambda: _coverage_item(available=False, reason="not_collected", period=period)
+    return {
+        "account": _coverage_item(available=campaigns_total > 0, total=1 if campaigns_total else 0, analyzed=1 if campaigns_analyzed else 0, source="performance_summary", period=period),
+        "campaigns": _coverage_item(available=campaigns_total > 0, total=campaigns_total, analyzed=campaigns_analyzed, source="direct_campaign_stats", period=period),
+        "adGroups": not_collected(),
+        "keywords": not_collected(),
+        "searchQueries": _coverage_item(available=search_total > 0, total=search_total, analyzed=search_analyzed, source="direct_search_query_stats" if search_total else None, period=period, reason=None if search_total else "not_collected"),
+        "placements": not_collected(),
+        "audiences": not_collected(),
+        "adsAndCreatives": not_collected(),
+        "demographics": not_collected(),
+        "devices": not_collected(),
+        "geo": not_collected(),
+        "goals": _coverage_item(available=bool(goals.get("selected_goal_ids")), total=len(goals.get("selected_goal_ids") or []), analyzed=len(goals.get("selected_goal_ids") or []) if goals.get("has_goal_data") else 0, source="yandex_direct_goals" if goals.get("has_goal_data") else None, period=period, reason=None if goals.get("has_goal_data") else "goal_data_unavailable"),
+        "crmLeadQuality": not_collected(),
     }
 
 
@@ -209,6 +313,18 @@ def build_compact_audit_context(
         missing_data.append("Контекст бизнеса не заполнен.")
     if not goals.get("has_goal_data"):
         missing_data.append("Нет подтверждённых конверсий по выбранным целям.")
+    analysis_period = _analysis_period(context, requested_period)
+    if not analysis_period.get("requestedMatchesAvailableData"):
+        warnings.append("Запрошенный период не полностью совпадает с доступными данными; указан фактический диапазон анализа.")
+    campaigns_analyzed = sum(len(items) for items in groups.values())
+    data_coverage = _data_coverage(
+        context,
+        analysis_period=analysis_period,
+        campaigns_total=len(campaigns),
+        campaigns_analyzed=campaigns_analyzed,
+        search_total=int(search.get("totalQueries") or len(search_items)),
+        search_analyzed=len(query_risks),
+    )
 
     snapshot = {
         "client": {
@@ -220,7 +336,8 @@ def build_compact_audit_context(
             "status": business.get("status"),
             "fields": _safe_business_fields(business.get("fields")),
         },
-        "period": requested_period,
+        "analysisPeriod": analysis_period,
+        "dataCoverage": data_coverage,
         "accountTotals": summary.get("totals") or {},
         "targetKpis": {"targetCpa": (context.get("client") or {}).get("target_cpa")},
         "selectedGoals": {
@@ -231,7 +348,7 @@ def build_compact_audit_context(
         "campaignGroups": groups,
         "trackingStatus": {
             "syncDiagnostics": diagnostics,
-            "warnings": warnings,
+            "warnings": list(dict.fromkeys(warnings)),
         },
         "searchQueryRisks": query_risks,
         "periodComparison": {
@@ -264,7 +381,7 @@ def build_compact_audit_context(
     }
     metadata = {
         "campaignsTotal": len(campaigns),
-        "campaignsIncluded": sum(len(items) for items in groups.values()),
+        "campaignsIncluded": campaigns_analyzed,
         "searchQueriesTotal": int(search.get("totalQueries") or len(search_items)),
         "searchQueriesIncluded": len(query_risks),
         "tokenTarget": token_target,
@@ -283,10 +400,48 @@ def build_compact_audit_context(
         metadata["truncated"] = True
         metadata["omittedSections"].append("detailed_period_comparison")
         metadata["estimatedTokens"] = estimate_tokens(_json_dump(snapshot))
+        snapshot["dataCoverage"]["campaigns"]["analyzed"] = metadata["campaignsIncluded"]
+        snapshot["dataCoverage"]["searchQueries"]["analyzed"] = metadata["searchQueriesIncluded"]
     return snapshot
 
 
-def build_full_audit_prompt(snapshot: dict[str, Any]) -> str:
+def _audit_result_contract(output_budget_tokens: int) -> dict[str, Any]:
+    finding = {
+        "campaign_name": "Название кампании или null",
+        "campaign_type": "search|yan|retargeting|master_campaign|unknown",
+        "analysis_level": "campaign|ad_group|keyword|query|placement|audience|device|geo|demographic|tracking",
+        "problem": "Краткая проблема",
+        "fact": "Факт из данных",
+        "evidence": ["До 5 коротких доказательств с метриками"],
+        "hypothesis": "Возможная причина или null",
+        "confidence": "low|medium|high",
+        "risk": "low|medium|high",
+        "recommendation": "Конкретный следующий шаг",
+        "requires_human_approval": True,
+        "next_data_needed": [],
+    }
+    return {
+        "meta": {"period": {}, "data_coverage": {}, "model": None, "output_budget_tokens": output_budget_tokens},
+        "executive_summary": "Краткий итог без вступления о роли AI",
+        "data_quality": {"status": "sufficient|partial|insufficient", "facts": [], "limitations": []},
+        "critical_findings": [finding],
+        "opportunities": [finding],
+        "insufficient_data_campaigns": [],
+        "tracking_and_goals": {},
+        "drilldown_summary": {"analyzed_levels": [], "not_analyzed_levels": [], "next_data_needed": []},
+        "action_plan": [{"priority": 1, "action": "...", "scope": "...", "reason": "...", "mode": "manual_review|dry_run", "requires_human_approval": True}],
+        "prohibited_actions": [],
+        "limitations": [],
+        "conclusion": "Итоговый вывод",
+    }
+
+
+def build_full_audit_prompt(
+    snapshot: dict[str, Any],
+    *,
+    output_budget_tokens: int = AI_AUDIT_MAX_OUTPUT_TOKENS,
+    compact_retry: bool = False,
+) -> str:
     knowledge = select_knowledge_snippets("полный аудит Яндекс Директ критические проблемы tracking поисковые запросы", snapshot, limit=4)
     knowledge_text = "\n".join(
         f"- {item.get('title') or item.get('id')}: {str(item.get('content') or item.get('text') or '')[:800]}"
@@ -297,8 +452,16 @@ def build_full_audit_prompt(snapshot: dict[str, Any]) -> str:
         if snapshot.get("requestedScope") == "critical_issues"
         else "Проведи полный аудит аккаунта по всем доступным разделам."
     )
+    compact_retry_instruction = (
+        "Это повтор после достижения лимита. Сохрани все обязательные разделы, но сократи evidence и количество примеров; обязательно закончи conclusion и limitations."
+        if compact_retry
+        else ""
+    )
     return f"""Задача: провести полный read-only аудит Яндекс.Директа по сохранённому compact snapshot DirectPilot.
 Scope: {scope_instruction}
+Доступный максимум ответа — {output_budget_tokens} токенов. Это потолок, а не целевой объём. Дай полный, но компактный ответ.
+Не обрывай разделы и finding. Если данных много, сокращай второстепенные примеры и повторяющиеся evidence.
+Зарезервируй место для action_plan, limitations и conclusion. {compact_retry_instruction}
 
 {build_direct_analyst_instructions(snapshot)}
 
@@ -308,20 +471,72 @@ Scope: {scope_instruction}
 Compact audit snapshot:
 {json.dumps(snapshot, ensure_ascii=False, indent=2)}
 
-Ответь по-русски в компактной Markdown-структуре:
-1. Краткий итог.
-2. Достаточность и качество данных.
-3. До 5 критических проблем.
-4. До 5 возможностей.
-5. Кампании с недостаточным объёмом данных.
-6. Tracking и выбранные цели.
-7. Search/РСЯ drill-down только по доступным данным.
-8. До 10 безопасных действий.
-9. Что нельзя делать автоматически.
-10. Ограничения анализа.
+Верни только один валидный JSON-объект без Markdown fences и текста до/после JSON.
+Строгий контракт результата:
+{json.dumps(_audit_result_contract(output_budget_tokens), ensure_ascii=False, indent=2)}
 
-Для каждого finding отделяй факт, evidence, гипотезу, рекомендацию, риск и requires_human_approval.
-Не повторяй всю статистику. Не выдумывай отсутствующие данные. Все действия — dry-run черновики; изменения в Яндекс.Директ не применялись."""
+Ограничения контракта: critical_findings ≤ 5, opportunities ≤ 5, action_plan ≤ 10, evidence в finding ≤ 5.
+Начинай анализ с фактического analysisPeriod и dataCoverage из snapshot. Не пиши вступление о роли AI.
+Используй только названия кампаний. Не выводи CampaignId, client_id, organization_id, job_id и любые внутренние object IDs.
+Если название отсутствует, используй «Кампания без названия». Если уровень данных не собран, укажи «не анализировался».
+Одна проблема — один finding. Не повторяй одинаковые цифры и safety-ограничения в разных finding.
+Факт и evidence должны содержать конкретные метрики; hypothesis не должна повторять problem; recommendation должна быть конкретной.
+Не выдумывай отсутствующие данные. Все действия — dry-run черновики; изменения в Яндекс.Директ не применялись."""
+
+
+def _trusted_result_meta(snapshot: dict[str, Any], job: AiAuditJob, response: dict[str, Any]) -> dict[str, Any]:
+    period = snapshot.get("analysisPeriod") or {}
+    return {
+        "period": {
+            "date_from": period.get("dateFrom"),
+            "date_to": period.get("dateTo"),
+            "days": period.get("days"),
+            "comparison_date_from": period.get("comparisonDateFrom"),
+            "comparison_date_to": period.get("comparisonDateTo"),
+        },
+        "data_coverage": snapshot.get("dataCoverage") or {},
+        "model": response.get("model") or job.model,
+        "output_budget_tokens": job.max_tokens,
+    }
+
+
+def _validate_structured_result(
+    answer: str,
+    *,
+    snapshot: dict[str, Any],
+    job: AiAuditJob,
+    response: dict[str, Any],
+) -> dict[str, Any] | None:
+    try:
+        parsed = json.loads(answer)
+        if not isinstance(parsed, dict):
+            return None
+        parsed["meta"] = _trusted_result_meta(snapshot, job, response)
+        return AiAuditResult.model_validate(parsed).model_dump(mode="json")
+    except (TypeError, ValueError):
+        return None
+
+
+def _format_period_line(period: dict[str, Any]) -> str:
+    def display(value: Any) -> str:
+        parsed = _parse_iso_date(value)
+        return parsed.strftime("%d.%m.%Y") if parsed else "дата не определена"
+
+    return f"Период анализа: {display(period.get('dateFrom'))}–{display(period.get('dateTo'))}, {period.get('days') or '—'} дней."
+
+
+def build_audit_answer_markdown(structured: dict[str, Any], snapshot: dict[str, Any]) -> str:
+    lines = [_format_period_line(snapshot.get("analysisPeriod") or {}), "", "## Итог", structured.get("executive_summary") or ""]
+    for title, key in (("Критические проблемы", "critical_findings"), ("Возможности", "opportunities")):
+        items = structured.get(key) or []
+        if items:
+            lines.extend(["", f"## {title}"])
+            for item in items:
+                lines.append(f"- **{item.get('campaign_name') or 'Аккаунт'}:** {item.get('problem') or ''} — {item.get('recommendation') or ''}")
+    lines.extend(["", "## Ограничения"])
+    lines.extend(f"- {item}" for item in (structured.get("limitations") or ["Не указаны."]))
+    lines.extend(["", "## Вывод", structured.get("conclusion") or ""])
+    return "\n".join(lines)
 
 
 def _prompt_metadata(prompt: str, job: AiAuditJob) -> dict[str, Any]:
@@ -332,6 +547,7 @@ def _prompt_metadata(prompt: str, job: AiAuditJob) -> dict[str, Any]:
         model=job.model,
         max_tokens=job.max_tokens,
         include_preview=False,
+        max_tokens_cap=AI_AUDIT_MAX_OUTPUT_TOKENS,
     )
     return {
         "promptHash": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
@@ -365,7 +581,12 @@ def get_audit_job(db: Session, job_id: str, *, organization_id: str) -> AiAuditJ
 
 
 def _context_metadata(job: AiAuditJob) -> dict[str, Any]:
-    return (_json_load(job.context_snapshot_json, {}) or {}).get("metadata") or {}
+    snapshot = _json_load(job.context_snapshot_json, {}) or {}
+    return {
+        **(snapshot.get("metadata") or {}),
+        "analysisPeriod": snapshot.get("analysisPeriod") or {},
+        "dataCoverage": snapshot.get("dataCoverage") or {},
+    }
 
 
 def audit_job_response(job: AiAuditJob) -> AiAuditJobResponse:
@@ -410,13 +631,11 @@ def create_audit_job(
     client = db.get(ClientAccount, payload.client_id)
     if not client or client.organization_id != organization_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Client not found")
-    options = normalize_ai_request_options(
+    options = normalize_ai_audit_request_options(
         model=payload.model,
         ai_preset=payload.ai_preset,
         max_tokens=payload.max_tokens,
-        models=production_ai_model_ids(),
-        configured_default=DEFAULT_PRODUCTION_AI_MODEL,
-        production_only=True,
+        scope=payload.scope,
     )
     prompt_metadata = get_system_prompt_metadata()
     now = _now()
@@ -485,8 +704,26 @@ async def advance_audit_job(
     *,
     organization_id: str,
     retry: bool = False,
+    compact_retry: bool = False,
 ) -> AiAuditJob:
     job = _locked_job(db, job_id, organization_id)
+    if job.status == "completed" and compact_retry:
+        current_result = _json_load(job.result_json, {}) or {}
+        if current_result.get("truncated"):
+            options = _json_load(job.input_options_json, {}) or {}
+            options["compact_retry"] = True
+            job.input_options_json = _json_dump(options)
+            job.status = "context_ready"
+            job.current_stage = "build_prompt"
+            job.progress_percent = 35
+            job.completed_at = None
+            job.result_json = None
+            job.answer_text = None
+            job.error_code = None
+            job.error_message = None
+            db.commit()
+            db.refresh(job)
+        return job
     if job.status in {"completed", "cancelled"}:
         return job
     if job.status == "failed":
@@ -533,13 +770,25 @@ async def advance_audit_job(
             snapshot["metadata"]["estimatedTokens"] = estimate_tokens(_json_dump(snapshot))
             timings["compactContextMs"] = _elapsed_ms(compact_started_at)
             job.context_snapshot_json = _json_dump(snapshot)
+            internal_ids = [
+                str(item.get("campaign_id") or item.get("id"))
+                for item in (full_context.get("campaigns") or [])
+                if isinstance(item, dict) and (item.get("campaign_id") or item.get("id"))
+            ]
+            job.prompt_snapshot_json = _json_dump({"internalCampaignIds": internal_ids[:100]})
             job.status = "context_ready"
             job.current_stage = "build_prompt"
             job.progress_percent = 35
         elif stage == "build_prompt":
             snapshot = _json_load(job.context_snapshot_json, {})
-            prompt = build_full_audit_prompt(snapshot)
+            input_options = _json_load(job.input_options_json, {}) or {}
+            prompt = build_full_audit_prompt(
+                snapshot,
+                output_budget_tokens=job.max_tokens,
+                compact_retry=bool(input_options.get("compact_retry")),
+            )
             metadata = _prompt_metadata(prompt, job)
+            metadata["internalCampaignIds"] = (_json_load(job.prompt_snapshot_json, {}) or {}).get("internalCampaignIds", [])
             if metadata["isTooLarge"]:
                 raise HTTPException(
                     status_code=413,
@@ -556,25 +805,47 @@ async def advance_audit_job(
             job.stage_version += 1
             db.commit()
             snapshot = _json_load(job.context_snapshot_json, {})
-            prompt = build_full_audit_prompt(snapshot)
+            input_options = _json_load(job.input_options_json, {}) or {}
+            prompt = build_full_audit_prompt(
+                snapshot,
+                output_budget_tokens=job.max_tokens,
+                compact_retry=bool(input_options.get("compact_retry")),
+            )
             expected_hash = (_json_load(job.prompt_snapshot_json, {}) or {}).get("promptHash")
             if expected_hash and hashlib.sha256(prompt.encode("utf-8")).hexdigest() != expected_hash:
                 raise RuntimeError("Audit prompt snapshot changed between stages")
             openrouter_started_at = perf_counter()
-            response = await generate_openrouter_response(job.model, prompt, max_tokens=job.max_tokens)
+            response = await generate_openrouter_response(
+                job.model,
+                prompt,
+                max_tokens=job.max_tokens,
+                max_tokens_cap=AI_AUDIT_MAX_OUTPUT_TOKENS,
+                timeout=OPENROUTER_AUDIT_TIMEOUT,
+            )
             timings["openrouterMs"] = _elapsed_ms(openrouter_started_at)
             answer = str(response.get("content") or "")
-            structured = None
-            try:
-                parsed = json.loads(answer)
-                structured = parsed if isinstance(parsed, dict) else None
-            except (TypeError, ValueError):
-                structured = None
+            structured = _validate_structured_result(answer, snapshot=snapshot, job=job, response=response)
+            finish_reason = str(response.get("finish_reason") or "") or None
+            truncated = finish_reason == "length"
+            warnings = []
+            if not (snapshot.get("analysisPeriod") or {}).get("requestedMatchesAvailableData"):
+                warnings.append("Фактический период отличается от запрошенного или доступен не полностью.")
+            if not structured:
+                warnings.append("Модель вернула ответ вне JSON-контракта; показан безопасный Markdown fallback.")
+            if truncated:
+                warnings.append("Ответ модели достиг лимита и мог быть обрезан.")
             job.returned_model = str(response.get("model") or job.model)
-            job.answer_text = answer
+            job.answer_text = build_audit_answer_markdown(structured, snapshot) if structured else answer
             job.result_json = _json_dump({
                 "structured": structured,
-                "warnings": [] if structured else ["Модель вернула Markdown/текст; результат сохранён без потери ответа."],
+                "fallbackMarkdown": None if structured else answer,
+                "rawResponse": answer,
+                "warnings": warnings,
+                "finishReason": finish_reason,
+                "truncated": truncated,
+                "completeness": "truncated" if truncated else ("structured" if structured else "fallback"),
+                "analysisPeriod": snapshot.get("analysisPeriod") or {},
+                "dataCoverage": snapshot.get("dataCoverage") or {},
                 "usage": response.get("usage"),
                 "responseId": response.get("id"),
                 "requestTrace": {

@@ -283,10 +283,10 @@ export async function createAiAuditJobFlow({ request, aiService, onStart, onSucc
   }
 }
 
-export async function advanceAiAuditJobFlow({ jobId, retry = false, aiService, onStart, onSuccess, onError, onFinally }) {
+export async function advanceAiAuditJobFlow({ jobId, retry = false, compactRetry = false, aiService, onStart, onSuccess, onError, onFinally }) {
   onStart?.();
   try {
-    const job = await aiService.advanceAiAuditJob(jobId, retry);
+    const job = await aiService.advanceAiAuditJob(jobId, retry, compactRetry);
     onSuccess?.(job);
     return { status: 'success', job };
   } catch (error) {
