@@ -8,6 +8,30 @@ from typing import Any
 import httpx
 
 
+YANDEX_DIRECT_GET_SERVICES: dict[str, str] = {
+    "campaigns": "Campaigns",
+    "adgroups": "AdGroups",
+    "ads": "Ads",
+    "keywords": "Keywords",
+    "audiencetargets": "AudienceTargets",
+    "retargetinglists": "RetargetingLists",
+    "bidmodifiers": "BidModifiers",
+    "creatives": "Creatives",
+    "dictionaries": "Dictionaries",
+    "feeds": "Feeds",
+    "strategies": "Strategies",
+    "changes": "Changes",
+    "clients": "Clients",
+}
+
+
+class YandexDirectReadError(RuntimeError):
+    def __init__(self, code: str, message: str, *, retryable: bool = False) -> None:
+        super().__init__(message)
+        self.code = code
+        self.retryable = retryable
+
+
 @dataclass(frozen=True)
 class YandexDirectAccount:
     login: str | None = None
@@ -52,23 +76,168 @@ class YandexDirectConnector:
     def list_campaigns(self, limit: int = 10) -> list[dict[str, Any]]:
         if not self.is_configured:
             return []
-
-        payload = {
-            "method": "get",
-            "params": {
+        return self.paginate_service_get(
+            "campaigns",
+            {
                 "SelectionCriteria": {},
                 "FieldNames": ["Id", "Name", "Status", "Type", "State"],
-                "Page": {"Limit": limit},
             },
-        }
-        response = httpx.post(self.campaigns_url, json=payload, headers=self._headers(), timeout=30)
-        response.raise_for_status()
-        body = response.json()
-        if "error" in body:
-            error = body["error"]
-            message = error.get("error_detail") or error.get("error_string") or error.get("error_code") or "Direct API error"
-            raise RuntimeError(str(message))
-        return body.get("result", {}).get("Campaigns", [])
+            maximum_rows=max(1, limit),
+            page_size=min(max(1, limit), 1000),
+        )
+
+    def request_service_get(self, service: str, params: dict[str, Any]) -> dict[str, Any]:
+        """Call an allowlisted Direct API v5 object service using only get."""
+
+        service_id = str(service or "").lower()
+        result_key = YANDEX_DIRECT_GET_SERVICES.get(service_id)
+        if not result_key:
+            raise YandexDirectReadError("direct_service_not_allowed", "Yandex Direct service is not allowlisted.")
+        if not self.is_configured:
+            raise YandexDirectReadError("direct_auth_error", "Yandex Direct access token is not configured.")
+        try:
+            response = httpx.post(
+                f"https://api.direct.yandex.com/json/v5/{service_id}",
+                json={"method": "get", "params": params},
+                headers=self._headers(),
+                timeout=30,
+            )
+        except httpx.TimeoutException as exc:
+            raise YandexDirectReadError("direct_timeout", "Yandex Direct read request timed out.", retryable=True) from exc
+        except httpx.RequestError as exc:
+            raise YandexDirectReadError("direct_temporary_error", "Yandex Direct read request failed.", retryable=True) from exc
+        if response.status_code >= 400:
+            raise _direct_read_error(response)
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise YandexDirectReadError("direct_permanent_error", "Yandex Direct returned an invalid response.") from exc
+        if body.get("error"):
+            raise _direct_read_error(response)
+        result = body.get("result") if isinstance(body, dict) else None
+        if not isinstance(result, dict):
+            raise YandexDirectReadError("direct_permanent_error", "Yandex Direct returned no result object.")
+        return {"items": list(result.get(result_key) or []), "limited_by": result.get("LimitedBy")}
+
+    def paginate_service_get(
+        self,
+        service: str,
+        params: dict[str, Any],
+        *,
+        maximum_rows: int = 1000,
+        page_size: int = 500,
+    ) -> list[dict[str, Any]]:
+        """Follow Direct's LimitedBy cursor with finite row and page budgets."""
+
+        maximum_rows = max(1, min(int(maximum_rows), 10_000))
+        page_size = max(1, min(int(page_size), maximum_rows, 10_000))
+        offset = 0
+        rows: list[dict[str, Any]] = []
+        seen_offsets: set[int] = set()
+        while len(rows) < maximum_rows and offset not in seen_offsets:
+            seen_offsets.add(offset)
+            page_params = dict(params)
+            page_params["Page"] = {"Limit": min(page_size, maximum_rows - len(rows)), "Offset": offset}
+            page = self.request_service_get(service, page_params)
+            items = [item for item in page.get("items", []) if isinstance(item, dict)]
+            rows.extend(items[: maximum_rows - len(rows)])
+            limited_by = page.get("limited_by")
+            if not items or limited_by is None:
+                break
+            try:
+                next_offset = int(limited_by)
+            except (TypeError, ValueError):
+                break
+            if next_offset <= offset:
+                break
+            offset = next_offset
+        return rows
+
+    def request_report(self, report_spec: dict[str, Any], *, processing_mode: str = "auto") -> dict[str, Any]:
+        """Perform one bounded Reports API attempt; never sleep or poll internally."""
+
+        if not self.is_configured:
+            raise YandexDirectReadError("direct_auth_error", "Yandex Direct access token is not configured.")
+        mode = processing_mode if processing_mode in {"auto", "online", "offline"} else "auto"
+        try:
+            response = httpx.post(
+                self.reports_url,
+                json={"params": report_spec},
+                headers=self._headers(reports=True, processing_mode=mode),
+                timeout=60,
+            )
+        except httpx.TimeoutException as exc:
+            raise YandexDirectReadError("direct_timeout", "Yandex Direct report request timed out.", retryable=True) from exc
+        except httpx.RequestError as exc:
+            raise YandexDirectReadError("direct_temporary_error", "Yandex Direct report request failed.", retryable=True) from exc
+        if response.status_code == 200:
+            return {
+                "status": "completed",
+                "rows": _parse_tsv_report(response.text),
+                "retry_after_seconds": 0,
+                "limited_by": _header_int(response, "limitedBy"),
+            }
+        if response.status_code in {201, 202}:
+            return {
+                "status": "processing",
+                "rows": [],
+                "retry_after_seconds": _retry_in_seconds(response),
+                "reports_in_queue": _header_int(response, "reportsInQueue"),
+            }
+        if response.status_code >= 400:
+            raise _direct_read_error(response)
+        raise YandexDirectReadError("direct_temporary_error", "Unexpected Yandex Direct report response.", retryable=True)
+
+    def paginate_report(
+        self,
+        report_spec: dict[str, Any],
+        *,
+        maximum_rows: int = 1000,
+        page_size: int = 500,
+        processing_mode: str = "auto",
+    ) -> dict[str, Any]:
+        """Read completed report pages with finite budgets; processing is returned to the caller."""
+
+        maximum_rows = max(1, min(int(maximum_rows), 10_000))
+        page_size = max(1, min(int(page_size), maximum_rows, 10_000))
+        offset = 0
+        rows: list[dict[str, Any]] = []
+        seen_offsets: set[int] = set()
+        while len(rows) < maximum_rows and offset not in seen_offsets:
+            seen_offsets.add(offset)
+            page_spec = dict(report_spec)
+            page_spec["Page"] = {"Limit": min(page_size, maximum_rows - len(rows)), "Offset": offset}
+            response = self.request_report(page_spec, processing_mode=processing_mode)
+            if response.get("status") == "processing":
+                return {**response, "rows": rows}
+            page_rows = list(response.get("rows") or [])
+            rows.extend(page_rows[: maximum_rows - len(rows)])
+            limited_by = response.get("limited_by")
+            if not page_rows or limited_by is None:
+                break
+            try:
+                next_offset = int(limited_by)
+            except (TypeError, ValueError):
+                break
+            if next_offset <= offset:
+                break
+            offset = next_offset
+        return {"status": "completed", "rows": rows, "retry_after_seconds": 0}
+
+    def request_report_with_polling(
+        self,
+        report_spec: dict[str, Any],
+        *,
+        processing_mode: str = "auto",
+        max_wait_seconds: int = 20,
+    ) -> list[dict[str, str]]:
+        """Compatibility helper for non-serverless flows; staged audit uses request_report()."""
+
+        return self._request_report_with_retries(
+            payload={"params": report_spec},
+            processing_mode=processing_mode,
+            max_wait_seconds=max_wait_seconds,
+        )
 
     def get_campaign_report(
         self,
@@ -425,6 +594,32 @@ def _retry_in_seconds(response: httpx.Response) -> int:
         return max(1, int(float(retry_after or 1)))
     except ValueError:
         return 1
+
+
+def _header_int(response: httpx.Response, name: str) -> int | None:
+    try:
+        return int(response.headers.get(name, ""))
+    except (TypeError, ValueError):
+        return None
+
+
+def _direct_read_error(response: httpx.Response) -> YandexDirectReadError:
+    status_code = response.status_code
+    message = _format_direct_error(response)
+    lowered = message.lower()
+    if status_code == 401:
+        return YandexDirectReadError("direct_auth_error", "Yandex Direct authorization failed.")
+    if status_code == 403:
+        return YandexDirectReadError("direct_permission_denied", "Yandex Direct access is denied for this account.")
+    if status_code == 429:
+        return YandexDirectReadError("direct_rate_limited", "Yandex Direct request limit was reached.", retryable=True)
+    if status_code == 400 and ("queue" in lowered or "очеред" in lowered):
+        return YandexDirectReadError("direct_report_queue_full", "Yandex Direct report queue is full.", retryable=True)
+    if status_code == 400:
+        return YandexDirectReadError("direct_invalid_field_combination", message or "Invalid Direct report fields.")
+    if status_code >= 500:
+        return YandexDirectReadError("direct_temporary_error", "Yandex Direct is temporarily unavailable.", retryable=True)
+    return YandexDirectReadError("direct_permanent_error", message or "Yandex Direct request failed.")
 
 
 def _format_direct_error(response: httpx.Response) -> str:

@@ -549,6 +549,8 @@ class AiAuditAdvanceRequest(BaseModel):
 
 
 class AiAuditPeriod(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     date_from: str | None = None
     date_to: str | None = None
     days: int | None = None
@@ -557,6 +559,8 @@ class AiAuditPeriod(BaseModel):
 
 
 class AiAuditCoverageItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     available: bool = False
     total: int | None = None
     analyzed: int = 0
@@ -567,6 +571,8 @@ class AiAuditCoverageItem(BaseModel):
 
 
 class AiAuditMeta(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     period: AiAuditPeriod = Field(default_factory=AiAuditPeriod)
     data_coverage: dict[str, AiAuditCoverageItem] = Field(default_factory=dict)
     model: str | None = None
@@ -574,51 +580,73 @@ class AiAuditMeta(BaseModel):
 
 
 class AiAuditDataQuality(BaseModel):
-    status: str = "partial"
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["sufficient", "partial", "insufficient"] = "partial"
     facts: list[str] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
 
 
 class AiAuditFinding(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     hypothesis_id: str | None = None
     verification_status: Literal["confirmed", "partially_confirmed", "rejected", "unverified", "not_applicable"] | None = None
     campaign_name: str | None = None
-    campaign_type: str = "unknown"
-    analysis_level: str = "campaign"
+    campaign_type: Literal["search", "yan", "retargeting", "master_campaign", "unknown"] = "unknown"
+    analysis_level: Literal[
+        "account", "campaign", "ad_group", "keyword", "query", "placement",
+        "audience", "device", "geo", "demographic", "tracking",
+    ] = "campaign"
     problem: str
     fact: str
     evidence: list[str] = Field(default_factory=list, max_length=5)
     hypothesis: str | None = None
-    confidence: str = "low"
-    risk: str = "medium"
+    confidence: Literal["low", "medium", "high"] = "low"
+    risk: Literal["low", "medium", "high"] = "medium"
     recommendation: str
     requires_human_approval: bool = True
     next_data_needed: list[str] = Field(default_factory=list, max_length=5)
 
 
 class AiAuditAction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     priority: int
     hypothesis_id: str | None = None
     action: str
     scope: str
     reason: str
-    mode: str = "manual_review"
+    mode: Literal["manual_review", "dry_run"] = "manual_review"
     requires_human_approval: bool = True
 
 
 class AiAuditDrilldownSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     analyzed_levels: list[str] = Field(default_factory=list)
     not_analyzed_levels: list[str] = Field(default_factory=list)
     next_data_needed: list[str] = Field(default_factory=list)
 
 
+class AiAuditInsufficientDataCampaign(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    campaign_name: str
+    reason: str
+    recommendation: str
+    next_data_needed: list[str] = Field(default_factory=list, max_length=5)
+
+
 class AiAuditResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     meta: AiAuditMeta = Field(default_factory=AiAuditMeta)
     executive_summary: str
     data_quality: AiAuditDataQuality = Field(default_factory=AiAuditDataQuality)
     critical_findings: list[AiAuditFinding] = Field(default_factory=list, max_length=5)
     opportunities: list[AiAuditFinding] = Field(default_factory=list, max_length=5)
-    insufficient_data_campaigns: list[str] = Field(default_factory=list)
+    insufficient_data_campaigns: list[AiAuditInsufficientDataCampaign] = Field(default_factory=list)
     tracking_and_goals: dict = Field(default_factory=dict)
     drilldown_summary: AiAuditDrilldownSummary = Field(default_factory=AiAuditDrilldownSummary)
     action_plan: list[AiAuditAction] = Field(default_factory=list, max_length=10)
@@ -636,16 +664,26 @@ class AuditDataRequest(BaseModel):
     campaign_family: Literal["search", "yan", "unknown"]
     campaign_subtype: Literal["search", "brand_search", "yan_prospecting", "yan_retargeting", "unknown"]
     dimension: Literal[
-        "ad_groups", "keywords", "search_queries", "ads", "landing_pages", "placements",
-        "audiences", "retargeting_segments", "audience_exclusions", "devices", "geo",
-        "demographics", "frequency", "goals", "conversion_sources", "lead_quality",
+        "account_summary", "campaigns", "campaign_performance", "campaign_daily_dynamics",
+        "campaign_settings", "campaign_strategy", "campaign_status", "campaign_bid_modifiers",
+        "ad_groups", "ad_group_performance", "ad_group_settings", "keywords", "keyword_performance",
+        "autotargeting", "criteria_performance", "search_queries", "audience_targets", "audiences",
+        "retargeting_segments", "retargeting_lists", "audience_exclusions", "targeting_conditions",
+        "ads", "ad_performance", "ad_texts", "ad_urls", "creatives", "images", "videos",
+        "sitelinks", "callouts", "landing_pages", "placements", "placement_or_network_breakdown",
+        "devices", "geo", "location_of_presence", "demographics", "age", "gender", "ad_format",
+        "mobile_platform", "carrier", "frequency", "frequency_and_reach", "goals",
+        "conversions_by_goal", "conversion_rate", "cost_per_conversion", "revenue", "roi",
+        "pageviews", "bounce_rate", "conversion_sources", "lead_quality", "bid_modifiers",
     ]
+    capability_id: str | None = None
     reason: str
     period: AiAuditPeriod = Field(default_factory=AiAuditPeriod)
     filters: dict = Field(default_factory=dict)
     metrics: list[str] = Field(default_factory=list)
     priority: Literal["low", "medium", "high"] = "medium"
     required_for_conclusion: bool = False
+    data_preference: Literal["live_required", "live_preferred", "saved_allowed"] = "live_preferred"
 
 
 class AuditDataRequestResult(BaseModel):
@@ -653,17 +691,35 @@ class AuditDataRequestResult(BaseModel):
 
     request_id: str
     hypothesis_id: str
+    capability_id: str | None = None
     dimension: str
     status: Literal[
         "collected", "not_applicable", "unavailable", "unsupported", "insufficient_data",
-        "failed", "skipped_budget_limit",
+        "failed", "skipped_budget_limit", "processing", "cached", "partial",
     ]
     source: str | None = None
+    source_type: Literal["report", "service_get", "saved_data", "external"] | None = None
+    source_required: str | None = None
+    live: bool = False
+    live_attempted: bool = False
+    live_error_code: str | None = None
+    saved_fallback: bool = False
+    cached: bool = False
+    request_hash: str | None = None
+    freshness: str | None = None
+    fetched_at: str | None = None
+    period: dict = Field(default_factory=dict)
+    campaign_name: str | None = None
     rows_analyzed: int = 0
+    rows_total: int = 0
+    truncated: bool = False
     data: list[dict] = Field(default_factory=list)
     summary: str = ""
     limitations: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
     error_code: str | None = None
+    retryable: bool = False
+    next_retry_at: str | None = None
 
 
 class AuditInvestigationHypothesis(BaseModel):

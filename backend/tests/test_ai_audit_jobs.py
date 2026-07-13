@@ -11,7 +11,7 @@ import app.services.ai_audit_jobs as audit_jobs
 from app.api.routers.ai import chat_with_ai
 from app.db import Base
 from app.models import AiAuditJob, ClientAccount, Organization, User
-from app.schemas import AiAuditCreateRequest, AiChatRequest
+from app.schemas import AiAuditCreateRequest, AiChatRequest, AuditDataRequestResult
 from app.core.config import normalize_ai_request_options, production_ai_model_ids, DEFAULT_PRODUCTION_AI_MODEL
 
 
@@ -268,7 +268,7 @@ def test_full_staged_flow_runs_planning_verification_and_final_answer(monkeypatc
             break
     assert job.status == "completed"
     assert stages[:7] == [
-        "create_investigation_plan", "validate_data_requests", "collect_drilldowns",
+        "create_investigation_plan", "validate_data_requests", "collect_live_data",
         "verify_hypotheses", "generate_answer", "finalize", "finalize",
     ]
     assert audit_jobs._json_load(job.prompt_snapshot_json, {})["fullPromptStored"] is False
@@ -731,7 +731,7 @@ def test_timeout_is_saved_as_retryable_failure(monkeypatch):
     assert failed.retryable is True
 
 
-def test_invalid_provider_format_is_kept_only_in_technical_details(monkeypatch):
+def test_invalid_provider_format_is_not_exposed(monkeypatch):
     db = _db()
     job = _create(db)
     job.status = "context_ready"
@@ -749,13 +749,12 @@ def test_invalid_provider_format_is_kept_only_in_technical_details(monkeypatch):
     result = audit_jobs._json_load(generated.result_json, {})
     assert result["structured"] is None
     assert result["fallbackMarkdown"] == audit_jobs._UNSUPPORTED_AUDIT_FORMAT_MESSAGE
-    assert result["technicalResponse"].startswith("## Итог")
-    assert result["structuredParsing"] == {
-        "status": "fallback",
-        "sourceFormat": "invalid",
-        "errorCode": "json_parse_failed",
-        "validationErrorsCount": 0,
-    }
+    assert result["technicalResponse"] is None
+    assert result["structuredParsing"]["status"] == "fallback"
+    assert result["structuredParsing"]["sourceFormat"] == "invalid"
+    assert result["structuredParsing"]["errorCode"] == "json_parse_failed"
+    assert result["structuredParsing"]["validationErrorsCount"] == 0
+    assert result["providerResponseMetadata"]["fullResponseStored"] is False
     assert result["completeness"] == "fallback"
     assert "rawResponse" not in result
 
@@ -814,12 +813,12 @@ def test_structured_result_accepts_json_markdown_fence_and_overrides_model_meta(
     assert structured["meta"]["model"] == "qwen/qwen3-14b"
     assert structured["meta"]["period"]["date_from"] != "1900-01-01"
     assert structured["meta"]["output_budget_tokens"] == job.max_tokens
-    assert parsing == {
-        "status": "success",
-        "sourceFormat": "markdown_fenced_json",
-        "errorCode": None,
-        "validationErrorsCount": 0,
-    }
+    assert parsing["status"] == "success"
+    assert parsing["sourceFormat"] == "markdown_fenced_json"
+    assert parsing["errorCode"] is None
+    assert parsing["validationErrorsCount"] == 0
+    assert parsing["validationErrorPaths"] == []
+    assert parsing["validationErrorTypes"] == []
 
 
 def test_generate_stage_stores_fenced_json_as_structured_without_raw_answer(monkeypatch):
@@ -897,7 +896,7 @@ def test_schema_invalid_json_is_hidden_from_public_result():
 
     assert response.result["structured"] is None
     assert response.result["fallbackMarkdown"] == audit_jobs._UNSUPPORTED_AUDIT_FORMAT_MESSAGE
-    assert response.result["technicalResponse"] == raw_answer
+    assert "technicalResponse" not in response.result
     assert response.result["structuredParsing"]["errorCode"] == "json_schema_validation_failed"
     assert response.result["structuredParsing"]["validationErrorsCount"] > 0
     assert response.answer == audit_jobs._UNSUPPORTED_AUDIT_FORMAT_MESSAGE
@@ -931,9 +930,93 @@ def test_context_metadata_reports_saved_live_and_unavailable_drilldowns():
         "allowed": 4,
         "saved": 2,
         "live": 0,
+        "liveCompleted": 0,
+        "processing": 0,
+        "cacheHits": 0,
+        "liveAttempts": 0,
+        "liveSucceeded": 0,
+        "liveProcessing": 0,
+        "liveFailed": 0,
+        "savedFallbacks": 0,
+        "liveFailureReasons": {},
         "statusCounts": {"collected": 2, "unavailable": 1, "insufficient_data": 1, "not_applicable": 1},
         "unavailableDimensions": ["placements"],
+        "unavailableCapabilities": [],
+        "freshestDataAt": None,
     }
+
+
+def test_live_runtime_counters_distinguish_attempts_cache_processing_and_fallbacks():
+    snapshot = {
+        "auditRuntime": {},
+        "drilldownResults": [
+            {"status": "collected", "live_attempted": True, "live": True},
+            {"status": "processing", "live_attempted": True, "live": True, "live_error_code": "direct_report_processing"},
+            {"status": "collected", "live_attempted": True, "saved_fallback": True, "source": "directpilot_saved_stats", "live_error_code": "direct_rate_limited"},
+            {"status": "cached", "cached": True, "source": "yandex_direct_cached_live"},
+        ],
+    }
+
+    audit_jobs._refresh_direct_read_runtime(snapshot, direct_api_calls=2)
+    runtime = snapshot["auditRuntime"]
+
+    assert runtime["liveAttempts"] == 3
+    assert runtime["liveSucceeded"] == 1
+    assert runtime["liveProcessing"] == 1
+    assert runtime["liveFailed"] == 1
+    assert runtime["cacheHits"] == 1
+    assert runtime["savedFallbacks"] == 1
+    assert runtime["liveFailureReasons"] == {
+        "direct_report_processing": 1,
+        "direct_rate_limited": 1,
+    }
+
+
+def test_processing_direct_report_waits_before_hypothesis_verification(monkeypatch):
+    db = _db()
+    job = _create(db)
+    plan = json.loads(_investigation_answer())
+    request = plan["hypotheses"][0]["data_requests"][0]
+    snapshot = audit_jobs.build_compact_audit_context(_context())
+    snapshot["investigationPlan"] = plan
+    snapshot["validatedDataRequests"] = [request]
+    snapshot["drilldownResults"] = []
+    snapshot["auditRuntime"] = {"requestsCount": 1}
+    job.context_snapshot_json = audit_jobs._json_dump(snapshot)
+    job.status = "context_ready"
+    job.current_stage = "collect_live_data"
+    db.commit()
+    calls = {"count": 0}
+
+    def fake_collect(*args, **kwargs):
+        calls["count"] += 1
+        status_value = "processing" if calls["count"] == 1 else "collected"
+        return [AuditDataRequestResult(
+            request_id=request["request_id"],
+            hypothesis_id=request["hypothesis_id"],
+            capability_id="search_queries",
+            dimension="search_queries",
+            campaign_name="Search",
+            status=status_value,
+            source="yandex_direct_live_report",
+            source_type="report",
+            live=True,
+            data=[] if status_value == "processing" else [{"query": "hotel"}],
+            rows_analyzed=0 if status_value == "processing" else 1,
+            rows_total=0 if status_value == "processing" else 1,
+            error_code="direct_report_processing" if status_value == "processing" else None,
+            retryable=status_value == "processing",
+        )], 1
+
+    monkeypatch.setattr(audit_jobs, "collect_audit_data_requests", fake_collect)
+
+    job = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
+    assert job.current_stage == "wait_for_offline_reports"
+    assert job.progress_percent == 58
+
+    job = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
+    assert job.current_stage == "verify_hypotheses"
+    assert audit_jobs.audit_job_response(job).context_metadata["investigation"]["dataRequests"]["liveCompleted"] == 1
 
 
 def test_truncated_invalid_json_reports_truncated_provider_response():
@@ -1014,3 +1097,105 @@ def test_chat_routes_heavy_audit_to_staged_job_without_openrouter():
     assert response.error_code == "staged_audit_required"
     assert response.suggested_action == "create_audit_job"
     assert response.source == "staged_audit_router"
+
+
+def test_all_audit_parsers_accept_fenced_json():
+    snapshot = audit_jobs.build_compact_audit_context(_context())
+    snapshot["campaignClassifications"] = audit_jobs.classify_audit_campaigns(snapshot)
+    base_plan = audit_jobs.build_rule_based_investigation_plan(snapshot)
+
+    plan, plan_valid, plan_parsing = audit_jobs._parse_investigation_plan(
+        f"```json\n{_investigation_answer()}\n```", snapshot, base_plan,
+    )
+
+    assert plan_valid is True
+    assert plan.hypotheses
+    assert plan_parsing["sourceFormat"] == "markdown_fenced_json"
+
+    snapshot["investigationPlan"] = plan.model_dump(mode="json")
+    snapshot["drilldownResults"] = [{
+        "request_id": plan.hypotheses[0].data_requests[0].request_id,
+        "hypothesis_id": plan.hypotheses[0].hypothesis_id,
+        "status": "collected",
+    }]
+    verification_payload = json.loads(_verification_answer())
+    verification_payload["verifications"][0]["hypothesis_id"] = plan.hypotheses[0].hypothesis_id
+    verifications, verification_valid, verification_parsing = audit_jobs._parse_verifications(
+        f"```json\n{json.dumps(verification_payload, ensure_ascii=False)}\n```", snapshot,
+    )
+
+    assert verification_valid is True
+    assert verifications.verifications[0].status == "confirmed"
+    assert verification_parsing["sourceFormat"] == "markdown_fenced_json"
+
+
+def test_strict_schema_reports_safe_validation_metadata_without_values():
+    db = _db()
+    job = _create(db)
+    payload = json.loads(_structured_answer())
+    payload["unexpected_secret_field"] = "must-not-leak"
+
+    structured, parsing = audit_jobs._validate_structured_result_with_metadata(
+        json.dumps(payload, ensure_ascii=False),
+        snapshot=audit_jobs.build_compact_audit_context(_context()),
+        job=job,
+        response={"model": job.model},
+    )
+
+    assert structured is None
+    assert parsing["errorCode"] == "json_schema_validation_failed"
+    assert parsing["validationErrorsCount"] == 1
+    assert parsing["validationErrorPaths"] == ["unexpected_secret_field"]
+    assert parsing["validationErrorTypes"] == ["extra_forbidden"]
+    assert "must-not-leak" not in json.dumps(parsing)
+
+
+def test_production_like_result_is_structured_and_unsafe_unverified_actions_are_downgraded():
+    db = _db()
+    job = _create(db)
+    snapshot = audit_jobs.build_compact_audit_context(_context())
+    payload = json.loads(_structured_answer())
+    payload["insufficient_data_campaigns"] = [{
+        "campaign_name": "РСЯ",
+        "reason": "Мало кликов",
+        "recommendation": "Собрать данные",
+        "next_data_needed": ["search_queries"],
+    }]
+    payload["critical_findings"][0]["hypothesis_id"] = None
+    payload["action_plan"] = [
+        {
+            "priority": 1,
+            "hypothesis_id": None,
+            "action": "pause_campaign",
+            "scope": "Search",
+            "reason": "Высокий CPA",
+            "mode": "dry_run",
+            "requires_human_approval": True,
+        },
+        {
+            "priority": 2,
+            "hypothesis_id": None,
+            "action": "review_search_queries",
+            "scope": "Search",
+            "reason": "Проверить интент",
+            "mode": "manual_review",
+            "requires_human_approval": True,
+        },
+    ]
+    payload["tracking_and_goals"] = {"status": "perfect", "goal_conversions": 999999}
+
+    structured, parsing = audit_jobs._validate_structured_result_with_metadata(
+        f"```json\n{json.dumps(payload, ensure_ascii=False)}\n```",
+        snapshot=snapshot,
+        job=job,
+        response={"model": job.model},
+    )
+
+    assert parsing["status"] == "success"
+    assert structured["insufficient_data_campaigns"][0]["campaign_name"] == "РСЯ"
+    assert structured["critical_findings"][0]["verification_status"] == "unverified"
+    assert "Неподтверждённая гипотеза" in structured["critical_findings"][0]["hypothesis"]
+    assert structured["action_plan"][0]["action"].startswith("Собрать дополнительные данные")
+    assert structured["action_plan"][1]["action"] == "review_search_queries"
+    assert structured["tracking_and_goals"]["goal_conversions"] != 999999
+    assert any("missing_hypothesis_id" in item for item in structured["limitations"])

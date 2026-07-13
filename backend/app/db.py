@@ -91,6 +91,63 @@ AI_AUDIT_JOB_SCHEMA_STATEMENTS = (
     "ALTER TABLE ai_audit_jobs ADD COLUMN IF NOT EXISTS cancel_requested BOOLEAN NOT NULL DEFAULT FALSE",
 )
 
+DIRECT_READ_SCHEMA_STATEMENTS = (
+    """
+    CREATE TABLE IF NOT EXISTS direct_read_cache (
+        id VARCHAR(36) PRIMARY KEY,
+        client_id VARCHAR(64) NOT NULL,
+        request_hash VARCHAR(64) NOT NULL,
+        capability_id VARCHAR(64) NOT NULL,
+        source VARCHAR(64) NOT NULL,
+        result_json TEXT NOT NULL DEFAULT '[]',
+        period_json TEXT NOT NULL DEFAULT '{}',
+        rows_count INTEGER NOT NULL DEFAULT 0,
+        partial BOOLEAN NOT NULL DEFAULT FALSE,
+        warnings_json TEXT NOT NULL DEFAULT '[]',
+        fetched_at TIMESTAMPTZ NOT NULL,
+        expires_at TIMESTAMPTZ NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        CONSTRAINT uq_direct_read_cache_client_request UNIQUE (client_id, request_hash)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_direct_read_cache_client_id ON direct_read_cache (client_id)",
+    "CREATE INDEX IF NOT EXISTS ix_direct_read_cache_request_hash ON direct_read_cache (request_hash)",
+    "CREATE INDEX IF NOT EXISTS ix_direct_read_cache_capability_id ON direct_read_cache (capability_id)",
+    "CREATE INDEX IF NOT EXISTS ix_direct_read_cache_expires_at ON direct_read_cache (expires_at)",
+    """
+    CREATE TABLE IF NOT EXISTS direct_report_jobs (
+        id VARCHAR(36) PRIMARY KEY,
+        audit_job_id VARCHAR(36),
+        client_id VARCHAR(64) NOT NULL,
+        capability_id VARCHAR(64) NOT NULL,
+        request_hash VARCHAR(64) NOT NULL,
+        report_name VARCHAR(255) NOT NULL,
+        report_spec_json TEXT NOT NULL,
+        status VARCHAR(32) NOT NULL DEFAULT 'queued',
+        retry_after_seconds INTEGER NOT NULL DEFAULT 1,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        rows_count INTEGER NOT NULL DEFAULT 0,
+        result_snapshot_json TEXT,
+        error_code VARCHAR(128),
+        error_message TEXT,
+        next_retry_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        completed_at TIMESTAMPTZ,
+        expires_at TIMESTAMPTZ,
+        CONSTRAINT uq_direct_report_jobs_client_request UNIQUE (client_id, request_hash)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_direct_report_jobs_audit_job_id ON direct_report_jobs (audit_job_id)",
+    "CREATE INDEX IF NOT EXISTS ix_direct_report_jobs_client_id ON direct_report_jobs (client_id)",
+    "CREATE INDEX IF NOT EXISTS ix_direct_report_jobs_request_hash ON direct_report_jobs (request_hash)",
+    "CREATE INDEX IF NOT EXISTS ix_direct_report_jobs_capability_id ON direct_report_jobs (capability_id)",
+    "CREATE INDEX IF NOT EXISTS ix_direct_report_jobs_status ON direct_report_jobs (status)",
+    "CREATE INDEX IF NOT EXISTS ix_direct_report_jobs_next_retry_at ON direct_report_jobs (next_retry_at)",
+    "CREATE INDEX IF NOT EXISTS ix_direct_report_jobs_expires_at ON direct_report_jobs (expires_at)",
+)
+
 
 def check_db_connection() -> None:
     if database_engine_error:
@@ -109,6 +166,7 @@ def init_db(*, run_schema_patch: bool = True) -> None:
     if not run_schema_patch:
         check_db_connection()
         ensure_ai_audit_job_schema()
+        ensure_direct_read_schema()
         return
     import app.models  # noqa: F401
     import app.models_wordstat  # noqa: F401
@@ -116,6 +174,7 @@ def init_db(*, run_schema_patch: bool = True) -> None:
 
     Base.metadata.create_all(bind=engine)
     ensure_mvp_schema()
+    ensure_direct_read_schema()
 
 
 def ensure_ai_audit_job_schema() -> None:
@@ -123,6 +182,14 @@ def ensure_ai_audit_job_schema() -> None:
         return
     with engine.begin() as connection:
         for statement in AI_AUDIT_JOB_SCHEMA_STATEMENTS:
+            connection.execute(text(statement))
+
+
+def ensure_direct_read_schema() -> None:
+    if engine is None:
+        return
+    with engine.begin() as connection:
+        for statement in DIRECT_READ_SCHEMA_STATEMENTS:
             connection.execute(text(statement))
 
 
