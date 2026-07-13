@@ -309,13 +309,31 @@ body[data-page="app"] .aiGrid {
 }
 
 body[data-page="app"] .aiChatMessages {
-  max-height: clamp(520px, 58vh, 600px);
+  min-height: 520px;
+  max-height: clamp(620px, 70vh, 850px);
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
   border-color: var(--dp-polish-border-soft);
   border-radius: 16px;
   background: #f8fafc;
+}
+
+body[data-page="app"] .aiAuditDataSources,
+body[data-page="app"] .aiAuditUsage {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin-top: 10px;
+  color: var(--dp-polish-muted);
+}
+
+body[data-page="app"] .aiAuditDataSources small {
+  flex-basis: 100%;
+}
+
+body[data-page="app"] .aiAuditStageRuntime strong {
+  color: #9a5b00;
 }
 
 body[data-page="app"] .wordstatChartPanel {
@@ -365,6 +383,10 @@ body[data-page="app"] .wordstatChartPanel svg {
 }
 
 @media (max-width: 720px) {
+  body[data-page="app"] .aiChatMessages {
+    min-height: 360px;
+    max-height: 65vh;
+  }
   body[data-page="app"] .workspace {
     padding: 10px;
   }

@@ -68,6 +68,11 @@ AI_AUDIT_JOB_SCHEMA_STATEMENTS = (
         retryable BOOLEAN NOT NULL DEFAULT FALSE,
         timings_json TEXT NOT NULL DEFAULT '{}',
         stage_version INTEGER NOT NULL DEFAULT 0,
+        stage_started_at TIMESTAMPTZ,
+        stage_lease_expires_at TIMESTAMPTZ,
+        stage_execution_token VARCHAR(36),
+        stage_attempt INTEGER NOT NULL DEFAULT 0,
+        cancel_requested BOOLEAN NOT NULL DEFAULT FALSE,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         started_at TIMESTAMPTZ,
@@ -79,6 +84,11 @@ AI_AUDIT_JOB_SCHEMA_STATEMENTS = (
     "CREATE INDEX IF NOT EXISTS ix_ai_audit_jobs_client_id ON ai_audit_jobs (client_id)",
     "CREATE INDEX IF NOT EXISTS ix_ai_audit_jobs_status ON ai_audit_jobs (status)",
     "CREATE INDEX IF NOT EXISTS ix_ai_audit_jobs_expires_at ON ai_audit_jobs (expires_at)",
+    "ALTER TABLE ai_audit_jobs ADD COLUMN IF NOT EXISTS stage_started_at TIMESTAMPTZ",
+    "ALTER TABLE ai_audit_jobs ADD COLUMN IF NOT EXISTS stage_lease_expires_at TIMESTAMPTZ",
+    "ALTER TABLE ai_audit_jobs ADD COLUMN IF NOT EXISTS stage_execution_token VARCHAR(36)",
+    "ALTER TABLE ai_audit_jobs ADD COLUMN IF NOT EXISTS stage_attempt INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE ai_audit_jobs ADD COLUMN IF NOT EXISTS cancel_requested BOOLEAN NOT NULL DEFAULT FALSE",
 )
 
 

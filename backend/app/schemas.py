@@ -726,6 +726,11 @@ class AiAuditJobResponse(BaseModel):
     error_code: str | None = None
     error_message: str | None = None
     retryable: bool = False
+    stage_started_at: str | None = None
+    stage_lease_expires_at: str | None = None
+    stage_attempt: int = 0
+    is_stage_stale: bool = False
+    cancel_requested: bool = False
     created_at: str | None = None
     updated_at: str | None = None
     completed_at: str | None = None

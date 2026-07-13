@@ -188,11 +188,16 @@ export function renderAiAuditJob({
   const foundStageIndex = stages.findIndex(([id]) => id === aiAuditJob?.current_stage);
   const stageIndex = foundStageIndex < 0 ? 0 : foundStageIndex;
   const terminal = ['completed', 'failed', 'cancelled'].includes(aiAuditJob?.status);
+  const stageStartedMs = Date.parse(aiAuditJob?.stage_started_at || '');
+  const stageElapsedSeconds = Number.isFinite(stageStartedMs)
+    ? Math.max(0, Math.floor((Date.now() - stageStartedMs) / 1000))
+    : 0;
+  const stageRunsLong = aiAuditJob?.status === 'generating' && stageElapsedSeconds > 90;
   const statusLabel = {
     queued: 'В очереди',
     collecting_context: 'Собираем данные',
     context_ready: 'Контекст готов',
-    generating: 'AI анализирует',
+    generating: aiAuditJob?.current_stage === 'generate_answer' ? 'AI формирует результат' : 'AI анализирует',
     completed: 'Готово',
     failed: 'Ошибка',
     cancelled: 'Отменено',
@@ -200,6 +205,7 @@ export function renderAiAuditJob({
   const investigation = aiAuditJob?.context_metadata?.investigation || {};
   const requestedDimensions = investigation.requestedDimensions || [];
   const runtime = aiAuditJob?.context_metadata?.runtime || {};
+  const tokenUsage = runtime.tokenUsage || {};
   return `
     <section class="panel aiAuditJobPanel">
       <div class="panelHeader">
@@ -209,17 +215,21 @@ export function renderAiAuditJob({
       ${aiAuditJob ? `
         <div class="aiAuditProgress"><span style="width:${Math.max(0, Math.min(100, Number(aiAuditJob.progress_percent) || 0))}%"></span></div>
         <strong>Прогресс: ${escapeHtml(String(aiAuditJob.progress_percent || 0))}%</strong>
+        ${aiAuditJob.status === 'generating' ? `<p class="aiAuditStageRuntime">Этап выполняется ${escapeHtml(String(stageElapsedSeconds))} сек. · попытка ${escapeHtml(String(aiAuditJob.stage_attempt || 1))}${stageRunsLong ? ' · <strong>Этап выполняется дольше обычного</strong>' : ''}</p>` : ''}
         <ol class="aiAuditStages">
           ${stages.map(([, label], index) => `<li class="${index < stageIndex || aiAuditJob.status === 'completed' ? 'done' : index === stageIndex && !terminal ? 'active' : ''}">${index < stageIndex || aiAuditJob.status === 'completed' ? '✓' : index === stageIndex && !terminal ? '•' : '○'} ${escapeHtml(label)}</li>`).join('')}
         </ol>
-        ${requestedDimensions.length ? `<div class="aiAuditInvestigation"><strong>AI запросил дополнительные данные:</strong> ${requestedDimensions.map((value) => escapeHtml({ ad_groups: 'группы', search_queries: 'поисковые запросы', goals: 'цели', placements: 'площадки', audiences: 'аудитории', retargeting_segments: 'сегменты ретаргетинга', devices: 'устройства', geo: 'география', demographics: 'демография', frequency: 'частота', lead_quality: 'качество лидов' }[value] || value)).join(', ')}.<small>Раунд ${escapeHtml(String(runtime.investigationRound || 1))} из 2 · запросов ${escapeHtml(String(runtime.requestsCount || 0))} · AI-вызовов ${escapeHtml(String(runtime.providerCallsCount || 0))} · Direct API ${escapeHtml(String(runtime.directApiCallsCount || 0))}</small></div>` : ''}
+        ${requestedDimensions.length ? `<div class="aiAuditInvestigation"><strong>AI запросил дополнительные данные:</strong> ${requestedDimensions.map((value) => escapeHtml({ ad_groups: 'группы', search_queries: 'поисковые запросы', goals: 'цели', placements: 'площадки', audiences: 'аудитории', retargeting_segments: 'сегменты ретаргетинга', devices: 'устройства', geo: 'география', demographics: 'демография', frequency: 'частота', lead_quality: 'качество лидов' }[value] || value)).join(', ')}.<small>Раунд ${escapeHtml(String(runtime.investigationRound || 1))} из 2 · запросов ${escapeHtml(String(runtime.requestsCount || 0))} · AI-вызовов ${escapeHtml(String(runtime.providerCallsCount || 0))}</small></div>` : ''}
+        ${runtime.requestsCount ? `<div class="aiAuditDataSources"><span><strong>Saved data requests:</strong> ${escapeHtml(String(runtime.savedDataRequestsCount || 0))}</span><span><strong>Live Direct API calls:</strong> ${escapeHtml(String(runtime.directApiCallsCount || 0))}</span>${Number(runtime.directApiCallsCount || 0) === 0 ? '<small>Дополнительные данные получены из последней синхронизации DirectPilot.</small>' : ''}</div>` : ''}
+        ${aiAuditJob.status === 'completed' && tokenUsage.total ? `<div class="aiAuditUsage"><span>Prompt tokens: ${escapeHtml(String(tokenUsage.prompt || 0))}</span><span>Completion tokens: ${escapeHtml(String(tokenUsage.completion || 0))}</span><span>Total tokens: ${escapeHtml(String(tokenUsage.total || 0))}</span></div>` : ''}
         ${aiAuditJob.error_message ? `<div class="authStatus integrationStatus">${escapeHtml(aiAuditJob.error_message)}</div>` : ''}
         ${aiAuditJob.answer || aiAuditJob.result ? `<div><h4>Результат аудита</h4>${renderAiAuditResult(aiAuditJob.result, aiAuditJob.answer, escapeHtml, aiAuditJob)}</div>` : ''}
         <div class="heroActions">
-          ${!terminal && aiAuditJob.status !== 'generating' ? '<button class="secondaryButton" data-ai-audit-cancel>Отменить</button>' : ''}
+          ${!terminal ? '<button class="secondaryButton" data-ai-audit-cancel>Отменить</button>' : ''}
           ${aiAuditJob.status === 'failed' && aiAuditJob.retryable ? '<button class="approveButton" data-ai-audit-retry>Повторить этап</button>' : ''}
+          ${aiAuditJob.status === 'failed' ? '<button class="secondaryButton" data-ai-audit-reset>Завершить и начать новый аудит</button>' : ''}
           ${aiAuditJob.result?.truncated ? '<button class="approveButton" data-ai-audit-compact-retry>Повторить в более компактном формате</button>' : ''}
-          ${terminal ? '<button class="secondaryButton" data-ai-audit-new>Новый аудит</button>' : ''}
+          ${['completed', 'cancelled'].includes(aiAuditJob.status) ? '<button class="secondaryButton" data-ai-audit-new>Новый аудит</button>' : ''}
         </div>
       ` : `<button class="approveButton" data-ai-audit-start="full_account" ${selectedClientId && !aiAuditLoading ? '' : 'disabled'}>${aiAuditLoading ? 'Создаём...' : 'Запустить полный аудит'}</button>`}
       ${aiAuditError ? `<div class="authStatus integrationStatus">${escapeHtml(aiAuditError)}</div>` : ''}
@@ -274,10 +284,8 @@ export function renderAiAssistantContent(context) {
     ${renderAiMethodologyPanel(context)}
     ${renderAiStatusPanel(context)}
     ${renderAiAuditJob(context)}
-    ${renderAiChat(context)}
     ${renderAiQuickActions(context)}
-    ${renderAiPromptDebugPanel(context)}
-    ${renderClientAiRecommendations(context)}
+    ${renderAiChat(context)}
   `;
 }
 import { renderSafeMarkdown } from '../core/markdown.js';

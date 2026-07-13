@@ -115,3 +115,7 @@ export function advanceAiAuditJob(jobId, retry = false, compactRetry = false) {
 export function cancelAiAuditJob(jobId) {
   return auditJobRequest(`/ai/audits/${jobId}/cancel`, { method: 'POST' });
 }
+
+export function resetAiAuditJob(jobId) {
+  return auditJobRequest(`/ai/audits/${jobId}/reset`, { method: 'POST' });
+}

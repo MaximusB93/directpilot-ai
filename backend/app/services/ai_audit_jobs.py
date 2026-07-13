@@ -1,6 +1,8 @@
+import asyncio
 import hashlib
 import json
 import logging
+import uuid
 from datetime import UTC, datetime, timedelta
 from time import perf_counter
 from typing import Any
@@ -42,6 +44,16 @@ TERMINAL_AUDIT_STATUSES = {"completed", "failed", "cancelled"}
 POLL_AFTER_MS = 1800
 CONTEXT_TOKEN_TARGET = 12000
 DRILLDOWN_TOKEN_TARGET = 18000
+AUDIT_STAGE_LEASE_SECONDS = {
+    "create_investigation_plan": 150,
+    "verify_hypotheses": 150,
+    "generate_answer": 180,
+}
+AUDIT_STAGE_TOTAL_TIMEOUT_SECONDS = {
+    "create_investigation_plan": 135,
+    "verify_hypotheses": 135,
+    "generate_answer": 165,
+}
 HEAVY_AUDIT_MARKERS = (
     "полный аудит",
     "аудит всего аккаунта",
@@ -949,12 +961,127 @@ def _locked_job(db: Session, job_id: str, organization_id: str) -> AiAuditJob:
     return job
 
 
-def get_audit_job(db: Session, job_id: str, *, organization_id: str) -> AiAuditJob:
-    job = db.scalar(
-        select(AiAuditJob).where(AiAuditJob.id == job_id, AiAuditJob.organization_id == organization_id)
+def is_audit_stage_stale(job: AiAuditJob, now: datetime | None = None) -> bool:
+    if job.status != "generating":
+        return False
+    lease_expires_at = job.stage_lease_expires_at
+    if not lease_expires_at:
+        legacy_started_at = job.stage_started_at or job.updated_at
+        if not legacy_started_at:
+            return False
+        lease_seconds = AUDIT_STAGE_LEASE_SECONDS.get(job.current_stage, 180)
+        lease_expires_at = _as_aware(legacy_started_at) + timedelta(seconds=lease_seconds)
+    return _as_aware(lease_expires_at) < _as_aware(now or _now())
+
+
+def recover_stale_audit_job(job: AiAuditJob, now: datetime | None = None) -> bool:
+    if not is_audit_stage_stale(job, now):
+        return False
+    logger.warning(
+        "AI_AUDIT_STAGE_STALE job_id=%s stage=%s attempt=%s",
+        job.id,
+        job.current_stage,
+        job.stage_attempt,
     )
-    if not job:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="AI audit job not found")
+    job.status = "failed"
+    job.error_code = "ai_audit_stage_stale"
+    job.error_message = "Этап аудита был прерван и не завершился."
+    job.retryable = True
+    job.stage_execution_token = None
+    job.cancel_requested = False
+    job.stage_version += 1
+    return True
+
+
+def _claim_provider_stage(db: Session, job: AiAuditJob, stage: str, *, progress_percent: int) -> str:
+    token = str(uuid.uuid4())
+    now = _now()
+    lease_seconds = AUDIT_STAGE_LEASE_SECONDS[stage]
+    job.status = "generating"
+    job.current_stage = stage
+    job.progress_percent = progress_percent
+    job.stage_started_at = now
+    job.stage_lease_expires_at = now + timedelta(seconds=lease_seconds)
+    job.stage_execution_token = token
+    job.stage_attempt = int(job.stage_attempt or 0) + 1
+    job.cancel_requested = False
+    job.error_code = None
+    job.error_message = None
+    job.retryable = False
+    job.stage_version += 1
+    db.commit()
+    db.refresh(job)
+    logger.info(
+        "AI_AUDIT_STAGE_STARTED job_id=%s stage=%s attempt=%s lease_seconds=%s",
+        job.id,
+        stage,
+        job.stage_attempt,
+        lease_seconds,
+    )
+    return token
+
+
+async def _call_audit_provider(stage: str, *args: Any, **kwargs: Any) -> dict[str, Any]:
+    try:
+        async with asyncio.timeout(AUDIT_STAGE_TOTAL_TIMEOUT_SECONDS[stage]):
+            return await generate_openrouter_response(*args, **kwargs)
+    except TimeoutError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail={
+                "error_code": "openrouter_total_timeout",
+                "message": "AI-провайдер не завершил этап аудита за отведённое время.",
+                "retryable": True,
+            },
+        ) from exc
+
+
+def _reload_stage_owner(
+    db: Session,
+    job_id: str,
+    organization_id: str,
+    *,
+    stage: str,
+    execution_token: str,
+) -> tuple[AiAuditJob, bool]:
+    db.expire_all()
+    current = _locked_job(db, job_id, organization_id)
+    if recover_stale_audit_job(current, _now()):
+        db.commit()
+        db.refresh(current)
+    owns_stage = (
+        current.status == "generating"
+        and current.current_stage == stage
+        and current.stage_execution_token == execution_token
+        and not current.cancel_requested
+    )
+    if owns_stage:
+        return current, True
+    logger.info(
+        "AI_AUDIT_LATE_RESULT_DISCARDED job_id=%s stage=%s attempt=%s",
+        current.id,
+        stage,
+        current.stage_attempt,
+    )
+    return current, False
+
+
+def _complete_provider_stage(job: AiAuditJob, stage: str) -> None:
+    logger.info(
+        "AI_AUDIT_STAGE_COMPLETED job_id=%s stage=%s attempt=%s",
+        job.id,
+        stage,
+        job.stage_attempt,
+    )
+    job.stage_execution_token = None
+    job.stage_lease_expires_at = None
+
+
+def get_audit_job(db: Session, job_id: str, *, organization_id: str) -> AiAuditJob:
+    job = _locked_job(db, job_id, organization_id)
+    if recover_stale_audit_job(job, _now()):
+        db.commit()
+        db.refresh(job)
     return job
 
 
@@ -1007,6 +1134,11 @@ def audit_job_response(job: AiAuditJob) -> AiAuditJobResponse:
         error_code=job.error_code,
         error_message=job.error_message,
         retryable=job.retryable,
+        stage_started_at=_iso(job.stage_started_at),
+        stage_lease_expires_at=_iso(job.stage_lease_expires_at),
+        stage_attempt=int(job.stage_attempt or 0),
+        is_stage_stale=job.error_code == "ai_audit_stage_stale" or is_audit_stage_stale(job),
+        cancel_requested=bool(job.cancel_requested),
         created_at=_iso(job.created_at),
         updated_at=_iso(job.updated_at),
         completed_at=_iso(job.completed_at),
@@ -1068,6 +1200,9 @@ def _save_failure(db: Session, job: AiAuditJob, exc: Exception, *, stage: str) -
     job.error_code = str(error_code or "ai_audit_stage_failed")
     job.error_message = str(detail.get("message") if isinstance(detail, dict) else detail)[:1000]
     job.retryable = retryable
+    job.stage_execution_token = None
+    job.stage_lease_expires_at = None
+    job.cancel_requested = False
     job.stage_version += 1
     db.commit()
     db.refresh(job)
@@ -1101,6 +1236,9 @@ async def advance_audit_job(
     compact_retry: bool = False,
 ) -> AiAuditJob:
     job = _locked_job(db, job_id, organization_id)
+    if recover_stale_audit_job(job, _now()):
+        db.commit()
+        db.refresh(job)
     if job.status == "completed" and compact_retry:
         current_result = _json_load(job.result_json, {}) or {}
         if current_result.get("truncated"):
@@ -1109,6 +1247,7 @@ async def advance_audit_job(
             job.input_options_json = _json_dump(options)
             job.status = "context_ready"
             job.current_stage = "generate_answer"
+            job.stage_attempt = 0
             job.progress_percent = 78
             job.completed_at = None
             job.result_json = None
@@ -1126,20 +1265,22 @@ async def advance_audit_job(
         if not job.context_snapshot_json:
             job.status = "queued"
             job.current_stage = "collect_context"
+            job.stage_attempt = 0
         else:
             job.status = "context_ready"
         job.error_code = None
         job.error_message = None
         job.retryable = False
+        job.cancel_requested = False
         db.commit()
         db.refresh(job)
-        return job
     if job.status in {"collecting_context", "generating"}:
         return job
 
     timings = _json_load(job.timings_json, {})
     stage = job.current_stage
     started_at = perf_counter()
+    execution_token: str | None = None
     try:
         if stage == "collect_context":
             job.status = "collecting_context"
@@ -1162,6 +1303,7 @@ async def advance_audit_job(
                 "maxInvestigationRounds": 2,
                 "requestsCount": 0,
                 "providerCallsCount": 0,
+                "savedDataRequestsCount": 0,
                 "directApiCallsCount": 0,
                 "tokenUsage": {"prompt": 0, "completion": 0, "total": 0},
             }
@@ -1176,6 +1318,7 @@ async def advance_audit_job(
             job.prompt_snapshot_json = _json_dump({"internalCampaignIds": internal_ids[:100]})
             job.status = "context_ready"
             job.current_stage = "classify_campaigns"
+            job.stage_attempt = 0
             job.progress_percent = 15
         elif stage == "classify_campaigns":
             snapshot = _json_load(job.context_snapshot_json, {})
@@ -1185,13 +1328,11 @@ async def advance_audit_job(
             job.context_snapshot_json = _json_dump(snapshot)
             job.status = "context_ready"
             job.current_stage = "create_investigation_plan"
+            job.stage_attempt = 0
             job.progress_percent = 25
             timings["classifyCampaignsMs"] = _elapsed_ms(started_at)
         elif stage == "create_investigation_plan":
-            job.status = "generating"
-            job.progress_percent = 30
-            job.stage_version += 1
-            db.commit()
+            execution_token = _claim_provider_stage(db, job, stage, progress_percent=30)
             snapshot = _json_load(job.context_snapshot_json, {})
             base_plan = AuditInvestigationPlan.model_validate(snapshot.get("ruleBasedInvestigationPlan") or {})
             prompt = build_investigation_plan_prompt(snapshot, base_plan)
@@ -1199,13 +1340,23 @@ async def advance_audit_job(
             _save_stage_prompt_metadata(job, stage, prompt, max_tokens=planner_tokens)
             db.commit()
             openrouter_started_at = perf_counter()
-            response = await generate_openrouter_response(
+            response = await _call_audit_provider(
+                stage,
                 job.model,
                 prompt,
                 max_tokens=planner_tokens,
                 max_tokens_cap=AI_AUDIT_MAX_OUTPUT_TOKENS,
                 timeout=OPENROUTER_AUDIT_TIMEOUT,
             )
+            job, owns_result = _reload_stage_owner(
+                db,
+                job_id,
+                organization_id,
+                stage=stage,
+                execution_token=execution_token,
+            )
+            if not owns_result:
+                return job
             timings["investigationPlanOpenrouterMs"] = _elapsed_ms(openrouter_started_at)
             _record_provider_call(snapshot, response)
             answer = str(response.get("content") or "")
@@ -1215,7 +1366,9 @@ async def advance_audit_job(
             job.returned_model = str(response.get("model") or job.model)
             job.status = "context_ready"
             job.current_stage = "validate_data_requests"
+            job.stage_attempt = 0
             job.progress_percent = 40
+            _complete_provider_stage(job, stage)
         elif stage == "validate_data_requests":
             snapshot = _json_load(job.context_snapshot_json, {})
             plan = AuditInvestigationPlan.model_validate(snapshot.get("investigationPlan") or {})
@@ -1228,6 +1381,7 @@ async def advance_audit_job(
             job.context_snapshot_json = _json_dump(snapshot)
             job.status = "context_ready"
             job.current_stage = "collect_drilldowns"
+            job.stage_attempt = 0
             job.progress_percent = 50
             timings["validateDataRequestsMs"] = _elapsed_ms(started_at)
         elif stage == "collect_drilldowns":
@@ -1238,27 +1392,37 @@ async def advance_audit_job(
                 (snapshot.get("drilldownResults") or []) + [item.model_dump(mode="json") for item in collected]
             )
             runtime = _audit_runtime(snapshot)
+            runtime["savedDataRequestsCount"] = int(runtime.get("savedDataRequestsCount") or 0) + sum(
+                1 for item in collected if item.source == "directpilot_saved_read_only_stats"
+            )
             runtime["directApiCallsCount"] = int(runtime.get("directApiCallsCount") or 0) + direct_api_calls
             job.context_snapshot_json = _json_dump(snapshot)
             job.status = "context_ready"
             job.current_stage = "verify_hypotheses"
+            job.stage_attempt = 0
             job.progress_percent = 65
             timings["collectDrilldownsMs"] = _elapsed_ms(started_at)
         elif stage == "verify_hypotheses":
-            job.status = "generating"
-            job.progress_percent = 70
-            job.stage_version += 1
-            db.commit()
+            execution_token = _claim_provider_stage(db, job, stage, progress_percent=70)
             snapshot = _json_load(job.context_snapshot_json, {})
             prompt = build_verification_prompt(snapshot)
             verification_tokens = min(job.max_tokens, 3500)
             _save_stage_prompt_metadata(job, stage, prompt, max_tokens=verification_tokens)
             db.commit()
             openrouter_started_at = perf_counter()
-            response = await generate_openrouter_response(
-                job.model, prompt, max_tokens=verification_tokens,
+            response = await _call_audit_provider(
+                stage, job.model, prompt, max_tokens=verification_tokens,
                 max_tokens_cap=AI_AUDIT_MAX_OUTPUT_TOKENS, timeout=OPENROUTER_AUDIT_TIMEOUT,
             )
+            job, owns_result = _reload_stage_owner(
+                db,
+                job_id,
+                organization_id,
+                stage=stage,
+                execution_token=execution_token,
+            )
+            if not owns_result:
+                return job
             timings["verificationOpenrouterMs"] = _elapsed_ms(openrouter_started_at)
             _record_provider_call(snapshot, response)
             verification = _normalized_verifications(str(response.get("content") or ""), snapshot)
@@ -1273,12 +1437,11 @@ async def advance_audit_job(
             job.returned_model = str(response.get("model") or job.returned_model or job.model)
             job.status = "context_ready"
             job.current_stage = "collect_drilldowns" if second_round else "generate_answer"
+            job.stage_attempt = 0
             job.progress_percent = 68 if second_round else 78
+            _complete_provider_stage(job, stage)
         elif stage == "generate_answer":
-            job.status = "generating"
-            job.progress_percent = 82
-            job.stage_version += 1
-            db.commit()
+            execution_token = _claim_provider_stage(db, job, stage, progress_percent=82)
             snapshot = _json_load(job.context_snapshot_json, {})
             input_options = _json_load(job.input_options_json, {}) or {}
             prompt = build_full_audit_prompt(snapshot, output_budget_tokens=job.max_tokens, compact_retry=bool(input_options.get("compact_retry")))
@@ -1288,10 +1451,19 @@ async def advance_audit_job(
             _save_stage_prompt_metadata(job, stage, prompt, max_tokens=job.max_tokens)
             db.commit()
             openrouter_started_at = perf_counter()
-            response = await generate_openrouter_response(
-                job.model, prompt, max_tokens=job.max_tokens,
+            response = await _call_audit_provider(
+                stage, job.model, prompt, max_tokens=job.max_tokens,
                 max_tokens_cap=AI_AUDIT_MAX_OUTPUT_TOKENS, timeout=OPENROUTER_AUDIT_TIMEOUT,
             )
+            job, owns_result = _reload_stage_owner(
+                db,
+                job_id,
+                organization_id,
+                stage=stage,
+                execution_token=execution_token,
+            )
+            if not owns_result:
+                return job
             timings["finalAnswerOpenrouterMs"] = _elapsed_ms(openrouter_started_at)
             _record_provider_call(snapshot, response)
             job.context_snapshot_json = _json_dump(snapshot)
@@ -1332,7 +1504,9 @@ async def advance_audit_job(
             })
             job.status = "context_ready"
             job.current_stage = "finalize"
+            job.stage_attempt = 0
             job.progress_percent = 95
+            _complete_provider_stage(job, stage)
         elif stage == "finalize":
             finalize_started_at = perf_counter()
             job.status = "completed"
@@ -1351,6 +1525,16 @@ async def advance_audit_job(
         return job
     except Exception as exc:
         timings[f"{stage}Ms"] = _elapsed_ms(started_at)
+        if execution_token:
+            job, owns_result = _reload_stage_owner(
+                db,
+                job_id,
+                organization_id,
+                stage=stage,
+                execution_token=execution_token,
+            )
+            if not owns_result:
+                return job
         job.timings_json = _json_dump(timings)
         failed = _save_failure(db, job, exc, stage=stage)
         _log_timing(failed, stage)
@@ -1359,9 +1543,45 @@ async def advance_audit_job(
 
 def cancel_audit_job(db: Session, job_id: str, *, organization_id: str) -> AiAuditJob:
     job = _locked_job(db, job_id, organization_id)
-    if job.status in {"completed", "cancelled", "generating"}:
+    if recover_stale_audit_job(job, _now()):
+        db.commit()
+        db.refresh(job)
+    if job.status in {"completed", "cancelled"}:
         return job
     job.status = "cancelled"
+    job.cancel_requested = True
+    job.stage_execution_token = None
+    job.stage_lease_expires_at = None
+    job.error_code = None
+    job.error_message = None
+    job.retryable = False
+    job.stage_version += 1
+    db.commit()
+    db.refresh(job)
+    logger.info(
+        "AI_AUDIT_STAGE_CANCELLED job_id=%s stage=%s attempt=%s",
+        job.id,
+        job.current_stage,
+        job.stage_attempt,
+    )
+    return job
+
+
+def reset_audit_job(db: Session, job_id: str, *, organization_id: str) -> AiAuditJob:
+    job = _locked_job(db, job_id, organization_id)
+    recovered = recover_stale_audit_job(job, _now())
+    if recovered:
+        db.commit()
+        db.refresh(job)
+    if job.status not in {"failed", "cancelled"}:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Сброс доступен только для завершённого, отменённого или зависшего аудита.",
+        )
+    job.status = "cancelled"
+    job.cancel_requested = True
+    job.stage_execution_token = None
+    job.stage_lease_expires_at = None
     job.error_code = None
     job.error_message = None
     job.retryable = False
