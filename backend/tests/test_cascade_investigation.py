@@ -20,6 +20,7 @@ from app.services.cascade_investigation import (
     next_cascade_capabilities,
     round_stop_reason,
 )
+from app.services.audit_evidence import evaluate_metric_sufficiency
 from app.services.yandex_direct_api_knowledge import search_direct_api_docs
 from app.services.yandex_direct_read_capabilities import (
     YANDEX_DIRECT_READ_CAPABILITIES,
@@ -220,7 +221,16 @@ def test_confirmed_requires_trusted_collected_evidence():
     assert enforced.status == "unverified"
     assert enforced.supporting_evidence == []
 
-    collected = {**unavailable, "status": "collected", "rows_analyzed": 20, "summary": "Mobile CPA выше."}
+    collected = {
+        **unavailable,
+        "status": "collected",
+        "rows_analyzed": 2,
+        "summary": "Mobile CPA выше.",
+        "data": [
+            {"device": "MOBILE", "clicks": 30, "cost": 3000, "conversions": 2},
+            {"device": "DESKTOP", "clicks": 30, "cost": 1000, "conversions": 2},
+        ],
+    }
     enforced = enforce_hypothesis_verification(
         proposed,
         hypothesis={"fact_sufficient_data": True},
@@ -228,7 +238,56 @@ def test_confirmed_requires_trusted_collected_evidence():
         results=[collected],
     )
     assert enforced.status == "confirmed"
-    assert enforced.supporting_evidence[0].startswith("devices: 20 строк")
+    assert enforced.confirmation_rules[0]["rule_code"] == "devices_cpa_segment_gap"
+    assert enforced.confirmation_rules[0]["passed"] is True
+
+
+def test_rows_without_numeric_signal_do_not_confirm_hypothesis():
+    proposed = AuditHypothesisVerification(
+        hypothesis_id="hyp-1",
+        status="confirmed",
+        verification_summary="Rows exist.",
+        supporting_evidence=["Model claimed confirmation."],
+    )
+    request = _request(1).model_dump(mode="json")
+    result = {
+        "request_id": "request-1",
+        "hypothesis_id": "hyp-1",
+        "capability_id": "devices",
+        "dimension": "devices",
+        "status": "collected",
+        "rows_analyzed": 2,
+        "data": [
+            {"device": "MOBILE", "clicks": 30, "cost": 1000, "conversions": 2},
+            {"device": "DESKTOP", "clicks": 30, "cost": 1100, "conversions": 2},
+        ],
+    }
+
+    enforced = enforce_hypothesis_verification(
+        proposed,
+        hypothesis={"fact_sufficient_data": True},
+        requests=[request],
+        results=[result],
+    )
+
+    assert enforced.status == "unverified"
+    assert enforced.confirmation_rules[0]["passed"] is False
+    assert enforced.supporting_evidence == []
+
+
+def test_ten_clicks_are_not_a_universal_sufficient_sample():
+    decision = evaluate_metric_sufficiency(
+        "high_cpa",
+        cost=10000,
+        clicks=10,
+        impressions=5000,
+        conversions=2,
+        target_cpa=500,
+        period_days=30,
+    )
+
+    assert decision.sufficient is False
+    assert decision.stop_reason == "low_data"
 
 
 def test_round_limits_and_stop_conditions_are_bounded():

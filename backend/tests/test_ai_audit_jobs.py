@@ -11,7 +11,7 @@ import app.services.ai_audit_jobs as audit_jobs
 from app.api.routers.ai import chat_with_ai
 from app.db import Base
 from app.models import AiAuditJob, ClientAccount, Organization, User
-from app.schemas import AiAuditCreateRequest, AiChatRequest, AuditDataRequestResult
+from app.schemas import AiAuditCreateRequest, AiChatRequest, AuditDataRequestResult, AuditNextRoundPlan
 from app.core.config import normalize_ai_request_options, production_ai_model_ids, DEFAULT_PRODUCTION_AI_MODEL
 
 
@@ -88,7 +88,13 @@ def _context() -> dict:
 def _create(db: Session, client_id: str = "client-a") -> AiAuditJob:
     return audit_jobs.create_audit_job(
         db,
-        AiAuditCreateRequest(client_id=client_id, model="qwen/qwen3-14b", ai_preset="balanced", max_tokens=2500),
+        AiAuditCreateRequest(
+            client_id=client_id,
+            model="qwen/qwen3-14b",
+            ai_preset="balanced",
+            max_tokens=2500,
+            cache_policy="prefer_cache",
+        ),
         organization_id="org-a",
         user_id="user-a",
         user_email="a@example.com",
@@ -258,6 +264,17 @@ def test_full_staged_flow_runs_planning_verification_and_final_answer(monkeypatc
             assert kwargs["timeout"] is audit_jobs.AUDIT_STAGE_PROVIDER_TIMEOUTS["verify_hypotheses"]
             assert "search_queries" in prompt
             return {"model": model, "content": _verification_answer(), "usage": {"total_tokens": 100}, "id": "or-verify", "finish_reason": "stop"}
+        if "Plan the next read-only investigation round" in prompt:
+            return {
+                "model": model,
+                "content": json.dumps({
+                    "continue_investigation": False,
+                    "requests": [],
+                    "stop_reason": "enough_evidence",
+                }),
+                "usage": {"total_tokens": 50},
+                "finish_reason": "stop",
+            }
         assert model == job.model
         assert kwargs["max_tokens_cap"] == 10000
         assert kwargs["timeout"] is audit_jobs.OPENROUTER_AUDIT_TIMEOUT
@@ -280,18 +297,18 @@ def test_full_staged_flow_runs_planning_verification_and_final_answer(monkeypatc
         if job.status == "completed":
             break
     assert job.status == "completed"
-    assert stages[:7] == [
+    assert stages[:8] == [
         "create_investigation_plan", "validate_data_requests", "collect_live_data",
-        "verify_hypotheses", "generate_answer", "finalize", "finalize",
+        "verify_hypotheses", "plan_next_investigation_round", "generate_answer", "finalize", "finalize",
     ]
     assert audit_jobs._json_load(job.prompt_snapshot_json, {})["fullPromptStored"] is False
     assert job.answer_text.startswith("Период анализа: 10.06.2026–09.07.2026, 30 дней.")
     assert audit_jobs.audit_job_response(job).result["structured"]["critical_findings"][0]["campaign_name"] == "Search"
     assert audit_jobs.audit_job_response(job).result["safety"]["appliedToYandexDirect"] is False
     runtime = audit_jobs.audit_job_response(job).context_metadata["runtime"]
-    assert calls["count"] == 3
-    assert runtime["providerCallsCount"] == 3
-    assert runtime["helperProviderCallsCount"] == 2
+    assert calls["count"] == 4
+    assert runtime["providerCallsCount"] == 4
+    assert runtime["helperProviderCallsCount"] == 3
     assert runtime["finalProviderCallsCount"] == 1
     assert runtime["helperFallbacksCount"] == 0
     assert runtime["investigationRound"] == 1
@@ -306,6 +323,7 @@ def test_full_staged_flow_runs_planning_verification_and_final_answer(monkeypatc
         "helper_model": audit_jobs.AI_AUDIT_HELPER_MODEL,
         "planner_returned_model": audit_jobs.AI_AUDIT_HELPER_MODEL,
         "verification_returned_model": audit_jobs.AI_AUDIT_HELPER_MODEL,
+        "next_round_planner_returned_model": audit_jobs.AI_AUDIT_HELPER_MODEL,
         "final_returned_model": job.model,
     }
     assert job.returned_model == job.model
@@ -400,14 +418,140 @@ def test_planner_is_skipped_when_no_investigation_is_needed(monkeypatch):
         raise AssertionError("Planner provider must be skipped")
 
     monkeypatch.setattr(audit_jobs, "generate_openrouter_response", forbidden_provider)
-    job = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
-    job = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
-    skipped = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
+    skipped = job
+    for _ in range(4):
+        skipped = asyncio.run(audit_jobs.advance_audit_job(db, skipped.id, organization_id="org-a"))
+        if skipped.current_stage == "validate_data_requests":
+            break
 
     assert skipped.current_stage == "validate_data_requests"
     snapshot = audit_jobs._json_load(skipped.context_snapshot_json, {})
     assert snapshot["helperStages"]["planner"]["status"] == "skipped_not_needed"
     assert snapshot["auditRuntime"]["providerCallsCount"] == 0
+
+
+def test_ai_next_round_selects_devices_after_rejected_query_hypothesis():
+    snapshot = {
+        "analysisPeriod": {"dateFrom": "2026-06-10", "dateTo": "2026-07-09", "days": 30},
+        "auditRuntime": {"investigationRound": 1, "requestsCount": 1},
+        "investigationPlan": {"hypotheses": [{
+            "hypothesis_id": "hyp-1",
+            "campaign_name": "Search Brand",
+            "campaign_family": "search",
+            "campaign_subtype": "search",
+            "hypothesis": "Search queries may explain high CPA.",
+            "forbidden_capabilities": [],
+        }]},
+        "verifiedHypotheses": [{
+            "hypothesis_id": "hyp-1",
+            "status": "rejected",
+            "remaining_data_needed": ["devices"],
+        }],
+        "validatedDataRequests": [{
+            "hypothesis_id": "hyp-1", "capability_id": "search_queries",
+        }],
+    }
+    plan = AuditNextRoundPlan.model_validate({
+        "continue_investigation": True,
+        "requests": [{
+            "hypothesis_id": "hyp-1",
+            "capability_id": "devices",
+            "reason": "Compare device efficiency after the query explanation was rejected.",
+            "expected_information_gain": "A device CPA gap can explain the account-level deviation.",
+            "required_for_conclusion": True,
+            "stop_if": ["No material device gap"],
+        }],
+        "stop_reason": None,
+    })
+
+    accepted, rejected = audit_jobs._next_round_requests_from_plan(snapshot, plan)
+
+    assert rejected == []
+    assert [item.capability_id for item in accepted] == ["devices"]
+    assert accepted[0].request_id == "req_r2_001"
+
+
+def test_valid_next_round_stop_does_not_require_backend_fallback():
+    plan, valid, parsing = audit_jobs._parse_next_round_plan(json.dumps({
+        "continue_investigation": False,
+        "requests": [],
+        "stop_reason": "low_data",
+    }))
+
+    assert valid is True
+    assert parsing["status"] == "success"
+    assert plan is not None and plan.stop_reason == "low_data"
+
+
+def test_planner_docs_lookup_is_local_bounded_and_non_executing(monkeypatch):
+    calls = []
+
+    def fake_lookup(query):
+        calls.append(query)
+        return {
+            "knowledge_version": "test-v1",
+            "matches": [{"capability_id": "devices", "supported_now": True}],
+            "executable": False,
+        }
+
+    monkeypatch.setattr(audit_jobs, "search_direct_api_docs", fake_lookup)
+    snapshot = {
+        "auditRuntime": {"investigationRound": 1},
+        "investigationPlan": {"hypotheses": [
+            {"hypothesis_id": "hyp-1", "campaign_subtype": "search", "hypothesis": "First"},
+            {"hypothesis_id": "hyp-2", "campaign_subtype": "search", "hypothesis": "Second"},
+            {"hypothesis_id": "hyp-3", "campaign_subtype": "search", "hypothesis": "Third"},
+        ]},
+        "verifiedHypotheses": [
+            {"hypothesis_id": "hyp-1", "status": "unverified"},
+            {"hypothesis_id": "hyp-2", "status": "rejected"},
+            {"hypothesis_id": "hyp-3", "status": "partially_confirmed"},
+        ],
+    }
+
+    trace = audit_jobs._planner_docs_lookup(snapshot)
+
+    assert len(calls) == 2
+    assert len(trace) == 2
+    assert all(item["apiExecuted"] is False for item in trace)
+    assert all("query" not in item for item in trace)
+
+
+def test_fresh_baseline_is_live_required_and_never_silently_uses_saved_campaigns():
+    snapshot = {
+        "analysisPeriod": {"dateFrom": "2026-06-10", "dateTo": "2026-07-09", "days": 30},
+        "campaignGroups": {"critical": [{"name": "Saved campaign", "cost": 9999}]},
+        "accountTotals": {"cost": 9999, "clicks": 100},
+    }
+    requests = audit_jobs._fresh_baseline_requests(snapshot)
+    assert {item.capability_id for item in requests} == {"campaigns", "campaign_performance"}
+    assert all(item.data_preference == "live_required" for item in requests)
+    assert all(item.campaign_name == "__all_campaigns__" for item in requests)
+
+    audit_jobs._apply_live_baseline(
+        snapshot,
+        [
+            {"capability_id": "campaigns", "status": "failed", "error_code": "direct_unavailable"},
+            {"capability_id": "campaign_performance", "status": "failed", "error_code": "direct_unavailable"},
+        ],
+        allow_saved_fallback=False,
+    )
+
+    assert snapshot["freshBaseline"]["status"] == "partial"
+    assert snapshot["freshBaseline"]["savedFallbackUsed"] is False
+    assert snapshot["campaignGroups"]["critical"] == []
+    assert snapshot["accountTotals"]["cost"] == 0
+
+
+def test_api_campaign_type_wins_when_name_is_unknown_and_conflict_is_explicit():
+    api_classified = audit_jobs._campaign_classification("Campaign 1", "SMART_CAMPAIGN")
+    conflict = audit_jobs._campaign_classification("Search Brand", "SMART_CAMPAIGN")
+
+    assert api_classified["campaign_family"] == "yan"
+    assert api_classified["classification_source"] == "direct_api_type"
+    assert conflict["campaign_family"] == "unknown"
+    assert conflict["classification_source"] == "api_name_conflict"
+    assert conflict["warnings"]
 
 
 def test_verification_timeout_uses_unverified_fallback_and_continues(monkeypatch):
@@ -443,7 +587,7 @@ def test_verification_timeout_uses_unverified_fallback_and_continues(monkeypatch
     continued = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
 
     assert continued.status == "context_ready"
-    assert continued.current_stage == "generate_answer"
+    assert continued.current_stage == "plan_next_investigation_round"
     snapshot = audit_jobs._json_load(continued.context_snapshot_json, {})
     assert snapshot["helperStages"]["verification"]["status"] == "fallback"
     assert snapshot["verifiedHypotheses"]
@@ -451,7 +595,7 @@ def test_verification_timeout_uses_unverified_fallback_and_continues(monkeypatch
     assert not any(item["status"] == "confirmed" for item in snapshot["verifiedHypotheses"])
 
 
-def test_audit_completes_when_both_helper_stages_fallback(monkeypatch):
+def test_audit_completes_when_all_helper_stages_fallback(monkeypatch):
     db = _db()
     job = _create(db)
     monkeypatch.setattr(audit_jobs, "build_client_ai_context_from_db", lambda *args, **kwargs: _context())
@@ -470,13 +614,13 @@ def test_audit_completes_when_both_helper_stages_fallback(monkeypatch):
 
     assert job.status == "completed"
     snapshot = audit_jobs._json_load(job.context_snapshot_json, {})
-    assert snapshot["auditRuntime"]["helperFallbacksCount"] == 2
-    assert snapshot["auditRuntime"]["helperProviderCallsCount"] == 2
+    assert snapshot["auditRuntime"]["helperFallbacksCount"] == 3
+    assert snapshot["auditRuntime"]["helperProviderCallsCount"] == 3
     assert snapshot["auditRuntime"]["finalProviderCallsCount"] == 1
     assert snapshot["helperStages"]["planner"]["status"] == "fallback"
     assert snapshot["helperStages"]["verification"]["status"] == "fallback"
     result = audit_jobs._json_load(job.result_json, {})
-    assert len(result["warnings"]) == 2
+    assert len(result["warnings"]) == 3
     assert job.returned_model == job.model
 
 
@@ -555,7 +699,7 @@ def test_advance_recovers_stale_helper_stage_with_fallback_without_provider_call
     recovered = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
 
     assert recovered.status == "context_ready"
-    assert recovered.current_stage == "generate_answer"
+    assert recovered.current_stage == "plan_next_investigation_round"
     assert recovered.error_code is None
     snapshot = audit_jobs._json_load(recovered.context_snapshot_json, {})
     assert snapshot["helperStages"]["verification"]["status"] == "fallback"
@@ -1147,7 +1291,7 @@ def test_all_audit_parsers_accept_fenced_json():
     )
 
     assert verification_valid is True
-    assert verifications.verifications[0].status == "partially_confirmed"
+    assert verifications.verifications[0].status == "unverified"
     assert verification_parsing["sourceFormat"] == "markdown_fenced_json"
 
 

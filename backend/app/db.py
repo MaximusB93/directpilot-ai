@@ -146,6 +146,12 @@ DIRECT_READ_SCHEMA_STATEMENTS = (
         retry_after_seconds INTEGER NOT NULL DEFAULT 1,
         attempts INTEGER NOT NULL DEFAULT 0,
         rows_count INTEGER NOT NULL DEFAULT 0,
+        next_offset INTEGER NOT NULL DEFAULT 0,
+        rows_collected INTEGER NOT NULL DEFAULT 0,
+        limited_by INTEGER,
+        pages_completed INTEGER NOT NULL DEFAULT 0,
+        partial BOOLEAN NOT NULL DEFAULT FALSE,
+        row_limit_reached BOOLEAN NOT NULL DEFAULT FALSE,
         result_snapshot_json TEXT,
         error_code VARCHAR(128),
         error_message TEXT,
@@ -164,6 +170,12 @@ DIRECT_READ_SCHEMA_STATEMENTS = (
     "CREATE INDEX IF NOT EXISTS ix_direct_report_jobs_status ON direct_report_jobs (status)",
     "CREATE INDEX IF NOT EXISTS ix_direct_report_jobs_next_retry_at ON direct_report_jobs (next_retry_at)",
     "CREATE INDEX IF NOT EXISTS ix_direct_report_jobs_expires_at ON direct_report_jobs (expires_at)",
+    "ALTER TABLE direct_report_jobs ADD COLUMN IF NOT EXISTS next_offset INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE direct_report_jobs ADD COLUMN IF NOT EXISTS rows_collected INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE direct_report_jobs ADD COLUMN IF NOT EXISTS limited_by INTEGER",
+    "ALTER TABLE direct_report_jobs ADD COLUMN IF NOT EXISTS pages_completed INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE direct_report_jobs ADD COLUMN IF NOT EXISTS partial BOOLEAN NOT NULL DEFAULT FALSE",
+    "ALTER TABLE direct_report_jobs ADD COLUMN IF NOT EXISTS row_limit_reached BOOLEAN NOT NULL DEFAULT FALSE",
 )
 
 

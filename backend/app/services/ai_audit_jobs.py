@@ -36,10 +36,12 @@ from app.schemas import (
     AiAuditJobResponse,
     AiAuditResult,
     AuditDataRequest,
+    AuditDataRequestResult,
     AuditHypothesisVerification,
     AuditHypothesisVerificationSet,
     AuditInvestigationHypothesis,
     AuditInvestigationPlan,
+    AuditNextRoundPlan,
 )
 from app.services.audit_data_tools import (
     MAX_AUDIT_DATA_REQUESTS,
@@ -48,6 +50,7 @@ from app.services.audit_data_tools import (
     select_live_request_batch,
     validate_audit_data_requests,
 )
+from app.services.audit_evidence import evaluate_metric_sufficiency
 from app.services.cascade_investigation import (
     MAX_DATA_REQUESTS_PER_AUDIT,
     MAX_INVESTIGATION_ROUNDS,
@@ -65,6 +68,7 @@ from app.services.knowledge_base import select_knowledge_snippets
 from app.services.yandex_direct_api_knowledge import (
     DIRECT_API_KNOWLEDGE_VERSION,
     describe_direct_capability,
+    search_direct_api_docs,
 )
 from app.services.openrouter import (
     DEFAULT_SYSTEM_PROMPT,
@@ -82,11 +86,13 @@ DRILLDOWN_TOKEN_TARGET = 18000
 AUDIT_STAGE_LEASE_SECONDS = {
     "create_investigation_plan": 75,
     "verify_hypotheses": 85,
+    "plan_next_investigation_round": 75,
     "generate_answer": 180,
 }
 AUDIT_STAGE_TOTAL_TIMEOUT_SECONDS = {
     "create_investigation_plan": 55,
     "verify_hypotheses": 65,
+    "plan_next_investigation_round": 55,
     "generate_answer": 165,
 }
 AUDIT_STAGE_PROVIDER_TIMEOUTS = {
@@ -99,6 +105,12 @@ AUDIT_STAGE_PROVIDER_TIMEOUTS = {
     "verify_hypotheses": httpx.Timeout(
         connect=10.0,
         read=AI_AUDIT_VERIFICATION_READ_TIMEOUT_SECONDS,
+        write=10.0,
+        pool=10.0,
+    ),
+    "plan_next_investigation_round": httpx.Timeout(
+        connect=10.0,
+        read=AI_AUDIT_PLANNER_READ_TIMEOUT_SECONDS,
         write=10.0,
         pool=10.0,
     ),
@@ -376,19 +388,54 @@ def _query_snapshot(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _campaign_classification(name: str, explicit_type: str | None = None) -> dict[str, str]:
-    normalized = f"{explicit_type or ''} {name}".lower().replace("ё", "е")
+def _name_campaign_classification(name: str) -> dict[str, str]:
+    normalized = name.lower().replace("ё", "е")
     is_retargeting = any(marker in normalized for marker in ("ретарг", "retarget", "ремаркет"))
     is_yan = any(marker in normalized for marker in ("рся", "yan", "сети", "network"))
     is_brand = any(marker in normalized for marker in ("бренд", "brand"))
     if is_yan:
-        return {"campaign_name": name, "campaign_family": "yan", "campaign_subtype": "yan_retargeting" if is_retargeting else "yan_prospecting"}
+        return {"campaign_name": name, "campaign_family": "yan", "campaign_subtype": "yan_retargeting" if is_retargeting else "yan_prospecting", "classification_source": "name_heuristic", "warnings": []}
     if any(marker in normalized for marker in ("поиск", "search")) or is_brand:
-        return {"campaign_name": name, "campaign_family": "search", "campaign_subtype": "brand_search" if is_brand else "search"}
-    return {"campaign_name": name, "campaign_family": "unknown", "campaign_subtype": "unknown"}
+        return {"campaign_name": name, "campaign_family": "search", "campaign_subtype": "brand_search" if is_brand else "search", "classification_source": "name_heuristic", "warnings": []}
+    return {"campaign_name": name, "campaign_family": "unknown", "campaign_subtype": "unknown", "classification_source": "unresolved", "warnings": []}
 
 
-def classify_audit_campaigns(snapshot: dict[str, Any]) -> list[dict[str, str]]:
+def _campaign_classification(name: str, explicit_type: str | None = None) -> dict[str, Any]:
+    heuristic = _name_campaign_classification(name)
+    api_type = str(explicit_type or "").upper()
+    api_family = None
+    if api_type in {"SMART_CAMPAIGN", "CPM_BANNER_CAMPAIGN"}:
+        api_family = "yan"
+    elif api_type == "DYNAMIC_TEXT_CAMPAIGN":
+        api_family = "search"
+    if api_family is None:
+        return {**heuristic, "api_type": api_type or None}
+    if heuristic["campaign_family"] not in {"unknown", api_family}:
+        return {
+            "campaign_name": name,
+            "campaign_family": "unknown",
+            "campaign_subtype": "unknown",
+            "classification_source": "api_name_conflict",
+            "api_type": api_type,
+            "warnings": ["API campaign type conflicts with the campaign-name heuristic."],
+        }
+    subtype = (
+        "brand_search" if api_family == "search" and heuristic["campaign_subtype"] == "brand_search"
+        else "search" if api_family == "search"
+        else "yan_retargeting" if heuristic["campaign_subtype"] == "yan_retargeting"
+        else "yan_prospecting"
+    )
+    return {
+        "campaign_name": name,
+        "campaign_family": api_family,
+        "campaign_subtype": subtype,
+        "classification_source": "direct_api_type",
+        "api_type": api_type,
+        "warnings": [],
+    }
+
+
+def classify_audit_campaigns(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     result = []
     seen = set()
     for items in (snapshot.get("campaignGroups") or {}).values():
@@ -397,7 +444,8 @@ def classify_audit_campaigns(snapshot: dict[str, Any]) -> list[dict[str, str]]:
             if name in seen:
                 continue
             seen.add(name)
-            result.append(_campaign_classification(name, item.get("type")))
+            api_metadata = (snapshot.get("campaignApiMetadata") or {}).get(name) or {}
+            result.append(_campaign_classification(name, api_metadata.get("type") or item.get("type")))
     return result
 
 
@@ -436,6 +484,150 @@ def _request(
         priority=priority,
         required_for_conclusion=required,
     )
+
+
+def _fresh_baseline_requests(snapshot: dict[str, Any]) -> list[AuditDataRequest]:
+    period = snapshot.get("analysisPeriod") or {}
+    common = {
+        "campaign_name": "__all_campaigns__",
+        "period": {
+            "date_from": period.get("dateFrom"),
+            "date_to": period.get("dateTo"),
+            "days": period.get("days"),
+        },
+        "filters": {"campaign_name": "__all_campaigns__"},
+        "priority": "high",
+        "required_for_conclusion": True,
+        "data_preference": "live_required",
+    }
+    return [
+        AuditDataRequest(
+            request_id="baseline_campaigns",
+            hypothesis_id="baseline",
+            campaign_family="unknown",
+            campaign_subtype="unknown",
+            dimension="campaigns",
+            capability_id="campaigns",
+            reason="Load current campaign names, statuses and API types before audit facts.",
+            metrics=["name", "status", "state", "type"],
+            **common,
+        ),
+        AuditDataRequest(
+            request_id="baseline_campaign_performance",
+            hypothesis_id="baseline",
+            campaign_family="search",
+            campaign_subtype="search",
+            dimension="campaign_performance",
+            capability_id="campaign_performance",
+            reason="Load current campaign performance for the requested audit period.",
+            metrics=["impressions", "clicks", "cost", "ctr", "avg_cpc", "conversions", "cpa", "conversion_rate"],
+            **common,
+        ),
+    ]
+
+
+def _row_goal_conversions(row: dict[str, Any]) -> tuple[float, bool]:
+    values = [
+        _number(value)
+        for key, value in row.items()
+        if str(key).startswith("conversions_")
+    ]
+    if values:
+        return sum(values), True
+    return _number(row.get("goal_conversions")), "goal_conversions" in row
+
+
+def _apply_live_baseline(
+    snapshot: dict[str, Any],
+    results: list[dict[str, Any]],
+    *,
+    allow_saved_fallback: bool,
+) -> None:
+    by_capability = {str(item.get("capability_id") or item.get("dimension")): item for item in results}
+    campaign_result = by_capability.get("campaigns") or {}
+    performance_result = by_capability.get("campaign_performance") or {}
+    campaign_available = campaign_result.get("status") in AVAILABLE_AUDIT_DATA_STATUSES
+    performance_available = performance_result.get("status") in AVAILABLE_AUDIT_DATA_STATUSES
+    metadata_by_name = {
+        str(row.get("name")): {
+            "type": row.get("type"), "status": row.get("status"), "state": row.get("state"),
+        }
+        for row in (campaign_result.get("data") or [])
+        if isinstance(row, dict) and row.get("name")
+    }
+    snapshot["campaignApiMetadata"] = metadata_by_name
+    baseline = {
+        "policy": "fresh",
+        "status": "complete" if campaign_available and performance_available else "partial",
+        "campaignsAvailable": campaign_available,
+        "performanceAvailable": performance_available,
+        "allowSavedFallback": allow_saved_fallback,
+        "savedFallbackUsed": False,
+        "failures": [
+            {
+                "capability_id": item.get("capability_id") or item.get("dimension"),
+                "status": item.get("status"),
+                "error_code": item.get("error_code"),
+            }
+            for item in results if item.get("status") not in AVAILABLE_AUDIT_DATA_STATUSES
+        ],
+    }
+    if not performance_available:
+        if allow_saved_fallback:
+            baseline["savedFallbackUsed"] = True
+        else:
+            snapshot["campaignGroups"] = {key: [] for key in ("critical", "warning", "opportunity", "low_data", "stable")}
+            snapshot["accountTotals"] = {
+                "cost": 0, "impressions": 0, "clicks": 0, "goalConversions": 0,
+            }
+        snapshot["freshBaseline"] = baseline
+        return
+    target_cpa = _number((snapshot.get("targetKpis") or {}).get("targetCpa"))
+    groups = {key: [] for key in ("critical", "warning", "opportunity", "low_data", "stable")}
+    totals = {"cost": 0.0, "impressions": 0, "clicks": 0, "goalConversions": 0.0}
+    has_goal_data = False
+    for row in performance_result.get("data") or []:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("campaign_name") or "Campaign without name")
+        cost = _number(row.get("cost"))
+        clicks = int(_number(row.get("clicks")))
+        impressions = int(_number(row.get("impressions")))
+        conversions, row_has_goals = _row_goal_conversions(row)
+        has_goal_data = has_goal_data or row_has_goals
+        ctr = _number(row.get("ctr")) or (clicks / impressions * 100 if impressions else 0)
+        cpa = cost / conversions if conversions > 0 else 0
+        flags = []
+        if cost > 0 and conversions == 0:
+            flags.append("spend_without_conversions")
+        if target_cpa and cpa > target_cpa:
+            flags.append("high_cpa")
+        if impressions >= 1000 and ctr < 1:
+            flags.append("low_ctr")
+        sufficient = evaluate_metric_sufficiency(
+            "spend_without_conversions" if conversions == 0 else "high_cpa",
+            cost=cost, clicks=clicks, impressions=impressions, conversions=conversions,
+            target_cpa=target_cpa, period_days=int((snapshot.get("analysisPeriod") or {}).get("days") or 30),
+        ).sufficient
+        group = "low_data" if not sufficient else "critical" if flags[:1] and flags[0] == "spend_without_conversions" else "warning" if flags else "opportunity" if conversions > 0 else "stable"
+        groups[group].append({
+            "name": name, "type": (metadata_by_name.get(name) or {}).get("type"),
+            "status": (metadata_by_name.get(name) or {}).get("status"),
+            "cost": cost, "clicks": clicks, "impressions": impressions, "ctr": ctr,
+            "goalConversions": conversions, "goalCpa": cpa, "flags": flags,
+            "diagnostic": "; ".join(flags) if flags else "No critical backend signal.",
+        })
+        totals["cost"] += cost
+        totals["clicks"] += clicks
+        totals["impressions"] += impressions
+        totals["goalConversions"] += conversions
+    totals["ctr"] = totals["clicks"] / totals["impressions"] * 100 if totals["impressions"] else 0
+    totals["goalCpa"] = totals["cost"] / totals["goalConversions"] if totals["goalConversions"] else 0
+    snapshot["campaignGroups"] = groups
+    snapshot["accountTotals"] = totals
+    if snapshot.get("selectedGoals"):
+        snapshot["selectedGoals"]["hasGoalData"] = has_goal_data
+    snapshot["freshBaseline"] = baseline
 
 
 def build_rule_based_investigation_plan(snapshot: dict[str, Any]) -> AuditInvestigationPlan:
@@ -537,12 +729,6 @@ def build_investigation_planner_context(snapshot: dict[str, Any]) -> dict[str, A
                 "metrics": item.get("permitted_metrics") or [],
                 "families": sorted(families & campaign_families) or sorted(families),
                 "subtypes": sorted(subtypes & campaign_subtypes) or sorted(subtypes),
-            })
-        elif item.get("source_required"):
-            compact_manifest.append({
-                "id": item.get("id"),
-                "supported": False,
-                "source_required": item.get("source_required"),
             })
     planned_capabilities = {
         str(request.get("capability_id") or request.get("dimension"))
@@ -784,6 +970,8 @@ def _parse_verifications(
             hypothesis=hypothesis,
             requests=hypothesis.get("data_requests") or [],
             results=snapshot.get("drilldownResults") or [],
+            target_cpa=float((snapshot.get("targetKpis") or {}).get("targetCpa") or 0),
+            period_days=int((snapshot.get("analysisPeriod") or {}).get("days") or 30),
         ))
     if not safe:
         return _verification_fallback(snapshot), False, parsing
@@ -850,6 +1038,186 @@ def _second_round_requests(snapshot: dict[str, Any]) -> list[AuditDataRequest]:
     if rejected:
         snapshot["drilldownResults"] = (snapshot.get("drilldownResults") or []) + [item.model_dump(mode="json") for item in rejected]
     return accepted
+
+
+def _planner_docs_lookup(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    """Planner-only local lookup. It never executes a Direct API request."""
+
+    queries: list[str] = []
+    hypotheses = {
+        item.get("hypothesis_id"): item
+        for item in (snapshot.get("investigationPlan") or {}).get("hypotheses", [])
+    }
+    for verification in snapshot.get("verifiedHypotheses") or []:
+        if verification.get("status") not in {"unverified", "partially_confirmed", "rejected"}:
+            continue
+        hypothesis = hypotheses.get(verification.get("hypothesis_id")) or {}
+        queries.append(" ".join([
+            str(hypothesis.get("campaign_subtype") or ""),
+            str(hypothesis.get("hypothesis") or ""),
+            " ".join(str(item) for item in verification.get("remaining_data_needed") or []),
+        ]).strip())
+        if len(queries) >= 2:
+            break
+    trace: list[dict[str, Any]] = []
+    for query in queries[:2]:
+        lookup = search_direct_api_docs(query)
+        trace.append({
+            "queryHash": hashlib.sha256(query.encode("utf-8")).hexdigest()[:16],
+            "knowledgeVersion": lookup.get("knowledge_version"),
+            "capabilityIds": [item.get("capability_id") for item in (lookup.get("matches") or [])[:10]],
+            "apiExecuted": False,
+        })
+    snapshot.setdefault("docsLookupTrace", []).append({
+        "round": int((_audit_runtime(snapshot).get("investigationRound") or 1)),
+        "lookups": trace,
+    })
+    return trace
+
+
+def build_next_round_prompt(snapshot: dict[str, Any]) -> str:
+    runtime = _audit_runtime(snapshot)
+    completed = sorted({
+        str(item.get("capability_id") or item.get("dimension"))
+        for item in snapshot.get("drilldownResults") or []
+        if item.get("status") in AVAILABLE_AUDIT_DATA_STATUSES
+    })
+    unavailable = sorted({
+        str(item.get("capability_id") or item.get("dimension"))
+        for item in snapshot.get("drilldownResults") or []
+        if item.get("status") in {"unavailable", "unsupported", "insufficient_data", "failed", "not_applicable"}
+    })
+    compact_manifest = [
+        {
+            "id": item.get("id"),
+            "supported_now": item.get("supported_now"),
+            "campaign_families": item.get("supported_campaign_families"),
+            "campaign_subtypes": item.get("supported_campaign_subtypes"),
+        }
+        for item in public_audit_tool_manifest()
+    ]
+    payload = {
+        "observed_facts": snapshot.get("observedFacts") or [],
+        "hypotheses": (snapshot.get("investigationPlan") or {}).get("hypotheses") or [],
+        "verifications": snapshot.get("verifiedHypotheses") or [],
+        "completed_capabilities": completed,
+        "unavailable_capabilities": unavailable,
+        "public_capability_manifest": compact_manifest,
+        "remaining_request_budget": max(0, MAX_DATA_REQUESTS_PER_AUDIT - int(runtime.get("requestsCount") or 0)),
+        "remaining_rounds": max(0, MAX_INVESTIGATION_ROUNDS - int(runtime.get("investigationRound") or 1)),
+        "docs_lookup_trace": _planner_docs_lookup(snapshot),
+    }
+    return """Plan the next read-only investigation round from verified evidence, not from a fixed sequence.
+Return only strict JSON:
+{"continue_investigation":true,"requests":[{"hypothesis_id":"hyp_001","capability_id":"devices","reason":"...","expected_information_gain":"...","required_for_conclusion":true,"stop_if":[]}],"stop_reason":null}
+Use only supported_now capabilities applicable to the campaign subtype. Never request write actions. If data is already sufficient, the sample is low, or no executable capability can change the conclusion, return continue_investigation=false with a stop_reason.
+Context: """ + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def _parse_next_round_plan(answer: str) -> tuple[AuditNextRoundPlan | None, bool, dict[str, Any]]:
+    parsed, parsing = _parse_model_json(answer, AuditNextRoundPlan)
+    if parsed is None:
+        return None, False, parsing
+    if parsed.continue_investigation and not parsed.requests:
+        return None, False, {**parsing, "errorCode": "empty_next_round_requests"}
+    if not parsed.continue_investigation and not parsed.stop_reason:
+        return None, False, {**parsing, "errorCode": "missing_stop_reason"}
+    return parsed, True, parsing
+
+
+def _next_round_requests_from_plan(
+    snapshot: dict[str, Any], plan: AuditNextRoundPlan,
+) -> tuple[list[AuditDataRequest], list[AuditDataRequestResult]]:
+    if not plan.continue_investigation:
+        return [], []
+    runtime = _audit_runtime(snapshot)
+    remaining = max(0, MAX_DATA_REQUESTS_PER_AUDIT - int(runtime.get("requestsCount") or 0))
+    hypotheses = {
+        item.get("hypothesis_id"): item
+        for item in (snapshot.get("investigationPlan") or {}).get("hypotheses", [])
+    }
+    manifest = {str(item.get("id")): item for item in public_audit_tool_manifest()}
+    already = {
+        (item.get("hypothesis_id"), item.get("capability_id") or item.get("dimension"))
+        for item in snapshot.get("validatedDataRequests") or []
+    }
+    candidates: list[AuditDataRequest] = []
+    for item in plan.requests[:remaining]:
+        hypothesis = hypotheses.get(item.hypothesis_id)
+        capability = manifest.get(item.capability_id) or {}
+        if not hypothesis or not capability.get("supported_now"):
+            continue
+        if (item.hypothesis_id, item.capability_id) in already:
+            continue
+        if item.capability_id in set(hypothesis.get("forbidden_capabilities") or []):
+            continue
+        if hypothesis.get("campaign_family") not in (capability.get("supported_campaign_families") or []):
+            continue
+        if hypothesis.get("campaign_subtype") not in (capability.get("supported_campaign_subtypes") or []):
+            continue
+        classification = {
+            "campaign_name": hypothesis.get("campaign_name"),
+            "campaign_family": hypothesis.get("campaign_family") or "unknown",
+            "campaign_subtype": hypothesis.get("campaign_subtype") or "unknown",
+        }
+        request = _request(
+            item.hypothesis_id,
+            classification,
+            item.capability_id,
+            f"{item.reason} Expected information gain: {item.expected_information_gain}",
+            snapshot.get("analysisPeriod") or {},
+            priority="high",
+            required=item.required_for_conclusion,
+        )
+        request.request_id = f"req_r{int(runtime.get('investigationRound') or 1) + 1}_{len(candidates) + 1:03d}"
+        candidates.append(request)
+    accepted, rejected = validate_audit_data_requests(candidates)
+    return accepted, rejected
+
+
+def _apply_next_round_requests(snapshot: dict[str, Any], requests: list[AuditDataRequest]) -> None:
+    runtime = _audit_runtime(snapshot)
+    if snapshot.get("investigationRounds"):
+        previous_round = snapshot["investigationRounds"][-1]
+        previous_round["completed_at"] = _now().isoformat()
+        previous_round["stop_reason"] = "next_level_requested"
+    runtime.pop("stopReason", None)
+    runtime["investigationRound"] = int(runtime.get("investigationRound") or 1) + 1
+    runtime["requestsCount"] = int(runtime.get("requestsCount") or 0) + len(requests)
+    snapshot["validatedDataRequests"] = (snapshot.get("validatedDataRequests") or []) + [
+        item.model_dump(mode="json") for item in requests
+    ]
+    snapshot["pendingDataRequests"] = [item.model_dump(mode="json") for item in requests]
+    snapshot["processingDataRequests"] = []
+    names = {request.campaign_name for request in requests}
+    round_facts = [
+        item for item in (snapshot.get("observedFacts") or []) if item.get("campaign_name") in names
+    ]
+    hypothesis_ids = {request.hypothesis_id for request in requests}
+    prior_hypotheses = [
+        item
+        for round_item in (snapshot.get("investigationRounds") or [])
+        for item in (round_item.get("hypotheses") or [])
+        if item.get("hypothesis_id") in hypothesis_ids
+    ]
+    round_hypotheses = [
+        {**item, "status": "collecting_data", "investigation_round": runtime["investigationRound"]}
+        for item in {item.get("hypothesis_id"): item for item in prior_hypotheses}.values()
+    ]
+    snapshot.setdefault("investigationRounds", []).append({
+        "round_number": runtime["investigationRound"],
+        "observed_facts": round_facts,
+        "hypotheses": round_hypotheses,
+        "planned_requests": [item.model_dump(mode="json") for item in requests],
+        "completed_requests": [],
+        "pending_requests": [item.model_dump(mode="json") for item in requests],
+        "processing_requests": [],
+        "failed_requests": [],
+        "verification_results": [],
+        "started_at": _now().isoformat(),
+        "completed_at": None,
+        "stop_reason": None,
+    })
 
 
 def build_compact_audit_context(
@@ -1543,6 +1911,7 @@ def _helper_stages(snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]:
     defaults = {
         "planner": {"model": AI_AUDIT_HELPER_MODEL, "status": "pending", "warningCode": None},
         "verification": {"model": AI_AUDIT_HELPER_MODEL, "status": "pending", "warningCode": None},
+        "next_round_planner": {"model": AI_AUDIT_HELPER_MODEL, "status": "pending", "warningCode": None},
     }
     for key, value in defaults.items():
         stages.setdefault(key, dict(value))
@@ -1556,6 +1925,7 @@ def _audit_models(snapshot: dict[str, Any], requested_model: str) -> dict[str, A
         "helper_model": AI_AUDIT_HELPER_MODEL,
         "planner_returned_model": None,
         "verification_returned_model": None,
+        "next_round_planner_returned_model": None,
         "final_returned_model": None,
     }
     for key, value in defaults.items():
@@ -1802,7 +2172,7 @@ def recover_stale_audit_job(job: AiAuditJob, now: datetime | None = None) -> boo
         job.current_stage,
         job.stage_attempt,
     )
-    if job.current_stage in {"create_investigation_plan", "verify_hypotheses"}:
+    if job.current_stage in {"create_investigation_plan", "verify_hypotheses", "plan_next_investigation_round"}:
         snapshot = _json_load(job.context_snapshot_json, {}) or {}
         runtime = _audit_runtime(snapshot)
         if job.current_stage == "create_investigation_plan":
@@ -1814,14 +2184,23 @@ def recover_stale_audit_job(job: AiAuditJob, now: datetime | None = None) -> boo
             next_stage = "validate_data_requests"
             progress_percent = 40
             prompt_tokens = int(runtime.get("plannerPromptTokensEstimated") or 0)
-        else:
+        elif job.current_stage == "verify_hypotheses":
             snapshot["verifiedHypotheses"] = _verification_fallback(snapshot).model_dump(mode="json")["verifications"]
             stage_name = "verification"
             warning_code = "verification_fallback_used"
             message = "AI-проверка гипотез не ответила; неподтверждённые выводы безопасно помечены как требующие проверки."
-            next_stage = "generate_answer"
+            next_stage = "plan_next_investigation_round"
             progress_percent = 78
             prompt_tokens = int(runtime.get("verificationPromptTokensEstimated") or 0)
+        else:
+            stage_name = "next_round_planner"
+            warning_code = "next_round_planner_fallback_used"
+            message = "AI-планировщик следующего раунда не ответил; используется безопасный backend fallback."
+            fallback_requests = _second_round_requests(snapshot)
+            snapshot["fallbackNextRoundRequests"] = [item.model_dump(mode="json") for item in fallback_requests]
+            next_stage = "apply_next_investigation_round"
+            progress_percent = 74
+            prompt_tokens = int(runtime.get("nextRoundPromptTokensEstimated") or 0)
         _append_helper_fallback(
             snapshot,
             job_id=job.id,
@@ -2198,6 +2577,7 @@ def create_audit_job(
         input_options_json=_json_dump({
             **payload.options.model_dump(),
             "cache_policy": payload.cache_policy,
+            "allow_saved_fallback": payload.allow_saved_fallback,
         }),
         timings_json="{}",
         expires_at=now + timedelta(days=30),
@@ -2358,9 +2738,62 @@ async def advance_audit_job(
             ]
             job.prompt_snapshot_json = _json_dump({"internalCampaignIds": internal_ids[:100]})
             job.status = "context_ready"
-            job.current_stage = "classify_campaigns"
+            job.current_stage = (
+                "collect_fresh_baseline"
+                if snapshot["metadata"]["cachePolicy"] == "fresh"
+                else "classify_campaigns"
+            )
             job.stage_attempt = 0
             job.progress_percent = 15
+        elif stage == "collect_fresh_baseline":
+            snapshot = _json_load(job.context_snapshot_json, {})
+            pending_source = snapshot.get("pendingBaselineRequests")
+            processing_source = snapshot.get("processingBaselineRequests") or []
+            if pending_source is None:
+                pending = _fresh_baseline_requests(snapshot)
+            else:
+                pending = [AuditDataRequest.model_validate(item) for item in pending_source]
+            processing = [AuditDataRequest.model_validate(item) for item in processing_source]
+            selected, deferred = select_live_request_batch(processing + pending)
+            collected, direct_api_calls = collect_audit_data_requests(
+                db,
+                job.client_id,
+                selected,
+                audit_job_id=job.id,
+                cache_policy="fresh",
+            )
+            snapshot["baselineResults"] = _merge_drilldown_results(
+                snapshot.get("baselineResults") or [],
+                [item.model_dump(mode="json") for item in collected],
+            )
+            selected_by_id = {item.request_id: item for item in selected}
+            pending_ids = {item.request_id for item in pending}
+            processing_ids = {item.request_id for item in processing}
+            next_processing = [
+                selected_by_id[item.request_id].model_dump(mode="json")
+                for item in collected
+                if item.status == "processing" and item.request_id in selected_by_id
+            ]
+            next_processing.extend(item.model_dump(mode="json") for item in deferred if item.request_id in processing_ids)
+            next_pending = [item.model_dump(mode="json") for item in deferred if item.request_id in pending_ids]
+            snapshot["pendingBaselineRequests"] = next_pending
+            snapshot["processingBaselineRequests"] = next_processing
+            _refresh_direct_read_runtime(snapshot, direct_api_calls)
+            if not next_pending and not next_processing:
+                input_options = _json_load(job.input_options_json, {}) or {}
+                _apply_live_baseline(
+                    snapshot,
+                    snapshot.get("baselineResults") or [],
+                    allow_saved_fallback=bool(input_options.get("allow_saved_fallback")),
+                )
+            job.context_snapshot_json = _json_dump(snapshot)
+            job.status = "context_ready"
+            job.current_stage = (
+                "collect_fresh_baseline" if next_pending or next_processing else "classify_campaigns"
+            )
+            job.stage_attempt = 0
+            job.progress_percent = 18 if next_pending or next_processing else 22
+            timings["collectFreshBaselineMs"] = int(timings.get("collectFreshBaselineMs") or 0) + _elapsed_ms(started_at)
         elif stage == "classify_campaigns":
             snapshot = _json_load(job.context_snapshot_json, {})
             snapshot["campaignClassifications"] = classify_audit_campaigns(snapshot)
@@ -2705,7 +3138,7 @@ async def advance_audit_job(
                 )
                 job.context_snapshot_json = _json_dump(snapshot)
                 job.status = "context_ready"
-                job.current_stage = "generate_answer"
+                job.current_stage = "plan_next_investigation_round"
                 job.stage_attempt = 0
                 job.progress_percent = 78
                 _complete_provider_stage(job, stage)
@@ -2740,7 +3173,6 @@ async def advance_audit_job(
                         item.status,
                         len(item.supporting_evidence),
                     )
-                second_round: list[AuditDataRequest] = []
                 if valid_verification:
                     _set_helper_stage(
                         snapshot,
@@ -2749,7 +3181,6 @@ async def advance_audit_job(
                         returned_model=returned_model,
                         parsing=parsing,
                     )
-                    second_round = _second_round_requests(snapshot)
                     usage = response.get("usage") if isinstance(response.get("usage"), dict) else {}
                     logger.info(
                         "AI_AUDIT_HELPER_STAGE_COMPLETED job_id=%s stage=%s helper_model=%s elapsed_ms=%s "
@@ -2774,100 +3205,158 @@ async def advance_audit_job(
                         prompt_tokens=int((_audit_runtime(snapshot).get("verificationPromptTokensEstimated") or 0)),
                         parsing=parsing,
                     )
-                if second_round:
-                    runtime = _audit_runtime(snapshot)
-                    if snapshot.get("investigationRounds"):
-                        snapshot["investigationRounds"][-1]["completed_at"] = _now().isoformat()
-                    logger.info(
-                        "CASCADE_AUDIT_ROUND_COMPLETED audit_job_id=%s round=%s hypothesis_count=%s provider_calls=%s stop_reason=%s",
-                        job.id,
-                        runtime.get("investigationRound") or 1,
-                        len(snapshot.get("verifiedHypotheses") or []),
-                        runtime.get("providerCallsCount") or 0,
-                        "next_level_requested",
+                job.context_snapshot_json = _json_dump(snapshot)
+                job.status = "context_ready"
+                job.current_stage = "plan_next_investigation_round"
+                job.stage_attempt = 0
+                job.progress_percent = 72
+                _complete_provider_stage(job, stage)
+        elif stage == "plan_next_investigation_round":
+            runtime_snapshot = _json_load(job.context_snapshot_json, {})
+            runtime = _audit_runtime(runtime_snapshot)
+            stop_reason = round_stop_reason(
+                round_number=int(runtime.get("investigationRound") or 1),
+                pending=len(runtime_snapshot.get("pendingDataRequests") or []),
+                processing=len(runtime_snapshot.get("processingDataRequests") or []),
+                verifications=runtime_snapshot.get("verifiedHypotheses") or [],
+                request_count=int(runtime.get("requestsCount") or 0),
+            )
+            if stop_reason:
+                runtime["stopReason"] = stop_reason
+                job.context_snapshot_json = _json_dump(runtime_snapshot)
+                job.status = "context_ready"
+                job.current_stage = "generate_answer"
+                job.progress_percent = 78
+            else:
+                execution_token = _claim_provider_stage(db, job, stage, progress_percent=74)
+                snapshot = _json_load(job.context_snapshot_json, {})
+                prompt = build_next_round_prompt(snapshot)
+                prompt_metadata = _save_stage_prompt_metadata(
+                    job,
+                    stage,
+                    prompt,
+                    model=AI_AUDIT_HELPER_MODEL,
+                    max_tokens=AI_AUDIT_PLANNER_MAX_TOKENS,
+                    max_tokens_cap=AI_AUDIT_PLANNER_MAX_TOKENS,
+                )
+                runtime = _audit_runtime(snapshot)
+                runtime["nextRoundPromptTokensEstimated"] = int(prompt_metadata["estimatedInputTokens"] or 0)
+                _record_provider_attempt(snapshot, "helper")
+                job.context_snapshot_json = _json_dump(snapshot)
+                db.commit()
+                openrouter_started_at = perf_counter()
+                try:
+                    response = await _call_audit_provider(
+                        stage,
+                        AI_AUDIT_HELPER_MODEL,
+                        prompt,
+                        max_tokens=AI_AUDIT_PLANNER_MAX_TOKENS,
+                        max_tokens_cap=AI_AUDIT_PLANNER_MAX_TOKENS,
+                        timeout=AUDIT_STAGE_PROVIDER_TIMEOUTS[stage],
                     )
-                    runtime["investigationRound"] = int(runtime.get("investigationRound") or 1) + 1
-                    runtime["requestsCount"] = int(runtime.get("requestsCount") or 0) + len(second_round)
-                    snapshot["validatedDataRequests"] = (snapshot.get("validatedDataRequests") or []) + [
-                        item.model_dump(mode="json") for item in second_round
-                    ]
-                    snapshot["pendingDataRequests"] = [item.model_dump(mode="json") for item in second_round]
-                    snapshot["processingDataRequests"] = []
-                    round_facts = [
-                        item for item in (snapshot.get("observedFacts") or [])
-                        if item.get("campaign_name") in {request.campaign_name for request in second_round}
-                    ]
-                    round_hypothesis_ids = {request.hypothesis_id for request in second_round}
-                    prior_hypotheses = [
-                        item
-                        for round_item in (snapshot.get("investigationRounds") or [])
-                        for item in (round_item.get("hypotheses") or [])
-                        if item.get("hypothesis_id") in round_hypothesis_ids
-                    ]
-                    round_hypotheses = [
-                        {
-                            **item,
-                            "status": "collecting_data",
-                            "investigation_round": runtime["investigationRound"],
-                        }
-                        for item in {item.get("hypothesis_id"): item for item in prior_hypotheses}.values()
-                    ]
-                    snapshot.setdefault("investigationRounds", []).append({
-                        "round_number": runtime["investigationRound"],
-                        "observed_facts": round_facts,
-                        "hypotheses": round_hypotheses,
-                        "planned_requests": [item.model_dump(mode="json") for item in second_round],
-                        "completed_requests": [],
-                        "pending_requests": [item.model_dump(mode="json") for item in second_round],
-                        "processing_requests": [],
-                        "failed_requests": [],
-                        "verification_results": [],
-                        "started_at": _now().isoformat(),
-                        "completed_at": None,
-                        "stop_reason": None,
-                    })
-                    logger.info(
-                        "CASCADE_AUDIT_ROUND_STARTED audit_job_id=%s round=%s request_count=%s",
-                        job.id, runtime["investigationRound"], len(second_round),
+                except Exception as helper_exc:
+                    job, owns_result = _reload_stage_owner(
+                        db, job_id, organization_id, stage=stage, execution_token=execution_token,
                     )
-                    logger.info(
-                        "CASCADE_AUDIT_DATA_REQUESTED audit_job_id=%s round=%s capability_ids=%s request_count=%s",
-                        job.id,
-                        runtime["investigationRound"],
-                        ",".join(sorted({item.capability_id or item.dimension for item in second_round})),
-                        len(second_round),
+                    if not owns_result:
+                        return job
+                    snapshot = _json_load(job.context_snapshot_json, {})
+                    next_requests = _second_round_requests(snapshot)
+                    _append_helper_fallback(
+                        snapshot,
+                        job_id=job.id,
+                        stage=stage,
+                        stage_name="next_round_planner",
+                        code="next_round_planner_fallback_used",
+                        message="AI-планировщик следующего раунда недоступен; используется backend fallback.",
+                        reason=_helper_fallback_reason(helper_exc),
+                        elapsed_ms=_elapsed_ms(openrouter_started_at),
+                        prompt_tokens=int((_audit_runtime(snapshot).get("nextRoundPromptTokensEstimated") or 0)),
                     )
+                    valid_plan = False
+                    plan = None
+                else:
+                    job, owns_result = _reload_stage_owner(
+                        db, job_id, organization_id, stage=stage, execution_token=execution_token,
+                    )
+                    if not owns_result:
+                        return job
+                    snapshot = _json_load(job.context_snapshot_json, {})
+                    _record_provider_response(snapshot, response)
+                    returned_model = str(response.get("model") or AI_AUDIT_HELPER_MODEL)
+                    _audit_models(snapshot, job.model)["next_round_planner_returned_model"] = returned_model
+                    plan, valid_plan, parsing = _parse_next_round_plan(str(response.get("content") or ""))
+                    next_requests: list[AuditDataRequest] = []
+                    rejected_requests: list[AuditDataRequestResult] = []
+                    if valid_plan and plan is not None:
+                        next_requests, rejected_requests = _next_round_requests_from_plan(snapshot, plan)
+                        if plan.continue_investigation and not next_requests:
+                            valid_plan = False
+                    if not valid_plan:
+                        next_requests = _second_round_requests(snapshot)
+                        _append_helper_fallback(
+                            snapshot,
+                            job_id=job.id,
+                            stage=stage,
+                            stage_name="next_round_planner",
+                            code="next_round_planner_fallback_used",
+                            message="AI-планировщик вернул невалидный следующий раунд; используется backend fallback.",
+                            reason="invalid_json_or_semantics",
+                            elapsed_ms=_elapsed_ms(openrouter_started_at),
+                            prompt_tokens=int((_audit_runtime(snapshot).get("nextRoundPromptTokensEstimated") or 0)),
+                            parsing=parsing,
+                        )
+                    else:
+                        _set_helper_stage(
+                            snapshot,
+                            "next_round_planner",
+                            status_value="success",
+                            returned_model=returned_model,
+                            parsing=parsing,
+                        )
+                        snapshot["nextRoundPlan"] = plan.model_dump(mode="json")
+                        if rejected_requests:
+                            snapshot["drilldownResults"] = _merge_drilldown_results(
+                                snapshot.get("drilldownResults") or [],
+                                [item.model_dump(mode="json") for item in rejected_requests],
+                            )
+                if next_requests:
+                    _apply_next_round_requests(snapshot, next_requests)
+                    next_stage = "collect_live_data"
+                    progress = 68
                 else:
                     runtime = _audit_runtime(snapshot)
-                    stop_reason = round_stop_reason(
-                        round_number=int(runtime.get("investigationRound") or 1),
-                        pending=len(snapshot.get("pendingDataRequests") or []),
-                        processing=len(snapshot.get("processingDataRequests") or []),
-                        verifications=snapshot.get("verifiedHypotheses") or [],
-                        request_count=int(runtime.get("requestsCount") or 0),
-                    ) or "low_expected_information_gain"
+                    stop_reason = (
+                        plan.stop_reason if valid_plan and plan is not None and not plan.continue_investigation
+                        else "low_expected_information_gain"
+                    )
                     runtime["stopReason"] = stop_reason
                     if snapshot.get("investigationRounds"):
                         snapshot["investigationRounds"][-1]["stop_reason"] = stop_reason
                         snapshot["investigationRounds"][-1]["completed_at"] = _now().isoformat()
-                    logger.info(
-                        "CASCADE_AUDIT_ROUND_COMPLETED audit_job_id=%s round=%s hypothesis_count=%s provider_calls=%s stop_reason=%s",
-                        job.id,
-                        runtime.get("investigationRound") or 1,
-                        len(snapshot.get("verifiedHypotheses") or []),
-                        runtime.get("providerCallsCount") or 0,
-                        stop_reason,
-                    )
-                    logger.info(
-                        "CASCADE_AUDIT_STOPPED audit_job_id=%s round=%s stop_reason=%s",
-                        job.id, runtime.get("investigationRound"), stop_reason,
-                    )
+                    next_stage = "generate_answer"
+                    progress = 78
                 job.context_snapshot_json = _json_dump(snapshot)
                 job.status = "context_ready"
-                job.current_stage = "collect_live_data" if second_round else "generate_answer"
+                job.current_stage = next_stage
                 job.stage_attempt = 0
-                job.progress_percent = 68 if second_round else 78
+                job.progress_percent = progress
                 _complete_provider_stage(job, stage)
+        elif stage == "apply_next_investigation_round":
+            snapshot = _json_load(job.context_snapshot_json, {})
+            next_requests = [
+                AuditDataRequest.model_validate(item)
+                for item in snapshot.pop("fallbackNextRoundRequests", [])
+            ]
+            if next_requests:
+                _apply_next_round_requests(snapshot, next_requests)
+            else:
+                _audit_runtime(snapshot)["stopReason"] = "low_expected_information_gain"
+            job.context_snapshot_json = _json_dump(snapshot)
+            job.status = "context_ready"
+            job.current_stage = "collect_live_data" if next_requests else "generate_answer"
+            job.stage_attempt = 0
+            job.progress_percent = 68 if next_requests else 78
         elif stage == "generate_answer":
             execution_token = _claim_provider_stage(db, job, stage, progress_percent=82)
             snapshot = _json_load(job.context_snapshot_json, {})

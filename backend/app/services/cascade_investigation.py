@@ -14,6 +14,7 @@ from app.schemas import (
     AuditInvestigationRound,
     AuditObservedFact,
 )
+from app.services.audit_evidence import evaluate_hypothesis_evidence, evaluate_metric_sufficiency
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +28,7 @@ CASCADE_BY_SUBTYPE: dict[str, tuple[str, ...]] = {
     "search": ("ad_groups", "keywords", "autotargeting", "search_queries", "ads", "devices", "geo", "demographics", "goals"),
     "brand_search": ("ad_groups", "search_queries", "goals", "devices", "geo"),
     "yan_prospecting": ("ad_groups", "audience_targets", "placements", "ads", "devices", "geo", "demographics", "frequency", "goals"),
-    "yan_retargeting": ("retargeting_lists", "audience_targets", "placements", "creatives", "devices", "geo", "demographics", "frequency", "goals"),
+    "yan_retargeting": ("retargeting_lists", "audience_targets", "placements", "ad_creative_metadata", "devices", "geo", "demographics", "frequency", "goals"),
     "unknown": ("campaigns",),
 }
 
@@ -81,7 +82,6 @@ def build_observed_facts(snapshot: dict[str, Any]) -> list[AuditObservedFact]:
         conversions = float(campaign.get("goalConversions") or 0)
         cpa = float(campaign.get("goalCpa") or 0) if conversions else None
         flags = set(campaign.get("flags") or [])
-        sufficient = clicks >= 10 or conversions >= 2
         metric = "campaign_health"
         evidence = [f"Расход {cost:.2f}; клики {clicks}; конверсии по целям {conversions:g}."]
         benchmark: float | None = None
@@ -94,10 +94,22 @@ def build_observed_facts(snapshot: dict[str, Any]) -> list[AuditObservedFact]:
             deviation = round((cpa / target_cpa - 1) * 100, 2)
         elif "low_ctr" in flags:
             metric = "low_ctr"
-        elif not sufficient or "low_data" in flags:
+        elif "low_data" in flags:
             metric = "low_data"
         elif conversions > 0 and (not target_cpa or (cpa or 0) <= target_cpa):
             metric = "good_campaign"
+        sufficiency = evaluate_metric_sufficiency(
+            metric,
+            cost=cost,
+            clicks=clicks,
+            impressions=impressions,
+            conversions=conversions,
+            target_cpa=target_cpa,
+            period_days=int(period.days or 0),
+        )
+        sufficient = sufficiency.sufficient
+        if not sufficient and metric not in {"tracking_inconsistency", "strategy_learning"}:
+            metric = "low_data"
         facts.append(AuditObservedFact(
             fact_id=f"fact_{len(facts) + 1:03d}",
             campaign_name=name,
@@ -155,7 +167,15 @@ def build_observed_facts(snapshot: dict[str, Any]) -> list[AuditObservedFact]:
                 benchmark_value=benchmark_value,
                 deviation=dynamic_deviation,
                 sample_size=int(current.get("clicks") or current.get("impressions") or 0),
-                sufficient_data=int(current.get("clicks") or 0) >= 10,
+                sufficient_data=evaluate_metric_sufficiency(
+                    "high_cpa" if dynamic_metric == "goal_conversions_drop" else "ctr",
+                    cost=float(current.get("cost") or 0),
+                    clicks=int(current.get("clicks") or 0),
+                    impressions=int(current.get("impressions") or 0),
+                    conversions=float(current.get("goalConversions") or 0),
+                    target_cpa=target_cpa,
+                    period_days=7,
+                ).sufficient,
                 evidence=[
                     f"Текущие 7 дней: {current_value}; предыдущие 7 дней: {benchmark_value}; изменение: {dynamic_deviation}%.",
                 ],
@@ -247,6 +267,8 @@ def trusted_evidence_for_results(results: list[dict[str, Any]]) -> list[str]:
 def enforce_hypothesis_verification(
     proposed: AuditHypothesisVerification,
     *, hypothesis: dict[str, Any], requests: list[dict[str, Any]], results: list[dict[str, Any]],
+    target_cpa: float = 0,
+    period_days: int = 30,
 ) -> AuditHypothesisVerification:
     related = [item for item in results if item.get("hypothesis_id") == proposed.hypothesis_id]
     by_request = {item.get("request_id"): item for item in related}
@@ -255,7 +277,19 @@ def enforce_hypothesis_verification(
         item for item in required
         if (by_request.get(item.get("request_id")) or {}).get("status") not in AVAILABLE_STATUSES
     ]
-    trusted = trusted_evidence_for_results(related)
+    backend_evaluation = evaluate_hypothesis_evidence(
+        {**hypothesis, "hypothesis_id": proposed.hypothesis_id},
+        requests,
+        results,
+        target_cpa=target_cpa,
+        period_days=period_days,
+    )
+    trusted = [
+        evidence
+        for rule in backend_evaluation["confirmation_rules"]
+        if rule.get("passed")
+        for evidence in rule.get("evidence") or []
+    ][:8]
     statuses = {item.get("status") for item in related}
     fact_sufficient = bool(hypothesis.get("fact_sufficient_data", True))
     status = proposed.status
@@ -264,11 +298,13 @@ def enforce_hypothesis_verification(
         status = "not_applicable"
     elif proposed.contradicting_evidence and proposed.status == "rejected":
         status = "rejected"
-    elif not trusted or not fact_sufficient:
+    elif not backend_evaluation["has_passed_confirmation_rule"] or not fact_sufficient:
         status = "unverified"
         limitations.append("Backend не нашёл достаточного подтверждения в доверенных данных.")
-    elif status == "confirmed" and (missing_required or not proposed.supporting_evidence):
-        status = "partially_confirmed" if proposed.supporting_evidence else "unverified"
+    elif status == "confirmed" and (
+        missing_required or not backend_evaluation["required_data_available"]
+    ):
+        status = "partially_confirmed" if trusted else "unverified"
         limitations.append("Не все обязательные данные или подтверждающие сигналы получены.")
     elif status == "partially_confirmed" and not proposed.supporting_evidence:
         status = "unverified"
@@ -281,6 +317,8 @@ def enforce_hypothesis_verification(
         "remaining_data_needed": [
             str(item.get("capability_id") or item.get("dimension")) for item in missing_required
         ][:8],
+        "evidence_summaries": backend_evaluation["evidence_summaries"],
+        "confirmation_rules": backend_evaluation["confirmation_rules"],
     })
 
 
@@ -303,7 +341,7 @@ def round_stop_reason(
     if pending or processing:
         return None
     statuses = {item.get("status") for item in verifications}
-    if statuses and statuses <= {"confirmed", "rejected", "not_applicable"}:
+    if statuses and statuses <= {"confirmed", "not_applicable"}:
         return "sufficient_evidence_or_rejected"
     if round_number >= MAX_INVESTIGATION_ROUNDS:
         return "max_rounds_reached"

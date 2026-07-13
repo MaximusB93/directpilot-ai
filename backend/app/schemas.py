@@ -541,6 +541,7 @@ class AiAuditCreateRequest(BaseModel):
     ai_preset: str | None = None
     max_tokens: int | None = Field(default=None, ge=1, le=10000)
     cache_policy: Literal["fresh", "prefer_cache", "cache_only"] = "fresh"
+    allow_saved_fallback: bool = False
     options: AiAuditOptions = Field(default_factory=AiAuditOptions)
 
 
@@ -670,7 +671,7 @@ class AuditDataRequest(BaseModel):
         "ad_groups", "ad_group_performance", "ad_group_settings", "keywords", "keyword_performance",
         "autotargeting", "criteria_performance", "search_queries", "audience_targets", "audiences",
         "retargeting_segments", "retargeting_lists", "audience_exclusions", "targeting_conditions",
-        "ads", "ad_performance", "ad_texts", "ad_urls", "creatives", "images", "videos",
+        "ads", "ad_performance", "ad_texts", "ad_urls", "ad_creative_metadata", "creatives", "images", "videos",
         "sitelinks", "callouts", "landing_pages", "placements", "placement_or_network_breakdown",
         "devices", "geo", "location_of_presence", "demographics", "age", "gender", "ad_format",
         "mobile_platform", "carrier", "frequency", "frequency_and_reach", "goals",
@@ -833,12 +834,33 @@ class AuditHypothesisVerification(BaseModel):
     contradicting_evidence: list[str] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
     remaining_data_needed: list[str] = Field(default_factory=list)
+    evidence_summaries: list[dict] = Field(default_factory=list)
+    confirmation_rules: list[dict] = Field(default_factory=list)
 
 
 class AuditHypothesisVerificationSet(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     verifications: list[AuditHypothesisVerification] = Field(default_factory=list, max_length=5)
+
+
+class AuditNextRoundRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    hypothesis_id: str
+    capability_id: str
+    reason: str
+    expected_information_gain: str
+    required_for_conclusion: bool = True
+    stop_if: list[str] = Field(default_factory=list, max_length=5)
+
+
+class AuditNextRoundPlan(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    continue_investigation: bool
+    requests: list[AuditNextRoundRequest] = Field(default_factory=list, max_length=8)
+    stop_reason: str | None = None
 
 
 class AiAuditJobResponse(BaseModel):

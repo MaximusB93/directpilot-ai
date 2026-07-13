@@ -299,6 +299,125 @@ def test_capability_validation_rejects_unknown_report_type_and_incompatible_fiel
     with pytest.raises(ValueError, match="Incompatible report fields"):
         validate_capability_definition(incompatible)
 
+    criteria = YANDEX_DIRECT_READ_CAPABILITIES["criteria_performance"]
+    assert "CriterionId" in criteria.api_fields
+    assert "CriteriaId" not in criteria.api_fields
+    with pytest.raises(ValueError, match="Incompatible report fields"):
+        validate_capability_definition(replace(
+            criteria,
+            api_fields=criteria.api_fields + ("CriteriaId",),
+        ))
+
+
+def test_goal_ids_are_split_into_valid_report_batches():
+    batches = direct_read.split_report_goal_ids([str(index) for index in range(1, 24)])
+
+    assert [len(batch) for batch in batches] == [10, 10, 3]
+    assert all(len(batch) <= direct_read.MAX_REPORT_GOALS for batch in batches)
+
+
+def test_report_pagination_persists_500_500_200_rows(monkeypatch):
+    db = _db()
+    monkeypatch.setattr(direct_read, "get_yandex_access_token_for_account", lambda *args: "secret")
+    specs = []
+
+    def fake_report(self, spec, *, processing_mode="auto"):
+        specs.append(spec)
+        offset = int(spec["Page"]["Offset"])
+        count = 500 if offset < 1000 else 200
+        return {
+            "status": "completed",
+            "rows": [
+                {
+                    "CampaignId": "101",
+                    "CampaignName": "Search Brand",
+                    "AdGroupId": "201",
+                    "AdGroupName": "Group",
+                    "Query": f"query-{index}",
+                    "Clicks": "1",
+                    "Cost": "10",
+                }
+                for index in range(offset, offset + count)
+            ],
+            "limited_by": offset + count if offset < 1000 else None,
+        }
+
+    monkeypatch.setattr(YandexDirectConnector, "request_report", fake_report)
+    request = _request("search_queries", family="search", subtype="search")
+
+    first = direct_read.execute_direct_read(db, "client-a", request, audit_job_id="audit-a", cache_policy="fresh")
+    job = db.scalar(select(DirectReportJob))
+    assert first.result.status == "processing"
+    assert (job.rows_collected, job.next_offset, job.pages_completed, job.limited_by) == (500, 500, 1, 500)
+
+    job.next_retry_at = datetime.now(UTC) - timedelta(seconds=1)
+    db.flush()
+    second = direct_read.execute_direct_read(db, "client-a", request, audit_job_id="audit-a", cache_policy="fresh")
+    db.flush()
+    db.refresh(job)
+    assert second.result.status == "processing"
+    assert (job.rows_collected, job.next_offset, job.pages_completed, job.limited_by) == (1000, 1000, 2, 1000)
+
+    job.next_retry_at = datetime.now(UTC) - timedelta(seconds=1)
+    db.flush()
+    third = direct_read.execute_direct_read(db, "client-a", request, audit_job_id="audit-a", cache_policy="fresh")
+    db.flush()
+    db.refresh(job)
+    assert third.result.status == "collected"
+    assert len(third.result.data) == 1200
+    assert (job.rows_collected, job.pages_completed, job.limited_by) == (1200, 3, 1000)
+    assert [spec["Page"]["Offset"] for spec in specs] == [0, 500, 1000]
+
+
+def test_report_queue_limit_is_shared_by_clients_of_connected_account(monkeypatch):
+    db = _db()
+    db.add(ClientAccount(
+        id="client-b",
+        organization_id="org-a",
+        name="Second client",
+        direct_login="safe-login",
+        yandex_account_id="account-a",
+        conversion_goal_ids="123",
+    ))
+    db.add(DirectCampaignPeriodStat(
+        client_id="client-b",
+        campaign_id="101",
+        campaign_name="Search Brand",
+        period_from=datetime(2026, 6, 10, tzinfo=UTC),
+        period_to=datetime(2026, 7, 9, tzinfo=UTC),
+        impressions=100,
+        clicks=10,
+        cost=500,
+    ))
+    for index in range(direct_read.MAX_PROCESSING_REPORTS_PER_ACCOUNT):
+        db.add(DirectReportJob(
+            client_id="client-a",
+            capability_id="devices",
+            request_hash=f"active-{index}",
+            report_name=f"active-{index}",
+            report_spec_json="{}",
+            status="processing",
+            expires_at=datetime.now(UTC) + timedelta(minutes=10),
+        ))
+    db.commit()
+    monkeypatch.setattr(direct_read, "get_yandex_access_token_for_account", lambda *args: "secret")
+
+    def forbidden_report(*args, **kwargs):
+        raise AssertionError("Shared account queue guard must run before Direct API")
+
+    monkeypatch.setattr(YandexDirectConnector, "request_report", forbidden_report)
+    request = AuditDataRequest(
+        **{
+            **_request("devices").model_dump(mode="json"),
+            "campaign_name": "Search Brand",
+            "filters": {"campaign_name": "Search Brand"},
+        }
+    )
+    outcome = direct_read.execute_direct_read(db, "client-b", request, audit_job_id="audit-b", cache_policy="fresh")
+
+    assert outcome.result.status == "processing"
+    assert outcome.result.error_code == "direct_report_queue_full"
+
 
 def test_prefer_cache_reuses_valid_cache_and_fresh_bypasses_it(monkeypatch):
     db = _db()
