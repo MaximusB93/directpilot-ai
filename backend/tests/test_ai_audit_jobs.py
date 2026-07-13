@@ -11,7 +11,7 @@ import app.services.ai_audit_jobs as audit_jobs
 from app.api.routers.ai import chat_with_ai
 from app.db import Base
 from app.models import AiAuditJob, ClientAccount, Organization, User
-from app.schemas import AiAuditCreateRequest, AiChatRequest
+from app.schemas import AiAuditCreateRequest, AiChatRequest, AuditDataRequestResult
 from app.core.config import normalize_ai_request_options, production_ai_model_ids, DEFAULT_PRODUCTION_AI_MODEL
 
 
@@ -268,7 +268,7 @@ def test_full_staged_flow_runs_planning_verification_and_final_answer(monkeypatc
             break
     assert job.status == "completed"
     assert stages[:7] == [
-        "create_investigation_plan", "validate_data_requests", "collect_drilldowns",
+        "create_investigation_plan", "validate_data_requests", "collect_live_data",
         "verify_hypotheses", "generate_answer", "finalize", "finalize",
     ]
     assert audit_jobs._json_load(job.prompt_snapshot_json, {})["fullPromptStored"] is False
@@ -931,9 +931,61 @@ def test_context_metadata_reports_saved_live_and_unavailable_drilldowns():
         "allowed": 4,
         "saved": 2,
         "live": 0,
+        "liveCompleted": 0,
+        "processing": 0,
+        "cacheHits": 0,
         "statusCounts": {"collected": 2, "unavailable": 1, "insufficient_data": 1, "not_applicable": 1},
         "unavailableDimensions": ["placements"],
+        "unavailableCapabilities": [],
+        "freshestDataAt": None,
     }
+
+
+def test_processing_direct_report_waits_before_hypothesis_verification(monkeypatch):
+    db = _db()
+    job = _create(db)
+    plan = json.loads(_investigation_answer())
+    request = plan["hypotheses"][0]["data_requests"][0]
+    snapshot = audit_jobs.build_compact_audit_context(_context())
+    snapshot["investigationPlan"] = plan
+    snapshot["validatedDataRequests"] = [request]
+    snapshot["drilldownResults"] = []
+    snapshot["auditRuntime"] = {"requestsCount": 1}
+    job.context_snapshot_json = audit_jobs._json_dump(snapshot)
+    job.status = "context_ready"
+    job.current_stage = "collect_live_data"
+    db.commit()
+    calls = {"count": 0}
+
+    def fake_collect(*args, **kwargs):
+        calls["count"] += 1
+        status_value = "processing" if calls["count"] == 1 else "collected"
+        return [AuditDataRequestResult(
+            request_id=request["request_id"],
+            hypothesis_id=request["hypothesis_id"],
+            capability_id="search_queries",
+            dimension="search_queries",
+            campaign_name="Search",
+            status=status_value,
+            source="yandex_direct_live_report",
+            source_type="report",
+            live=True,
+            data=[] if status_value == "processing" else [{"query": "hotel"}],
+            rows_analyzed=0 if status_value == "processing" else 1,
+            rows_total=0 if status_value == "processing" else 1,
+            error_code="direct_report_processing" if status_value == "processing" else None,
+            retryable=status_value == "processing",
+        )], 1
+
+    monkeypatch.setattr(audit_jobs, "collect_audit_data_requests", fake_collect)
+
+    job = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
+    assert job.current_stage == "wait_for_offline_reports"
+    assert job.progress_percent == 58
+
+    job = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
+    assert job.current_stage == "verify_hypotheses"
+    assert audit_jobs.audit_job_response(job).context_metadata["investigation"]["dataRequests"]["liveCompleted"] == 1
 
 
 def test_truncated_invalid_json_reports_truncated_provider_response():

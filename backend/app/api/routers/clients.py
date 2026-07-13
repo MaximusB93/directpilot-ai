@@ -14,6 +14,8 @@ from app.models import (
     ClientBusinessContext,
     ConnectedAccount,
     DirectCampaignPeriodStat,
+    DirectReadCache,
+    DirectReportJob,
     OAuthToken,
     OptimizationActionDraft as OptimizationActionDraftModel,
     OptimizationActionEvent,
@@ -431,6 +433,8 @@ def delete_client(
     client = _get_owned_client(db, client_id, current)
     db.execute(delete(SyncJob).where(SyncJob.client_id == client_id))
     db.execute(delete(DirectCampaignPeriodStat).where(DirectCampaignPeriodStat.client_id == client_id))
+    db.execute(delete(DirectReadCache).where(DirectReadCache.client_id == client_id))
+    db.execute(delete(DirectReportJob).where(DirectReportJob.client_id == client_id))
     db.execute(delete(ClientBusinessContext).where(ClientBusinessContext.client_id == client_id))
     db.execute(delete(OptimizationActionEvent).where(OptimizationActionEvent.client_id == client_id))
     db.execute(delete(OptimizationActionDraftModel).where(OptimizationActionDraftModel.client_id == client_id))
