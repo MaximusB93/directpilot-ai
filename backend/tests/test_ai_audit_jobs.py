@@ -750,6 +750,74 @@ def test_invalid_json_is_preserved_as_markdown_fallback(monkeypatch):
     assert result["structured"] is None
     assert result["fallbackMarkdown"].startswith("## Итог")
     assert result["completeness"] == "fallback"
+    assert "rawResponse" not in result
+
+
+def test_structured_result_accepts_json_markdown_fence():
+    db = _db()
+    job = _create(db)
+    snapshot = audit_jobs.build_compact_audit_context(_context())
+    fenced_answer = f"```json\n{_structured_answer()}\n```"
+
+    structured = audit_jobs._validate_structured_result(
+        fenced_answer,
+        snapshot=snapshot,
+        job=job,
+        response={"model": "qwen/qwen3-14b"},
+    )
+
+    assert structured is not None
+    assert structured["executive_summary"]
+    assert structured["meta"]["model"] == "qwen/qwen3-14b"
+
+
+def test_legacy_fenced_json_job_is_repaired_and_raw_response_is_not_exposed():
+    db = _db()
+    job = _create(db)
+    snapshot = audit_jobs.build_compact_audit_context(_context())
+    fenced_answer = f"```json\n{_structured_answer()}\n```"
+    job.context_snapshot_json = audit_jobs._json_dump(snapshot)
+    job.answer_text = fenced_answer
+    job.result_json = audit_jobs._json_dump({
+        "structured": None,
+        "fallbackMarkdown": fenced_answer,
+        "rawResponse": fenced_answer,
+        "warnings": ["Модель вернула ответ вне JSON-контракта."],
+        "completeness": "fallback",
+    })
+    db.commit()
+
+    response = audit_jobs.audit_job_response(job)
+
+    assert response.result["structured"] is not None
+    assert response.result["fallbackMarkdown"] is None
+    assert response.result["completeness"] == "structured"
+    assert "rawResponse" not in response.result
+    assert "```json" not in response.answer
+
+
+def test_schema_invalid_json_is_hidden_from_public_result():
+    db = _db()
+    job = _create(db)
+    raw_answer = '```json\n{"executive_summary":"incomplete"}\n```'
+    job.context_snapshot_json = audit_jobs._json_dump(audit_jobs.build_compact_audit_context(_context()))
+    job.answer_text = raw_answer
+    job.result_json = audit_jobs._json_dump({
+        "structured": None,
+        "fallbackMarkdown": raw_answer,
+        "rawResponse": raw_answer,
+        "warnings": [],
+        "completeness": "fallback",
+    })
+    db.commit()
+
+    response = audit_jobs.audit_job_response(job)
+
+    assert response.result["structured"] is None
+    assert response.result["fallbackMarkdown"] == audit_jobs._SAFE_AUDIT_FALLBACK_MESSAGE
+    assert response.answer == audit_jobs._SAFE_AUDIT_FALLBACK_MESSAGE
+    assert "rawResponse" not in response.result
+    assert "executive_summary" not in response.answer
 
 
 def test_finish_reason_length_marks_result_truncated_and_allows_compact_retry(monkeypatch):

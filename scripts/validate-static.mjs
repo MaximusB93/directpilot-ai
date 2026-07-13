@@ -140,7 +140,7 @@ const checks = [
   ['staged audit hidden debug panels', !has('src/pages/ai-assistant.js', '${renderAiChat(context)}\n    ${renderAiPromptDebugPanel(context)}') && !has('src/pages/ai-assistant.js', '${renderClientAiRecommendations(context)}\n  `;')],
   ['ai chat minimum height', has('src/app-product-polish.css', 'min-height: 520px') && has('src/app-product-polish.css', 'min-height: 360px')],
   ['audit source counters are explicit', has('src/pages/ai-assistant.js', 'Saved data requests:') && has('src/pages/ai-assistant.js', 'Live Direct API calls:')],
-  ['assistant safe markdown', has('src/pages/ai-assistant.js', 'renderSafeMarkdown(message.content)') && has('src/pages/ai-assistant.js', '`<p>${escapeHtml(message.content)}</p>`') && has('src/core/markdown.js', 'export function renderSafeMarkdown') && has('src/core/markdown.js', 'noreferrer noopener')],
+  ['assistant safe markdown', has('src/pages/ai-assistant.js', 'renderAiAssistantMarkdown(message.content)') && has('src/pages/ai-assistant.js', 'renderSafeMarkdown(value)') && has('src/pages/ai-assistant.js', '`<p>${escapeHtml(message.content)}</p>`') && has('src/core/markdown.js', 'export function renderSafeMarkdown') && has('src/core/markdown.js', 'noreferrer noopener')],
   ['staged audit timeout isolated', has('src/services/ai-service.js', 'AI_AUDIT_GENERATION_TIMEOUT_MS = 150 * 1000') && has('src/services/ai-service.js', 'options?.timeoutMs ?? AI_API_REQUEST_TIMEOUT_MS')],
   ['no seeded account data', has('src/data.js', 'export const clients = []')],
   ['docs updated', has('docs/journal-domain-model.md', 'details UI: done') && has('docs/frontend-architecture.md', 'Journal details UI wired')],
@@ -172,6 +172,16 @@ if (!auditSmoke.includes('<p class="aiAuditPeriod">Период анализа: 
   || !auditSmoke.includes('Ответ модели достиг лимита')
   || auditSmoke.includes('CampaignId')) {
   failed.push(['structured audit runtime smoke', false]);
+}
+const rawAuditFallbackSmoke = renderAiAuditResult({
+  structured: null,
+  fallbackMarkdown: '```json\n{"executive_summary":"must stay hidden"}\n```',
+  warnings: [],
+}, '', escapeHtml, {});
+if (!rawAuditFallbackSmoke.includes('интерфейс не показывает сырой JSON')
+  || rawAuditFallbackSmoke.includes('must stay hidden')
+  || rawAuditFallbackSmoke.includes('<pre>')) {
+  failed.push(['raw audit JSON presentation guard', false]);
 }
 if (failed.length > 0) {
   console.error(`Static validation failed: ${failed.map(([name]) => name).join(', ')}`);

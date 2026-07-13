@@ -152,7 +152,7 @@ export function renderAiChat({
         <button class="secondaryButton" data-ai-chat-sample="Проанализируй поисковые запросы и предложи минус-слова с рисками.">Запросы</button>
       </div>
       <div class="aiChatMessages" data-ai-chat-messages>
-        ${aiChatMessages.map((message) => `<article class="aiChatMessage ${message.role}"><span>${message.role === 'user' ? 'Вы' : 'AI'}</span>${message.role === 'user' ? `<p>${escapeHtml(message.content)}</p>` : renderSafeMarkdown(message.content)}</article>`).join('')}
+        ${aiChatMessages.map((message) => `<article class="aiChatMessage ${message.role}"><span>${message.role === 'user' ? 'Вы' : 'AI'}</span>${message.role === 'user' ? `<p>${escapeHtml(message.content)}</p>` : renderAiAssistantMarkdown(message.content)}</article>`).join('')}
       </div>
       ${aiChatError ? `<div class="authStatus integrationStatus">${escapeHtml(aiChatError)}${aiChatErrorDetails?.retry_suggestion ? `<br>${escapeHtml(aiChatErrorDetails.retry_suggestion)}` : ''}</div>` : ''}
       <form class="aiChatForm" data-ai-chat-form>
@@ -293,6 +293,25 @@ export function renderAiAssistantContent(context) {
 }
 import { renderSafeMarkdown } from '../core/markdown.js';
 
+const RAW_AUDIT_JSON_MESSAGE = 'Структурированный результат скрыт: интерфейс не показывает сырой JSON. Откройте карточку результата аудита или повторите аудит.';
+
+function looksLikeRawStructuredJson(value) {
+  const text = String(value || '').trim();
+  if (!text) return false;
+  if (text.toLowerCase().startsWith('```json')) return true;
+  if (text.startsWith('```')) {
+    const body = text.replace(/^```[^\n]*\n?/, '').replace(/```\s*$/, '').trim();
+    return body.startsWith('{') || body.startsWith('[');
+  }
+  return text.startsWith('{') || text.startsWith('[');
+}
+
+function renderAiAssistantMarkdown(value) {
+  return looksLikeRawStructuredJson(value)
+    ? `<p class="aiAuditRawJsonNotice">${RAW_AUDIT_JSON_MESSAGE}</p>`
+    : renderSafeMarkdown(value);
+}
+
 function auditCoverageLabel(key) {
   return {
     account: 'Аккаунт', campaigns: 'Кампании', adGroups: 'Группы', keywords: 'Ключи',
@@ -325,7 +344,7 @@ export function renderAiAuditResult(result, fallbackAnswer, escapeHtml, job = {}
   const coverage = structured?.meta?.data_coverage || result?.dataCoverage || job.context_metadata?.dataCoverage || {};
   const periodLine = `Период анализа: ${formatAuditDate(period.date_from || period.dateFrom)}–${formatAuditDate(period.date_to || period.dateTo)}, ${escapeHtml(String(period.days || '—'))} дней.`;
   if (!structured) {
-    return `<div class="aiAuditResult"><p class="aiAuditPeriod">${periodLine}</p>${result?.warnings?.map((warning) => `<div class="authStatus integrationStatus">${escapeHtml(warning)}</div>`).join('') || ''}${renderSafeMarkdown(result?.fallbackMarkdown || fallbackAnswer || '')}</div>`;
+    return `<div class="aiAuditResult"><p class="aiAuditPeriod">${periodLine}</p>${result?.warnings?.map((warning) => `<div class="authStatus integrationStatus">${escapeHtml(warning)}</div>`).join('') || ''}${renderAiAssistantMarkdown(result?.fallbackMarkdown || fallbackAnswer || '')}</div>`;
   }
   const coverageRows = Object.entries(coverage).map(([key, item]) => `<tr><th>${escapeHtml(auditCoverageLabel(key))}</th><td><span class="aiStatusBadge ${item.available ? 'ready' : 'pending'}">${item.available ? 'Доступно' : 'Не собрано'}</span></td><td>${escapeHtml(String(item.analyzed || 0))}${item.total === null || item.total === undefined ? '' : ` / ${escapeHtml(String(item.total))}`}</td><td>${escapeHtml(item.reason || item.source || '—')}</td></tr>`).join('');
   return `<div class="aiAuditResult">

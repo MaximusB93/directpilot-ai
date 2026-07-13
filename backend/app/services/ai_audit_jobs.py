@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import uuid
 from datetime import UTC, datetime, timedelta
 from time import perf_counter
@@ -930,7 +931,7 @@ def _validate_structured_result(
     response: dict[str, Any],
 ) -> dict[str, Any] | None:
     try:
-        parsed = json.loads(answer)
+        parsed = _parse_structured_json(answer)
         if not isinstance(parsed, dict):
             return None
         parsed["meta"] = _trusted_result_meta(snapshot, job, response)
@@ -938,6 +939,53 @@ def _validate_structured_result(
         return _enforce_verified_result(validated, snapshot)
     except (TypeError, ValueError):
         return None
+
+
+_JSON_FENCE_PATTERN = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.IGNORECASE | re.DOTALL)
+_SAFE_AUDIT_FALLBACK_MESSAGE = (
+    "Модель вернула структурированный ответ, который не удалось проверить. "
+    "Сырой JSON скрыт. Повторите аудит в более компактном формате."
+)
+_MAX_AUDIT_FALLBACK_CHARS = 12_000
+
+
+def _parse_structured_json(answer: str) -> Any:
+    """Parse direct JSON or JSON wrapped in a Markdown code fence."""
+    text = str(answer or "").lstrip("\ufeff").strip()
+    if not text:
+        raise ValueError("Empty audit response")
+    candidates = [text]
+    candidates.extend(match.group(1).strip() for match in _JSON_FENCE_PATTERN.finditer(text))
+    last_error: ValueError | None = None
+    for candidate in candidates:
+        try:
+            return json.loads(candidate)
+        except (TypeError, ValueError) as exc:
+            last_error = ValueError(str(exc))
+    raise last_error or ValueError("Audit response does not contain JSON")
+
+
+def _looks_like_raw_json(answer: str | None) -> bool:
+    text = str(answer or "").lstrip("\ufeff").strip()
+    if not text:
+        return False
+    if text.lower().startswith("```json"):
+        return True
+    if text.startswith("```"):
+        fenced = _JSON_FENCE_PATTERN.search(text)
+        return bool(fenced and fenced.group(1).lstrip().startswith(("{", "[")))
+    return text.startswith(("{", "["))
+
+
+def _safe_audit_fallback_markdown(answer: str | None) -> str:
+    text = str(answer or "").strip()
+    if not text:
+        return "Модель не вернула результат аудита. Повторите запуск."
+    if _looks_like_raw_json(text):
+        return _SAFE_AUDIT_FALLBACK_MESSAGE
+    if len(text) > _MAX_AUDIT_FALLBACK_CHARS:
+        return f"{text[:_MAX_AUDIT_FALLBACK_CHARS].rstrip()}\n\n_Ответ сокращён для безопасного отображения._"
+    return text
 
 
 def _enforce_verified_result(result: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any]:
@@ -1413,7 +1461,58 @@ def _context_metadata(job: AiAuditJob) -> dict[str, Any]:
     }
 
 
+def _public_audit_result(job: AiAuditJob) -> tuple[dict[str, Any] | None, str | None]:
+    """Return a presentation-safe result and repair legacy fenced-JSON jobs on read."""
+    stored_result = _json_load(job.result_json, None)
+    result = dict(stored_result) if isinstance(stored_result, dict) else None
+    snapshot = _json_load(job.context_snapshot_json, {}) or {}
+    structured = result.get("structured") if result else None
+
+    if not structured:
+        candidates = []
+        if result:
+            candidates.extend((result.get("fallbackMarkdown"), result.get("rawResponse")))
+        candidates.append(job.answer_text)
+        response = {"model": job.returned_model or job.model}
+        for candidate in candidates:
+            if not candidate:
+                continue
+            structured = _validate_structured_result(
+                str(candidate),
+                snapshot=snapshot,
+                job=job,
+                response=response,
+            )
+            if structured:
+                break
+
+    if result is not None:
+        result.pop("rawResponse", None)
+        if structured:
+            result["structured"] = structured
+            result["fallbackMarkdown"] = None
+            if not result.get("truncated"):
+                result["completeness"] = "structured"
+            result["warnings"] = [
+                warning
+                for warning in (result.get("warnings") or [])
+                if "json-контракт" not in str(warning).lower()
+            ]
+        else:
+            fallback = result.get("fallbackMarkdown") or job.answer_text
+            result["fallbackMarkdown"] = _safe_audit_fallback_markdown(fallback)
+
+    if structured:
+        answer = build_audit_answer_markdown(structured, snapshot)
+    elif result is not None:
+        answer = str(result.get("fallbackMarkdown") or _safe_audit_fallback_markdown(job.answer_text))
+    else:
+        answer = _safe_audit_fallback_markdown(job.answer_text) if job.answer_text else None
+    return result, answer
+
+
 def audit_job_response(job: AiAuditJob) -> AiAuditJobResponse:
+    result, answer = _public_audit_result(job)
     return AiAuditJobResponse(
         job_id=job.id,
         client_id=job.client_id,
@@ -1432,8 +1531,8 @@ def audit_job_response(job: AiAuditJob) -> AiAuditJobResponse:
         system_prompt_hash=job.system_prompt_hash,
         context_metadata=_context_metadata(job),
         timings=_json_load(job.timings_json, {}),
-        result=_json_load(job.result_json, None),
-        answer=job.answer_text,
+        result=result,
+        answer=answer,
         error_code=job.error_code,
         error_message=job.error_message,
         retryable=job.retryable,
@@ -1987,12 +2086,12 @@ async def advance_audit_job(
                 warnings.append("Модель вернула ответ вне JSON-контракта; показан безопасный Markdown fallback.")
             if truncated:
                 warnings.append("Ответ модели достиг лимита и мог быть обрезан.")
+            fallback_markdown = None if structured else _safe_audit_fallback_markdown(answer)
             job.returned_model = final_returned_model
-            job.answer_text = build_audit_answer_markdown(structured, snapshot) if structured else answer
+            job.answer_text = build_audit_answer_markdown(structured, snapshot) if structured else fallback_markdown
             job.result_json = _json_dump({
                 "structured": structured,
-                "fallbackMarkdown": None if structured else answer,
-                "rawResponse": answer,
+                "fallbackMarkdown": fallback_markdown,
                 "warnings": warnings,
                 "finishReason": finish_reason,
                 "truncated": truncated,
