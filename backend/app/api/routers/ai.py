@@ -39,6 +39,7 @@ from app.services.ai_audit_jobs import (
     cancel_audit_job,
     create_audit_job,
     get_audit_job,
+    reset_audit_job,
     requires_staged_audit,
 )
 from app.services.ai_chat import answer_ai_chat, compact_client_context_for_chat, detect_analysis_intent
@@ -667,6 +668,15 @@ def cancel_staged_audit(
     current: CurrentUser = Depends(get_current_session_user),
 ) -> AiAuditJobResponse:
     return audit_job_response(cancel_audit_job(db, job_id, organization_id=current.organization.id))
+
+
+@router.post("/audits/{job_id}/reset", response_model=AiAuditJobResponse)
+def reset_staged_audit(
+    job_id: str,
+    db: Session = Depends(get_db),
+    current: CurrentUser = Depends(get_current_session_user),
+) -> AiAuditJobResponse:
+    return audit_job_response(reset_audit_job(db, job_id, organization_id=current.organization.id))
 
 
 @router.post("/openrouter/generate", response_model=AiPromptResponse)

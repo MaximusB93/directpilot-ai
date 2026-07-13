@@ -1,6 +1,6 @@
 import asyncio
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException
 from sqlalchemy import create_engine
@@ -280,6 +280,10 @@ def test_generating_status_prevents_duplicate_openrouter_call(monkeypatch):
     job = _create(db)
     job.status = "generating"
     job.current_stage = "generate_answer"
+    job.stage_execution_token = "active-token"
+    job.stage_started_at = datetime.now(UTC)
+    job.stage_lease_expires_at = datetime.now(UTC) + timedelta(seconds=60)
+    job.stage_attempt = 1
     db.commit()
 
     async def forbidden_generate(*args, **kwargs):
@@ -288,6 +292,203 @@ def test_generating_status_prevents_duplicate_openrouter_call(monkeypatch):
     monkeypatch.setattr(audit_jobs, "generate_openrouter_response", forbidden_generate)
     same_job = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
     assert same_job.status == "generating"
+
+
+def test_expired_generating_lease_becomes_retryable_failure_on_read():
+    db = _db()
+    job = _create(db)
+    job.status = "generating"
+    job.current_stage = "generate_answer"
+    job.stage_execution_token = "expired-token"
+    job.stage_started_at = datetime.now(UTC) - timedelta(minutes=5)
+    job.stage_lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    db.commit()
+
+    recovered = audit_jobs.get_audit_job(db, job.id, organization_id="org-a")
+
+    assert recovered.status == "failed"
+    assert recovered.current_stage == "generate_answer"
+    assert recovered.error_code == "ai_audit_stage_stale"
+    assert recovered.retryable is True
+    assert recovered.stage_execution_token is None
+    response = audit_jobs.audit_job_response(recovered)
+    assert response.is_stage_stale is True
+    assert response.stage_attempt == 0
+
+
+def test_legacy_generating_job_without_lease_is_recovered_from_updated_at():
+    db = _db()
+    job = _create(db)
+    job.status = "generating"
+    job.current_stage = "generate_answer"
+    job.stage_execution_token = None
+    job.stage_started_at = None
+    job.stage_lease_expires_at = None
+    job.updated_at = datetime.now(UTC) - timedelta(minutes=10)
+    db.commit()
+
+    recovered = audit_jobs.get_audit_job(db, job.id, organization_id="org-a")
+
+    assert recovered.status == "failed"
+    assert recovered.error_code == "ai_audit_stage_stale"
+
+
+def test_advance_recovers_stale_job_without_provider_call(monkeypatch):
+    db = _db()
+    job = _create(db)
+    job.status = "generating"
+    job.current_stage = "verify_hypotheses"
+    job.stage_execution_token = "expired-token"
+    job.stage_started_at = datetime.now(UTC) - timedelta(minutes=5)
+    job.stage_lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    db.commit()
+
+    async def forbidden_generate(*args, **kwargs):
+        raise AssertionError("Stale recovery must not start a provider request without explicit retry")
+
+    monkeypatch.setattr(audit_jobs, "generate_openrouter_response", forbidden_generate)
+    recovered = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
+
+    assert recovered.status == "failed"
+    assert recovered.error_code == "ai_audit_stage_stale"
+
+
+def test_cancel_is_allowed_while_generating_and_late_result_is_discarded(monkeypatch):
+    db = _db()
+    job = _create(db)
+    job.status = "context_ready"
+    job.current_stage = "generate_answer"
+    job.context_snapshot_json = audit_jobs._json_dump(audit_jobs.build_compact_audit_context(_context()))
+    db.commit()
+
+    async def cancel_then_return(*args, **kwargs):
+        cancelled = audit_jobs.cancel_audit_job(db, job.id, organization_id="org-a")
+        assert cancelled.status == "cancelled"
+        assert cancelled.cancel_requested is True
+        return {"model": "qwen/qwen3-14b", "content": _structured_answer(), "id": "late"}
+
+    monkeypatch.setattr(audit_jobs, "generate_openrouter_response", cancel_then_return)
+    cancelled = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
+
+    assert cancelled.status == "cancelled"
+    assert cancelled.result_json is None
+    assert cancelled.answer_text is None
+
+
+def test_late_result_from_old_execution_token_is_discarded(monkeypatch):
+    db = _db()
+    job = _create(db)
+    job.status = "context_ready"
+    job.current_stage = "generate_answer"
+    job.context_snapshot_json = audit_jobs._json_dump(audit_jobs.build_compact_audit_context(_context()))
+    db.commit()
+
+    async def replace_token_then_return(*args, **kwargs):
+        current = db.get(AiAuditJob, job.id)
+        current.stage_execution_token = "newer-attempt-token"
+        current.stage_attempt += 1
+        db.commit()
+        return {"model": "qwen/qwen3-14b", "content": _structured_answer(), "id": "old"}
+
+    monkeypatch.setattr(audit_jobs, "generate_openrouter_response", replace_token_then_return)
+    current = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
+
+    assert current.status == "generating"
+    assert current.stage_execution_token == "newer-attempt-token"
+    assert current.result_json is None
+
+
+def test_retry_reuses_saved_context_and_creates_new_execution_token(monkeypatch):
+    db = _db()
+    job = _create(db)
+    job.status = "failed"
+    job.current_stage = "generate_answer"
+    job.retryable = True
+    job.error_code = "ai_audit_stage_stale"
+    job.stage_attempt = 1
+    job.stage_execution_token = "old-attempt-token"
+    job.context_snapshot_json = audit_jobs._json_dump(audit_jobs.build_compact_audit_context(_context()))
+    db.commit()
+    seen_tokens = []
+    seen_attempts = []
+
+    def forbidden_context(*args, **kwargs):
+        raise AssertionError("Retry must reuse the saved context")
+
+    async def successful_retry(*args, **kwargs):
+        current = db.get(AiAuditJob, job.id)
+        seen_tokens.append(current.stage_execution_token)
+        seen_attempts.append(current.stage_attempt)
+        return {"model": "qwen/qwen3-14b", "content": _structured_answer(), "id": "retry", "finish_reason": "stop"}
+
+    monkeypatch.setattr(audit_jobs, "build_client_ai_context_from_db", forbidden_context)
+    monkeypatch.setattr(audit_jobs, "generate_openrouter_response", successful_retry)
+    retried = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a", retry=True))
+
+    assert retried.current_stage == "finalize"
+    assert seen_attempts == [2]
+    assert seen_tokens and seen_tokens[0] not in {None, "old-attempt-token"}
+
+
+def test_nested_advance_during_provider_call_does_not_call_provider_twice(monkeypatch):
+    db = _db()
+    job = _create(db)
+    job.status = "context_ready"
+    job.current_stage = "generate_answer"
+    job.context_snapshot_json = audit_jobs._json_dump(audit_jobs.build_compact_audit_context(_context()))
+    db.commit()
+    calls = {"count": 0}
+
+    async def nested_advance(*args, **kwargs):
+        calls["count"] += 1
+        nested = await audit_jobs.advance_audit_job(db, job.id, organization_id="org-a")
+        assert nested.status == "generating"
+        return {"model": "qwen/qwen3-14b", "content": _structured_answer(), "id": "one", "finish_reason": "stop"}
+
+    monkeypatch.setattr(audit_jobs, "generate_openrouter_response", nested_advance)
+    generated = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
+
+    assert calls["count"] == 1
+    assert generated.current_stage == "finalize"
+
+
+def test_total_timeout_does_not_leave_job_generating(monkeypatch):
+    db = _db()
+    job = _create(db)
+    job.status = "context_ready"
+    job.current_stage = "generate_answer"
+    job.context_snapshot_json = audit_jobs._json_dump(audit_jobs.build_compact_audit_context(_context()))
+    db.commit()
+
+    async def slow_provider(*args, **kwargs):
+        await asyncio.sleep(0.05)
+        return {"model": "qwen/qwen3-14b", "content": _structured_answer()}
+
+    monkeypatch.setitem(audit_jobs.AUDIT_STAGE_TOTAL_TIMEOUT_SECONDS, "generate_answer", 0.001)
+    monkeypatch.setattr(audit_jobs, "generate_openrouter_response", slow_provider)
+    failed = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
+
+    assert failed.status == "failed"
+    assert failed.error_code == "openrouter_total_timeout"
+    assert failed.retryable is True
+    assert failed.stage_execution_token is None
+
+
+def test_stale_or_cancelled_job_can_be_reset_without_deletion():
+    db = _db()
+    job = _create(db)
+    job.status = "generating"
+    job.current_stage = "generate_answer"
+    job.stage_execution_token = "expired"
+    job.stage_lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    db.commit()
+
+    reset = audit_jobs.reset_audit_job(db, job.id, organization_id="org-a")
+
+    assert reset.id == job.id
+    assert reset.status == "cancelled"
+    assert reset.cancel_requested is True
+    assert reset.stage_execution_token is None
 
 
 def test_final_result_does_not_turn_rejected_or_unverified_hypotheses_into_actions():

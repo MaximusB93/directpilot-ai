@@ -200,6 +200,7 @@ let journalState = createInitialJournalState();
 let journalLoadedFor = '';
 let aiChatShouldScrollToBottom = false;
 let aiAuditPollTimer = 0;
+let aiAuditRefreshInFlight = false;
 
 function storageKey(key) {
   return scopedStorageKey(key);
@@ -1080,19 +1081,36 @@ function showCompletedAiAudit(job) {
 }
 
 function applyAiAuditJob(job) {
+  const current = aiFeatureState.audit.job;
+  const incomingUpdatedAt = Date.parse(job?.updated_at || '');
+  const currentUpdatedAt = Date.parse(current?.updated_at || '');
+  if (current?.job_id === job?.job_id
+    && Number.isFinite(incomingUpdatedAt)
+    && Number.isFinite(currentUpdatedAt)
+    && incomingUpdatedAt < currentUpdatedAt) {
+    return;
+  }
   aiFeatureState.audit.job = job;
   aiFeatureState.audit.error = '';
   persistAiAuditJob(job);
   if (job?.status === 'completed') showCompletedAiAudit(job);
 }
 
-function scheduleAiAuditAdvance(delayMs = 1800) {
+function aiAuditStatusCanAdvance(status) {
+  return ['queued', 'context_ready'].includes(String(status || ''));
+}
+
+function scheduleAiAuditProgress(delayMs = 1800, forceRefresh = false) {
   stopAiAuditPolling();
   const job = aiFeatureState.audit.job;
   if (activeView !== 'ai' || !job?.job_id || aiStore.isTerminalAiAuditStatus(job.status)) return;
   aiAuditPollTimer = window.setTimeout(() => {
     aiAuditPollTimer = 0;
-    void advanceActiveAiAudit();
+    if (!forceRefresh && !aiFeatureState.audit.loading && aiAuditStatusCanAdvance(aiFeatureState.audit.job?.status)) {
+      void advanceActiveAiAudit();
+    } else {
+      void refreshActiveAiAudit();
+    }
   }, Math.max(1500, Number(delayMs) || 1800));
 }
 
@@ -1134,12 +1152,29 @@ async function startAiAudit(scope = 'full_account', requestedMessage = '') {
       render();
     },
   });
-  if (aiFeatureState.audit.job) scheduleAiAuditAdvance(0);
+  if (aiFeatureState.audit.job) scheduleAiAuditProgress(0);
+}
+
+async function refreshActiveAiAudit() {
+  const jobId = aiFeatureState.audit.job?.job_id;
+  if (!jobId || aiAuditRefreshInFlight || activeView !== 'ai') return;
+  aiAuditRefreshInFlight = true;
+  try {
+    applyAiAuditJob(await aiService.fetchAiAuditJob(jobId));
+  } catch (error) {
+    aiFeatureState.audit.error = error.message || 'Не удалось обновить статус AI-аудита.';
+  } finally {
+    aiAuditRefreshInFlight = false;
+    render();
+  }
+  const job = aiFeatureState.audit.job;
+  if (job && !aiStore.isTerminalAiAuditStatus(job.status)) scheduleAiAuditProgress(job.poll_after_ms);
 }
 
 async function advanceActiveAiAudit(retry = false, compactRetry = false) {
   const jobId = aiFeatureState.audit.job?.job_id;
   if (!jobId || aiFeatureState.audit.loading || activeView !== 'ai') return;
+  let pollOnlyAfterRequest = false;
   await advanceAiAuditJobFlow({
     jobId,
     retry,
@@ -1148,16 +1183,29 @@ async function advanceActiveAiAudit(retry = false, compactRetry = false) {
     onStart: () => {
       aiFeatureState.audit.loading = true;
       aiFeatureState.audit.error = '';
+      render();
+      scheduleAiAuditProgress(1800, true);
     },
     onSuccess: (job) => applyAiAuditJob(job),
-    onError: (message) => { aiFeatureState.audit.error = message; },
+    onError: (message, error) => {
+      const timeout = error?.code === 'ai_audit_generation_timeout'
+        || error?.payload?.error_code === 'ai_audit_generation_timeout'
+        || error?.name === 'AbortError'
+        || /150 секунд|timeout/i.test(String(message || ''));
+      pollOnlyAfterRequest = timeout;
+      aiFeatureState.audit.error = timeout
+        ? 'Этап продолжает выполняться на сервере. Проверяем статус задачи.'
+        : message;
+    },
     onFinally: () => {
       aiFeatureState.audit.loading = false;
       render();
     },
   });
   const job = aiFeatureState.audit.job;
-  if (job && !aiStore.isTerminalAiAuditStatus(job.status)) scheduleAiAuditAdvance(job.poll_after_ms);
+  if (job && !aiStore.isTerminalAiAuditStatus(job.status)) {
+    scheduleAiAuditProgress(job.poll_after_ms, pollOnlyAfterRequest);
+  }
 }
 
 async function restoreAiAuditJob() {
@@ -1169,7 +1217,7 @@ async function restoreAiAuditJob() {
     const job = await aiService.fetchAiAuditJob(jobId);
     applyAiAuditJob(job);
     render();
-    if (!aiStore.isTerminalAiAuditStatus(job.status)) scheduleAiAuditAdvance(job.poll_after_ms);
+    if (!aiStore.isTerminalAiAuditStatus(job.status)) scheduleAiAuditProgress(job.poll_after_ms);
   } catch (error) {
     window.localStorage.removeItem(aiAuditStorageKey());
     aiFeatureState.audit.error = error.message || 'Не удалось восстановить AI-аудит.';
@@ -1187,6 +1235,26 @@ async function cancelActiveAiAudit() {
     aiFeatureState.audit.error = error.message || 'Не удалось отменить AI-аудит.';
   }
   render();
+}
+
+async function resetAndRestartAiAudit() {
+  const jobId = aiFeatureState.audit.job?.job_id;
+  if (!jobId || aiFeatureState.audit.loading) return;
+  stopAiAuditPolling();
+  aiFeatureState.audit.loading = true;
+  try {
+    await aiService.resetAiAuditJob(jobId);
+    persistAiAuditJob(null);
+    aiFeatureState.audit = aiStore.createInitialAiAuditState();
+    aiFeatureState.audit.loadedFor = selectedClientId;
+    aiFeatureState.audit.loading = false;
+    await startAiAudit('full_account');
+  } catch (error) {
+    aiFeatureState.audit.error = error.message || 'Не удалось завершить зависший аудит.';
+  } finally {
+    aiFeatureState.audit.loading = false;
+    render();
+  }
 }
 
 function clearActiveAiAudit() {
@@ -2686,6 +2754,10 @@ async function handleCabinetActionClick(event) {
   }
   if (event.target.closest('[data-ai-audit-compact-retry]')) {
     await advanceActiveAiAudit(false, true);
+    return true;
+  }
+  if (event.target.closest('[data-ai-audit-reset]')) {
+    await resetAndRestartAiAudit();
     return true;
   }
   if (event.target.closest('[data-ai-audit-new]')) {
