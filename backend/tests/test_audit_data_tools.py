@@ -90,14 +90,14 @@ def test_unknown_campaign_type_cannot_request_specialized_dimension():
     assert rejected[0].error_code == "unsupported_campaign_type"
 
 
-def test_supported_but_unavailable_adapter_returns_unavailable():
+def test_live_capability_without_trusted_client_returns_unavailable():
     request = _request(family="yan", subtype="yan_retargeting", dimension="placements")
     accepted, rejected = validate_audit_data_requests([request])
     results, _ = collect_audit_data_requests(_db(), "client-a", accepted)
 
     assert rejected == []
     assert results[0].status == "unavailable"
-    assert results[0].error_code == "adapter_unavailable"
+    assert results[0].error_code == "direct_no_data"
 
 
 def test_registry_is_read_only_and_does_not_expose_endpoints_or_credentials():

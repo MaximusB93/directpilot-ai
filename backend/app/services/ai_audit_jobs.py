@@ -56,6 +56,7 @@ from app.services.openrouter import (
 logger = logging.getLogger(__name__)
 
 TERMINAL_AUDIT_STATUSES = {"completed", "failed", "cancelled"}
+AVAILABLE_AUDIT_DATA_STATUSES = {"collected", "cached", "partial"}
 POLL_AFTER_MS = 1800
 CONTEXT_TOKEN_TARGET = 12000
 DRILLDOWN_TOKEN_TARGET = 18000
@@ -448,6 +449,28 @@ def build_investigation_planner_context(snapshot: dict[str, Any]) -> dict[str, A
         if str(item.get("campaign_name") or "") in selected_names
     ]
     tracking = snapshot.get("trackingStatus") or {}
+    campaign_families = {str(item.get("campaign_family")) for item in classifications}
+    campaign_subtypes = {str(item.get("campaign_subtype")) for item in classifications}
+    compact_manifest = []
+    for item in public_audit_tool_manifest():
+        families = set(item.get("supported_campaign_families") or [])
+        subtypes = set(item.get("supported_campaign_subtypes") or [])
+        if item.get("supported_now") and (
+            (not campaign_families or families & campaign_families)
+            and (not campaign_subtypes or subtypes & campaign_subtypes)
+        ):
+            compact_manifest.append({
+                "id": item.get("id"),
+                "metrics": item.get("permitted_metrics") or [],
+                "families": sorted(families & campaign_families) or sorted(families),
+                "subtypes": sorted(subtypes & campaign_subtypes) or sorted(subtypes),
+            })
+        elif item.get("source_required"):
+            compact_manifest.append({
+                "id": item.get("id"),
+                "supported": False,
+                "source_required": item.get("source_required"),
+            })
     return {
         "analysisPeriod": snapshot.get("analysisPeriod") or {},
         "accountTotals": snapshot.get("accountTotals") or {},
@@ -456,7 +479,7 @@ def build_investigation_planner_context(snapshot: dict[str, Any]) -> dict[str, A
         "campaignClassifications": classifications,
         "dataCoverage": snapshot.get("dataCoverage") or {},
         "ruleBasedInvestigationPlan": snapshot.get("ruleBasedInvestigationPlan") or {},
-        "publicToolManifest": public_audit_tool_manifest(),
+        "publicToolManifest": compact_manifest,
         "missingData": (snapshot.get("missingData") or [])[:10],
         "trackingWarnings": (tracking.get("warnings") or [])[:10],
     }
@@ -601,8 +624,16 @@ def _verification_fallback(snapshot: dict[str, Any]) -> AuditHypothesisVerificat
         verifications.append(AuditHypothesisVerification(
             hypothesis_id=hypothesis.get("hypothesis_id"), status=status_value,
             verification_summary="AI-проверка недоступна; backend не считает гипотезу подтверждённой.",
-            limitations=[item.get("summary") for item in related if item.get("status") != "collected" and item.get("summary")][:5],
-            remaining_data_needed=[item.get("dimension") for item in related if item.get("status") != "collected"][:5],
+            limitations=[
+                item.get("summary")
+                for item in related
+                if item.get("status") not in AVAILABLE_AUDIT_DATA_STATUSES and item.get("summary")
+            ][:5],
+            remaining_data_needed=[
+                item.get("dimension")
+                for item in related
+                if item.get("status") not in AVAILABLE_AUDIT_DATA_STATUSES
+            ][:5],
         ))
     return AuditHypothesisVerificationSet(verifications=verifications)
 
@@ -624,9 +655,9 @@ def _parse_verifications(answer: str, snapshot: dict[str, Any]) -> tuple[AuditHy
         if item.hypothesis_id not in expected:
             continue
         related = [result for result in (snapshot.get("drilldownResults") or []) if result.get("hypothesis_id") == item.hypothesis_id]
-        collected = [result for result in related if result.get("status") == "collected"]
+        collected = [result for result in related if result.get("status") in AVAILABLE_AUDIT_DATA_STATUSES]
         missing_required = any(
-            request_required.get(result.get("request_id")) and result.get("status") != "collected"
+            request_required.get(result.get("request_id")) and result.get("status") not in AVAILABLE_AUDIT_DATA_STATUSES
             for result in related
         )
         if not collected:
@@ -1124,7 +1155,13 @@ def _audit_runtime(snapshot: dict[str, Any]) -> dict[str, Any]:
         "helperFallbacksCount": 0,
         "plannerPromptTokensEstimated": 0,
         "verificationPromptTokensEstimated": 0,
+        "savedDataRequestsCount": 0,
         "directApiCallsCount": 0,
+        "liveRequestCount": 0,
+        "liveCompletedCount": 0,
+        "processingReportCount": 0,
+        "cacheHitCount": 0,
+        "unavailableCapabilities": [],
         "tokenUsage": {"prompt": 0, "completion": 0, "total": 0},
     }
     runtime = snapshot.setdefault("auditRuntime", {})
@@ -1271,6 +1308,43 @@ def _cap_drilldown_results(results: list[dict[str, Any]], token_target: int = DR
             item["limitations"] = list(item.get("limitations") or []) + [f"В AI-контекст включено {len(included)} из {len(rows)} строк."]
         compact.append(item)
     return compact
+
+
+def _merge_drilldown_results(
+    existing: list[dict[str, Any]],
+    collected: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for item in existing + collected:
+        request_id = str(item.get("request_id") or "")
+        key = request_id or f"anonymous-{len(order)}"
+        if key not in merged:
+            order.append(key)
+        merged[key] = item
+    return _cap_drilldown_results([merged[key] for key in order])
+
+
+def _refresh_direct_read_runtime(snapshot: dict[str, Any], direct_api_calls: int) -> None:
+    results = snapshot.get("drilldownResults") or []
+    runtime = _audit_runtime(snapshot)
+    runtime["directApiCallsCount"] = int(runtime.get("directApiCallsCount") or 0) + direct_api_calls
+    runtime["liveRequestCount"] = runtime["directApiCallsCount"]
+    runtime["liveCompletedCount"] = sum(
+        1
+        for item in results
+        if item.get("live") and item.get("status") in AVAILABLE_AUDIT_DATA_STATUSES
+    )
+    runtime["processingReportCount"] = sum(1 for item in results if item.get("status") == "processing")
+    runtime["cacheHitCount"] = sum(1 for item in results if item.get("cached"))
+    runtime["savedDataRequestsCount"] = sum(
+        1 for item in results if item.get("source") == "directpilot_saved_stats"
+    )
+    runtime["unavailableCapabilities"] = sorted({
+        str(item.get("capability_id") or item.get("dimension"))
+        for item in results
+        if item.get("status") in {"unavailable", "unsupported", "not_applicable", "failed"}
+    })
 
 
 def _save_stage_prompt_metadata(
@@ -1502,10 +1576,15 @@ def _context_metadata(job: AiAuditJob) -> dict[str, Any]:
                 "allowed": sum(
                     1
                     for item in drilldowns
-                    if item.get("status") in {"collected", "unavailable", "insufficient_data", "failed"}
+                    if item.get("status") in {
+                        "collected", "cached", "partial", "processing", "unavailable", "insufficient_data", "failed"
+                    }
                 ),
                 "saved": int(runtime.get("savedDataRequestsCount") or 0),
-                "live": int(runtime.get("directApiCallsCount") or 0),
+                "live": int(runtime.get("liveRequestCount") or runtime.get("directApiCallsCount") or 0),
+                "liveCompleted": int(runtime.get("liveCompletedCount") or 0),
+                "processing": int(runtime.get("processingReportCount") or 0),
+                "cacheHits": int(runtime.get("cacheHitCount") or 0),
                 "statusCounts": status_counts,
                 "unavailableDimensions": sorted({
                     str(item.get("dimension"))
@@ -1514,6 +1593,11 @@ def _context_metadata(job: AiAuditJob) -> dict[str, Any]:
                         "unavailable", "unsupported", "skipped_budget_limit", "failed"
                     }
                 }),
+                "unavailableCapabilities": runtime.get("unavailableCapabilities") or [],
+                "freshestDataAt": max(
+                    (str(item.get("fetched_at")) for item in drilldowns if item.get("fetched_at")),
+                    default=None,
+                ),
             },
         },
         "runtime": runtime,
@@ -1790,6 +1874,11 @@ async def advance_audit_job(
                 "verificationPromptTokensEstimated": 0,
                 "savedDataRequestsCount": 0,
                 "directApiCallsCount": 0,
+                "liveRequestCount": 0,
+                "liveCompletedCount": 0,
+                "processingReportCount": 0,
+                "cacheHitCount": 0,
+                "unavailableCapabilities": [],
                 "tokenUsage": {"prompt": 0, "completion": 0, "total": 0},
             }
             _helper_stages(snapshot)
@@ -1961,32 +2050,38 @@ async def advance_audit_job(
             snapshot["drilldownResults"] = [item.model_dump(mode="json") for item in rejected]
             job.context_snapshot_json = _json_dump(snapshot)
             job.status = "context_ready"
-            job.current_stage = "collect_drilldowns"
+            job.current_stage = "collect_live_data"
             job.stage_attempt = 0
             job.progress_percent = 50
             timings["validateDataRequestsMs"] = _elapsed_ms(started_at)
-        elif stage == "collect_drilldowns":
+        elif stage in {"collect_drilldowns", "collect_live_data", "wait_for_offline_reports"}:
             snapshot = _json_load(job.context_snapshot_json, {})
             requests = [AuditDataRequest.model_validate(item) for item in (snapshot.get("validatedDataRequests") or [])]
-            collected, direct_api_calls = collect_audit_data_requests(db, job.client_id, requests)
-            snapshot["drilldownResults"] = _cap_drilldown_results(
-                (snapshot.get("drilldownResults") or []) + [item.model_dump(mode="json") for item in collected]
+            collected, direct_api_calls = collect_audit_data_requests(
+                db,
+                job.client_id,
+                requests,
+                audit_job_id=job.id,
             )
-            runtime = _audit_runtime(snapshot)
-            runtime["savedDataRequestsCount"] = int(runtime.get("savedDataRequestsCount") or 0) + sum(
-                1 for item in collected if item.source == "directpilot_saved_read_only_stats"
+            snapshot["drilldownResults"] = _merge_drilldown_results(
+                snapshot.get("drilldownResults") or [],
+                [item.model_dump(mode="json") for item in collected],
             )
-            runtime["directApiCallsCount"] = int(runtime.get("directApiCallsCount") or 0) + direct_api_calls
+            _refresh_direct_read_runtime(snapshot, direct_api_calls)
+            has_processing = any(item.status == "processing" for item in collected)
             has_hypotheses = bool((snapshot.get("investigationPlan") or {}).get("hypotheses"))
             if not has_hypotheses:
                 snapshot["verifiedHypotheses"] = []
                 _set_helper_stage(snapshot, "verification", status_value="skipped_not_needed")
             job.context_snapshot_json = _json_dump(snapshot)
             job.status = "context_ready"
-            job.current_stage = "verify_hypotheses" if has_hypotheses else "generate_answer"
+            if has_processing:
+                job.current_stage = "wait_for_offline_reports"
+            else:
+                job.current_stage = "verify_hypotheses" if has_hypotheses else "generate_answer"
             job.stage_attempt = 0
-            job.progress_percent = 65 if has_hypotheses else 78
-            timings["collectDrilldownsMs"] = _elapsed_ms(started_at)
+            job.progress_percent = 58 if has_processing else (65 if has_hypotheses else 78)
+            timings["collectLiveDataMs"] = int(timings.get("collectLiveDataMs") or 0) + _elapsed_ms(started_at)
         elif stage == "verify_hypotheses":
             execution_token = _claim_provider_stage(db, job, stage, progress_percent=70)
             snapshot = _json_load(job.context_snapshot_json, {})
@@ -2110,7 +2205,7 @@ async def advance_audit_job(
                     snapshot["validatedDataRequests"] = [item.model_dump(mode="json") for item in second_round]
                 job.context_snapshot_json = _json_dump(snapshot)
                 job.status = "context_ready"
-                job.current_stage = "collect_drilldowns" if second_round else "generate_answer"
+                job.current_stage = "collect_live_data" if second_round else "generate_answer"
                 job.stage_attempt = 0
                 job.progress_percent = 68 if second_round else 78
                 _complete_provider_stage(job, stage)

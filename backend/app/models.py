@@ -336,3 +336,56 @@ class AiAuditJob(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+
+
+class DirectReadCache(Base):
+    __tablename__ = "direct_read_cache"
+    __table_args__ = (
+        UniqueConstraint("client_id", "request_hash", name="uq_direct_read_cache_client_request"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    client_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    capability_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    source: Mapped[str] = mapped_column(String(64), nullable=False)
+    result_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    period_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    rows_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    partial: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    warnings_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class DirectReportJob(Base):
+    __tablename__ = "direct_report_jobs"
+    __table_args__ = (
+        UniqueConstraint("client_id", "request_hash", name="uq_direct_report_jobs_client_request"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    audit_job_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    client_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    capability_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    report_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    report_spec_json: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued", index=True)
+    retry_after_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    rows_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    result_snapshot_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
