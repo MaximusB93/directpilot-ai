@@ -13,7 +13,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.connectors.yandex_direct import YandexDirectConnector, YandexDirectReadError
-from app.models import ClientAccount, DirectCampaignPeriodStat, DirectReadCache, DirectReportJob
+from app.models import ClientAccount, ConnectedAccount, DirectCampaignPeriodStat, DirectReadCache, DirectReportJob
 from app.schemas import AuditDataRequest, AuditDataRequestResult
 from app.services.connected_accounts import get_yandex_access_token_for_account
 from app.services.yandex_direct_read_capabilities import (
@@ -513,6 +513,11 @@ def execute_direct_read(
         raise YandexDirectReadError("direct_no_data", "Client was not found.")
     if not client.yandex_account_id or not client.direct_login:
         raise YandexDirectReadError("direct_auth_error", "Yandex account is not bound to this client.")
+    account = db.get(ConnectedAccount, client.yandex_account_id)
+    if account is None or account.provider != "yandex" or account.status != "connected":
+        raise YandexDirectReadError("direct_auth_error", "Bound Yandex account is unavailable.")
+    if not client.organization_id or account.organization_id != client.organization_id:
+        raise YandexDirectReadError("direct_permission_denied", "Bound Yandex account belongs to another organization.")
     token = get_yandex_access_token_for_account(db, client.yandex_account_id)
     if not token:
         raise YandexDirectReadError("direct_auth_error", "Yandex OAuth token is unavailable.")

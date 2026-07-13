@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.connectors.yandex_direct import YandexDirectConnector, YandexDirectReadError
 from app.db import Base
-from app.models import ClientAccount, DirectCampaignPeriodStat, DirectReadCache, DirectReportJob
+from app.models import ClientAccount, ConnectedAccount, DirectCampaignPeriodStat, DirectReadCache, DirectReportJob, Organization
 from app.schemas import AuditDataRequest
 from app.services.audit_data_tools import collect_audit_data_requests, validate_audit_data_requests
 from app.services import yandex_direct_read as direct_read
@@ -29,8 +29,17 @@ def _db() -> Session:
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(bind=engine)
     db = Session(engine)
+    db.add(Organization(id="org-a", name="A"))
+    db.add(ConnectedAccount(
+        id="account-a",
+        organization_id="org-a",
+        provider="yandex",
+        external_user_id="user-a",
+        status="connected",
+    ))
     db.add(ClientAccount(
         id="client-a",
+        organization_id="org-a",
         name="Клиент",
         direct_login="safe-login",
         yandex_account_id="account-a",
@@ -54,6 +63,27 @@ def _db() -> Session:
     ))
     db.commit()
     return db
+
+
+def test_live_read_rejects_account_from_another_organization(monkeypatch):
+    db = _db()
+    db.add(Organization(id="org-b", name="B"))
+    db.add(ConnectedAccount(
+        id="account-b",
+        organization_id="org-b",
+        provider="yandex",
+        external_user_id="user-b",
+        status="connected",
+    ))
+    client = db.get(ClientAccount, "client-a")
+    client.yandex_account_id = "account-b"
+    db.commit()
+    monkeypatch.setattr(direct_read, "get_yandex_access_token_for_account", lambda *args: "secret")
+
+    with pytest.raises(YandexDirectReadError) as exc:
+        direct_read.execute_direct_read(db, "client-a", _request())
+
+    assert exc.value.code == "direct_permission_denied"
 
 
 def _request(
@@ -224,6 +254,7 @@ def test_duplicate_semantic_requests_make_one_live_call(monkeypatch):
     assert direct_calls == 1
     assert [item.request_id for item in results] == ["req-1", "req-2"]
     assert all(item.status == "collected" for item in results)
+    assert all(item.live_attempted for item in results)
 
 
 def test_live_required_never_silently_uses_saved_rows():
@@ -234,6 +265,26 @@ def test_live_required_never_silently_uses_saved_rows():
 
     assert results[0].source != "directpilot_saved_stats"
     assert results[0].status in {"failed", "unavailable"}
+    assert results[0].live_attempted is True
+
+
+def test_live_preferred_saved_fallback_preserves_safe_live_diagnostics(monkeypatch):
+    db = _db()
+    request = _request("goals", preference="live_preferred")
+    accepted, _ = validate_audit_data_requests([request])
+
+    def failed_live(*args, **kwargs):
+        raise YandexDirectReadError("direct_rate_limited", "rate limited", retryable=True)
+
+    monkeypatch.setattr("app.services.audit_data_tools.execute_direct_read", failed_live)
+    results, direct_calls = collect_audit_data_requests(db, "client-a", accepted)
+
+    assert direct_calls == 0
+    assert results[0].source == "directpilot_saved_stats"
+    assert results[0].status == "collected"
+    assert results[0].live_attempted is True
+    assert results[0].live_error_code == "direct_rate_limited"
+    assert results[0].saved_fallback is True
 
 
 def test_capability_validation_rejects_unknown_report_type_and_incompatible_fields():

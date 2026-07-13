@@ -296,6 +296,8 @@ def collect_audit_data_requests(
                     allow_cache=True,
                 )
                 result = outcome.result
+                result.live_attempted = not result.cached
+                result.live_error_code = result.error_code if result.live_attempted else None
                 direct_api_calls += outcome.api_calls
             except YandexDirectReadError as exc:
                 result = AuditDataRequestResult(
@@ -307,6 +309,8 @@ def collect_audit_data_requests(
                     status="failed" if exc.retryable else "unavailable",
                     source="unavailable",
                     source_type=capability.source_type,
+                    live_attempted=True,
+                    live_error_code=exc.code,
                     summary=str(exc),
                     error_code=exc.code,
                     retryable=exc.retryable,
@@ -321,6 +325,8 @@ def collect_audit_data_requests(
                     status="failed",
                     source="unavailable",
                     source_type=capability.source_type,
+                    live_attempted=True,
+                    live_error_code="adapter_failed",
                     summary="Read-only Direct adapter завершился ошибкой.",
                     error_code="adapter_failed",
                     retryable=True,
@@ -336,6 +342,9 @@ def collect_audit_data_requests(
                 warning=f"Live Direct недоступен ({result.error_code or result.status}); использованы сохранённые данные.",
             )
             if saved and saved.status == "collected":
+                saved.live_attempted = result.live_attempted
+                saved.live_error_code = result.live_error_code or result.error_code
+                saved.saved_fallback = True
                 result = saved
         results.append(result)
         deduplicated[dedupe_key] = result

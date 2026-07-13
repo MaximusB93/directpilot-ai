@@ -549,6 +549,8 @@ class AiAuditAdvanceRequest(BaseModel):
 
 
 class AiAuditPeriod(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     date_from: str | None = None
     date_to: str | None = None
     days: int | None = None
@@ -557,6 +559,8 @@ class AiAuditPeriod(BaseModel):
 
 
 class AiAuditCoverageItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     available: bool = False
     total: int | None = None
     analyzed: int = 0
@@ -567,6 +571,8 @@ class AiAuditCoverageItem(BaseModel):
 
 
 class AiAuditMeta(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     period: AiAuditPeriod = Field(default_factory=AiAuditPeriod)
     data_coverage: dict[str, AiAuditCoverageItem] = Field(default_factory=dict)
     model: str | None = None
@@ -574,51 +580,73 @@ class AiAuditMeta(BaseModel):
 
 
 class AiAuditDataQuality(BaseModel):
-    status: str = "partial"
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["sufficient", "partial", "insufficient"] = "partial"
     facts: list[str] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
 
 
 class AiAuditFinding(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     hypothesis_id: str | None = None
     verification_status: Literal["confirmed", "partially_confirmed", "rejected", "unverified", "not_applicable"] | None = None
     campaign_name: str | None = None
-    campaign_type: str = "unknown"
-    analysis_level: str = "campaign"
+    campaign_type: Literal["search", "yan", "retargeting", "master_campaign", "unknown"] = "unknown"
+    analysis_level: Literal[
+        "account", "campaign", "ad_group", "keyword", "query", "placement",
+        "audience", "device", "geo", "demographic", "tracking",
+    ] = "campaign"
     problem: str
     fact: str
     evidence: list[str] = Field(default_factory=list, max_length=5)
     hypothesis: str | None = None
-    confidence: str = "low"
-    risk: str = "medium"
+    confidence: Literal["low", "medium", "high"] = "low"
+    risk: Literal["low", "medium", "high"] = "medium"
     recommendation: str
     requires_human_approval: bool = True
     next_data_needed: list[str] = Field(default_factory=list, max_length=5)
 
 
 class AiAuditAction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     priority: int
     hypothesis_id: str | None = None
     action: str
     scope: str
     reason: str
-    mode: str = "manual_review"
+    mode: Literal["manual_review", "dry_run"] = "manual_review"
     requires_human_approval: bool = True
 
 
 class AiAuditDrilldownSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     analyzed_levels: list[str] = Field(default_factory=list)
     not_analyzed_levels: list[str] = Field(default_factory=list)
     next_data_needed: list[str] = Field(default_factory=list)
 
 
+class AiAuditInsufficientDataCampaign(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    campaign_name: str
+    reason: str
+    recommendation: str
+    next_data_needed: list[str] = Field(default_factory=list, max_length=5)
+
+
 class AiAuditResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     meta: AiAuditMeta = Field(default_factory=AiAuditMeta)
     executive_summary: str
     data_quality: AiAuditDataQuality = Field(default_factory=AiAuditDataQuality)
     critical_findings: list[AiAuditFinding] = Field(default_factory=list, max_length=5)
     opportunities: list[AiAuditFinding] = Field(default_factory=list, max_length=5)
-    insufficient_data_campaigns: list[str] = Field(default_factory=list)
+    insufficient_data_campaigns: list[AiAuditInsufficientDataCampaign] = Field(default_factory=list)
     tracking_and_goals: dict = Field(default_factory=dict)
     drilldown_summary: AiAuditDrilldownSummary = Field(default_factory=AiAuditDrilldownSummary)
     action_plan: list[AiAuditAction] = Field(default_factory=list, max_length=10)
@@ -673,6 +701,9 @@ class AuditDataRequestResult(BaseModel):
     source_type: Literal["report", "service_get", "saved_data", "external"] | None = None
     source_required: str | None = None
     live: bool = False
+    live_attempted: bool = False
+    live_error_code: str | None = None
+    saved_fallback: bool = False
     cached: bool = False
     request_hash: str | None = None
     freshness: str | None = None

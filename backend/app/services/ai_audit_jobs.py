@@ -50,7 +50,6 @@ from app.services.openrouter import (
     DEFAULT_SYSTEM_PROMPT,
     OPENROUTER_AUDIT_TIMEOUT,
     generate_openrouter_response,
-    redact_openrouter_debug_payload,
 )
 
 logger = logging.getLogger(__name__)
@@ -591,14 +590,11 @@ def _parse_investigation_plan(
     answer: str,
     snapshot: dict[str, Any],
     fallback: AuditInvestigationPlan,
-) -> tuple[AuditInvestigationPlan, bool]:
-    try:
-        proposed = AuditInvestigationPlan.model_validate_json(answer)
-        if not proposed.hypotheses:
-            return fallback, False
-        return _merge_investigation_plans(proposed, snapshot, fallback), True
-    except (TypeError, ValueError):
-        return fallback, False
+) -> tuple[AuditInvestigationPlan, bool, dict[str, Any]]:
+    proposed, parsing = _parse_model_json(answer, AuditInvestigationPlan)
+    if proposed is None or not proposed.hypotheses:
+        return fallback, False, parsing
+    return _merge_investigation_plans(proposed, snapshot, fallback), True, parsing
 
 
 def _normalized_investigation_plan(answer: str, snapshot: dict[str, Any], fallback: AuditInvestigationPlan) -> AuditInvestigationPlan:
@@ -638,11 +634,13 @@ def _verification_fallback(snapshot: dict[str, Any]) -> AuditHypothesisVerificat
     return AuditHypothesisVerificationSet(verifications=verifications)
 
 
-def _parse_verifications(answer: str, snapshot: dict[str, Any]) -> tuple[AuditHypothesisVerificationSet, bool]:
-    try:
-        parsed = AuditHypothesisVerificationSet.model_validate_json(answer)
-    except ValueError:
-        return _verification_fallback(snapshot), False
+def _parse_verifications(
+    answer: str,
+    snapshot: dict[str, Any],
+) -> tuple[AuditHypothesisVerificationSet, bool, dict[str, Any]]:
+    parsed, parsing = _parse_model_json(answer, AuditHypothesisVerificationSet)
+    if parsed is None:
+        return _verification_fallback(snapshot), False, parsing
     hypotheses = (snapshot.get("investigationPlan") or {}).get("hypotheses", [])
     expected = {item.get("hypothesis_id") for item in hypotheses}
     request_required = {
@@ -667,8 +665,8 @@ def _parse_verifications(answer: str, snapshot: dict[str, Any]) -> tuple[AuditHy
             item.limitations.append("Backend не получил все обязательные data requests; статус понижен до partially_confirmed.")
         safe.append(item)
     if not safe:
-        return _verification_fallback(snapshot), False
-    return AuditHypothesisVerificationSet(verifications=safe), True
+        return _verification_fallback(snapshot), False, parsing
+    return AuditHypothesisVerificationSet(verifications=safe), True, parsing
 
 
 def _normalized_verifications(answer: str, snapshot: dict[str, Any]) -> AuditHypothesisVerificationSet:
@@ -883,7 +881,12 @@ def _audit_result_contract(output_budget_tokens: int) -> dict[str, Any]:
         "data_quality": {"status": "sufficient|partial|insufficient", "facts": [], "limitations": []},
         "critical_findings": [finding],
         "opportunities": [finding],
-        "insufficient_data_campaigns": [],
+        "insufficient_data_campaigns": [{
+            "campaign_name": "Название кампании",
+            "reason": "Почему данных недостаточно",
+            "recommendation": "Безопасный следующий шаг",
+            "next_data_needed": [],
+        }],
         "tracking_and_goals": {},
         "drilldown_summary": {"analyzed_levels": [], "not_analyzed_levels": [], "next_data_needed": []},
         "action_plan": [{"priority": 1, "hypothesis_id": "hyp_001 или null", "action": "...", "scope": "...", "reason": "...", "mode": "manual_review|dry_run", "requires_human_approval": True}],
@@ -965,10 +968,8 @@ _JSON_FENCE_PATTERN = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _UNSUPPORTED_AUDIT_FORMAT_MESSAGE = (
-    "AI вернул результат в неподдерживаемом формате. Метаданные аудита сохранены, "
-    "технический ответ доступен ниже."
+    "AI вернул результат в неподдерживаемом формате. Сохранены только безопасные метаданные аудита."
 )
-_MAX_AUDIT_TECHNICAL_RESPONSE_CHARS = 80_000
 
 
 def extract_model_json_object(answer: str) -> tuple[dict[str, Any] | None, str]:
@@ -993,6 +994,43 @@ def extract_model_json_object(answer: str) -> tuple[dict[str, Any] | None, str]:
     return (parsed, "markdown_fenced_json") if isinstance(parsed, dict) else (None, "invalid")
 
 
+def _validation_error_diagnostics(exc: ValidationError) -> dict[str, Any]:
+    errors = exc.errors(include_url=False, include_context=False, include_input=False)
+    return {
+        "validationErrorsCount": len(errors),
+        "validationErrorPaths": [
+            ".".join(str(part) for part in item.get("loc") or ())[:300]
+            for item in errors[:20]
+        ],
+        "validationErrorTypes": [str(item.get("type") or "validation_error")[:100] for item in errors[:20]],
+    }
+
+
+def _parse_model_json(answer: str, model_type: Any) -> tuple[Any | None, dict[str, Any]]:
+    parsed, source_format = extract_model_json_object(answer)
+    metadata: dict[str, Any] = {
+        "status": "fallback",
+        "sourceFormat": source_format,
+        "parseOutcome": source_format if parsed is not None else "invalid",
+        "errorCode": None,
+        "validationErrorsCount": 0,
+        "validationErrorPaths": [],
+        "validationErrorTypes": [],
+    }
+    if parsed is None:
+        metadata["errorCode"] = "json_parse_failed"
+        return None, metadata
+    try:
+        validated = model_type.model_validate(parsed)
+    except ValidationError as exc:
+        metadata.update(_validation_error_diagnostics(exc))
+        metadata["parseOutcome"] = "schema_validation_failed"
+        metadata["errorCode"] = "json_schema_validation_failed"
+        return None, metadata
+    metadata["status"] = "success"
+    return validated, metadata
+
+
 def _validate_structured_result_with_metadata(
     answer: str,
     *,
@@ -1005,8 +1043,11 @@ def _validate_structured_result_with_metadata(
     parsing = {
         "status": "fallback",
         "sourceFormat": source_format,
+        "parseOutcome": source_format if parsed is not None else "invalid",
         "errorCode": None,
         "validationErrorsCount": 0,
+        "validationErrorPaths": [],
+        "validationErrorTypes": [],
     }
     if parsed is None:
         parsing["errorCode"] = (
@@ -1020,7 +1061,8 @@ def _validate_structured_result_with_metadata(
         validated = AiAuditResult.model_validate(parsed).model_dump(mode="json")
     except ValidationError as exc:
         parsing["errorCode"] = "truncated_provider_response" if finish_reason == "length" else "json_schema_validation_failed"
-        parsing["validationErrorsCount"] = len(exc.errors())
+        parsing["parseOutcome"] = "schema_validation_failed"
+        parsing.update(_validation_error_diagnostics(exc))
         return None, parsing
     parsing["status"] = "success"
     parsing["errorCode"] = "truncated_provider_response" if finish_reason == "length" else None
@@ -1043,14 +1085,75 @@ def _validate_structured_result(
     return structured
 
 
-def _safe_technical_response(answer: str | None) -> str | None:
-    text = str(answer or "").strip()
-    if not text:
-        return None
-    redacted = str(redact_openrouter_debug_payload(text))
-    if len(redacted) > _MAX_AUDIT_TECHNICAL_RESPONSE_CHARS:
-        return f"{redacted[:_MAX_AUDIT_TECHNICAL_RESPONSE_CHARS].rstrip()}\n\n[технический ответ сокращён]"
-    return redacted
+READ_ONLY_AUDIT_ACTIONS = frozenset({
+    "inspect_data", "validate_tracking", "collect_more_data", "compare_periods", "monitor",
+    "manual_review", "prepare_dry_run", "review_search_queries", "review_campaign_settings",
+})
+MODIFYING_AUDIT_ACTIONS = frozenset({
+    "budget_reallocation", "budget_increase", "budget_decrease", "pause_campaign",
+    "disable_campaign", "change_strategy", "change_bid", "add_negative_keyword",
+    "exclude_placement", "disable_keyword", "change_targeting", "scale_campaign", "tracking_fix",
+})
+_READ_ONLY_ACTION_MARKERS = (
+    "inspect", "review", "validate", "collect", "compare", "monitor", "dry run", "dry_run",
+    "провер", "проанализ", "собрать", "сравнить", "монитор", "ручн", "подготовить",
+)
+_MODIFYING_ACTION_MARKERS = (
+    "reallocat", "increase budget", "decrease budget", "raise budget", "pause", "disable",
+    "change strategy", "change bid", "add negative", "exclude placement", "change targeting", "scale campaign",
+    "перераспредел", "увеличить бюджет", "снизить бюджет", "приостанов", "отключ",
+    "изменить стратег", "изменить став", "добавить минус", "исключить площад", "изменить таргет", "масштаб",
+)
+
+
+def _audit_action_safety_class(action_value: Any) -> str:
+    text = str(action_value or "").strip().lower()
+    semantic_code = re.sub(r"[^a-z0-9а-яё]+", "_", text).strip("_")
+    if semantic_code in READ_ONLY_AUDIT_ACTIONS:
+        return "read_only"
+    if semantic_code in MODIFYING_AUDIT_ACTIONS:
+        return "modifying"
+    if any(marker in text for marker in _MODIFYING_ACTION_MARKERS):
+        return "modifying"
+    if any(marker in text for marker in _READ_ONLY_ACTION_MARKERS):
+        return "read_only"
+    return "unknown"
+
+
+def _append_safety_warning(result: dict[str, Any], code: str, message: str) -> None:
+    warning = f"{code}: {message}"
+    limitations = result.setdefault("limitations", [])
+    if warning not in limitations:
+        limitations.append(warning)
+
+
+def _safe_manual_action(action: dict[str, Any], reason: str) -> dict[str, Any]:
+    return {
+        **action,
+        "hypothesis_id": None,
+        "action": "Собрать дополнительные данные и провести ручную проверку.",
+        "reason": reason,
+        "mode": "manual_review",
+        "requires_human_approval": True,
+    }
+
+
+def _trusted_tracking_and_goals(snapshot: dict[str, Any]) -> dict[str, Any]:
+    selected = snapshot.get("selectedGoals") if isinstance(snapshot.get("selectedGoals"), dict) else {}
+    tracking = snapshot.get("trackingStatus") if isinstance(snapshot.get("trackingStatus"), dict) else {}
+    diagnostics = tracking.get("syncDiagnostics") if isinstance(tracking.get("syncDiagnostics"), dict) else {}
+    warnings = [str(item)[:500] for item in (tracking.get("warnings") or [])[:10]]
+    goal_ids = [str(item) for item in (selected.get("ids") or [])[:20]]
+    has_goal_data = bool(selected.get("hasGoalData"))
+    return {
+        "status": "partial" if goal_ids or has_goal_data else "unverified",
+        "selected_goal_ids": goal_ids,
+        "has_goal_data": has_goal_data,
+        "goal_conversions": _number((snapshot.get("accountTotals") or {}).get("goalConversions")),
+        "sync_status": diagnostics.get("dataQualityLevel") or diagnostics.get("status") or "unverified",
+        "warnings": warnings,
+        "limitations": [] if has_goal_data else ["Данные по выбранным целям не подтверждены trusted backend context."],
+    }
 
 
 def _enforce_verified_result(result: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any]:
@@ -1060,6 +1163,15 @@ def _enforce_verified_result(result: dict[str, Any], snapshot: dict[str, Any]) -
             hypothesis_id = finding.get("hypothesis_id")
             verified = verification.get(hypothesis_id) if hypothesis_id else None
             status_value = str((verified or {}).get("status") or "unverified")
+            if finding.get("hypothesis") and not hypothesis_id:
+                _append_safety_warning(
+                    result,
+                    "missing_hypothesis_id",
+                    f"Гипотеза для «{finding.get('campaign_name') or 'Аккаунт'}» оставлена неподтверждённой.",
+                )
+                finding["next_data_needed"] = list(dict.fromkeys(
+                    [*(finding.get("next_data_needed") or []), "hypothesis_id и проверка гипотезы"]
+                ))[:5]
             finding["verification_status"] = status_value
             if status_value in {"rejected", "not_applicable"}:
                 finding["hypothesis"] = None
@@ -1068,20 +1180,50 @@ def _enforce_verified_result(result: dict[str, Any], snapshot: dict[str, Any]) -
                 remaining = (verified or {}).get("remaining_data_needed") or finding.get("next_data_needed") or []
                 finding["hypothesis"] = f"Неподтверждённая гипотеза: {finding.get('hypothesis') or 'причина не установлена'}"
                 finding["recommendation"] = "Собрать недостающие данные: " + (", ".join(remaining) if remaining else "проверить гипотезу вручную")
+            if _audit_action_safety_class(finding.get("recommendation")) == "modifying" and status_value not in {
+                "confirmed", "partially_confirmed",
+            }:
+                finding["recommendation"] = "Собрать недостающие данные и проверить вывод вручную до любых изменений."
+                _append_safety_warning(
+                    result,
+                    "unverified_modifying_recommendation",
+                    "Изменяющая рекомендация заменена безопасной ручной проверкой.",
+                )
             finding["requires_human_approval"] = True
     safe_actions = []
     for action in result.get("action_plan") or []:
         hypothesis_id = action.get("hypothesis_id")
-        status_value = str((verification.get(hypothesis_id) or {}).get("status") or "") if hypothesis_id else "fact_based"
+        status_value = str((verification.get(hypothesis_id) or {}).get("status") or "unverified")
+        safety_class = _audit_action_safety_class(action.get("action"))
         if status_value in {"rejected", "not_applicable"}:
             continue
-        if status_value == "unverified":
-            action["action"] = f"Собрать дополнительные данные для проверки {hypothesis_id}."
-            action["reason"] = "Причина не подтверждена собранными данными."
-            action["mode"] = "manual_review"
+        modifying_is_verified = (
+            safety_class == "modifying"
+            and bool(hypothesis_id)
+            and status_value in {"confirmed", "partially_confirmed"}
+            and action.get("mode") in {"manual_review", "dry_run"}
+            and action.get("requires_human_approval") is True
+        )
+        if safety_class == "modifying" and not modifying_is_verified:
+            action = _safe_manual_action(action, "Изменяющее действие не связано с подтверждённой гипотезой.")
+            _append_safety_warning(
+                result,
+                "unsafe_modifying_action_downgraded",
+                "Изменяющее действие заменено сбором данных и ручной проверкой.",
+            )
+        elif safety_class == "unknown" and (not hypothesis_id or status_value not in {"confirmed", "partially_confirmed"}):
+            action = _safe_manual_action(action, "Неизвестный тип действия требует подтверждённой гипотезы.")
+            _append_safety_warning(
+                result,
+                "unknown_action_downgraded",
+                "Неизвестное действие заменено безопасной ручной проверкой.",
+            )
+        elif status_value == "unverified" and hypothesis_id:
+            action = _safe_manual_action(action, "Причина не подтверждена собранными данными.")
         action["requires_human_approval"] = True
         safe_actions.append(action)
     result["action_plan"] = safe_actions[:10]
+    result["tracking_and_goals"] = _trusted_tracking_and_goals(snapshot)
     return result
 
 
@@ -1161,6 +1303,13 @@ def _audit_runtime(snapshot: dict[str, Any]) -> dict[str, Any]:
         "liveCompletedCount": 0,
         "processingReportCount": 0,
         "cacheHitCount": 0,
+        "liveAttempts": 0,
+        "liveSucceeded": 0,
+        "liveProcessing": 0,
+        "liveFailed": 0,
+        "cacheHits": 0,
+        "savedFallbacks": 0,
+        "liveFailureReasons": {},
         "unavailableCapabilities": [],
         "tokenUsage": {"prompt": 0, "completion": 0, "total": 0},
     }
@@ -1221,6 +1370,7 @@ def _set_helper_stage(
     status_value: str,
     warning_code: str | None = None,
     returned_model: str | None = None,
+    parsing: dict[str, Any] | None = None,
 ) -> None:
     helper_stage = _helper_stages(snapshot).setdefault(stage_name, {})
     helper_stage.update({
@@ -1230,6 +1380,8 @@ def _set_helper_stage(
     })
     if returned_model:
         helper_stage["returnedModel"] = returned_model
+    if parsing is not None:
+        helper_stage["parsing"] = parsing
 
 
 def _helper_warning(stage: str, code: str, message: str) -> dict[str, Any]:
@@ -1247,13 +1399,20 @@ def _append_helper_fallback(
     reason: str,
     elapsed_ms: int,
     prompt_tokens: int,
+    parsing: dict[str, Any] | None = None,
 ) -> None:
     warnings = snapshot.setdefault("auditWarnings", [])
     if not any(item.get("code") == code for item in warnings if isinstance(item, dict)):
         warnings.append(_helper_warning(stage, code, message))
     runtime = _audit_runtime(snapshot)
     runtime["helperFallbacksCount"] = int(runtime.get("helperFallbacksCount") or 0) + 1
-    _set_helper_stage(snapshot, stage_name, status_value="fallback", warning_code=code)
+    _set_helper_stage(
+        snapshot,
+        stage_name,
+        status_value="fallback",
+        warning_code=code,
+        parsing=parsing,
+    )
     logger.warning(
         "AI_AUDIT_HELPER_STAGE_FALLBACK job_id=%s stage=%s helper_model=%s elapsed_ms=%s "
         "prompt_estimated_tokens=%s fallback_reason=%s",
@@ -1340,6 +1499,46 @@ def _refresh_direct_read_runtime(snapshot: dict[str, Any], direct_api_calls: int
     runtime["savedDataRequestsCount"] = sum(
         1 for item in results if item.get("source") == "directpilot_saved_stats"
     )
+    runtime["liveAttempts"] = sum(1 for item in results if item.get("live_attempted"))
+    runtime["liveSucceeded"] = sum(
+        1
+        for item in results
+        if item.get("live_attempted")
+        and not item.get("saved_fallback")
+        and item.get("status") in AVAILABLE_AUDIT_DATA_STATUSES
+    )
+    runtime["liveProcessing"] = sum(
+        1 for item in results if item.get("live_attempted") and item.get("status") == "processing"
+    )
+    runtime["liveFailed"] = sum(
+        1
+        for item in results
+        if item.get("live_attempted")
+        and (item.get("saved_fallback") or item.get("status") in {"failed", "unavailable"})
+    )
+    runtime["cacheHits"] = runtime["cacheHitCount"]
+    runtime["savedFallbacks"] = sum(1 for item in results if item.get("saved_fallback"))
+    safe_reason_codes = {
+        "direct_auth_error",
+        "direct_permission_denied",
+        "direct_invalid_field_combination",
+        "direct_report_processing",
+        "direct_rate_limited",
+        "direct_no_data",
+        "adapter_failed",
+        "saved_fallback_used",
+    }
+    failure_reasons: dict[str, int] = {}
+    for item in results:
+        if not item.get("live_attempted") or not (item.get("live_error_code") or item.get("saved_fallback")):
+            continue
+        reason = str(item.get("live_error_code") or "saved_fallback_used")
+        if item.get("saved_fallback") and not reason:
+            reason = "saved_fallback_used"
+        if reason not in safe_reason_codes:
+            reason = "direct_request_failed"
+        failure_reasons[reason] = failure_reasons.get(reason, 0) + 1
+    runtime["liveFailureReasons"] = failure_reasons
     runtime["unavailableCapabilities"] = sorted({
         str(item.get("capability_id") or item.get("dimension"))
         for item in results
@@ -1585,6 +1784,12 @@ def _context_metadata(job: AiAuditJob) -> dict[str, Any]:
                 "liveCompleted": int(runtime.get("liveCompletedCount") or 0),
                 "processing": int(runtime.get("processingReportCount") or 0),
                 "cacheHits": int(runtime.get("cacheHitCount") or 0),
+                "liveAttempts": int(runtime.get("liveAttempts") or 0),
+                "liveSucceeded": int(runtime.get("liveSucceeded") or 0),
+                "liveProcessing": int(runtime.get("liveProcessing") or 0),
+                "liveFailed": int(runtime.get("liveFailed") or 0),
+                "savedFallbacks": int(runtime.get("savedFallbacks") or 0),
+                "liveFailureReasons": runtime.get("liveFailureReasons") or {},
                 "statusCounts": status_counts,
                 "unavailableDimensions": sorted({
                     str(item.get("dimension"))
@@ -1614,8 +1819,6 @@ def _public_audit_result(job: AiAuditJob) -> tuple[dict[str, Any] | None, str | 
     snapshot = _json_load(job.context_snapshot_json, {}) or {}
     structured = result.get("structured") if result else None
     parsing = result.get("structuredParsing") if result else None
-    technical_candidate = None
-
     if not structured:
         candidates = []
         if result:
@@ -1625,7 +1828,6 @@ def _public_audit_result(job: AiAuditJob) -> tuple[dict[str, Any] | None, str | 
         for candidate in candidates:
             if not candidate:
                 continue
-            technical_candidate = technical_candidate or str(candidate)
             structured, candidate_parsing = _validate_structured_result_with_metadata(
                 str(candidate),
                 snapshot=snapshot,
@@ -1656,9 +1858,7 @@ def _public_audit_result(job: AiAuditJob) -> tuple[dict[str, Any] | None, str | 
             ]
         else:
             result["fallbackMarkdown"] = _UNSUPPORTED_AUDIT_FORMAT_MESSAGE
-            result["technicalResponse"] = _safe_technical_response(
-                result.get("technicalResponse") or technical_candidate or job.answer_text
-            )
+            result.pop("technicalResponse", None)
             result["structuredParsing"] = parsing or {
                 "status": "fallback", "sourceFormat": "empty", "errorCode": "empty_provider_response", "validationErrorsCount": 0,
             }
@@ -1878,6 +2078,13 @@ async def advance_audit_job(
                 "liveCompletedCount": 0,
                 "processingReportCount": 0,
                 "cacheHitCount": 0,
+                "liveAttempts": 0,
+                "liveSucceeded": 0,
+                "liveProcessing": 0,
+                "liveFailed": 0,
+                "cacheHits": 0,
+                "savedFallbacks": 0,
+                "liveFailureReasons": {},
                 "unavailableCapabilities": [],
                 "tokenUsage": {"prompt": 0, "completion": 0, "total": 0},
             }
@@ -2001,7 +2208,9 @@ async def advance_audit_job(
                     _record_provider_response(snapshot, response)
                     returned_model = str(response.get("model") or AI_AUDIT_HELPER_MODEL)
                     _audit_models(snapshot, job.model)["planner_returned_model"] = returned_model
-                    plan, valid_plan = _parse_investigation_plan(str(response.get("content") or ""), snapshot, base_plan)
+                    plan, valid_plan, parsing = _parse_investigation_plan(
+                        str(response.get("content") or ""), snapshot, base_plan,
+                    )
                     snapshot["investigationPlan"] = plan.model_dump(mode="json")
                     if valid_plan:
                         _set_helper_stage(
@@ -2009,6 +2218,7 @@ async def advance_audit_job(
                             "planner",
                             status_value="success",
                             returned_model=returned_model,
+                            parsing=parsing,
                         )
                         usage = response.get("usage") if isinstance(response.get("usage"), dict) else {}
                         logger.info(
@@ -2032,6 +2242,7 @@ async def advance_audit_job(
                             reason="invalid_json",
                             elapsed_ms=elapsed_ms,
                             prompt_tokens=int((_audit_runtime(snapshot).get("plannerPromptTokensEstimated") or 0)),
+                            parsing=parsing,
                         )
                     job.context_snapshot_json = _json_dump(snapshot)
                     job.status = "context_ready"
@@ -2164,7 +2375,9 @@ async def advance_audit_job(
                 _record_provider_response(snapshot, response)
                 returned_model = str(response.get("model") or AI_AUDIT_HELPER_MODEL)
                 _audit_models(snapshot, job.model)["verification_returned_model"] = returned_model
-                verification, valid_verification = _parse_verifications(str(response.get("content") or ""), snapshot)
+                verification, valid_verification, parsing = _parse_verifications(
+                    str(response.get("content") or ""), snapshot,
+                )
                 snapshot["verifiedHypotheses"] = verification.model_dump(mode="json")["verifications"]
                 second_round: list[AuditDataRequest] = []
                 if valid_verification:
@@ -2173,6 +2386,7 @@ async def advance_audit_job(
                         "verification",
                         status_value="success",
                         returned_model=returned_model,
+                        parsing=parsing,
                     )
                     second_round = _second_round_requests(snapshot)
                     usage = response.get("usage") if isinstance(response.get("usage"), dict) else {}
@@ -2197,6 +2411,7 @@ async def advance_audit_job(
                         reason="invalid_json",
                         elapsed_ms=elapsed_ms,
                         prompt_tokens=int((_audit_runtime(snapshot).get("verificationPromptTokensEstimated") or 0)),
+                        parsing=parsing,
                     )
                 if second_round:
                     runtime = _audit_runtime(snapshot)
@@ -2265,19 +2480,18 @@ async def advance_audit_job(
             if truncated:
                 warnings.append("Ответ модели достиг лимита и мог быть обрезан.")
             fallback_markdown = None if structured else _UNSUPPORTED_AUDIT_FORMAT_MESSAGE
-            technical_response = None if structured else _safe_technical_response(answer)
             job.returned_model = final_returned_model
             job.answer_text = build_audit_answer_markdown(structured, snapshot) if structured else fallback_markdown
             job.result_json = _json_dump({
                 "structured": structured,
                 "fallbackMarkdown": fallback_markdown,
-                "technicalResponse": technical_response,
+                "technicalResponse": None,
                 "structuredParsing": parsing,
                 "providerResponseMetadata": {
                     "sha256": hashlib.sha256(answer.encode("utf-8")).hexdigest() if answer else None,
                     "length": len(answer),
                     "sourceFormat": parsing["sourceFormat"],
-                    "fullResponseStored": bool(technical_response),
+                    "fullResponseStored": False,
                 },
                 "warnings": warnings,
                 "finishReason": finish_reason,

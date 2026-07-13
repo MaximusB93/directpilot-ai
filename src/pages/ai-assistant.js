@@ -382,7 +382,12 @@ function renderAuditDataRequests(job, escapeHtml) {
   const planned = Number(dataRequests.planned || 0);
   if (!planned) return '';
   const saved = Number(dataRequests.saved || 0);
-  const live = Number(dataRequests.live || 0);
+  const liveAttempts = Number(dataRequests.liveAttempts ?? dataRequests.live ?? 0);
+  const liveSucceeded = Number(dataRequests.liveSucceeded ?? dataRequests.liveCompleted ?? 0);
+  const liveProcessing = Number(dataRequests.liveProcessing ?? dataRequests.processing ?? 0);
+  const liveFailed = Number(dataRequests.liveFailed || 0);
+  const cacheHits = Number(dataRequests.cacheHits || 0);
+  const savedFallbacks = Number(dataRequests.savedFallbacks || 0);
   const unavailable = dataRequests.unavailableDimensions || [];
   return `<section class="aiAuditRequestSummary">
     <h4>Дополнительные запросы данных</h4>
@@ -390,13 +395,18 @@ function renderAuditDataRequests(job, escapeHtml) {
       <span><strong>${planned}</strong> запланировано</span>
       <span><strong>${Number(dataRequests.allowed || 0)}</strong> разрешено backend</span>
       <span><strong>${saved}</strong> выполнено по сохранённым данным</span>
-      <span><strong>${live}</strong> live-запросов к Директу</span>
+      <span><strong>${liveAttempts}</strong> live-попыток</span>
+      <span><strong>${liveSucceeded}</strong> live-запросов выполнено</span>
+      <span><strong>${liveProcessing}</strong> отчётов готовится</span>
+      <span><strong>${liveFailed}</strong> live-ошибок</span>
+      <span><strong>${cacheHits}</strong> ответов из кеша</span>
+      <span><strong>${savedFallbacks}</strong> переходов к сохранённым данным</span>
       <span><strong>${Number(statuses.unavailable || 0)}</strong> недоступно</span>
       <span><strong>${Number(statuses.not_applicable || 0)}</strong> неприменимо</span>
       <span><strong>${Number(statuses.insufficient_data || 0)}</strong> мало данных</span>
       <span><strong>${Number(statuses.failed || 0)}</strong> ошибок</span>
     </div>
-    ${saved && !live ? `<p>Выполнено по данным последней синхронизации DirectPilot: ${saved}. Live-запросы к Яндекс.Директу в этом аудите не выполнялись.</p>` : ''}
+    ${saved && !liveAttempts ? `<p>Выполнено по данным последней синхронизации DirectPilot: ${saved}. Live-запросы к Яндекс.Директу в этом аудите не выполнялись.</p>` : ''}
     ${unavailable.length ? `<aside class="aiAuditNotice"><strong>Не удалось проверить:</strong> ${unavailable.map((value) => escapeHtml(auditDimensionLabel(value))).join(', ')}. Эти данные не учитывались в выводах.</aside>` : ''}
   </section>`;
 }
@@ -407,7 +417,6 @@ export function renderAiAuditResult(result, fallbackAnswer, escapeHtml, job = {}
   const coverage = structured?.meta?.data_coverage || result?.dataCoverage || job.context_metadata?.dataCoverage || {};
   const periodLine = `Период анализа: ${formatAuditDate(period.date_from || period.dateFrom)}–${formatAuditDate(period.date_to || period.dateTo)}, ${escapeHtml(String(period.days || '—'))} дней.`;
   if (!structured) {
-    const technicalResponse = result?.technicalResponse || '';
     const fallbackValue = result?.fallbackMarkdown || fallbackAnswer || 'AI вернул результат в неподдерживаемом формате.';
     const fallbackMessage = looksLikeRawStructuredJson(fallbackValue)
       ? 'AI вернул результат в неподдерживаемом формате. Метаданные аудита сохранены.'
@@ -417,7 +426,6 @@ export function renderAiAuditResult(result, fallbackAnswer, escapeHtml, job = {}
       ${result?.warnings?.map((warning) => `<div class="authStatus integrationStatus">${escapeHtml(warning)}</div>`).join('') || ''}
       <div class="aiAuditNotice">${escapeHtml(fallbackMessage)}</div>
       ${renderAuditDataRequests(job, escapeHtml)}
-      ${technicalResponse ? `<details class="aiAuditTechnicalDetails"><summary>Технический ответ модели</summary><pre>${escapeHtml(technicalResponse)}</pre></details>` : ''}
     </div>`;
   }
   const coverageRows = Object.entries(coverage).map(([key, item]) => `<tr><th>${escapeHtml(auditCoverageLabel(key))}</th><td><span class="aiStatusBadge ${item.available ? 'ready' : 'pending'}">${item.available ? 'Доступно' : 'Не собрано'}</span></td><td>${escapeHtml(String(item.analyzed || 0))}${item.total === null || item.total === undefined ? '' : ` / ${escapeHtml(String(item.total))}`}</td><td>${escapeHtml(item.reason || item.source || '—')}</td></tr>`).join('');
@@ -437,7 +445,7 @@ export function renderAiAuditResult(result, fallbackAnswer, escapeHtml, job = {}
     ${renderFindingSection('Неподтверждённые гипотезы', byStatus('unverified'), escapeHtml)}
     ${renderFindingSection('Опровергнутые гипотезы', byStatus('rejected'), escapeHtml, { open: false })}
     ${opportunities.length ? `<section><h4>Возможности</h4><div class="aiAuditFindingGrid">${opportunities.map((item) => renderFinding(item, escapeHtml)).join('')}</div></section>` : ''}
-    ${structured.insufficient_data_campaigns?.length ? `<aside class="aiAuditNotice"><h4>Недостаточно данных</h4><ul>${structured.insufficient_data_campaigns.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul></aside>` : ''}
+    ${structured.insufficient_data_campaigns?.length ? `<aside class="aiAuditNotice"><h4>Недостаточно данных</h4><ul>${structured.insufficient_data_campaigns.map((item) => `<li><strong>${escapeHtml(item.campaign_name || 'Кампания')}</strong>: ${escapeHtml(item.reason || 'Недостаточно данных.')} ${item.recommendation ? `<span>${escapeHtml(item.recommendation)}</span>` : ''}${item.next_data_needed?.length ? `<small> Нужны данные: ${item.next_data_needed.map((value) => escapeHtml(auditDimensionLabel(value))).join(', ')}.</small>` : ''}</li>`).join('')}</ul></aside>` : ''}
     ${structured.action_plan?.length ? `<section><h4>План действий</h4><ol>${[...structured.action_plan].sort((a, b) => Number(a.priority) - Number(b.priority)).map((item) => `<li><strong>${escapeHtml(item.action)}</strong> — ${escapeHtml(item.reason)} <small>Объект: ${escapeHtml(item.scope)} · ${escapeHtml(item.mode)} · подтверждение обязательно</small></li>`).join('')}</ol></section>` : ''}
     ${structured.prohibited_actions?.length ? `<aside class="aiAuditNotice"><h4>Запрещённые автоматические действия</h4><ul>${structured.prohibited_actions.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul></aside>` : ''}
     <aside class="aiAuditNotice"><h4>Ограничения</h4><ul>${(structured.limitations || []).map((item) => `<li>${escapeHtml(item)}</li>`).join('') || '<li>Не указаны.</li>'}</ul></aside>
