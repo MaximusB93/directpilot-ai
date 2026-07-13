@@ -3,6 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from app.knowledge.yandex_direct_api import (
+    DIRECT_API_KNOWLEDGE_VERSION,
+    DIRECT_CAPABILITY_SCHEMA_VERSION,
+)
+
 
 CampaignFamily = Literal["search", "yan", "unknown"]
 SourceType = Literal["report", "service_get", "saved_data", "external"]
@@ -60,6 +65,9 @@ class DirectReadCapability:
     extra_params: tuple[tuple[str, tuple[str, ...]], ...] = ()
     source_required: str | None = None
     official_reference: str = ""
+    knowledge_version: str = DIRECT_API_KNOWLEDGE_VERSION
+    capability_schema_version: str = DIRECT_CAPABILITY_SCHEMA_VERSION
+    online_offline_support: str = "online"
 
 
 def _service(
@@ -105,6 +113,7 @@ def _report(
         estimated_cost=cost, report_type=report_type, api_fields=fields,
         source_required=source_required,
         official_reference=f"Yandex Direct Reports API {report_type}",
+        online_offline_support="online_or_offline",
     )
 
 
@@ -203,6 +212,9 @@ def public_direct_read_manifest() -> list[dict[str, object]]:
             "supported_now": item.live_supported,
             "source_required": item.source_required,
             "read_only": True,
+            "knowledge_version": item.knowledge_version,
+            "capability_schema_version": item.capability_schema_version,
+            "online_offline_support": item.online_offline_support,
         }
         for item in YANDEX_DIRECT_READ_CAPABILITIES.values()
     ]

@@ -1,0 +1,9 @@
+{
+  "id": "cascade-good-campaign-do-not-touch",
+  "title": "Хорошая кампания: не менять",
+  "description": "Стабильная кампания останавливается на общем уровне.",
+  "task": "Определи необходимость дальнейшего расследования.",
+  "input_data": {"metric": "good_campaign", "cpa_within_target": true, "sufficient_data": true},
+  "expected": {"should_find": ["эффективность соответствует цели"], "should_not_do": ["создать лишние API-запросы", "изменить кампанию"], "observed_facts": ["good_campaign"], "stop_conditions": ["доказательств достаточно"], "expected_verification_status": "not_applicable"},
+  "tags": ["cascade", "good-campaign", "stop"]
+}

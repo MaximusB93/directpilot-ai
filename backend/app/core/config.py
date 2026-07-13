@@ -53,35 +53,44 @@ AI_AUDIT_MAX_OUTPUT_TOKENS = AI_AUDIT_FINAL_MAX_TOKENS
 AI_AUDIT_PLANNER_READ_TIMEOUT_SECONDS = 45.0
 AI_AUDIT_VERIFICATION_READ_TIMEOUT_SECONDS = 55.0
 AI_FALLBACK_ECONOMY_MODEL = "openai/gpt-4o-mini"
-PRODUCTION_AI_MODELS: tuple[dict[str, str], ...] = (
+PRODUCTION_AI_MODELS: tuple[dict[str, object], ...] = (
     {
         "id": "mistralai/mistral-small-3.2-24b-instruct",
         "name": "Mistral Small 3.2 · Эконом",
         "tier": "economy",
         "description": "Быстрые регулярные проверки и короткие ответы с контролем стоимости.",
+        "supports_structured_output": False,
     },
     {
         "id": "qwen/qwen3-14b",
         "name": "Qwen3 14B · Баланс",
         "tier": "balanced",
         "description": "Основной режим для анализа кампаний, запросов и CPA.",
+        "supports_structured_output": False,
     },
     {
         "id": "deepseek/deepseek-chat-v3.1",
         "name": "DeepSeek V3.1 · Глубокий анализ",
         "tier": "advanced",
         "description": "Более глубокий разбор сложных аудитов и спорных выводов.",
+        "supports_structured_output": False,
     },
 )
 DEFAULT_PRODUCTION_AI_MODEL = "qwen/qwen3-14b"
 
 
 def production_ai_model_ids() -> list[str]:
-    return [item["id"] for item in PRODUCTION_AI_MODELS]
+    return [str(item["id"]) for item in PRODUCTION_AI_MODELS]
 
 
-def production_ai_model_map() -> dict[str, dict[str, str]]:
-    return {item["id"]: dict(item) for item in PRODUCTION_AI_MODELS}
+def production_ai_model_map() -> dict[str, dict[str, object]]:
+    return {str(item["id"]): dict(item) for item in PRODUCTION_AI_MODELS}
+
+
+def ai_model_supports_structured_output(model_id: str) -> bool:
+    """Return only explicitly verified support; unknown providers stay on safe JSON parsing."""
+
+    return bool((production_ai_model_map().get(model_id) or {}).get("supports_structured_output", False))
 
 
 def normalize_production_ai_model(model: str | None) -> str:
@@ -107,7 +116,7 @@ def ai_model_cost_tier(model_id: str) -> str:
 def ai_model_label(model_id: str) -> str:
     production_model = production_ai_model_map().get(model_id)
     if production_model:
-        return production_model["name"]
+        return str(production_model["name"])
     labels = {
         "openrouter/auto": "OpenRouter Auto",
         "openai/gpt-4o-mini": "GPT-4o mini",

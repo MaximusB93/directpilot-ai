@@ -1,0 +1,9 @@
+{
+  "id": "cascade-search-irrelevant-queries",
+  "title": "Search: высокий CPA из-за нерелевантных запросов",
+  "description": "Каскад должен проверить группы, ключи и запросы до рекомендации.",
+  "task": "Построй расследование причины высокого CPA.",
+  "input_data": {"campaign_family": "search", "campaign_subtype": "search", "metric": "cpa_above_target", "sufficient_data": true},
+  "expected": {"should_find": ["CPA выше цели"], "should_recommend": ["проверить поисковые запросы"], "should_not_do": ["автоматически добавить минус-слова"], "observed_facts": ["cpa_above_target"], "expected_hypotheses": ["нерелевантный поисковый спрос"], "expected_first_capabilities": ["ad_groups"], "expected_followup_capabilities": ["keywords", "search_queries"], "confirmation_rules": ["есть измеримый сигнал в trusted data"], "stop_conditions": ["доказательств достаточно"], "expected_verification_status": "confirmed", "requires_human_approval": true},
+  "tags": ["cascade", "search", "queries"]
+}

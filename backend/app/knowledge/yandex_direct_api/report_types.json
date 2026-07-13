@@ -1,0 +1,15 @@
+{
+  "schema_version": "v1",
+  "source": "https://yandex.com/dev/direct/doc/en/fields-list",
+  "report_types": [
+    "ACCOUNT_PERFORMANCE_REPORT",
+    "CAMPAIGN_PERFORMANCE_REPORT",
+    "ADGROUP_PERFORMANCE_REPORT",
+    "AD_PERFORMANCE_REPORT",
+    "CRITERIA_PERFORMANCE_REPORT",
+    "CUSTOM_REPORT",
+    "REACH_AND_FREQUENCY_PERFORMANCE_REPORT",
+    "SEARCH_QUERY_PERFORMANCE_REPORT"
+  ],
+  "processing": {"immediate": 200, "offline": [201, 202], "retry_header": "retryIn"}
+}

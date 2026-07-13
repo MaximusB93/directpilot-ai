@@ -13,6 +13,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.connectors.yandex_direct import YandexDirectConnector, YandexDirectReadError
+from app.knowledge.yandex_direct_api import DIRECT_NORMALIZATION_VERSION
 from app.models import ClientAccount, ConnectedAccount, DirectCampaignPeriodStat, DirectReadCache, DirectReportJob
 from app.schemas import AuditDataRequest, AuditDataRequestResult
 from app.services.connected_accounts import get_yandex_access_token_for_account
@@ -132,6 +133,9 @@ def _base_result(
         source=source,
         source_type=capability.source_type,
         source_required=capability.source_required,
+        capability_schema_version=capability.capability_schema_version,
+        direct_api_knowledge_version=capability.knowledge_version,
+        normalization_version=DIRECT_NORMALIZATION_VERSION,
         period=_period(request),
         summary=summary,
         **kwargs,
@@ -163,13 +167,20 @@ def _trusted_spec(
     return {
         "client_login_hash": _login_hash(client.direct_login),
         "capability_id": capability.id,
+        "capability_schema_version": capability.capability_schema_version,
+        "direct_api_knowledge_version": capability.knowledge_version,
+        "normalization_version": DIRECT_NORMALIZATION_VERSION,
         "source_type": capability.source_type,
+        "service": capability.service,
+        "report_type": capability.report_type,
+        "api_fields": list(capability.api_fields),
         "campaign_ids": campaign_ids,
         "campaign_family": request.campaign_family,
         "campaign_subtype": request.campaign_subtype,
         "period": _period(request),
         "goal_ids": parse_goal_ids(client.conversion_goal_ids, fallback=client.main_goal_id),
         "metrics": requested_metrics,
+        "filters": {"campaign_name": request.campaign_name},
         "limit": min(capability.maximum_limit, MAX_NORMALIZED_ROWS),
     }
 
@@ -237,6 +248,8 @@ def _cache_result(
     period: dict[str, Any],
     partial: bool,
     warnings: list[str],
+    original_status: str,
+    error_code: str | None = None,
 ) -> None:
     now = _now()
     cached = db.scalar(select(DirectReadCache).where(
@@ -247,24 +260,35 @@ def _cache_result(
         cached = DirectReadCache(client_id=client_id, request_hash=request_hash, capability_id=capability.id)
         db.add(cached)
     cached.source = source
+    cached.original_status = original_status
+    cached.error_code = error_code
+    cached.capability_schema_version = capability.capability_schema_version
+    cached.direct_api_knowledge_version = capability.knowledge_version
+    cached.normalization_version = DIRECT_NORMALIZATION_VERSION
+    cached.source_type = capability.source_type
+    cached.report_type = capability.report_type
+    cached.service = capability.service
+    cached.api_fields_hash = hashlib.sha256(_json_dump(list(capability.api_fields)).encode("utf-8")).hexdigest()
     cached.result_json = _json_dump(rows)
     cached.period_json = _json_dump(period)
     cached.rows_count = len(rows)
     cached.partial = partial
     cached.warnings_json = _json_dump(warnings)
     cached.fetched_at = now
-    cached.expires_at = now + timedelta(seconds=capability.cache_ttl_seconds)
+    ttl = min(120, capability.cache_ttl_seconds) if original_status == "insufficient_data" else capability.cache_ttl_seconds
+    cached.expires_at = now + timedelta(seconds=ttl)
     db.flush()
 
 
 def _cached_outcome(
     db: Session,
+    client_id: str,
     request: AuditDataRequest,
     capability: DirectReadCapability,
     request_hash: str,
 ) -> DirectReadOutcome | None:
     cached = db.scalar(select(DirectReadCache).where(
-        DirectReadCache.client_id == request.filters.get("client_id"),
+        DirectReadCache.client_id == client_id,
         DirectReadCache.request_hash == request_hash,
         DirectReadCache.expires_at > _now(),
     ))
@@ -275,10 +299,12 @@ def _cached_outcome(
         "DIRECT_READ_CACHE_HIT capability_id=%s request_hash=%s rows=%s",
         capability.id, request_hash, len(rows),
     )
+    original_status = cached.original_status or ("insufficient_data" if not rows else "collected")
+    status = "cached" if original_status == "collected" else original_status
     return DirectReadOutcome(_base_result(
         request,
         capability,
-        status="cached",
+        status=status,
         source="yandex_direct_cached_live",
         live=True,
         cached=True,
@@ -290,12 +316,14 @@ def _cached_outcome(
         truncated=cached.partial,
         data=rows,
         warnings=_json_load(cached.warnings_json, []),
-        summary=f"Получено из свежего кеша: {len(rows)} строк.",
+        summary=f"Получено из свежего кеша: {len(rows)} строк." if rows else "Свежий кеш подтверждает отсутствие строк по запросу.",
+        error_code=cached.error_code,
     ))
 
 
 def _completed_outcome(
     db: Session,
+    client_id: str,
     request: AuditDataRequest,
     capability: DirectReadCapability,
     trusted: dict[str, Any],
@@ -308,9 +336,10 @@ def _completed_outcome(
     normalized, truncated = _normalize_rows(rows, int(trusted["limit"]))
     now = _now()
     warnings = ["Результат ограничен безопасным лимитом строк."] if truncated else []
+    status = "partial" if truncated else ("collected" if normalized else "insufficient_data")
     _cache_result(
         db,
-        client_id=request.filters["client_id"],
+        client_id=client_id,
         capability=capability,
         request_hash=request_hash,
         source=source,
@@ -318,8 +347,9 @@ def _completed_outcome(
         period=trusted["period"],
         partial=truncated,
         warnings=warnings,
+        original_status=status,
+        error_code=None if normalized else "direct_no_data",
     )
-    status = "partial" if truncated else ("collected" if normalized else "insufficient_data")
     return DirectReadOutcome(_base_result(
         request,
         capability,
@@ -341,6 +371,7 @@ def _completed_outcome(
 
 def _report_outcome(
     db: Session,
+    client_id: str,
     connector: YandexDirectConnector,
     request: AuditDataRequest,
     capability: DirectReadCapability,
@@ -348,12 +379,30 @@ def _report_outcome(
     request_hash: str,
     *,
     audit_job_id: str | None,
+    cache_policy: str,
 ) -> DirectReadOutcome:
     now = _now()
     report_job = db.scalar(select(DirectReportJob).where(
-        DirectReportJob.client_id == request.filters["client_id"],
+        DirectReportJob.client_id == client_id,
         DirectReportJob.request_hash == request_hash,
     ))
+    if cache_policy == "fresh" and report_job and report_job.audit_job_id != audit_job_id:
+        if report_job.status in {"queued", "requested", "processing"}:
+            return DirectReadOutcome(_base_result(
+                request,
+                capability,
+                status="processing",
+                source="yandex_direct_live_report",
+                live=True,
+                request_hash=request_hash,
+                retryable=True,
+                next_retry_at=(now + timedelta(seconds=5)).isoformat(),
+                summary="Другой fresh-аудит формирует такой же отчёт; текущий аудит дождётся своей live-попытки.",
+                error_code="fresh_report_busy",
+            ))
+        db.delete(report_job)
+        db.flush()
+        report_job = None
     if report_job and report_job.expires_at:
         expires_at = report_job.expires_at
         expires_at = expires_at.replace(tzinfo=UTC) if expires_at.tzinfo is None else expires_at
@@ -364,7 +413,7 @@ def _report_outcome(
     if report_job and report_job.status == "completed":
         rows = _json_load(report_job.result_snapshot_json, [])
         return _completed_outcome(
-            db, request, capability, trusted, request_hash, rows, "yandex_direct_cached_live", api_calls=0,
+            db, client_id, request, capability, trusted, request_hash, rows, "yandex_direct_cached_live", api_calls=0,
         )
     if report_job and report_job.status in {"queued", "requested", "processing"} and report_job.next_retry_at:
         retry_at = report_job.next_retry_at
@@ -399,7 +448,7 @@ def _report_outcome(
             ))
     if report_job is None:
         active_count = len(list(db.scalars(select(DirectReportJob.id).where(
-            DirectReportJob.client_id == request.filters["client_id"],
+            DirectReportJob.client_id == client_id,
             DirectReportJob.status.in_(("queued", "requested", "processing")),
             or_(DirectReportJob.expires_at.is_(None), DirectReportJob.expires_at > now),
         ))))
@@ -414,7 +463,7 @@ def _report_outcome(
         report_spec = _report_spec(capability, trusted, request_hash)
         report_job = DirectReportJob(
             audit_job_id=audit_job_id,
-            client_id=request.filters["client_id"],
+            client_id=client_id,
             capability_id=capability.id,
             request_hash=request_hash,
             report_name=report_spec["ReportName"],
@@ -476,7 +525,7 @@ def _report_outcome(
         audit_job_id, capability.id, request_hash, elapsed_ms, len(rows),
     )
     return _completed_outcome(
-        db, request, capability, trusted, request_hash, rows, "yandex_direct_live_report", api_calls=1,
+        db, client_id, request, capability, trusted, request_hash, rows, "yandex_direct_live_report", api_calls=1,
     )
 
 
@@ -487,6 +536,7 @@ def execute_direct_read(
     *,
     audit_job_id: str | None = None,
     allow_cache: bool = True,
+    cache_policy: str = "prefer_cache",
 ) -> DirectReadOutcome:
     capability_id = request.capability_id or request.dimension
     capability = YANDEX_DIRECT_READ_CAPABILITIES.get(capability_id)
@@ -511,6 +561,25 @@ def execute_direct_read(
     client = db.get(ClientAccount, client_id)
     if client is None:
         raise YandexDirectReadError("direct_no_data", "Client was not found.")
+    campaign_ids = _resolve_campaign_ids(db, client_id, request.campaign_name)
+    trusted = _trusted_spec(client, capability, request, campaign_ids)
+    request_hash = _request_hash(trusted)
+    if allow_cache and cache_policy != "fresh":
+        cached = _cached_outcome(db, client_id, request, capability, request_hash)
+        if cached:
+            return cached
+    if cache_policy == "cache_only":
+        return DirectReadOutcome(_base_result(
+            request,
+            capability,
+            status="insufficient_data",
+            source="cache_only",
+            request_hash=request_hash,
+            freshness="cache_miss",
+            summary="В кеше нет подходящих данных; live API отключён политикой cache_only.",
+            limitations=["Для получения свежих данных запустите аудит с политикой fresh."],
+            error_code="cache_miss",
+        ))
     if not client.yandex_account_id or not client.direct_login:
         raise YandexDirectReadError("direct_auth_error", "Yandex account is not bound to this client.")
     account = db.get(ConnectedAccount, client.yandex_account_id)
@@ -521,14 +590,6 @@ def execute_direct_read(
     token = get_yandex_access_token_for_account(db, client.yandex_account_id)
     if not token:
         raise YandexDirectReadError("direct_auth_error", "Yandex OAuth token is unavailable.")
-    campaign_ids = _resolve_campaign_ids(db, client_id, request.campaign_name)
-    trusted = _trusted_spec(client, capability, request, campaign_ids)
-    request_hash = _request_hash(trusted)
-    request.filters = {"campaign_name": request.campaign_name, "client_id": client_id}
-    if allow_cache:
-        cached = _cached_outcome(db, request, capability, request_hash)
-        if cached:
-            return cached
     connector = YandexDirectConnector(access_token=token, client_login=client.direct_login)
     logger.info(
         "DIRECT_READ_REQUEST_STARTED audit_job_id=%s capability_id=%s client_login_hash=%s "
@@ -538,7 +599,8 @@ def execute_direct_read(
     try:
         if capability.source_type == "report":
             return _report_outcome(
-                db, connector, request, capability, trusted, request_hash, audit_job_id=audit_job_id,
+                db, client_id, connector, request, capability, trusted, request_hash,
+                audit_job_id=audit_job_id, cache_policy=cache_policy,
             )
         started_at = perf_counter()
         api_calls = 1
@@ -598,7 +660,7 @@ def execute_direct_read(
             audit_job_id, capability.id, request_hash, round((perf_counter() - started_at) * 1000), len(rows),
         )
         return _completed_outcome(
-            db, request, capability, trusted, request_hash, rows, "yandex_direct_live_service", api_calls=api_calls,
+            db, client_id, request, capability, trusted, request_hash, rows, "yandex_direct_live_service", api_calls=api_calls,
         )
     except YandexDirectReadError as exc:
         logger.warning(

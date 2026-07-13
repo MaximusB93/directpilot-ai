@@ -99,13 +99,14 @@ def redact_openrouter_debug_payload(value: Any) -> Any:
     return value
 
 
-def configured_models() -> list[dict[str, str]]:
+def configured_models() -> list[dict[str, object]]:
     return [
         {
             "id": str(model["id"]),
             "name": str(model["name"]),
             "description": str(model["description"]),
             "tier": str(model["tier"]),
+            "supports_structured_output": bool(model.get("supports_structured_output", False)),
         }
         for model in PRODUCTION_AI_MODELS
     ]

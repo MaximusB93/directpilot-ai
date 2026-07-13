@@ -298,3 +298,63 @@ def test_capability_validation_rejects_unknown_report_type_and_incompatible_fiel
     )
     with pytest.raises(ValueError, match="Incompatible report fields"):
         validate_capability_definition(incompatible)
+
+
+def test_prefer_cache_reuses_valid_cache_and_fresh_bypasses_it(monkeypatch):
+    db = _db()
+    monkeypatch.setattr(direct_read, "get_yandex_access_token_for_account", lambda *args: "secret")
+    calls = {"count": 0}
+
+    def fake_get(self, service, params, *, maximum_rows, page_size):
+        calls["count"] += 1
+        return [{"Id": 101, "Name": "Поиск Бренд", "Status": "ACCEPTED", "Type": "TEXT_CAMPAIGN"}]
+
+    monkeypatch.setattr(YandexDirectConnector, "paginate_service_get", fake_get)
+    request = _request("campaigns")
+
+    first = direct_read.execute_direct_read(db, "client-a", request, cache_policy="prefer_cache")
+    cached = direct_read.execute_direct_read(db, "client-a", request, cache_policy="prefer_cache")
+    fresh = direct_read.execute_direct_read(db, "client-a", request, cache_policy="fresh")
+
+    assert first.result.status == "collected"
+    assert cached.result.status == "cached"
+    assert fresh.result.status == "collected"
+    assert fresh.result.freshness == "live"
+    assert calls["count"] == 2
+
+
+def test_empty_live_result_stays_insufficient_in_negative_cache(monkeypatch):
+    db = _db()
+    monkeypatch.setattr(direct_read, "get_yandex_access_token_for_account", lambda *args: "secret")
+    calls = {"count": 0}
+
+    def fake_get(self, service, params, *, maximum_rows, page_size):
+        calls["count"] += 1
+        return []
+
+    monkeypatch.setattr(YandexDirectConnector, "paginate_service_get", fake_get)
+    request = _request("campaigns")
+
+    first = direct_read.execute_direct_read(db, "client-a", request, cache_policy="prefer_cache")
+    cached = direct_read.execute_direct_read(db, "client-a", request, cache_policy="prefer_cache")
+
+    assert first.result.status == "insufficient_data"
+    assert cached.result.status == "insufficient_data"
+    assert cached.result.cached is True
+    assert calls["count"] == 1
+
+
+def test_cache_hash_changes_with_capability_and_knowledge_versions():
+    db = _db()
+    client = db.get(ClientAccount, "client-a")
+    request = _request("campaigns")
+    capability = YANDEX_DIRECT_READ_CAPABILITIES["campaigns"]
+    original = direct_read._trusted_spec(client, capability, request, ["101"])
+    changed_capability = replace(
+        capability,
+        knowledge_version="v-next",
+        capability_schema_version="v-next",
+    )
+    changed = direct_read._trusted_spec(client, changed_capability, request, ["101"])
+
+    assert direct_read._request_hash(original) != direct_read._request_hash(changed)

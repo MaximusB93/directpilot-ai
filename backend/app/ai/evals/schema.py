@@ -16,6 +16,17 @@ class EvalExpected(BaseModel):
     should_not_do: list[str] = Field(default_factory=list)
     risk_level: RiskLevel | None = None
     requires_human_approval: bool | None = None
+    observed_facts: list[str] = Field(default_factory=list)
+    expected_hypotheses: list[str] = Field(default_factory=list)
+    expected_first_capabilities: list[str] = Field(default_factory=list)
+    expected_followup_capabilities: list[str] = Field(default_factory=list)
+    forbidden_capabilities: list[str] = Field(default_factory=list)
+    confirmation_rules: list[str] = Field(default_factory=list)
+    rejection_rules: list[str] = Field(default_factory=list)
+    stop_conditions: list[str] = Field(default_factory=list)
+    expected_verification_status: Literal[
+        "confirmed", "partially_confirmed", "rejected", "unverified", "not_applicable"
+    ] | None = None
 
     @model_validator(mode="after")
     def validate_assertions(self) -> "EvalExpected":

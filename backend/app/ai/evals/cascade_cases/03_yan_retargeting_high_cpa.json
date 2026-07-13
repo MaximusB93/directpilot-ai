@@ -1,0 +1,9 @@
+{
+  "id": "cascade-yan-retargeting-high-cpa",
+  "title": "РСЯ ретаргетинг: высокий CPA",
+  "description": "Расследование использует аудитории, площадки и устройства.",
+  "task": "Определи безопасный каскад для ретаргетинга.",
+  "input_data": {"campaign_family": "yan", "campaign_subtype": "yan_retargeting", "metric": "cpa_above_target"},
+  "expected": {"should_find": ["CPA выше цели"], "should_recommend": ["проверить сегменты и площадки"], "should_not_do": ["исключить площадки автоматически"], "observed_facts": ["cpa_above_target"], "expected_first_capabilities": ["retargeting_lists"], "expected_followup_capabilities": ["audience_targets", "placements", "devices"], "forbidden_capabilities": ["search_queries", "keywords"], "expected_verification_status": "partially_confirmed", "requires_human_approval": true},
+  "tags": ["cascade", "yan", "retargeting"]
+}

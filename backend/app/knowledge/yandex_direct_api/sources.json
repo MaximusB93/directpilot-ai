@@ -1,0 +1,10 @@
+{
+  "schema_version": "v1",
+  "verified_at": "2026-07-13",
+  "sources": [
+    {"id": "direct_api", "url": "https://yandex.com/dev/direct/doc/en/", "title": "Yandex Direct API v5"},
+    {"id": "reports", "url": "https://yandex.com/dev/direct/doc/en/fields-list", "title": "Reports API fields"},
+    {"id": "object_get", "url": "https://yandex.com/dev/direct/doc/en/get", "title": "Get methods"},
+    {"id": "adgroups_get", "url": "https://yandex.com/dev/direct/doc/en/adgroups/get", "title": "AdGroups.get"}
+  ]
+}

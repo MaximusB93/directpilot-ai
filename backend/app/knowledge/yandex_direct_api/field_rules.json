@@ -1,0 +1,10 @@
+{
+  "schema_version": "v1",
+  "source": "https://yandex.com/dev/direct/doc/en/fields-list",
+  "rules": [
+    {"id": "registry_only", "description": "Report fields are selected only by the executable backend registry."},
+    {"id": "report_compatibility", "description": "Fields must be supported by the selected official report type."},
+    {"id": "goal_metrics", "description": "Goal metrics require configured goal identifiers and available Metrica data in Direct."},
+    {"id": "no_raw_fields_from_ai", "description": "AI output cannot supply FieldNames, filters, campaign IDs, or report types."}
+  ]
+}

@@ -168,6 +168,71 @@ export function renderAiChat({
   `;
 }
 
+function auditRequestStatusLabel(status) {
+  return ({
+    pending: 'Ожидает', processing: 'Формируется', collected: 'Получено', cached: 'Из кеша',
+    partial: 'Получено частично', insufficient_data: 'Недостаточно данных', unavailable: 'Недоступно',
+    unsupported: 'Не поддерживается', failed: 'Ошибка', not_applicable: 'Неприменимо',
+  })[status] || 'Ожидает';
+}
+
+function auditVerificationStatusLabel(status) {
+  return ({
+    confirmed: 'Подтверждена', partially_confirmed: 'Подтверждена частично', rejected: 'Отклонена',
+    unverified: 'Не подтверждена', not_applicable: 'Неприменима', collecting_data: 'Собираем данные',
+    proposed: 'Предложена',
+  })[status] || 'Проверяется';
+}
+
+function auditSourceLabel(source) {
+  return ({
+    yandex_direct_live_report: 'Live-отчёт Директа', yandex_direct_live_service: 'Live API Директа',
+    yandex_direct_cached_live: 'Кеш live-отчёта', direct_read_cache: 'Кеш DirectPilot',
+    saved_campaign_stats: 'Сохранённая статистика', unavailable: 'Источник недоступен',
+  })[source] || (source ? 'Доверенный read-only источник' : 'Ожидается');
+}
+
+function renderAuditInvestigationTree(rounds, escapeHtml) {
+  if (!rounds.length) return '';
+  return `
+    <details class="quietDetails" open>
+      <summary>Ход расследования: факты, гипотезы и доказательства</summary>
+      <div class="aiAuditInvestigation">
+        ${rounds.map((round) => {
+          const hypotheses = round.hypotheses || [];
+          const requests = round.requests || [];
+          const verifications = round.verifications || [];
+          return `
+            <section>
+              <strong>Раунд ${escapeHtml(String(round.roundNumber || 1))}</strong>
+              ${(round.facts || []).map((fact) => `
+                <article>
+                  <b>${escapeHtml(fact.campaignName || 'Аккаунт')}</b>
+                  <p>Факт: ${escapeHtml((fact.evidence || []).join(' ') || fact.metric || 'Наблюдение зафиксировано')}</p>
+                  ${hypotheses.filter((item) => item.campaignName === fact.campaignName).map((hypothesis) => {
+                    const hypothesisRequests = requests.filter((item) => item.hypothesisId === hypothesis.hypothesisId);
+                    const verification = verifications.find((item) => item.hypothesis_id === hypothesis.hypothesisId) || {};
+                    return `
+                      <details class="quietDetails">
+                        <summary>Гипотеза: ${escapeHtml(hypothesis.hypothesis || 'Причина проверяется')} · ${escapeHtml(auditVerificationStatusLabel(verification.status || hypothesis.status))}</summary>
+                        ${hypothesisRequests.length ? `<ul>${hypothesisRequests.map((item) => `<li><b>${escapeHtml(item.capabilityId || 'Данные')}</b>: ${escapeHtml(auditRequestStatusLabel(item.status))} · ${escapeHtml(auditSourceLabel(item.source))}${item.rows ? ` · строк: ${escapeHtml(String(item.rows))}` : ''}${item.freshness ? ` · свежесть: ${escapeHtml(String(item.freshness))}` : ''}</li>`).join('')}</ul>` : '<p>Дополнительные запросы не требуются.</p>'}
+                        ${(verification.supporting_evidence || []).length ? `<p><b>Доказательства:</b> ${escapeHtml(verification.supporting_evidence.join(' '))}</p>` : ''}
+                        ${(verification.contradicting_evidence || []).length ? `<p><b>Противоречащие данные:</b> ${escapeHtml(verification.contradicting_evidence.join(' '))}</p>` : ''}
+                        ${(verification.limitations || []).length ? `<p><b>Ограничения:</b> ${escapeHtml(verification.limitations.join(' '))}</p>` : ''}
+                      </details>
+                    `;
+                  }).join('')}
+                </article>
+              `).join('')}
+              ${round.stopReason ? `<small>Причина остановки раунда: ${escapeHtml(String(round.stopReason))}</small>` : ''}
+            </section>
+          `;
+        }).join('')}
+      </div>
+    </details>
+  `;
+}
+
 export function renderAiAuditJob({
   selectedClientId,
   aiAuditJob = null,
@@ -176,14 +241,15 @@ export function renderAiAuditJob({
   escapeHtml,
 }) {
   const stages = [
-    ['collect_context', 'Данные клиента'],
-    ['classify_campaigns', 'Классификация кампаний'],
-    ['create_investigation_plan', 'План проверок'],
-    ['validate_data_requests', 'Запрос данных Яндекс.Директа'],
-    ['collect_live_data', 'Получение live-данных'],
-    ['wait_for_offline_reports', 'Формирование отчётов'],
+    ['collect_context', 'Общий анализ'],
+    ['classify_campaigns', 'Выбор проблемных кампаний'],
+    ['create_investigation_plan', 'Гипотезы'],
+    ['validate_data_requests', 'Запрос данных'],
+    ['collect_live_data', 'Получение отчётов'],
+    ['wait_for_offline_reports', 'Получение отчётов'],
     ['verify_hypotheses', 'Проверка гипотез'],
-    ['generate_answer', 'Формирование результата'],
+    ['next_cascade_round', 'Следующий уровень'],
+    ['generate_answer', 'Финальный аудит'],
     ['finalize', 'Готово'],
   ];
   const currentStage = aiAuditJob?.current_stage === 'collect_drilldowns' ? 'collect_live_data' : aiAuditJob?.current_stage;
@@ -210,6 +276,8 @@ export function renderAiAuditJob({
   const requestedDimensions = investigation.requestedDimensions || [];
   const runtime = aiAuditJob?.context_metadata?.runtime || {};
   const dataRequests = investigation.dataRequests || {};
+  const rounds = investigation.rounds || [];
+  const cachePolicy = aiAuditJob?.context_metadata?.cachePolicy || 'fresh';
   const tokenUsage = runtime.tokenUsage || {};
   const helperWarnings = (aiAuditJob?.context_metadata?.warnings || [])
     .filter((item) => item?.code === 'planner_fallback_used' || item?.code === 'verification_fallback_used');
@@ -226,7 +294,8 @@ export function renderAiAuditJob({
         <ol class="aiAuditStages">
           ${stages.map(([, label], index) => `<li class="${index < stageIndex || aiAuditJob.status === 'completed' ? 'done' : index === stageIndex && !terminal ? 'active' : ''}">${index < stageIndex || aiAuditJob.status === 'completed' ? '✓' : index === stageIndex && !terminal ? '•' : '○'} ${escapeHtml(label)}</li>`).join('')}
         </ol>
-        ${requestedDimensions.length ? `<div class="aiAuditInvestigation"><strong>AI запросил дополнительные данные:</strong> ${requestedDimensions.map((value) => escapeHtml({ ad_groups: 'группы', search_queries: 'поисковые запросы', goals: 'цели', placements: 'площадки', audiences: 'аудитории', retargeting_segments: 'сегменты ретаргетинга', devices: 'устройства', geo: 'география', demographics: 'демография', frequency: 'частота', lead_quality: 'качество лидов' }[value] || value)).join(', ')}.<small>Раунд ${escapeHtml(String(runtime.investigationRound || 1))} из 2 · запросов ${escapeHtml(String(runtime.requestsCount || 0))} · служебных AI-вызовов ${escapeHtml(String(runtime.helperProviderCallsCount || 0))} · финальных ${escapeHtml(String(runtime.finalProviderCallsCount || 0))}</small></div>` : ''}
+        <div class="aiAuditInvestigation"><strong>Данные аудита: ${escapeHtml({ fresh: 'свежие live-данные', prefer_cache: 'кеш с обновлением при необходимости', cache_only: 'только кеш' }[cachePolicy] || cachePolicy)}</strong><small>Раунд ${escapeHtml(String(runtime.investigationRound || 1))} из ${escapeHtml(String(runtime.maxInvestigationRounds || 3))} · запросов ${escapeHtml(String(runtime.requestsCount || 0))} · live-попыток ${escapeHtml(String(dataRequests.liveAttempts || 0))} · успешно ${escapeHtml(String(dataRequests.liveSucceeded || 0))} · кеш ${escapeHtml(String(dataRequests.cacheHits || 0))} · сохранённые данные ${escapeHtml(String(dataRequests.savedFallbacks || 0))} · служебных AI-вызовов ${escapeHtml(String(runtime.helperProviderCallsCount || 0))} · финальных ${escapeHtml(String(runtime.finalProviderCallsCount || 0))}</small></div>
+        ${requestedDimensions.length ? `<div class="aiAuditInvestigation"><strong>Запрошены данные:</strong> ${requestedDimensions.map((value) => escapeHtml({ ad_groups: 'группы', search_queries: 'поисковые запросы', goals: 'цели', placements: 'площадки', audiences: 'аудитории', retargeting_segments: 'сегменты ретаргетинга', devices: 'устройства', geo: 'география', demographics: 'демография', frequency: 'частота', lead_quality: 'качество лидов' }[value] || value)).join(', ')}.</div>` : ''}
         ${(dataRequests.live || dataRequests.processing || dataRequests.cacheHits || dataRequests.saved) ? `
           <div class="aiAuditInvestigation">
             <strong>Дополнительные данные</strong>
@@ -235,6 +304,7 @@ export function renderAiAuditJob({
             ${dataRequests.freshestDataAt ? `<small>Свежесть данных: ${escapeHtml(String(dataRequests.freshestDataAt))}.</small>` : ''}
           </div>
         ` : ''}
+        ${renderAuditInvestigationTree(rounds, escapeHtml)}
         ${helperWarnings.length && !aiAuditJob.result ? `<aside class="aiAuditNotice"><strong>Аудит продолжен безопасно.</strong>${helperWarnings.map((item) => `<p>${escapeHtml(item.message || '')}</p>`).join('')}</aside>` : ''}
         ${aiAuditJob.status === 'completed' && tokenUsage.total ? `<div class="aiAuditUsage"><span>Prompt tokens: ${escapeHtml(String(tokenUsage.prompt || 0))}</span><span>Completion tokens: ${escapeHtml(String(tokenUsage.completion || 0))}</span><span>Total tokens: ${escapeHtml(String(tokenUsage.total || 0))}</span></div>` : ''}
         ${aiAuditJob.error_message ? `<div class="authStatus integrationStatus">${escapeHtml(aiAuditJob.error_message)}</div>` : ''}
@@ -246,7 +316,7 @@ export function renderAiAuditJob({
           ${aiAuditJob.result?.truncated ? '<button class="approveButton" data-ai-audit-compact-retry>Повторить в более компактном формате</button>' : ''}
           ${['completed', 'cancelled'].includes(aiAuditJob.status) ? '<button class="secondaryButton" data-ai-audit-new>Новый аудит</button>' : ''}
         </div>
-      ` : `<button class="approveButton" data-ai-audit-start="full_account" ${selectedClientId && !aiAuditLoading ? '' : 'disabled'}>${aiAuditLoading ? 'Создаём...' : 'Запустить полный аудит'}</button>`}
+      ` : `<div class="heroActions"><label>Данные аудита <select data-ai-audit-cache-policy><option value="fresh" selected>Свежие live-данные</option><option value="prefer_cache">Кеш с обновлением</option><option value="cache_only">Только кеш</option></select></label><button class="approveButton" data-ai-audit-start="full_account" ${selectedClientId && !aiAuditLoading ? '' : 'disabled'}>${aiAuditLoading ? 'Создаём...' : 'Запустить полный аудит'}</button></div>`}
       ${aiAuditError ? `<div class="authStatus integrationStatus">${escapeHtml(aiAuditError)}</div>` : ''}
     </section>
   `;

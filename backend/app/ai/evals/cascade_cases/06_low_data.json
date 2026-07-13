@@ -1,0 +1,9 @@
+{
+  "id": "cascade-low-data-volume",
+  "title": "Недостаточный объём данных",
+  "description": "Каскад не должен искать причины при малой выборке.",
+  "task": "Оцени достаточность данных.",
+  "input_data": {"metric": "low_data", "clicks": 3, "conversions": 0},
+  "expected": {"should_find": ["мало данных"], "should_recommend": ["накопить данные"], "should_not_do": ["отключить кампанию", "изменить бюджет"], "observed_facts": ["low_data"], "stop_conditions": ["данных недостаточно"], "expected_verification_status": "unverified", "requires_human_approval": true},
+  "tags": ["cascade", "low-data", "stop"]
+}

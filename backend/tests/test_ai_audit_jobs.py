@@ -64,6 +64,17 @@ def _context() -> dict:
                 }
             },
             "dataQuality": {"rows": 30},
+            "campaignDynamics": {
+                "worstCampaigns": [{
+                    "campaignName": "Search",
+                    "severity": "critical",
+                    "issueFlags": ["conversion_drop"],
+                    "last7": {"cost": 5000, "clicks": 50, "goalConversions": 2, "goalCpa": 2500},
+                    "previous7": {"cost": 4500, "clicks": 55, "goalConversions": 5, "goalCpa": 900},
+                    "changes": {"last7VsPrevious7": {"goalConversionsDeltaPct": -60, "costDeltaPct": 11.11}},
+                }],
+                "bestCampaigns": [],
+            },
             "missingData": [],
         },
         "yandex_direct_audit": {"score": 45, "grade": "D", "criticalIssues": [], "quickWins": []},
@@ -198,6 +209,8 @@ def test_compact_snapshot_has_expected_fields_and_no_secrets():
     assert snapshot["analysisPeriod"]["days"] == 30
     assert snapshot["dataCoverage"]["campaigns"]["analyzed"] == 1
     assert snapshot["dataCoverage"]["keywords"]["reason"] == "not_collected"
+    assert snapshot["periodComparison"]["worstCampaigns"][0]["last7"]["goalConversions"] == 2
+    assert snapshot["periodComparison"]["worstCampaigns"][0]["changes"]["goalConversionsDeltaPct"] == -60
     assert "id" not in snapshot["campaignGroups"]["critical"][0]
     assert "campaign_id" not in audit_jobs._json_dump(snapshot)
     assert "must-not-be-stored" not in audit_jobs._json_dump(snapshot)
@@ -309,10 +322,13 @@ def test_helper_model_is_in_production_allowlist_and_planner_context_is_compact(
     assert audit_jobs.AI_AUDIT_HELPER_MODEL in production_ai_model_ids()
     assert audit_jobs.should_call_ai_investigation_planner(base_plan, snapshot) is True
     assert audit_jobs.estimate_tokens(serialized) < 4000
+    assert "directLogin" not in serialized
+    assert "login-a" not in serialized
     assert set(planner_context) == {
         "analysisPeriod", "accountTotals", "targetKpis", "campaigns",
         "campaignClassifications", "dataCoverage", "ruleBasedInvestigationPlan",
-        "publicToolManifest", "missingData", "trackingWarnings",
+        "publicToolManifest", "missingData", "trackingWarnings", "observedFacts",
+        "directApiKnowledgeVersion", "capabilityDescriptions",
     }
     for excluded in ("businessContext", "auditFramework", "draftActions", "periodComparison", "searchQueryRisks"):
         assert excluded not in serialized
@@ -943,6 +959,10 @@ def test_context_metadata_reports_saved_live_and_unavailable_drilldowns():
         "unavailableDimensions": ["placements"],
         "unavailableCapabilities": [],
         "freshestDataAt": None,
+        "pending": 0,
+        "completed": 0,
+        "failed": 0,
+        "unavailable": 0,
     }
 
 
@@ -1117,6 +1137,8 @@ def test_all_audit_parsers_accept_fenced_json():
         "request_id": plan.hypotheses[0].data_requests[0].request_id,
         "hypothesis_id": plan.hypotheses[0].hypothesis_id,
         "status": "collected",
+        "rows_analyzed": 12,
+        "summary": "Получено 12 доверенных строк.",
     }]
     verification_payload = json.loads(_verification_answer())
     verification_payload["verifications"][0]["hypothesis_id"] = plan.hypotheses[0].hypothesis_id
@@ -1125,7 +1147,7 @@ def test_all_audit_parsers_accept_fenced_json():
     )
 
     assert verification_valid is True
-    assert verifications.verifications[0].status == "confirmed"
+    assert verifications.verifications[0].status == "partially_confirmed"
     assert verification_parsing["sourceFormat"] == "markdown_fenced_json"
 
 
@@ -1142,8 +1164,9 @@ def test_strict_schema_reports_safe_validation_metadata_without_values():
         response={"model": job.model},
     )
 
-    assert structured is None
-    assert parsing["errorCode"] == "json_schema_validation_failed"
+    assert structured is not None
+    assert parsing["status"] == "partial"
+    assert parsing["errorCode"] == "partial_schema_validation"
     assert parsing["validationErrorsCount"] == 1
     assert parsing["validationErrorPaths"] == ["unexpected_secret_field"]
     assert parsing["validationErrorTypes"] == ["extra_forbidden"]

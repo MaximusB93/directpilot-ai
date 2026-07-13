@@ -1136,6 +1136,7 @@ async function startAiAudit(scope = 'full_account', requestedMessage = '') {
       selected_campaign_name: aiFeatureState.chat.selectedCampaignName || null,
       model: activeAiModel(),
       ai_preset: aiFeatureState.model.selectedPreset,
+      cache_policy: app.querySelector('[data-ai-audit-cache-policy]')?.value || 'fresh',
       options: {
         include_search_queries: true,
         include_dynamics: true,
