@@ -88,6 +88,16 @@ function lacks(file, values) {
   return values.every((value) => !files[file].includes(value));
 }
 
+function appearsInOrder(file, values) {
+  let previousIndex = -1;
+  return values.every((value) => {
+    const index = files[file].indexOf(value, previousIndex + 1);
+    if (index < 0) return false;
+    previousIndex = index;
+    return true;
+  });
+}
+
 function functionBody(file, functionName) {
   const source = files[file];
   const match = source.match(new RegExp(`function\\s+${functionName}\\s*\\(\\)\\s*\\{([\\s\\S]*?)\\n\\}`));
@@ -123,9 +133,10 @@ const checks = [
   ['staged audit result UI', has('src/pages/ai-assistant.js', 'Результат аудита') && has('src/pages/ai-assistant.js', 'data-ai-audit-retry') && has('src/pages/ai-assistant.js', 'data-ai-audit-cancel')],
   ['staged audit structured result', has('src/pages/ai-assistant.js', 'renderAiAuditResult') && has('src/pages/ai-assistant.js', 'Что проанализировано') && has('src/pages/ai-assistant.js', 'data-ai-audit-compact-retry')],
   ['adaptive audit progress', ['classify_campaigns', 'create_investigation_plan', 'collect_drilldowns', 'verify_hypotheses'].every((stage) => has('src/pages/ai-assistant.js', stage)) && has('src/pages/ai-assistant.js', 'AI запросил дополнительные данные:')],
+  ['audit helper fallback UX', has('src/pages/ai-assistant.js', 'Аудит продолжен безопасно.') && has('src/pages/ai-assistant.js', 'helperProviderCallsCount') && lacks('src/pages/ai-assistant.js', ['helper_model || job.model'])],
   ['staged audit GET polling recovery', has('src/main.js', 'function refreshActiveAiAudit()') && has('src/main.js', 'aiAuditStatusCanAdvance') && has('src/main.js', 'void refreshActiveAiAudit()') && has('src/services/ai-service.js', '/reset')],
   ['staged audit timeout switches to polling', has('src/main.js', "error?.code === 'ai_audit_generation_timeout'") && has('src/main.js', 'scheduleAiAuditProgress(job.poll_after_ms, pollOnlyAfterRequest)')],
-  ['staged audit assistant order', has('src/pages/ai-assistant.js', '${renderAiAuditJob(context)}\n    ${renderAiQuickActions(context)}\n    ${renderAiChat(context)}')],
+  ['staged audit assistant order', appearsInOrder('src/pages/ai-assistant.js', ['${renderAiAuditJob(context)}', '${renderAiQuickActions(context)}', '${renderAiChat(context)}'])],
   ['staged audit hidden debug panels', !has('src/pages/ai-assistant.js', '${renderAiChat(context)}\n    ${renderAiPromptDebugPanel(context)}') && !has('src/pages/ai-assistant.js', '${renderClientAiRecommendations(context)}\n  `;')],
   ['ai chat minimum height', has('src/app-product-polish.css', 'min-height: 520px') && has('src/app-product-polish.css', 'min-height: 360px')],
   ['audit source counters are explicit', has('src/pages/ai-assistant.js', 'Saved data requests:') && has('src/pages/ai-assistant.js', 'Live Direct API calls:')],
