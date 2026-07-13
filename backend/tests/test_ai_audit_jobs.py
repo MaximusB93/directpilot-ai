@@ -2,6 +2,7 @@ import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -231,13 +232,22 @@ def test_full_staged_flow_runs_planning_verification_and_final_answer(monkeypatc
 
     async def fake_generate(model, prompt, max_tokens, **kwargs):
         calls["count"] += 1
-        assert kwargs["max_tokens_cap"] == 10000
-        assert kwargs["timeout"] is audit_jobs.OPENROUTER_AUDIT_TIMEOUT
-        if "Сформируй только investigation plan" in prompt:
+        if "Дополни безопасный read-only investigation plan" in prompt:
+            assert model == audit_jobs.AI_AUDIT_HELPER_MODEL
+            assert max_tokens == 1200
+            assert kwargs["max_tokens_cap"] == 1200
+            assert kwargs["timeout"] is audit_jobs.AUDIT_STAGE_PROVIDER_TIMEOUTS["create_investigation_plan"]
             return {"model": model, "content": _investigation_answer(), "usage": {"total_tokens": 100}, "id": "or-plan", "finish_reason": "stop"}
-        if "Проверь гипотезы только" in prompt:
+        if "Проверь максимум 5 гипотез" in prompt:
+            assert model == audit_jobs.AI_AUDIT_HELPER_MODEL
+            assert max_tokens == 1600
+            assert kwargs["max_tokens_cap"] == 1600
+            assert kwargs["timeout"] is audit_jobs.AUDIT_STAGE_PROVIDER_TIMEOUTS["verify_hypotheses"]
             assert "search_queries" in prompt
             return {"model": model, "content": _verification_answer(), "usage": {"total_tokens": 100}, "id": "or-verify", "finish_reason": "stop"}
+        assert model == job.model
+        assert kwargs["max_tokens_cap"] == 10000
+        assert kwargs["timeout"] is audit_jobs.OPENROUTER_AUDIT_TIMEOUT
         assert "10000 токенов" not in prompt  # explicit test job uses 2500
         assert "не обрывай разделы" in prompt.lower()
         assert "не выводи campaignid" in prompt.lower()
@@ -257,22 +267,201 @@ def test_full_staged_flow_runs_planning_verification_and_final_answer(monkeypatc
         if job.status == "completed":
             break
     assert job.status == "completed"
-    assert stages[:9] == [
+    assert stages[:7] == [
         "create_investigation_plan", "validate_data_requests", "collect_drilldowns",
-        "verify_hypotheses", "collect_drilldowns", "verify_hypotheses", "generate_answer", "finalize", "finalize",
+        "verify_hypotheses", "generate_answer", "finalize", "finalize",
     ]
     assert audit_jobs._json_load(job.prompt_snapshot_json, {})["fullPromptStored"] is False
     assert job.answer_text.startswith("Период анализа: 10.06.2026–09.07.2026, 30 дней.")
     assert audit_jobs.audit_job_response(job).result["structured"]["critical_findings"][0]["campaign_name"] == "Search"
     assert audit_jobs.audit_job_response(job).result["safety"]["appliedToYandexDirect"] is False
     runtime = audit_jobs.audit_job_response(job).context_metadata["runtime"]
-    assert calls["count"] == 4
-    assert runtime["providerCallsCount"] == 4
-    assert runtime["investigationRound"] == 2
+    assert calls["count"] == 3
+    assert runtime["providerCallsCount"] == 3
+    assert runtime["helperProviderCallsCount"] == 2
+    assert runtime["finalProviderCallsCount"] == 1
+    assert runtime["helperFallbacksCount"] == 0
+    assert runtime["investigationRound"] == 1
     assert runtime["requestsCount"] == 2
+    assert runtime["plannerPromptTokensEstimated"] > 0
+    assert runtime["verificationPromptTokensEstimated"] > 0
     snapshot = audit_jobs._json_load(job.context_snapshot_json, {})
     assert snapshot["investigationPlan"]["hypotheses"][0]["data_requests"][0]["request_id"] == "req_001_01"
     assert snapshot["verifiedHypotheses"][0]["status"] == "unverified"
+    assert snapshot["auditModels"] == {
+        "requested_model": job.model,
+        "helper_model": audit_jobs.AI_AUDIT_HELPER_MODEL,
+        "planner_returned_model": audit_jobs.AI_AUDIT_HELPER_MODEL,
+        "verification_returned_model": audit_jobs.AI_AUDIT_HELPER_MODEL,
+        "final_returned_model": job.model,
+    }
+    assert job.returned_model == job.model
+
+
+def test_helper_model_is_in_production_allowlist_and_planner_context_is_compact():
+    snapshot = audit_jobs.build_compact_audit_context(_context())
+    snapshot["campaignClassifications"] = audit_jobs.classify_audit_campaigns(snapshot)
+    base_plan = audit_jobs.build_rule_based_investigation_plan(snapshot)
+    snapshot["ruleBasedInvestigationPlan"] = base_plan.model_dump(mode="json")
+    planner_context = audit_jobs.build_investigation_planner_context(snapshot)
+    serialized = audit_jobs._json_dump(planner_context)
+
+    assert audit_jobs.AI_AUDIT_HELPER_MODEL in production_ai_model_ids()
+    assert audit_jobs.should_call_ai_investigation_planner(base_plan, snapshot) is True
+    assert audit_jobs.estimate_tokens(serialized) < 4000
+    assert set(planner_context) == {
+        "analysisPeriod", "accountTotals", "targetKpis", "campaigns",
+        "campaignClassifications", "dataCoverage", "ruleBasedInvestigationPlan",
+        "publicToolManifest", "missingData", "trackingWarnings",
+    }
+    for excluded in ("businessContext", "auditFramework", "draftActions", "periodComparison", "searchQueryRisks"):
+        assert excluded not in serialized
+
+
+@pytest.mark.parametrize("failure_mode", ["timeout", "rate_limit", "provider_error", "invalid_json"])
+def test_planner_failure_uses_rule_based_fallback_and_continues(monkeypatch, failure_mode):
+    db = _db()
+    job = _create(db)
+    monkeypatch.setattr(audit_jobs, "build_client_ai_context_from_db", lambda *args, **kwargs: _context())
+    job = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
+    job = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
+    assert job.current_stage == "create_investigation_plan"
+
+    async def failed_planner(model, prompt, max_tokens, **kwargs):
+        assert model == audit_jobs.AI_AUDIT_HELPER_MODEL
+        assert max_tokens == audit_jobs.AI_AUDIT_PLANNER_MAX_TOKENS
+        if failure_mode == "timeout":
+            raise HTTPException(status_code=504, detail={"error_code": "openrouter_timeout", "retryable": True})
+        if failure_mode == "rate_limit":
+            raise HTTPException(status_code=429, detail={"error_code": "openrouter_rate_limited", "retryable": True})
+        if failure_mode == "provider_error":
+            raise RuntimeError("provider unavailable")
+        return {"model": model, "content": "not-json", "usage": {"completion_tokens": 3}}
+
+    monkeypatch.setattr(audit_jobs, "generate_openrouter_response", failed_planner)
+    continued = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
+
+    assert continued.status == "context_ready"
+    assert continued.current_stage == "validate_data_requests"
+    assert continued.error_code is None
+    snapshot = audit_jobs._json_load(continued.context_snapshot_json, {})
+    assert snapshot["investigationPlan"] == snapshot["ruleBasedInvestigationPlan"]
+    assert snapshot["helperStages"]["planner"]["status"] == "fallback"
+    assert snapshot["helperStages"]["planner"]["warningCode"] == "planner_fallback_used"
+    assert snapshot["auditRuntime"]["helperFallbacksCount"] == 1
+    assert snapshot["auditRuntime"]["helperProviderCallsCount"] == 1
+
+
+def test_planner_total_timeout_uses_fallback_instead_of_failing_job(monkeypatch):
+    db = _db()
+    job = _create(db)
+    monkeypatch.setattr(audit_jobs, "build_client_ai_context_from_db", lambda *args, **kwargs: _context())
+    job = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
+    job = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
+
+    async def slow_planner(*args, **kwargs):
+        await asyncio.sleep(0.05)
+        return {"model": audit_jobs.AI_AUDIT_HELPER_MODEL, "content": _investigation_answer()}
+
+    monkeypatch.setitem(audit_jobs.AUDIT_STAGE_TOTAL_TIMEOUT_SECONDS, "create_investigation_plan", 0.001)
+    monkeypatch.setattr(audit_jobs, "generate_openrouter_response", slow_planner)
+    continued = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
+
+    assert continued.status == "context_ready"
+    assert continued.current_stage == "validate_data_requests"
+    snapshot = audit_jobs._json_load(continued.context_snapshot_json, {})
+    assert snapshot["helperStages"]["planner"]["warningCode"] == "planner_fallback_used"
+
+
+def test_planner_is_skipped_when_no_investigation_is_needed(monkeypatch):
+    context = _context()
+    context["campaigns"][0].update({"severity": "ok", "goal_conversions": 2, "issue_flags": []})
+    db = _db()
+    job = _create(db)
+    monkeypatch.setattr(audit_jobs, "build_client_ai_context_from_db", lambda *args, **kwargs: context)
+
+    async def forbidden_provider(*args, **kwargs):
+        raise AssertionError("Planner provider must be skipped")
+
+    monkeypatch.setattr(audit_jobs, "generate_openrouter_response", forbidden_provider)
+    job = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
+    job = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
+    skipped = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
+
+    assert skipped.current_stage == "validate_data_requests"
+    snapshot = audit_jobs._json_load(skipped.context_snapshot_json, {})
+    assert snapshot["helperStages"]["planner"]["status"] == "skipped_not_needed"
+    assert snapshot["auditRuntime"]["providerCallsCount"] == 0
+
+
+def test_verification_timeout_uses_unverified_fallback_and_continues(monkeypatch):
+    db = _db()
+    job = _create(db)
+    snapshot = audit_jobs.build_compact_audit_context(_context())
+    snapshot["campaignClassifications"] = audit_jobs.classify_audit_campaigns(snapshot)
+    plan = audit_jobs.build_rule_based_investigation_plan(snapshot)
+    snapshot["ruleBasedInvestigationPlan"] = plan.model_dump(mode="json")
+    snapshot["investigationPlan"] = plan.model_dump(mode="json")
+    snapshot["drilldownResults"] = [
+        {
+            "request_id": request.request_id,
+            "hypothesis_id": request.hypothesis_id,
+            "dimension": request.dimension,
+            "status": "unavailable",
+            "summary": "Нет данных",
+        }
+        for hypothesis in plan.hypotheses
+        for request in hypothesis.data_requests
+    ]
+    job.context_snapshot_json = audit_jobs._json_dump(snapshot)
+    job.status = "context_ready"
+    job.current_stage = "verify_hypotheses"
+    db.commit()
+
+    async def timeout(model, prompt, max_tokens, **kwargs):
+        assert model == audit_jobs.AI_AUDIT_HELPER_MODEL
+        assert max_tokens == audit_jobs.AI_AUDIT_VERIFICATION_MAX_TOKENS
+        raise HTTPException(status_code=504, detail={"error_code": "openrouter_timeout", "retryable": True})
+
+    monkeypatch.setattr(audit_jobs, "generate_openrouter_response", timeout)
+    continued = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
+
+    assert continued.status == "context_ready"
+    assert continued.current_stage == "generate_answer"
+    snapshot = audit_jobs._json_load(continued.context_snapshot_json, {})
+    assert snapshot["helperStages"]["verification"]["status"] == "fallback"
+    assert snapshot["verifiedHypotheses"]
+    assert all(item["status"] in {"unverified", "not_applicable"} for item in snapshot["verifiedHypotheses"])
+    assert not any(item["status"] == "confirmed" for item in snapshot["verifiedHypotheses"])
+
+
+def test_audit_completes_when_both_helper_stages_fallback(monkeypatch):
+    db = _db()
+    job = _create(db)
+    monkeypatch.setattr(audit_jobs, "build_client_ai_context_from_db", lambda *args, **kwargs: _context())
+
+    async def fallback_helpers(model, prompt, max_tokens, **kwargs):
+        if model == audit_jobs.AI_AUDIT_HELPER_MODEL:
+            raise HTTPException(status_code=504, detail={"error_code": "openrouter_timeout", "retryable": True})
+        assert model == job.model
+        return {"model": model, "content": _structured_answer(), "usage": {"total_tokens": 500}, "finish_reason": "stop"}
+
+    monkeypatch.setattr(audit_jobs, "generate_openrouter_response", fallback_helpers)
+    for _ in range(12):
+        job = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
+        if job.status == "completed":
+            break
+
+    assert job.status == "completed"
+    snapshot = audit_jobs._json_load(job.context_snapshot_json, {})
+    assert snapshot["auditRuntime"]["helperFallbacksCount"] == 2
+    assert snapshot["auditRuntime"]["helperProviderCallsCount"] == 2
+    assert snapshot["auditRuntime"]["finalProviderCallsCount"] == 1
+    assert snapshot["helperStages"]["planner"]["status"] == "fallback"
+    assert snapshot["helperStages"]["verification"]["status"] == "fallback"
+    result = audit_jobs._json_load(job.result_json, {})
+    assert len(result["warnings"]) == 2
+    assert job.returned_model == job.model
 
 
 def test_generating_status_prevents_duplicate_openrouter_call(monkeypatch):
@@ -333,7 +522,7 @@ def test_legacy_generating_job_without_lease_is_recovered_from_updated_at():
     assert recovered.error_code == "ai_audit_stage_stale"
 
 
-def test_advance_recovers_stale_job_without_provider_call(monkeypatch):
+def test_advance_recovers_stale_helper_stage_with_fallback_without_provider_call(monkeypatch):
     db = _db()
     job = _create(db)
     job.status = "generating"
@@ -349,8 +538,11 @@ def test_advance_recovers_stale_job_without_provider_call(monkeypatch):
     monkeypatch.setattr(audit_jobs, "generate_openrouter_response", forbidden_generate)
     recovered = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
 
-    assert recovered.status == "failed"
-    assert recovered.error_code == "ai_audit_stage_stale"
+    assert recovered.status == "context_ready"
+    assert recovered.current_stage == "generate_answer"
+    assert recovered.error_code is None
+    snapshot = audit_jobs._json_load(recovered.context_snapshot_json, {})
+    assert snapshot["helperStages"]["verification"]["status"] == "fallback"
 
 
 def test_cancel_is_allowed_while_generating_and_late_result_is_discarded(monkeypatch):
