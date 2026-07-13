@@ -636,16 +636,26 @@ class AuditDataRequest(BaseModel):
     campaign_family: Literal["search", "yan", "unknown"]
     campaign_subtype: Literal["search", "brand_search", "yan_prospecting", "yan_retargeting", "unknown"]
     dimension: Literal[
-        "ad_groups", "keywords", "search_queries", "ads", "landing_pages", "placements",
-        "audiences", "retargeting_segments", "audience_exclusions", "devices", "geo",
-        "demographics", "frequency", "goals", "conversion_sources", "lead_quality",
+        "account_summary", "campaigns", "campaign_performance", "campaign_daily_dynamics",
+        "campaign_settings", "campaign_strategy", "campaign_status", "campaign_bid_modifiers",
+        "ad_groups", "ad_group_performance", "ad_group_settings", "keywords", "keyword_performance",
+        "autotargeting", "criteria_performance", "search_queries", "audience_targets", "audiences",
+        "retargeting_segments", "retargeting_lists", "audience_exclusions", "targeting_conditions",
+        "ads", "ad_performance", "ad_texts", "ad_urls", "creatives", "images", "videos",
+        "sitelinks", "callouts", "landing_pages", "placements", "placement_or_network_breakdown",
+        "devices", "geo", "location_of_presence", "demographics", "age", "gender", "ad_format",
+        "mobile_platform", "carrier", "frequency", "frequency_and_reach", "goals",
+        "conversions_by_goal", "conversion_rate", "cost_per_conversion", "revenue", "roi",
+        "pageviews", "bounce_rate", "conversion_sources", "lead_quality", "bid_modifiers",
     ]
+    capability_id: str | None = None
     reason: str
     period: AiAuditPeriod = Field(default_factory=AiAuditPeriod)
     filters: dict = Field(default_factory=dict)
     metrics: list[str] = Field(default_factory=list)
     priority: Literal["low", "medium", "high"] = "medium"
     required_for_conclusion: bool = False
+    data_preference: Literal["live_required", "live_preferred", "saved_allowed"] = "live_preferred"
 
 
 class AuditDataRequestResult(BaseModel):
@@ -653,17 +663,32 @@ class AuditDataRequestResult(BaseModel):
 
     request_id: str
     hypothesis_id: str
+    capability_id: str | None = None
     dimension: str
     status: Literal[
         "collected", "not_applicable", "unavailable", "unsupported", "insufficient_data",
-        "failed", "skipped_budget_limit",
+        "failed", "skipped_budget_limit", "processing", "cached", "partial",
     ]
     source: str | None = None
+    source_type: Literal["report", "service_get", "saved_data", "external"] | None = None
+    source_required: str | None = None
+    live: bool = False
+    cached: bool = False
+    request_hash: str | None = None
+    freshness: str | None = None
+    fetched_at: str | None = None
+    period: dict = Field(default_factory=dict)
+    campaign_name: str | None = None
     rows_analyzed: int = 0
+    rows_total: int = 0
+    truncated: bool = False
     data: list[dict] = Field(default_factory=list)
     summary: str = ""
     limitations: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
     error_code: str | None = None
+    retryable: bool = False
+    next_retry_at: str | None = None
 
 
 class AuditInvestigationHypothesis(BaseModel):
