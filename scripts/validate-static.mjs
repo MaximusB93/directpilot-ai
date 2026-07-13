@@ -139,7 +139,10 @@ const checks = [
   ['staged audit assistant order', appearsInOrder('src/pages/ai-assistant.js', ['${renderAiAuditJob(context)}', '${renderAiQuickActions(context)}', '${renderAiChat(context)}'])],
   ['staged audit hidden debug panels', !has('src/pages/ai-assistant.js', '${renderAiChat(context)}\n    ${renderAiPromptDebugPanel(context)}') && !has('src/pages/ai-assistant.js', '${renderClientAiRecommendations(context)}\n  `;')],
   ['ai chat minimum height', has('src/app-product-polish.css', 'min-height: 520px') && has('src/app-product-polish.css', 'min-height: 360px')],
-  ['audit source counters are explicit', has('src/pages/ai-assistant.js', 'Saved data requests:') && has('src/pages/ai-assistant.js', 'Live Direct API calls:')],
+  ['audit source counters are explicit', has('src/pages/ai-assistant.js', 'выполнено по сохранённым данным') && has('src/pages/ai-assistant.js', 'live-запросов к Директу') && has('src/pages/ai-assistant.js', 'unavailableDimensions')],
+  ['audit findings grouped by verification', has('src/pages/ai-assistant.js', 'Подтверждённые проблемы') && has('src/pages/ai-assistant.js', 'Частично подтверждённые проблемы') && has('src/pages/ai-assistant.js', 'Опровергнутые гипотезы')],
+  ['audit technical response is collapsed', has('src/pages/ai-assistant.js', 'class="aiAuditTechnicalDetails"') && has('src/app-product-polish.css', 'max-height: 400px') && !has('src/pages/ai-assistant.js', '<details open class="aiAuditTechnicalDetails"')],
+  ['completed audit chat is compact', has('src/main.js', 'job.result?.structured') && has('src/main.js', 'auditJobId: job.job_id') && has('src/pages/ai-assistant.js', 'data-ai-audit-open')],
   ['assistant safe markdown', has('src/pages/ai-assistant.js', 'renderAiAssistantMarkdown(message.content)') && has('src/pages/ai-assistant.js', 'renderSafeMarkdown(value)') && has('src/pages/ai-assistant.js', '`<p>${escapeHtml(message.content)}</p>`') && has('src/core/markdown.js', 'export function renderSafeMarkdown') && has('src/core/markdown.js', 'noreferrer noopener')],
   ['staged audit timeout isolated', has('src/services/ai-service.js', 'AI_AUDIT_GENERATION_TIMEOUT_MS = 150 * 1000') && has('src/services/ai-service.js', 'options?.timeoutMs ?? AI_API_REQUEST_TIMEOUT_MS')],
   ['no seeded account data', has('src/data.js', 'export const clients = []')],
@@ -164,11 +167,25 @@ const auditSmoke = renderAiAuditResult({
   },
   truncated: true,
   warnings: ['Ответ модели достиг лимита и мог быть обрезан.'],
-}, '', escapeHtml, { timings: {} });
+}, '', escapeHtml, {
+  timings: {},
+  context_metadata: {
+    investigation: {
+      dataRequests: {
+        planned: 3, allowed: 2, saved: 1, live: 0,
+        statusCounts: { collected: 1, unavailable: 1, not_applicable: 1 },
+        unavailableDimensions: ['placements'],
+      },
+    },
+  },
+});
 if (!auditSmoke.includes('<p class="aiAuditPeriod">Период анализа: 10.06.2026–09.07.2026, 30 дней.')
   || auditSmoke.indexOf('Период анализа:') > auditSmoke.indexOf('Что проанализировано')
   || !auditSmoke.includes('Что проанализировано')
   || !auditSmoke.includes('Кампания Бренд')
+  || !auditSmoke.includes('Выполнено по данным последней синхронизации DirectPilot: 1')
+  || !auditSmoke.includes('площадки. Эти данные не учитывались в выводах')
+  || !auditSmoke.includes('Неподтверждённые гипотезы')
   || !auditSmoke.includes('Ответ модели достиг лимита')
   || auditSmoke.includes('CampaignId')) {
   failed.push(['structured audit runtime smoke', false]);
@@ -178,10 +195,23 @@ const rawAuditFallbackSmoke = renderAiAuditResult({
   fallbackMarkdown: '```json\n{"executive_summary":"must stay hidden"}\n```',
   warnings: [],
 }, '', escapeHtml, {});
-if (!rawAuditFallbackSmoke.includes('интерфейс не показывает сырой JSON')
+if (!rawAuditFallbackSmoke.includes('AI вернул результат в неподдерживаемом формате')
   || rawAuditFallbackSmoke.includes('must stay hidden')
   || rawAuditFallbackSmoke.includes('<pre>')) {
   failed.push(['raw audit JSON presentation guard', false]);
+}
+const technicalAuditSmoke = renderAiAuditResult({
+  structured: null,
+  fallbackMarkdown: 'AI вернул результат в неподдерживаемом формате.',
+  technicalResponse: '<script>must-not-run</script>',
+  structuredParsing: { errorCode: 'json_schema_validation_failed' },
+  warnings: [],
+}, '', escapeHtml, {});
+if (!technicalAuditSmoke.includes('<details class="aiAuditTechnicalDetails">')
+  || !technicalAuditSmoke.includes('&lt;script&gt;must-not-run&lt;/script&gt;')
+  || technicalAuditSmoke.includes('<script>must-not-run</script>')
+  || technicalAuditSmoke.includes('<details open')) {
+  failed.push(['audit technical response runtime smoke', false]);
 }
 if (failed.length > 0) {
   console.error(`Static validation failed: ${failed.map(([name]) => name).join(', ')}`);

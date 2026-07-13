@@ -10,6 +10,7 @@ from typing import Any
 
 import httpx
 from fastapi import HTTPException, status
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -45,7 +46,12 @@ from app.services.ai_prompt_debug import build_prompt_debug_snapshot, estimate_t
 from app.services.ai_recommendations import build_client_ai_context_from_db
 from app.services.direct_analyst_playbook import build_direct_analyst_instructions
 from app.services.knowledge_base import select_knowledge_snippets
-from app.services.openrouter import DEFAULT_SYSTEM_PROMPT, OPENROUTER_AUDIT_TIMEOUT, generate_openrouter_response
+from app.services.openrouter import (
+    DEFAULT_SYSTEM_PROMPT,
+    OPENROUTER_AUDIT_TIMEOUT,
+    generate_openrouter_response,
+    redact_openrouter_debug_payload,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -923,6 +929,73 @@ def _trusted_result_meta(snapshot: dict[str, Any], job: AiAuditJob, response: di
     }
 
 
+_JSON_FENCE_PATTERN = re.compile(
+    r"\A```[ \t]*(?P<language>json)?[ \t]*\r?\n(?P<body>.*?)(?:\r?\n)?```[ \t]*\Z",
+    re.IGNORECASE | re.DOTALL,
+)
+_UNSUPPORTED_AUDIT_FORMAT_MESSAGE = (
+    "AI вернул результат в неподдерживаемом формате. Метаданные аудита сохранены, "
+    "технический ответ доступен ниже."
+)
+_MAX_AUDIT_TECHNICAL_RESPONSE_CHARS = 80_000
+
+
+def extract_model_json_object(answer: str) -> tuple[dict[str, Any] | None, str]:
+    """Accept only a JSON object or one outer plain/JSON Markdown fence."""
+    text = str(answer or "").lstrip("\ufeff").strip()
+    if not text:
+        return None, "empty"
+    try:
+        parsed = json.loads(text)
+    except (TypeError, ValueError):
+        parsed = None
+    if isinstance(parsed, dict):
+        return parsed, "plain_json"
+
+    fenced = _JSON_FENCE_PATTERN.fullmatch(text)
+    if not fenced:
+        return None, "invalid"
+    try:
+        parsed = json.loads(fenced.group("body").strip())
+    except (TypeError, ValueError):
+        return None, "invalid"
+    return (parsed, "markdown_fenced_json") if isinstance(parsed, dict) else (None, "invalid")
+
+
+def _validate_structured_result_with_metadata(
+    answer: str,
+    *,
+    snapshot: dict[str, Any],
+    job: AiAuditJob,
+    response: dict[str, Any],
+    finish_reason: str | None = None,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    parsed, source_format = extract_model_json_object(answer)
+    parsing = {
+        "status": "fallback",
+        "sourceFormat": source_format,
+        "errorCode": None,
+        "validationErrorsCount": 0,
+    }
+    if parsed is None:
+        parsing["errorCode"] = (
+            "truncated_provider_response"
+            if finish_reason == "length"
+            else ("empty_provider_response" if source_format == "empty" else "json_parse_failed")
+        )
+        return None, parsing
+    parsed["meta"] = _trusted_result_meta(snapshot, job, response)
+    try:
+        validated = AiAuditResult.model_validate(parsed).model_dump(mode="json")
+    except ValidationError as exc:
+        parsing["errorCode"] = "truncated_provider_response" if finish_reason == "length" else "json_schema_validation_failed"
+        parsing["validationErrorsCount"] = len(exc.errors())
+        return None, parsing
+    parsing["status"] = "success"
+    parsing["errorCode"] = "truncated_provider_response" if finish_reason == "length" else None
+    return _enforce_verified_result(validated, snapshot), parsing
+
+
 def _validate_structured_result(
     answer: str,
     *,
@@ -930,62 +1003,23 @@ def _validate_structured_result(
     job: AiAuditJob,
     response: dict[str, Any],
 ) -> dict[str, Any] | None:
-    try:
-        parsed = _parse_structured_json(answer)
-        if not isinstance(parsed, dict):
-            return None
-        parsed["meta"] = _trusted_result_meta(snapshot, job, response)
-        validated = AiAuditResult.model_validate(parsed).model_dump(mode="json")
-        return _enforce_verified_result(validated, snapshot)
-    except (TypeError, ValueError):
-        return None
+    structured, _ = _validate_structured_result_with_metadata(
+        answer,
+        snapshot=snapshot,
+        job=job,
+        response=response,
+    )
+    return structured
 
 
-_JSON_FENCE_PATTERN = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.IGNORECASE | re.DOTALL)
-_SAFE_AUDIT_FALLBACK_MESSAGE = (
-    "Модель вернула структурированный ответ, который не удалось проверить. "
-    "Сырой JSON скрыт. Повторите аудит в более компактном формате."
-)
-_MAX_AUDIT_FALLBACK_CHARS = 12_000
-
-
-def _parse_structured_json(answer: str) -> Any:
-    """Parse direct JSON or JSON wrapped in a Markdown code fence."""
-    text = str(answer or "").lstrip("\ufeff").strip()
-    if not text:
-        raise ValueError("Empty audit response")
-    candidates = [text]
-    candidates.extend(match.group(1).strip() for match in _JSON_FENCE_PATTERN.finditer(text))
-    last_error: ValueError | None = None
-    for candidate in candidates:
-        try:
-            return json.loads(candidate)
-        except (TypeError, ValueError) as exc:
-            last_error = ValueError(str(exc))
-    raise last_error or ValueError("Audit response does not contain JSON")
-
-
-def _looks_like_raw_json(answer: str | None) -> bool:
-    text = str(answer or "").lstrip("\ufeff").strip()
-    if not text:
-        return False
-    if text.lower().startswith("```json"):
-        return True
-    if text.startswith("```"):
-        fenced = _JSON_FENCE_PATTERN.search(text)
-        return bool(fenced and fenced.group(1).lstrip().startswith(("{", "[")))
-    return text.startswith(("{", "["))
-
-
-def _safe_audit_fallback_markdown(answer: str | None) -> str:
+def _safe_technical_response(answer: str | None) -> str | None:
     text = str(answer or "").strip()
     if not text:
-        return "Модель не вернула результат аудита. Повторите запуск."
-    if _looks_like_raw_json(text):
-        return _SAFE_AUDIT_FALLBACK_MESSAGE
-    if len(text) > _MAX_AUDIT_FALLBACK_CHARS:
-        return f"{text[:_MAX_AUDIT_FALLBACK_CHARS].rstrip()}\n\n_Ответ сокращён для безопасного отображения._"
-    return text
+        return None
+    redacted = str(redact_openrouter_debug_payload(text))
+    if len(redacted) > _MAX_AUDIT_TECHNICAL_RESPONSE_CHARS:
+        return f"{redacted[:_MAX_AUDIT_TECHNICAL_RESPONSE_CHARS].rstrip()}\n\n[технический ответ сокращён]"
+    return redacted
 
 
 def _enforce_verified_result(result: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any]:
@@ -1029,15 +1063,24 @@ def _format_period_line(period: dict[str, Any]) -> str:
 
 
 def build_audit_answer_markdown(structured: dict[str, Any], snapshot: dict[str, Any]) -> str:
-    lines = [_format_period_line(snapshot.get("analysisPeriod") or {}), "", "## Итог", structured.get("executive_summary") or ""]
-    for title, key in (("Критические проблемы", "critical_findings"), ("Возможности", "opportunities")):
-        items = structured.get(key) or []
+    lines = [_format_period_line(snapshot.get("analysisPeriod") or {}), "", "## Краткий итог аудита", structured.get("executive_summary") or ""]
+    sections = (
+        ("Критические проблемы", "critical_findings", 5),
+        ("Возможности", "opportunities", 3),
+    )
+    for title, key, limit in sections:
+        items = [
+            item for item in (structured.get(key) or [])
+            if item.get("verification_status") not in {"rejected", "not_applicable"}
+        ][:limit]
         if items:
             lines.extend(["", f"## {title}"])
             for item in items:
                 lines.append(f"- **{item.get('campaign_name') or 'Аккаунт'}:** {item.get('problem') or ''} — {item.get('recommendation') or ''}")
-    lines.extend(["", "## Ограничения"])
-    lines.extend(f"- {item}" for item in (structured.get("limitations") or ["Не указаны."]))
+    actions = (structured.get("action_plan") or [])[:5]
+    if actions:
+        lines.extend(["", "## Краткий план действий"])
+        lines.extend(f"- {item.get('action') or ''}" for item in actions)
     lines.extend(["", "## Вывод", structured.get("conclusion") or ""])
     return "\n".join(lines)
 
@@ -1436,6 +1479,7 @@ def get_audit_job(db: Session, job_id: str, *, organization_id: str) -> AiAuditJ
 def _context_metadata(job: AiAuditJob) -> dict[str, Any]:
     snapshot = _json_load(job.context_snapshot_json, {}) or {}
     drilldowns = snapshot.get("drilldownResults") or []
+    runtime = snapshot.get("auditRuntime") or {}
     requested_dimensions = sorted({str(item.get("dimension")) for item in drilldowns if item.get("dimension")})
     status_counts: dict[str, int] = {}
     for item in drilldowns:
@@ -1453,8 +1497,26 @@ def _context_metadata(job: AiAuditJob) -> dict[str, Any]:
                 status_name: sum(1 for item in (snapshot.get("verifiedHypotheses") or []) if item.get("status") == status_name)
                 for status_name in ("confirmed", "partially_confirmed", "rejected", "unverified", "not_applicable")
             },
+            "dataRequests": {
+                "planned": int(runtime.get("requestsCount") or 0),
+                "allowed": sum(
+                    1
+                    for item in drilldowns
+                    if item.get("status") in {"collected", "unavailable", "insufficient_data", "failed"}
+                ),
+                "saved": int(runtime.get("savedDataRequestsCount") or 0),
+                "live": int(runtime.get("directApiCallsCount") or 0),
+                "statusCounts": status_counts,
+                "unavailableDimensions": sorted({
+                    str(item.get("dimension"))
+                    for item in drilldowns
+                    if item.get("dimension") and item.get("status") in {
+                        "unavailable", "unsupported", "skipped_budget_limit", "failed"
+                    }
+                }),
+            },
         },
-        "runtime": snapshot.get("auditRuntime") or {},
+        "runtime": runtime,
         "helperStages": snapshot.get("helperStages") or {},
         "models": snapshot.get("auditModels") or {},
         "warnings": snapshot.get("auditWarnings") or [],
@@ -1467,47 +1529,62 @@ def _public_audit_result(job: AiAuditJob) -> tuple[dict[str, Any] | None, str | 
     result = dict(stored_result) if isinstance(stored_result, dict) else None
     snapshot = _json_load(job.context_snapshot_json, {}) or {}
     structured = result.get("structured") if result else None
+    parsing = result.get("structuredParsing") if result else None
+    technical_candidate = None
 
     if not structured:
         candidates = []
         if result:
-            candidates.extend((result.get("fallbackMarkdown"), result.get("rawResponse")))
+            candidates.extend((result.get("technicalResponse"), result.get("rawResponse"), result.get("fallbackMarkdown")))
         candidates.append(job.answer_text)
         response = {"model": job.returned_model or job.model}
         for candidate in candidates:
             if not candidate:
                 continue
-            structured = _validate_structured_result(
+            technical_candidate = technical_candidate or str(candidate)
+            structured, candidate_parsing = _validate_structured_result_with_metadata(
                 str(candidate),
                 snapshot=snapshot,
                 job=job,
                 response=response,
+                finish_reason=(result or {}).get("finishReason"),
             )
             if structured:
+                parsing = candidate_parsing
                 break
+            parsing = parsing or candidate_parsing
 
     if result is not None:
         result.pop("rawResponse", None)
         if structured:
             result["structured"] = structured
             result["fallbackMarkdown"] = None
+            result.pop("technicalResponse", None)
             if not result.get("truncated"):
                 result["completeness"] = "structured"
+            result["structuredParsing"] = parsing or {
+                "status": "success", "sourceFormat": "plain_json", "errorCode": None, "validationErrorsCount": 0,
+            }
             result["warnings"] = [
                 warning
                 for warning in (result.get("warnings") or [])
                 if "json-контракт" not in str(warning).lower()
             ]
         else:
-            fallback = result.get("fallbackMarkdown") or job.answer_text
-            result["fallbackMarkdown"] = _safe_audit_fallback_markdown(fallback)
+            result["fallbackMarkdown"] = _UNSUPPORTED_AUDIT_FORMAT_MESSAGE
+            result["technicalResponse"] = _safe_technical_response(
+                result.get("technicalResponse") or technical_candidate or job.answer_text
+            )
+            result["structuredParsing"] = parsing or {
+                "status": "fallback", "sourceFormat": "empty", "errorCode": "empty_provider_response", "validationErrorsCount": 0,
+            }
 
     if structured:
         answer = build_audit_answer_markdown(structured, snapshot)
     elif result is not None:
-        answer = str(result.get("fallbackMarkdown") or _safe_audit_fallback_markdown(job.answer_text))
+        answer = _UNSUPPORTED_AUDIT_FORMAT_MESSAGE
     else:
-        answer = _safe_audit_fallback_markdown(job.answer_text) if job.answer_text else None
+        answer = _UNSUPPORTED_AUDIT_FORMAT_MESSAGE if job.answer_text else None
     return result, answer
 
 
@@ -2076,22 +2153,37 @@ async def advance_audit_job(
             _audit_models(snapshot, job.model)["final_returned_model"] = final_returned_model
             job.context_snapshot_json = _json_dump(snapshot)
             answer = str(response.get("content") or "")
-            structured = _validate_structured_result(answer, snapshot=snapshot, job=job, response=response)
             finish_reason = str(response.get("finish_reason") or "") or None
+            structured, parsing = _validate_structured_result_with_metadata(
+                answer,
+                snapshot=snapshot,
+                job=job,
+                response=response,
+                finish_reason=finish_reason,
+            )
             truncated = finish_reason == "length"
             warnings = _helper_warning_messages(snapshot)
             if not (snapshot.get("analysisPeriod") or {}).get("requestedMatchesAvailableData"):
                 warnings.append("Фактический период отличается от запрошенного или доступен не полностью.")
             if not structured:
-                warnings.append("Модель вернула ответ вне JSON-контракта; показан безопасный Markdown fallback.")
+                warnings.append("Модель вернула результат в неподдерживаемом формате; основной интерфейс показывает только безопасные метаданные.")
             if truncated:
                 warnings.append("Ответ модели достиг лимита и мог быть обрезан.")
-            fallback_markdown = None if structured else _safe_audit_fallback_markdown(answer)
+            fallback_markdown = None if structured else _UNSUPPORTED_AUDIT_FORMAT_MESSAGE
+            technical_response = None if structured else _safe_technical_response(answer)
             job.returned_model = final_returned_model
             job.answer_text = build_audit_answer_markdown(structured, snapshot) if structured else fallback_markdown
             job.result_json = _json_dump({
                 "structured": structured,
                 "fallbackMarkdown": fallback_markdown,
+                "technicalResponse": technical_response,
+                "structuredParsing": parsing,
+                "providerResponseMetadata": {
+                    "sha256": hashlib.sha256(answer.encode("utf-8")).hexdigest() if answer else None,
+                    "length": len(answer),
+                    "sourceFormat": parsing["sourceFormat"],
+                    "fullResponseStored": bool(technical_response),
+                },
                 "warnings": warnings,
                 "finishReason": finish_reason,
                 "truncated": truncated,

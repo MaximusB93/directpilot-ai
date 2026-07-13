@@ -731,7 +731,7 @@ def test_timeout_is_saved_as_retryable_failure(monkeypatch):
     assert failed.retryable is True
 
 
-def test_invalid_json_is_preserved_as_markdown_fallback(monkeypatch):
+def test_invalid_provider_format_is_kept_only_in_technical_details(monkeypatch):
     db = _db()
     job = _create(db)
     job.status = "context_ready"
@@ -748,18 +748,61 @@ def test_invalid_json_is_preserved_as_markdown_fallback(monkeypatch):
     generated = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
     result = audit_jobs._json_load(generated.result_json, {})
     assert result["structured"] is None
-    assert result["fallbackMarkdown"].startswith("## Итог")
+    assert result["fallbackMarkdown"] == audit_jobs._UNSUPPORTED_AUDIT_FORMAT_MESSAGE
+    assert result["technicalResponse"].startswith("## Итог")
+    assert result["structuredParsing"] == {
+        "status": "fallback",
+        "sourceFormat": "invalid",
+        "errorCode": "json_parse_failed",
+        "validationErrorsCount": 0,
+    }
     assert result["completeness"] == "fallback"
     assert "rawResponse" not in result
 
 
-def test_structured_result_accepts_json_markdown_fence():
+@pytest.mark.parametrize(
+    ("wrapper", "expected_format"),
+    [
+        (lambda value: value, "plain_json"),
+        (lambda value: f"```json\n{value}\n```", "markdown_fenced_json"),
+        (lambda value: f"```\n{value}\n```", "markdown_fenced_json"),
+        (lambda value: f"  ```  json  \n{value}\n```  ", "markdown_fenced_json"),
+        (lambda value: f"\ufeff  {value}", "plain_json"),
+    ],
+)
+def test_extract_model_json_object_accepts_supported_formats(wrapper, expected_format):
+    parsed, source_format = audit_jobs.extract_model_json_object(wrapper('{"ok":true}'))
+
+    assert parsed == {"ok": True}
+    assert source_format == expected_format
+
+
+@pytest.mark.parametrize(
+    ("answer", "expected_format"),
+    [
+        ("", "empty"),
+        ("До ответа {\"ok\":true}", "invalid"),
+        ('{"ok":true} после ответа', "invalid"),
+        ('```json\n{"ok":}\n```', "invalid"),
+        ('[1, 2, 3]', "invalid"),
+    ],
+)
+def test_extract_model_json_object_rejects_empty_prose_and_invalid_json(answer, expected_format):
+    parsed, source_format = audit_jobs.extract_model_json_object(answer)
+
+    assert parsed is None
+    assert source_format == expected_format
+
+
+def test_structured_result_accepts_json_markdown_fence_and_overrides_model_meta():
     db = _db()
     job = _create(db)
     snapshot = audit_jobs.build_compact_audit_context(_context())
-    fenced_answer = f"```json\n{_structured_answer()}\n```"
+    payload = json.loads(_structured_answer())
+    payload["meta"] = {"model": "untrusted/model", "period": {"date_from": "1900-01-01"}, "output_budget_tokens": 999999}
+    fenced_answer = f"```json\n{json.dumps(payload, ensure_ascii=False)}\n```"
 
-    structured = audit_jobs._validate_structured_result(
+    structured, parsing = audit_jobs._validate_structured_result_with_metadata(
         fenced_answer,
         snapshot=snapshot,
         job=job,
@@ -769,6 +812,44 @@ def test_structured_result_accepts_json_markdown_fence():
     assert structured is not None
     assert structured["executive_summary"]
     assert structured["meta"]["model"] == "qwen/qwen3-14b"
+    assert structured["meta"]["period"]["date_from"] != "1900-01-01"
+    assert structured["meta"]["output_budget_tokens"] == job.max_tokens
+    assert parsing == {
+        "status": "success",
+        "sourceFormat": "markdown_fenced_json",
+        "errorCode": None,
+        "validationErrorsCount": 0,
+    }
+
+
+def test_generate_stage_stores_fenced_json_as_structured_without_raw_answer(monkeypatch):
+    db = _db()
+    job = _create(db)
+    job.status = "context_ready"
+    job.current_stage = "generate_answer"
+    job.context_snapshot_json = audit_jobs._json_dump(audit_jobs.build_compact_audit_context(_context()))
+    db.commit()
+    calls = {"count": 0}
+
+    async def fenced_provider(*args, **kwargs):
+        calls["count"] += 1
+        return {
+            "model": "qwen/qwen3-14b",
+            "content": f"```json\n{_structured_answer()}\n```",
+            "finish_reason": "stop",
+        }
+
+    monkeypatch.setattr(audit_jobs, "generate_openrouter_response", fenced_provider)
+    generated = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
+    result = audit_jobs._json_load(generated.result_json, {})
+
+    assert calls["count"] == 1
+    assert result["structured"] is not None
+    assert result["fallbackMarkdown"] is None
+    assert result["technicalResponse"] is None
+    assert result["structuredParsing"]["sourceFormat"] == "markdown_fenced_json"
+    assert result["providerResponseMetadata"]["fullResponseStored"] is False
+    assert "```json" not in generated.answer_text
 
 
 def test_legacy_fenced_json_job_is_repaired_and_raw_response_is_not_exposed():
@@ -792,6 +873,7 @@ def test_legacy_fenced_json_job_is_repaired_and_raw_response_is_not_exposed():
     assert response.result["structured"] is not None
     assert response.result["fallbackMarkdown"] is None
     assert response.result["completeness"] == "structured"
+    assert response.result["structuredParsing"]["sourceFormat"] == "markdown_fenced_json"
     assert "rawResponse" not in response.result
     assert "```json" not in response.answer
 
@@ -814,10 +896,60 @@ def test_schema_invalid_json_is_hidden_from_public_result():
     response = audit_jobs.audit_job_response(job)
 
     assert response.result["structured"] is None
-    assert response.result["fallbackMarkdown"] == audit_jobs._SAFE_AUDIT_FALLBACK_MESSAGE
-    assert response.answer == audit_jobs._SAFE_AUDIT_FALLBACK_MESSAGE
+    assert response.result["fallbackMarkdown"] == audit_jobs._UNSUPPORTED_AUDIT_FORMAT_MESSAGE
+    assert response.result["technicalResponse"] == raw_answer
+    assert response.result["structuredParsing"]["errorCode"] == "json_schema_validation_failed"
+    assert response.result["structuredParsing"]["validationErrorsCount"] > 0
+    assert response.answer == audit_jobs._UNSUPPORTED_AUDIT_FORMAT_MESSAGE
     assert "rawResponse" not in response.result
     assert "executive_summary" not in response.answer
+
+
+def test_context_metadata_reports_saved_live_and_unavailable_drilldowns():
+    db = _db()
+    job = _create(db)
+    snapshot = audit_jobs.build_compact_audit_context(_context())
+    snapshot["auditRuntime"] = {
+        "requestsCount": 5,
+        "savedDataRequestsCount": 2,
+        "directApiCallsCount": 0,
+    }
+    snapshot["drilldownResults"] = [
+        {"request_id": "1", "dimension": "search_queries", "status": "collected", "source": "directpilot_saved_read_only_stats"},
+        {"request_id": "2", "dimension": "goals", "status": "collected", "source": "directpilot_saved_read_only_stats"},
+        {"request_id": "3", "dimension": "placements", "status": "unavailable"},
+        {"request_id": "4", "dimension": "devices", "status": "insufficient_data"},
+        {"request_id": "5", "dimension": "demographics", "status": "not_applicable"},
+    ]
+    job.context_snapshot_json = audit_jobs._json_dump(snapshot)
+    db.commit()
+
+    data_requests = audit_jobs.audit_job_response(job).context_metadata["investigation"]["dataRequests"]
+
+    assert data_requests == {
+        "planned": 5,
+        "allowed": 4,
+        "saved": 2,
+        "live": 0,
+        "statusCounts": {"collected": 2, "unavailable": 1, "insufficient_data": 1, "not_applicable": 1},
+        "unavailableDimensions": ["placements"],
+    }
+
+
+def test_truncated_invalid_json_reports_truncated_provider_response():
+    db = _db()
+    job = _create(db)
+    structured, parsing = audit_jobs._validate_structured_result_with_metadata(
+        '```json\n{"executive_summary":',
+        snapshot=audit_jobs.build_compact_audit_context(_context()),
+        job=job,
+        response={"model": job.model},
+        finish_reason="length",
+    )
+
+    assert structured is None
+    assert parsing["status"] == "fallback"
+    assert parsing["errorCode"] == "truncated_provider_response"
 
 
 def test_finish_reason_length_marks_result_truncated_and_allows_compact_retry(monkeypatch):
@@ -840,6 +972,8 @@ def test_finish_reason_length_marks_result_truncated_and_allows_compact_retry(mo
     assert generated.status == "completed"
     assert result["truncated"] is True
     assert result["completeness"] == "truncated"
+    assert result["structuredParsing"]["status"] == "success"
+    assert result["structuredParsing"]["errorCode"] == "truncated_provider_response"
     retrying = asyncio.run(audit_jobs.advance_audit_job(db, generated.id, organization_id="org-a", compact_retry=True))
     assert (retrying.status, retrying.current_stage) == ("context_ready", "generate_answer")
     assert audit_jobs._json_load(retrying.input_options_json, {})["compact_retry"] is True
