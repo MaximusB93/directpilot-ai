@@ -445,9 +445,21 @@ body[data-page="app"] .wordstatChartPanel svg {
 .aiAuditMeta { display: flex; flex-wrap: wrap; gap: 8px; color: #475569; font-size: 13px; }
 .aiAuditMeta span { padding: 6px 9px; border: 1px solid #e2e8f0; border-radius: 6px; background: #f8fafc; }
 .aiAuditFindingGrid { display: grid; gap: 10px; }
+.aiAuditFindingSection { padding: 12px; border: 1px solid #e2e8f0; border-radius: 8px; background: #f8fafc; }
+.aiAuditFindingSection > summary { cursor: pointer; font-weight: 800; }
+.aiAuditFindingSection[open] > summary { margin-bottom: 12px; }
 .aiAuditFinding { padding: 14px; border: 1px solid #e2e8f0; border-radius: 8px; background: #fff; }
 .aiAuditFinding p { margin: 8px 0; }
+.aiAuditFindingBadges { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+.aiAuditRequestSummary { display: grid; gap: 10px; }
+.aiAuditRequestCounters { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+.aiAuditRequestCounters span { padding: 10px; border: 1px solid #e2e8f0; border-radius: 8px; background: #f8fafc; }
+.aiAuditRequestCounters strong { display: block; font-size: 20px; color: #0f172a; }
 .aiAuditNotice { padding: 14px; border-left: 4px solid #f59e0b; background: #fffbeb; }
+.aiAuditTechnicalDetails { border: 1px solid #cbd5e1; border-radius: 8px; background: #f8fafc; }
+.aiAuditTechnicalDetails > summary { padding: 12px; cursor: pointer; font-weight: 700; }
+.aiAuditTechnicalDetails pre { max-height: 400px; margin: 0; overflow: auto; padding: 12px; white-space: pre-wrap; overflow-wrap: anywhere; color: #e2e8f0; background: #0f172a; }
+.aiAuditRawJsonNotice { padding: 10px 12px; border-left: 3px solid #f59e0b; background: #fffbeb; }
 .safeMarkdown { color: inherit; line-height: 1.55; }
 .safeMarkdown > :first-child { margin-top: 0; }
 .safeMarkdown > :last-child { margin-bottom: 0; }

@@ -152,7 +152,7 @@ export function renderAiChat({
         <button class="secondaryButton" data-ai-chat-sample="Проанализируй поисковые запросы и предложи минус-слова с рисками.">Запросы</button>
       </div>
       <div class="aiChatMessages" data-ai-chat-messages>
-        ${aiChatMessages.map((message) => `<article class="aiChatMessage ${message.role}"><span>${message.role === 'user' ? 'Вы' : 'AI'}</span>${message.role === 'user' ? `<p>${escapeHtml(message.content)}</p>` : renderSafeMarkdown(message.content)}</article>`).join('')}
+        ${aiChatMessages.map((message) => `<article class="aiChatMessage ${message.role}"><span>${message.role === 'user' ? 'Вы' : 'AI'}</span>${message.role === 'user' ? `<p>${escapeHtml(message.content)}</p>` : `${renderAiAssistantMarkdown(message.content)}${message.auditJobId ? '<button class="secondaryButton" data-ai-audit-open>Открыть полный аудит</button>' : ''}`}</article>`).join('')}
       </div>
       ${aiChatError ? `<div class="authStatus integrationStatus">${escapeHtml(aiChatError)}${aiChatErrorDetails?.retry_suggestion ? `<br>${escapeHtml(aiChatErrorDetails.retry_suggestion)}` : ''}</div>` : ''}
       <form class="aiChatForm" data-ai-chat-form>
@@ -209,7 +209,7 @@ export function renderAiAuditJob({
   const helperWarnings = (aiAuditJob?.context_metadata?.warnings || [])
     .filter((item) => item?.code === 'planner_fallback_used' || item?.code === 'verification_fallback_used');
   return `
-    <section class="panel aiAuditJobPanel">
+    <section class="panel aiAuditJobPanel" data-ai-audit-panel>
       <div class="panelHeader">
         <div><h3>Аудит аккаунта</h3><p>Полный аудит выполняется по этапам и сохраняется в проекте. Можно обновить страницу без потери задачи.</p></div>
         <span class="aiStatusBadge ${aiAuditJob?.status === 'completed' ? 'ready' : 'pending'}">${escapeHtml(statusLabel)}</span>
@@ -223,7 +223,6 @@ export function renderAiAuditJob({
         </ol>
         ${requestedDimensions.length ? `<div class="aiAuditInvestigation"><strong>AI запросил дополнительные данные:</strong> ${requestedDimensions.map((value) => escapeHtml({ ad_groups: 'группы', search_queries: 'поисковые запросы', goals: 'цели', placements: 'площадки', audiences: 'аудитории', retargeting_segments: 'сегменты ретаргетинга', devices: 'устройства', geo: 'география', demographics: 'демография', frequency: 'частота', lead_quality: 'качество лидов' }[value] || value)).join(', ')}.<small>Раунд ${escapeHtml(String(runtime.investigationRound || 1))} из 2 · запросов ${escapeHtml(String(runtime.requestsCount || 0))} · служебных AI-вызовов ${escapeHtml(String(runtime.helperProviderCallsCount || 0))} · финальных ${escapeHtml(String(runtime.finalProviderCallsCount || 0))}</small></div>` : ''}
         ${helperWarnings.length && !aiAuditJob.result ? `<aside class="aiAuditNotice"><strong>Аудит продолжен безопасно.</strong>${helperWarnings.map((item) => `<p>${escapeHtml(item.message || '')}</p>`).join('')}</aside>` : ''}
-        ${runtime.requestsCount ? `<div class="aiAuditDataSources"><span><strong>Saved data requests:</strong> ${escapeHtml(String(runtime.savedDataRequestsCount || 0))}</span><span><strong>Live Direct API calls:</strong> ${escapeHtml(String(runtime.directApiCallsCount || 0))}</span>${Number(runtime.directApiCallsCount || 0) === 0 ? '<small>Дополнительные данные получены из последней синхронизации DirectPilot.</small>' : ''}</div>` : ''}
         ${aiAuditJob.status === 'completed' && tokenUsage.total ? `<div class="aiAuditUsage"><span>Prompt tokens: ${escapeHtml(String(tokenUsage.prompt || 0))}</span><span>Completion tokens: ${escapeHtml(String(tokenUsage.completion || 0))}</span><span>Total tokens: ${escapeHtml(String(tokenUsage.total || 0))}</span></div>` : ''}
         ${aiAuditJob.error_message ? `<div class="authStatus integrationStatus">${escapeHtml(aiAuditJob.error_message)}</div>` : ''}
         ${aiAuditJob.answer || aiAuditJob.result ? `<div><h4>Результат аудита</h4>${renderAiAuditResult(aiAuditJob.result, aiAuditJob.answer, escapeHtml, aiAuditJob)}</div>` : ''}
@@ -293,6 +292,25 @@ export function renderAiAssistantContent(context) {
 }
 import { renderSafeMarkdown } from '../core/markdown.js';
 
+const RAW_AUDIT_JSON_MESSAGE = 'Структурированный результат скрыт: интерфейс не показывает сырой JSON. Откройте карточку результата аудита или повторите аудит.';
+
+function looksLikeRawStructuredJson(value) {
+  const text = String(value || '').trim();
+  if (!text) return false;
+  if (text.toLowerCase().startsWith('```json')) return true;
+  if (text.startsWith('```')) {
+    const body = text.replace(/^```[^\n]*\n?/, '').replace(/```\s*$/, '').trim();
+    return body.startsWith('{') || body.startsWith('[');
+  }
+  return text.startsWith('{') || text.startsWith('[');
+}
+
+function renderAiAssistantMarkdown(value) {
+  return looksLikeRawStructuredJson(value)
+    ? `<p class="aiAuditRawJsonNotice">${RAW_AUDIT_JSON_MESSAGE}</p>`
+    : renderSafeMarkdown(value);
+}
+
 function auditCoverageLabel(key) {
   return {
     account: 'Аккаунт', campaigns: 'Кампании', adGroups: 'Группы', keywords: 'Ключи',
@@ -302,6 +320,24 @@ function auditCoverageLabel(key) {
   }[key] || key;
 }
 
+function auditVerificationLabel(status) {
+  return {
+    confirmed: 'Подтверждено', partially_confirmed: 'Частично подтверждено',
+    unverified: 'Не подтверждено', rejected: 'Опровергнуто', not_applicable: 'Неприменимо',
+  }[status] || 'Не подтверждено';
+}
+
+function auditDimensionLabel(value) {
+  return {
+    ad_groups: 'группы', keywords: 'ключевые фразы', search_queries: 'поисковые запросы',
+    ads: 'объявления и креативы', landing_pages: 'посадочные страницы', placements: 'площадки',
+    audiences: 'аудитории', retargeting_segments: 'сегменты ретаргетинга',
+    audience_exclusions: 'исключения аудиторий', devices: 'устройства', geo: 'география',
+    demographics: 'демография', frequency: 'частотность', goals: 'цели',
+    conversion_sources: 'источники конверсий', lead_quality: 'качество лидов',
+  }[value] || value;
+}
+
 function formatAuditDate(value) {
   if (!value) return '—';
   const [year, month, day] = String(value).slice(0, 10).split('-');
@@ -309,14 +345,47 @@ function formatAuditDate(value) {
 }
 
 function renderFinding(item, escapeHtml) {
+  const verificationStatus = item.verification_status || 'unverified';
+  const verificationClass = verificationStatus === 'confirmed' ? 'ready' : 'pending';
   return `<article class="aiAuditFinding">
-    <div class="panelHeader"><div><span>${escapeHtml(item.campaign_name || 'Аккаунт')}</span><h4>${escapeHtml(item.problem || 'Проблема')}</h4></div><span class="aiStatusBadge ${item.risk === 'high' ? 'pending' : 'ready'}">Риск: ${escapeHtml(item.risk || 'не указан')}</span></div>
+    <div class="panelHeader"><div><span>${escapeHtml(item.campaign_name || 'Аккаунт')}</span><h4>${escapeHtml(item.problem || 'Проблема')}</h4></div><div class="aiAuditFindingBadges"><span class="aiStatusBadge ${verificationClass}">${escapeHtml(auditVerificationLabel(verificationStatus))}</span><span class="aiStatusBadge ${item.risk === 'high' ? 'pending' : 'ready'}">Риск: ${escapeHtml(item.risk || 'не указан')}</span></div></div>
     <p><strong>Факт:</strong> ${escapeHtml(item.fact || '—')}</p>
     ${item.evidence?.length ? `<details><summary>Доказательства</summary><ul>${item.evidence.map((value) => `<li>${escapeHtml(value)}</li>`).join('')}</ul></details>` : ''}
     ${item.hypothesis ? `<p><strong>Гипотеза:</strong> ${escapeHtml(item.hypothesis)}</p>` : ''}
     <p><strong>Рекомендация:</strong> ${escapeHtml(item.recommendation || '—')}</p>
-    <small>Тип: ${escapeHtml(item.campaign_type || 'unknown')} · Уровень: ${escapeHtml(item.analysis_level || 'campaign')} · Проверка: ${escapeHtml(item.verification_status || 'unverified')} · Уверенность: ${escapeHtml(item.confidence || 'low')} · Требуется подтверждение: ${item.requires_human_approval === false ? 'нет' : 'да'}</small>
+    ${item.next_data_needed?.length ? `<p><strong>Недостающие данные:</strong> ${item.next_data_needed.map((value) => escapeHtml(auditDimensionLabel(value))).join(', ')}</p>` : ''}
+    <small>Тип: ${escapeHtml(item.campaign_type || 'не определён')} · Уровень: ${escapeHtml(item.analysis_level || 'кампания')} · Уверенность: ${escapeHtml(item.confidence || 'низкая')} · Подтверждение действия: ${item.requires_human_approval === false ? 'не требуется' : 'обязательно'}</small>
   </article>`;
+}
+
+function renderFindingSection(title, items, escapeHtml, { open = true } = {}) {
+  if (!items.length) return '';
+  return `<details class="aiAuditFindingSection" ${open ? 'open' : ''}><summary>${escapeHtml(title)} · ${items.length}</summary><div class="aiAuditFindingGrid">${items.map((item) => renderFinding(item, escapeHtml)).join('')}</div></details>`;
+}
+
+function renderAuditDataRequests(job, escapeHtml) {
+  const dataRequests = job?.context_metadata?.investigation?.dataRequests || {};
+  const statuses = dataRequests.statusCounts || {};
+  const planned = Number(dataRequests.planned || 0);
+  if (!planned) return '';
+  const saved = Number(dataRequests.saved || 0);
+  const live = Number(dataRequests.live || 0);
+  const unavailable = dataRequests.unavailableDimensions || [];
+  return `<section class="aiAuditRequestSummary">
+    <h4>Дополнительные запросы данных</h4>
+    <div class="aiAuditRequestCounters">
+      <span><strong>${planned}</strong> запланировано</span>
+      <span><strong>${Number(dataRequests.allowed || 0)}</strong> разрешено backend</span>
+      <span><strong>${saved}</strong> выполнено по сохранённым данным</span>
+      <span><strong>${live}</strong> live-запросов к Директу</span>
+      <span><strong>${Number(statuses.unavailable || 0)}</strong> недоступно</span>
+      <span><strong>${Number(statuses.not_applicable || 0)}</strong> неприменимо</span>
+      <span><strong>${Number(statuses.insufficient_data || 0)}</strong> мало данных</span>
+      <span><strong>${Number(statuses.failed || 0)}</strong> ошибок</span>
+    </div>
+    ${saved && !live ? `<p>Выполнено по данным последней синхронизации DirectPilot: ${saved}. Live-запросы к Яндекс.Директу в этом аудите не выполнялись.</p>` : ''}
+    ${unavailable.length ? `<aside class="aiAuditNotice"><strong>Не удалось проверить:</strong> ${unavailable.map((value) => escapeHtml(auditDimensionLabel(value))).join(', ')}. Эти данные не учитывались в выводах.</aside>` : ''}
+  </section>`;
 }
 
 export function renderAiAuditResult(result, fallbackAnswer, escapeHtml, job = {}) {
@@ -325,9 +394,23 @@ export function renderAiAuditResult(result, fallbackAnswer, escapeHtml, job = {}
   const coverage = structured?.meta?.data_coverage || result?.dataCoverage || job.context_metadata?.dataCoverage || {};
   const periodLine = `Период анализа: ${formatAuditDate(period.date_from || period.dateFrom)}–${formatAuditDate(period.date_to || period.dateTo)}, ${escapeHtml(String(period.days || '—'))} дней.`;
   if (!structured) {
-    return `<div class="aiAuditResult"><p class="aiAuditPeriod">${periodLine}</p>${result?.warnings?.map((warning) => `<div class="authStatus integrationStatus">${escapeHtml(warning)}</div>`).join('') || ''}${renderSafeMarkdown(result?.fallbackMarkdown || fallbackAnswer || '')}</div>`;
+    const technicalResponse = result?.technicalResponse || '';
+    const fallbackValue = result?.fallbackMarkdown || fallbackAnswer || 'AI вернул результат в неподдерживаемом формате.';
+    const fallbackMessage = looksLikeRawStructuredJson(fallbackValue)
+      ? 'AI вернул результат в неподдерживаемом формате. Метаданные аудита сохранены.'
+      : fallbackValue;
+    return `<div class="aiAuditResult"><p class="aiAuditPeriod">${periodLine}</p>
+      <div class="aiAuditMeta"><span>Модель: ${escapeHtml(job.returned_model || job.model || '—')}</span><span>Время: ${escapeHtml(String(job.timings?.totalElapsedMs || '—'))} мс</span><span>Ошибка формата: ${escapeHtml(result?.structuredParsing?.errorCode || 'json_parse_failed')}</span></div>
+      ${result?.warnings?.map((warning) => `<div class="authStatus integrationStatus">${escapeHtml(warning)}</div>`).join('') || ''}
+      <div class="aiAuditNotice">${escapeHtml(fallbackMessage)}</div>
+      ${renderAuditDataRequests(job, escapeHtml)}
+      ${technicalResponse ? `<details class="aiAuditTechnicalDetails"><summary>Технический ответ модели</summary><pre>${escapeHtml(technicalResponse)}</pre></details>` : ''}
+    </div>`;
   }
   const coverageRows = Object.entries(coverage).map(([key, item]) => `<tr><th>${escapeHtml(auditCoverageLabel(key))}</th><td><span class="aiStatusBadge ${item.available ? 'ready' : 'pending'}">${item.available ? 'Доступно' : 'Не собрано'}</span></td><td>${escapeHtml(String(item.analyzed || 0))}${item.total === null || item.total === undefined ? '' : ` / ${escapeHtml(String(item.total))}`}</td><td>${escapeHtml(item.reason || item.source || '—')}</td></tr>`).join('');
+  const critical = structured.critical_findings || [];
+  const byStatus = (status) => critical.filter((item) => (item.verification_status || 'unverified') === status);
+  const opportunities = (structured.opportunities || []).filter((item) => !['rejected', 'not_applicable'].includes(item.verification_status));
   return `<div class="aiAuditResult">
     <p class="aiAuditPeriod">${periodLine}</p>
     <div class="aiAuditMeta"><span>Сравнение: ${formatAuditDate(period.comparison_date_from)}–${formatAuditDate(period.comparison_date_to)}</span><span>Модель: ${escapeHtml(structured.meta?.model || job.returned_model || job.model || '—')}</span><span>Лимит: ${escapeHtml(String(structured.meta?.output_budget_tokens || job.max_tokens || '—'))} токенов</span><span>Полнота: ${escapeHtml(result?.completeness || 'structured')}</span><span>Качество данных: ${escapeHtml(structured.data_quality?.status || 'partial')}</span><span>Время: ${escapeHtml(String(job.timings?.totalElapsedMs || '—'))} мс</span></div>
@@ -335,8 +418,13 @@ export function renderAiAuditResult(result, fallbackAnswer, escapeHtml, job = {}
     ${result?.truncated ? '<div class="authStatus integrationStatus"><strong>Ответ модели достиг лимита и мог быть обрезан.</strong></div>' : ''}
     <section><h4>Итог</h4><p>${escapeHtml(structured.executive_summary || '')}</p></section>
     <details open><summary>Что проанализировано</summary><div class="markdownTableWrap"><table><thead><tr><th>Уровень</th><th>Статус</th><th>Проанализировано</th><th>Источник / причина</th></tr></thead><tbody>${coverageRows}</tbody></table></div></details>
-    ${structured.critical_findings?.length ? `<section><h4>Критические проблемы</h4><div class="aiAuditFindingGrid">${structured.critical_findings.map((item) => renderFinding(item, escapeHtml)).join('')}</div></section>` : ''}
-    ${structured.opportunities?.length ? `<section><h4>Возможности</h4><div class="aiAuditFindingGrid">${structured.opportunities.map((item) => renderFinding(item, escapeHtml)).join('')}</div></section>` : ''}
+    ${renderAuditDataRequests(job, escapeHtml)}
+    ${renderFindingSection('Подтверждённые проблемы', byStatus('confirmed'), escapeHtml)}
+    ${renderFindingSection('Частично подтверждённые проблемы', byStatus('partially_confirmed'), escapeHtml)}
+    ${renderFindingSection('Неподтверждённые гипотезы', byStatus('unverified'), escapeHtml)}
+    ${renderFindingSection('Опровергнутые гипотезы', byStatus('rejected'), escapeHtml, { open: false })}
+    ${opportunities.length ? `<section><h4>Возможности</h4><div class="aiAuditFindingGrid">${opportunities.map((item) => renderFinding(item, escapeHtml)).join('')}</div></section>` : ''}
+    ${structured.insufficient_data_campaigns?.length ? `<aside class="aiAuditNotice"><h4>Недостаточно данных</h4><ul>${structured.insufficient_data_campaigns.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul></aside>` : ''}
     ${structured.action_plan?.length ? `<section><h4>План действий</h4><ol>${[...structured.action_plan].sort((a, b) => Number(a.priority) - Number(b.priority)).map((item) => `<li><strong>${escapeHtml(item.action)}</strong> — ${escapeHtml(item.reason)} <small>Объект: ${escapeHtml(item.scope)} · ${escapeHtml(item.mode)} · подтверждение обязательно</small></li>`).join('')}</ol></section>` : ''}
     ${structured.prohibited_actions?.length ? `<aside class="aiAuditNotice"><h4>Запрещённые автоматические действия</h4><ul>${structured.prohibited_actions.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul></aside>` : ''}
     <aside class="aiAuditNotice"><h4>Ограничения</h4><ul>${(structured.limitations || []).map((item) => `<li>${escapeHtml(item)}</li>`).join('') || '<li>Не указаны.</li>'}</ul></aside>

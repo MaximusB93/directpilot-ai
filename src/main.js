@@ -1073,9 +1073,13 @@ function persistAiAuditJob(job) {
 function showCompletedAiAudit(job) {
   if (!job?.answer || aiFeatureState.audit.completedShownJobId === job.job_id) return;
   aiFeatureState.audit.completedShownJobId = job.job_id;
+  const content = job.result?.structured
+    ? job.answer
+    : 'Аудит завершён, но модель вернула неподдерживаемый формат. Технический ответ доступен в блоке аудита.';
   aiFeatureState.chat.messages = aiStore.addAiChatMessage(currentAiChatState(), {
     role: 'assistant',
-    content: job.answer,
+    content,
+    auditJobId: job.job_id,
   }).messages;
   requestAiChatScrollToBottom();
 }
@@ -2597,6 +2601,7 @@ const CABINET_ACTION_CLICK_SELECTOR = [
   '[data-ai-audit-retry]',
   '[data-ai-audit-compact-retry]',
   '[data-ai-audit-new]',
+  '[data-ai-audit-open]',
   '[data-integration="yandex-direct"]',
   '[data-period-preset]',
   '[data-load-period-summary]',
@@ -2762,6 +2767,10 @@ async function handleCabinetActionClick(event) {
   }
   if (event.target.closest('[data-ai-audit-new]')) {
     clearActiveAiAudit();
+    return true;
+  }
+  if (event.target.closest('[data-ai-audit-open]')) {
+    app.querySelector('[data-ai-audit-panel]')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     return true;
   }
   if (await handleAiClickEvent(event, {
