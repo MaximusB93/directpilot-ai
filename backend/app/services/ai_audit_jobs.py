@@ -74,7 +74,11 @@ from app.services.cascade_investigation import (
     next_cascade_capabilities,
     round_stop_reason,
 )
-from app.services.ai_prompt_debug import build_prompt_debug_snapshot, estimate_tokens
+from app.services.ai_prompt_debug import (
+    build_prompt_debug_snapshot,
+    context_limit_for_model,
+    estimate_tokens,
+)
 from app.services.ai_recommendations import build_client_ai_context_from_db
 from app.services.direct_analyst_playbook import build_direct_analyst_instructions
 from app.services.knowledge_base import select_knowledge_snippets
@@ -96,6 +100,34 @@ AVAILABLE_AUDIT_DATA_STATUSES = {"collected", "cached", "partial"}
 POLL_AFTER_MS = 1800
 CONTEXT_TOKEN_TARGET = 12000
 DRILLDOWN_TOKEN_TARGET = 18000
+FINAL_PROMPT_SAFETY_MARGIN_TOKENS = 2048
+FINAL_COMPACTION_LEVELS = (0, 1, 2, 3)
+PROVIDER_CONTEXT_OVERFLOW_CODE = "provider_context_limit_rejected"
+_PROVIDER_CONTEXT_OVERFLOW_CODES = frozenset({
+    "context_length_exceeded",
+    "context_window_exceeded",
+    "context_limit_exceeded",
+    "maximum_context_length_exceeded",
+    "prompt_too_large",
+    "prompt_too_long",
+    "input_too_long",
+    "input_tokens_exceeded",
+    "token_limit_exceeded",
+})
+_PROVIDER_CONTEXT_OVERFLOW_MARKERS = (
+    "context length",
+    "maximum context",
+    "max context",
+    "context window",
+    "prompt too large",
+    "prompt is too large",
+    "prompt too long",
+    "input too long",
+    "input tokens exceed",
+    "input token count exceeds",
+    "token limit exceeded",
+    "tokens exceed the context",
+)
 AUDIT_STAGE_LEASE_SECONDS = {
     "create_investigation_plan": 75,
     "verify_hypotheses": 85,
@@ -2224,6 +2256,396 @@ def _audit_source_description(snapshot: dict[str, Any]) -> str:
     }.get(source, f"read-only источник {source}")
 
 
+_FINAL_METRIC_KEYS = {
+    "impressions", "clicks", "cost", "ctr", "avgCpc", "avg_cpc", "cpc",
+    "goalConversions", "goal_conversions", "goalCpa", "goal_cpa",
+    "conversionRate", "conversion_rate", "revenue", "roi", "campaigns",
+}
+_FINAL_PRIVATE_TEXT_PATTERN = re.compile(
+    r'''(?ix)["']?\b(?:
+        authorization|access_token|refresh_token|oauth_token|request_hash|
+        client_id|organization_id|job_id|campaignid|adgroupid|criterionid
+    )\b["']?\s*[:=]\s*["']?[^\s,"';}\]]+'''
+)
+
+
+def _safe_final_text(value: Any, *, max_chars: int = 500) -> str:
+    text = str(value or "").strip()
+    return _FINAL_PRIVATE_TEXT_PATTERN.sub("[internal value removed]", text)[:max_chars]
+
+
+def _bounded_strings(values: Any, limit: int, *, max_chars: int = 500) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    result: list[str] = []
+    for value in values:
+        text = _safe_final_text(value, max_chars=max_chars)
+        if text and text not in result:
+            result.append(text)
+        if len(result) >= limit:
+            break
+    return result
+
+
+def _safe_metric_values(values: Any) -> dict[str, Any]:
+    if not isinstance(values, dict):
+        return {}
+    return {
+        str(key): value
+        for key, value in values.items()
+        if str(key) in _FINAL_METRIC_KEYS and isinstance(value, (int, float, str, bool, type(None)))
+    }
+
+
+def _final_campaign_type(item: dict[str, Any]) -> str:
+    family = str(item.get("campaign_family") or item.get("campaignFamily") or "unknown")
+    subtype = str(item.get("campaign_subtype") or item.get("campaignSubtype") or "unknown")
+    if "retarget" in subtype:
+        return "retargeting"
+    if family == "search":
+        return "search"
+    if family == "yan":
+        return "yan"
+    if "master" in subtype:
+        return "master_campaign"
+    return "unknown"
+
+
+def _final_fact_records(snapshot: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
+    facts_by_id: dict[str, dict[str, Any]] = {}
+    unique: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for index, raw in enumerate(snapshot.get("observedFacts") or []):
+        if not isinstance(raw, dict):
+            continue
+        fact_id = str(raw.get("fact_id") or raw.get("factId") or f"fact_{index + 1:03d}")
+        evidence = _bounded_strings(raw.get("evidence"), 3, max_chars=350)
+        item = {
+            "campaignName": str(raw.get("campaign_name") or raw.get("campaignName") or "Аккаунт")[:300],
+            "metric": str(raw.get("metric") or "observation")[:100],
+            "summary": " ".join(evidence)[:800] or "Факт зафиксирован backend-правилом.",
+            "sufficientData": bool(raw.get("sufficient_data") if "sufficient_data" in raw else raw.get("sufficientData")),
+        }
+        facts_by_id[fact_id] = item
+        key = (item["campaignName"], item["metric"], item["summary"])
+        if key not in seen:
+            seen.add(key)
+            unique.append(item)
+    return facts_by_id, unique
+
+
+def _final_rule_summaries(values: Any, limit: int) -> list[dict[str, Any]]:
+    if not isinstance(values, list):
+        return []
+    result = []
+    for raw in values:
+        if not isinstance(raw, dict):
+            continue
+        result.append({
+            "ruleCode": str(raw.get("rule_code") or raw.get("ruleCode") or "")[:120] or None,
+            "passed": bool(raw.get("passed")),
+            "summary": _safe_final_text(raw.get("summary"), max_chars=500) or None,
+        })
+        if len(result) >= limit:
+            break
+    return result
+
+
+def _final_evidence_summary(item: dict[str, Any], *, example_limit: int) -> dict[str, Any]:
+    numeric = item.get("numeric_state_counts") or item.get("numericStateCounts") or {}
+    return {
+        "capabilityId": str(item.get("capability_id") or item.get("capabilityId") or item.get("dimension") or "")[:100],
+        "status": str(item.get("status") or "unknown")[:50],
+        "rowsAnalyzed": int(item.get("rows_total") or item.get("rowsAnalyzed") or item.get("segments") or 0),
+        "metrics": _safe_metric_values(item.get("metrics")),
+        "numericStateCounts": {
+            "known": int(numeric.get("known") or 0),
+            "missing": int(numeric.get("missing") or 0),
+            "invalid": int(numeric.get("invalid") or 0),
+        },
+        "confirmationRules": _final_rule_summaries(
+            item.get("matched_confirmation_rules") or item.get("confirmation_rules"), example_limit,
+        ),
+        "rejectionRules": _final_rule_summaries(
+            item.get("matched_rejection_rules") or item.get("rejection_rules"), example_limit,
+        ),
+        "limitations": _bounded_strings(
+            item.get("limitations") or item.get("data_quality_warnings"), example_limit,
+        ),
+    }
+
+
+def _final_classification_summary(classifications: list[dict[str, Any]]) -> dict[str, Any]:
+    by_family: dict[str, int] = {}
+    by_subtype: dict[str, int] = {}
+    for item in classifications:
+        family = str(item.get("campaign_family") or item.get("campaignFamily") or "unknown")
+        subtype = str(item.get("campaign_subtype") or item.get("campaignSubtype") or "unknown")
+        by_family[family] = by_family.get(family, 0) + 1
+        by_subtype[subtype] = by_subtype.get(subtype, 0) + 1
+    return {"total": len(classifications), "byFamily": by_family, "bySubtype": by_subtype}
+
+
+def build_final_audit_projection(
+    snapshot: dict[str, Any],
+    *,
+    compaction_level: int = 0,
+) -> dict[str, Any]:
+    """Build the only snapshot projection allowed into the final model prompt."""
+
+    level = max(0, min(int(compaction_level), 3))
+    example_limit = 5 if level == 0 else 3 if level < 3 else 2
+    limitation_limit = 10 if level == 0 else 3
+    facts_by_id, all_facts = _final_fact_records(snapshot)
+    registry = _hypothesis_registry(snapshot)
+    verifications = _verification_registry(snapshot)
+    evidence_by_hypothesis: dict[str, list[dict[str, Any]]] = {}
+    for raw in snapshot.get("drilldownEvidenceSummaries") or []:
+        if not isinstance(raw, dict):
+            continue
+        hypothesis_id = str(raw.get("hypothesis_id") or raw.get("hypothesisId") or "")
+        if hypothesis_id:
+            evidence_by_hypothesis.setdefault(hypothesis_id, []).append(raw)
+
+    hypotheses: list[dict[str, Any]] = []
+    for hypothesis_id, raw in registry.items():
+        if not isinstance(raw, dict):
+            continue
+        verification = verifications.get(hypothesis_id) or {}
+        fact_ids = [str(value) for value in (raw.get("fact_ids") or raw.get("factIds") or [])]
+        linked_facts = [facts_by_id[value] for value in fact_ids if value in facts_by_id]
+        fact_summary = " ".join(item["summary"] for item in linked_facts)[:1200]
+        evidence = [
+            _final_evidence_summary(item, example_limit=example_limit)
+            for item in evidence_by_hypothesis.get(hypothesis_id, [])[:example_limit]
+        ]
+        status_value = str(verification.get("status") or raw.get("current_status") or "unverified")
+        limitations = _bounded_strings(verification.get("limitations"), limitation_limit)
+        for item in evidence:
+            limitations.extend(value for value in item["limitations"] if value not in limitations)
+        priority = str(raw.get("priority") or "medium")
+        hypotheses.append({
+            "hypothesisId": hypothesis_id,
+            "campaignName": str(raw.get("campaign_name") or raw.get("campaignName") or "Аккаунт")[:300],
+            "campaignType": _final_campaign_type(raw),
+            "hypothesisType": str(raw.get("hypothesis_type") or raw.get("hypothesisType") or "campaign_metadata_issue")[:100],
+            "factSummary": fact_summary or _safe_final_text(
+                raw.get("observed_fact") or "Исходный факт не детализирован.", max_chars=1200,
+            ),
+            "verificationStatus": status_value,
+            "evidenceSummary": evidence,
+            "supportingEvidence": _bounded_strings(verification.get("supporting_evidence"), example_limit),
+            "contradictingEvidence": _bounded_strings(verification.get("contradicting_evidence"), example_limit),
+            "limitations": limitations[:limitation_limit],
+            "remainingDataNeeded": _bounded_strings(verification.get("remaining_data_needed"), limitation_limit),
+            "priority": priority,
+            "criticalUnverified": status_value == "unverified" and (
+                priority in {"critical", "high"}
+                or any(
+                    facts_by_id.get(fact_id, {}).get("metric") in {
+                        "spend_without_goal_conversions", "cpa_above_target",
+                        "tracking_inconsistency", "conversion_data_unknown",
+                    }
+                    for fact_id in fact_ids
+                )
+            ),
+        })
+
+    status_rank = {"confirmed": 0, "partially_confirmed": 1, "unverified": 2, "rejected": 3, "not_applicable": 4}
+    hypotheses.sort(key=lambda item: (
+        status_rank.get(item["verificationStatus"], 5),
+        0 if item["criticalUnverified"] else 1,
+        item["campaignName"],
+        item["hypothesisId"],
+    ))
+    all_hypotheses = list(hypotheses)
+    if level == 2:
+        hypotheses = hypotheses[:10]
+    elif level >= 3:
+        hypotheses = [
+            item for item in hypotheses
+            if item["verificationStatus"] in {"confirmed", "partially_confirmed"} or item["criticalUnverified"]
+        ][:10]
+
+    omitted = [item for item in all_hypotheses if item not in hypotheses]
+    omitted_by_status: dict[str, int] = {}
+    omitted_by_type: dict[str, int] = {}
+    for item in omitted:
+        omitted_by_status[item["verificationStatus"]] = omitted_by_status.get(item["verificationStatus"], 0) + 1
+        omitted_by_type[item["campaignType"]] = omitted_by_type.get(item["campaignType"], 0) + 1
+    for item in hypotheses:
+        item.pop("criticalUnverified", None)
+        item.pop("priority", None)
+
+    classifications = [item for item in (snapshot.get("campaignClassifications") or []) if isinstance(item, dict)]
+    selected_campaigns = {item["campaignName"] for item in hypotheses}
+    compact_classifications = [{
+        "campaignName": str(item.get("campaign_name") or item.get("campaignName") or "Кампания без названия")[:300],
+        "campaignFamily": str(item.get("campaign_family") or item.get("campaignFamily") or "unknown")[:50],
+        "campaignSubtype": str(item.get("campaign_subtype") or item.get("campaignSubtype") or "unknown")[:80],
+    } for item in classifications]
+    if level >= 2:
+        compact_classifications = [
+            item for item in compact_classifications if item["campaignName"] in selected_campaigns
+        ][:20 if level == 2 else 10]
+
+    selected_fact_summaries = {
+        item["factSummary"] for item in hypotheses if item.get("factSummary")
+    }
+    fact_limit = 100 if level == 0 else 40 if level == 1 else 15 if level == 2 else 10
+    observed_facts = [item for item in all_facts if item["summary"] not in selected_fact_summaries][:fact_limit]
+
+    numeric_counts = {"known": 0, "missing": 0, "invalid": 0}
+    for items in evidence_by_hypothesis.values():
+        for item in items:
+            counts = item.get("numeric_state_counts") or item.get("numericStateCounts") or {}
+            for key in numeric_counts:
+                numeric_counts[key] += int(counts.get(key) or 0)
+    source_counts: dict[str, int] = {}
+    for item in snapshot.get("baselineEvidenceSummary") or []:
+        if not isinstance(item, dict):
+            continue
+        source = str(item.get("source") or "unavailable")
+        source_counts[source] = source_counts.get(source, 0) + 1
+    analysis_period = snapshot.get("analysisPeriod") or {}
+    if analysis_period.get("source"):
+        source = str(analysis_period["source"])
+        source_counts[source] = source_counts.get(source, 0) + 1
+
+    warnings = _bounded_strings((snapshot.get("trackingStatus") or {}).get("warnings"), limitation_limit)
+    warnings.extend(_bounded_strings(snapshot.get("missingData"), limitation_limit))
+    warnings.extend(_bounded_strings(snapshot.get("limitations"), limitation_limit))
+    warnings.extend(
+        _safe_final_text(item.get("message"), max_chars=500)
+        for item in (snapshot.get("auditWarnings") or [])[:limitation_limit]
+        if isinstance(item, dict) and item.get("message")
+    )
+    limitations = list(dict.fromkeys(value for value in warnings if value))[:limitation_limit]
+
+    coverage = {}
+    for key, value in (snapshot.get("dataCoverage") or {}).items():
+        if isinstance(value, dict):
+            coverage[str(key)] = {
+                field: value.get(field)
+                for field in ("available", "total", "analyzed", "source", "status", "reason")
+                if field in value and isinstance(value.get(field), (int, float, str, bool, type(None)))
+            }
+    return {
+        "analysisPeriod": {
+            key: analysis_period.get(key)
+            for key in (
+                "dateFrom", "dateTo", "days", "comparisonDateFrom", "comparisonDateTo",
+                "requestedMatchesAvailableData", "source",
+            )
+            if key in analysis_period
+        },
+        "dataCoverage": coverage,
+        "accountTotals": _safe_metric_values(snapshot.get("accountTotals")),
+        "targetKpis": _safe_metric_values(snapshot.get("targetKpis")),
+        "selectedGoals": {
+            "ids": [str(value)[:64] for value in ((snapshot.get("selectedGoals") or {}).get("ids") or [])[:20]],
+            "hasGoalData": bool((snapshot.get("selectedGoals") or {}).get("hasGoalData")),
+            "message": _safe_final_text(
+                (snapshot.get("selectedGoals") or {}).get("message"), max_chars=500,
+            ) or None,
+        },
+        "campaignClassificationSummary": _final_classification_summary(classifications),
+        "campaignClassifications": compact_classifications,
+        "observedFacts": observed_facts,
+        "verificationRegistry": hypotheses,
+        "omittedHypothesesSummary": {
+            "count": len(omitted), "byStatus": omitted_by_status, "byCampaignType": omitted_by_type,
+        },
+        "dataQualitySummaries": {"numericStateCounts": numeric_counts},
+        "sourceSummaries": source_counts,
+        "limitations": limitations,
+        "stopReason": _safe_final_text(
+            (snapshot.get("auditRuntime") or {}).get("stopReason"), max_chars=300,
+        ) or None,
+        "compactionLevel": level,
+    }
+
+
+def _provider_error_fragments(value: Any, *, depth: int = 0) -> list[str]:
+    if depth > 4 or value is None:
+        return []
+    if isinstance(value, dict):
+        fragments: list[str] = []
+        for key, item in value.items():
+            if str(key).lower() in {"code", "type", "error_code", "message", "detail", "error"}:
+                fragments.extend(_provider_error_fragments(item, depth=depth + 1))
+        return fragments
+    if isinstance(value, (list, tuple)):
+        fragments = []
+        for item in value[:20]:
+            fragments.extend(_provider_error_fragments(item, depth=depth + 1))
+        return fragments
+    return [str(value)[:2000]]
+
+
+def is_provider_context_overflow(exc: Exception) -> bool:
+    """Recognize provider-confirmed context overflow without exposing provider text."""
+
+    if isinstance(exc, HTTPException) and exc.status_code in {
+        status.HTTP_401_UNAUTHORIZED,
+        status.HTTP_403_FORBIDDEN,
+        status.HTTP_408_REQUEST_TIMEOUT,
+        status.HTTP_429_TOO_MANY_REQUESTS,
+        status.HTTP_504_GATEWAY_TIMEOUT,
+    }:
+        return False
+    detail = getattr(exc, "detail", None)
+    fragments = _provider_error_fragments(detail)
+    fragments.extend(_provider_error_fragments(str(exc)))
+    normalized = " ".join(fragments).lower()
+    normalized_code = re.sub(r"[^a-z0-9]+", "_", normalized).strip("_")
+    if any(code in normalized_code for code in _PROVIDER_CONTEXT_OVERFLOW_CODES):
+        return True
+    return any(marker in normalized for marker in _PROVIDER_CONTEXT_OVERFLOW_MARKERS)
+
+
+def build_final_audit_prompt_bundle(
+    snapshot: dict[str, Any],
+    job: AiAuditJob,
+    *,
+    compact_retry: bool = False,
+    minimum_compaction_level: int | None = None,
+) -> dict[str, Any]:
+    start_level = (
+        max(0, min(int(minimum_compaction_level), 3))
+        if minimum_compaction_level is not None
+        else (2 if compact_retry else 0)
+    )
+    context_limit = context_limit_for_model(job.model)
+    reserved_output = max(1, min(int(job.max_tokens or 0), AI_AUDIT_FINAL_MAX_TOKENS))
+    safety_margin = min(FINAL_PROMPT_SAFETY_MARGIN_TOKENS, max(512, context_limit // 50))
+    candidate: dict[str, Any] | None = None
+    for level in FINAL_COMPACTION_LEVELS[start_level:]:
+        projection = build_final_audit_projection(snapshot, compaction_level=level)
+        prompt = build_full_audit_prompt(
+            projection,
+            output_budget_tokens=reserved_output,
+            compact_retry=compact_retry or level > 0,
+        )
+        prompt_tokens = estimate_tokens(f"{DEFAULT_SYSTEM_PROMPT}\n{prompt}")
+        diagnostics = {
+            "finalProjectionEstimatedTokens": estimate_tokens(_json_dump(projection)),
+            "finalPromptEstimatedTokens": prompt_tokens,
+            "modelContextLimit": context_limit,
+            "reservedOutputTokens": reserved_output,
+            "safetyMarginTokens": safety_margin,
+            "finalCompactionLevel": level,
+            "fitsModelContext": prompt_tokens + reserved_output + safety_margin <= context_limit,
+            "preflightFitsModelContext": prompt_tokens + reserved_output + safety_margin <= context_limit,
+            "providerContextRejected": False,
+            "providerContextErrorCode": None,
+        }
+        candidate = {"projection": projection, "prompt": prompt, "diagnostics": diagnostics}
+        if diagnostics["fitsModelContext"]:
+            return candidate
+    return candidate or {"projection": {}, "prompt": "", "diagnostics": {}}
+
+
 def build_full_audit_prompt(
     snapshot: dict[str, Any],
     *,
@@ -2257,7 +2679,7 @@ Scope: {scope_instruction}
 Релевантные фрагменты базы знаний:
 {knowledge_text or '- Дополнительные фрагменты не выбраны.'}
 
-Compact audit snapshot:
+Final audit projection:
 {json.dumps(snapshot, ensure_ascii=False, indent=2)}
 
 Верни только один валидный JSON-объект без Markdown fences и текста до/после JSON.
@@ -2290,6 +2712,35 @@ def _trusted_result_meta(snapshot: dict[str, Any], job: AiAuditJob, response: di
         "model": response.get("model") or job.model,
         "output_budget_tokens": job.max_tokens,
     }
+
+
+def _record_final_generation_diagnostics(
+    snapshot: dict[str, Any],
+    job: AiAuditJob,
+    diagnostics: dict[str, Any],
+    *,
+    status_value: str,
+    backend_fallback_used: bool = False,
+) -> None:
+    safe_diagnostics = {
+        key: diagnostics.get(key)
+        for key in (
+            "finalProjectionEstimatedTokens", "finalPromptEstimatedTokens", "modelContextLimit",
+            "reservedOutputTokens", "safetyMarginTokens", "finalCompactionLevel", "fitsModelContext",
+            "preflightFitsModelContext", "providerContextRejected", "providerContextErrorCode",
+        )
+    }
+    runtime = _audit_runtime(snapshot)
+    runtime.update(safe_diagnostics)
+    runtime["finalGenerationStatus"] = status_value
+    runtime["backendFallbackUsed"] = backend_fallback_used
+    stored = _json_load(job.prompt_snapshot_json, {}) or {}
+    stage_metadata = stored.setdefault("stages", {}).setdefault("generate_answer", {})
+    stage_metadata.update(safe_diagnostics)
+    stage_metadata["finalGenerationStatus"] = status_value
+    stage_metadata["backendFallbackUsed"] = backend_fallback_used
+    stored["fullPromptStored"] = False
+    job.prompt_snapshot_json = _json_dump(stored)
 
 
 _JSON_FENCE_PATTERN = re.compile(
@@ -2622,6 +3073,216 @@ def _enforce_verified_result(result: dict[str, Any], snapshot: dict[str, Any]) -
     result["action_plan"] = safe_actions[:10]
     result["tracking_and_goals"] = _trusted_tracking_and_goals(snapshot)
     return result
+
+
+def build_backend_fallback_audit_result(
+    snapshot: dict[str, Any],
+    job: AiAuditJob,
+    *,
+    reason_code: str = "final_prompt_too_large",
+) -> dict[str, Any]:
+    """Build a safe result from already verified backend evidence without an LLM call."""
+
+    projection = build_final_audit_projection(snapshot, compaction_level=3)
+    findings: list[dict[str, Any]] = []
+    insufficient: list[dict[str, Any]] = []
+    actions: list[dict[str, Any]] = []
+    for item in projection.get("verificationRegistry") or []:
+        status_value = str(item.get("verificationStatus") or "unverified")
+        campaign_name = str(item.get("campaignName") or "Аккаунт")
+        evidence = _bounded_strings(item.get("supportingEvidence"), 3)
+        if not evidence:
+            evidence = _bounded_strings([item.get("factSummary")], 1)
+        if status_value in {"confirmed", "partially_confirmed"} and len(findings) < 5:
+            hypothesis_id = str(item.get("hypothesisId") or "") or None
+            findings.append({
+                "hypothesis_id": hypothesis_id,
+                "verification_status": status_value,
+                "campaign_name": campaign_name,
+                "campaign_type": item.get("campaignType") or "unknown",
+                "analysis_level": "campaign",
+                "problem": "Backend-проверка обнаружила сигнал, требующий внимания.",
+                "fact": str(item.get("factSummary") or "Факт подтверждён собранными данными."),
+                "evidence": evidence,
+                "hypothesis": "Причина подтверждена полностью или частично backend-проверкой.",
+                "confidence": "high" if status_value == "confirmed" else "medium",
+                "risk": "medium",
+                "recommendation": "Проверить доказательства и подготовить решение в ручном режиме.",
+                "requires_human_approval": True,
+                "next_data_needed": _bounded_strings(item.get("remainingDataNeeded"), 5),
+            })
+            actions.append({
+                "priority": len(actions) + 1,
+                "hypothesis_id": hypothesis_id,
+                "action": "Провести ручную проверку подтверждённого сигнала.",
+                "scope": campaign_name,
+                "reason": str(item.get("factSummary") or "Сигнал подтверждён backend-проверкой."),
+                "mode": "manual_review",
+                "requires_human_approval": True,
+            })
+        elif status_value == "unverified":
+            insufficient.append({
+                "campaign_name": campaign_name,
+                "reason": "Гипотеза не подтверждена собранными данными.",
+                "recommendation": "Собрать недостающие данные и повторить проверку без изменений в Директе.",
+                "next_data_needed": _bounded_strings(item.get("remainingDataNeeded"), 5),
+            })
+
+    totals = projection.get("accountTotals") or {}
+    raw_goal_conversions = (
+        totals.get("goalConversions")
+        if "goalConversions" in totals
+        else totals.get("goal_conversions")
+    )
+    goal_metric = parse_numeric_metric(raw_goal_conversions)
+    goal_conversions_label = (
+        f"{goal_metric.value:g}" if goal_metric.state == "known" and goal_metric.value is not None
+        else "недоступны"
+    )
+    cost_metric = parse_numeric_metric(totals.get("cost"))
+    cost_label = (
+        f"{cost_metric.value:g}" if cost_metric.state == "known" and cost_metric.value is not None
+        else "недоступен"
+    )
+    data_facts = [
+        f"Проанализировано кампаний: {(projection.get('campaignClassificationSummary') or {}).get('total') or 0}.",
+        f"Расход в доступном периоде: {cost_label}.",
+        f"Конверсии по выбранным целям: {goal_conversions_label}.",
+    ]
+    limitations = list(projection.get("limitations") or [])
+    fallback_limitation = (
+        "Провайдер отклонил фактический размер контекста; расширенный AI-отчёт заменён безопасным backend-результатом."
+        if reason_code == PROVIDER_CONTEXT_OVERFLOW_CODE
+        else "Расширенный AI-отчёт не сформирован из-за размера финального контекста."
+    )
+    if fallback_limitation not in limitations:
+        limitations.append(fallback_limitation)
+    candidate = {
+        "meta": _trusted_result_meta(snapshot, job, {"model": job.model}),
+        "executive_summary": (
+            "Аудит завершён по собранным read-only данным. Провайдер отклонил финальный контекст, "
+            "поэтому расширенный AI-текст заменён безопасным backend-результатом."
+            if reason_code == PROVIDER_CONTEXT_OVERFLOW_CODE
+            else "Аудит завершён по собранным read-only данным. Финальный AI-запрос не отправлялся: "
+            "контекст не поместился в безопасный бюджет выбранной модели."
+        ),
+        "data_quality": {
+            "status": "partial",
+            "facts": data_facts,
+            "limitations": limitations[:10],
+        },
+        "critical_findings": findings,
+        "opportunities": [],
+        "insufficient_data_campaigns": insufficient[:25],
+        "tracking_and_goals": _trusted_tracking_and_goals(snapshot),
+        "drilldown_summary": {
+            "analyzed_levels": sorted({
+                str(item.get("capabilityId"))
+                for hypothesis in projection.get("verificationRegistry") or []
+                for item in hypothesis.get("evidenceSummary") or []
+                if item.get("capabilityId")
+            }),
+            "not_analyzed_levels": [],
+            "next_data_needed": list(dict.fromkeys(
+                value
+                for hypothesis in projection.get("verificationRegistry") or []
+                for value in (hypothesis.get("remainingDataNeeded") or [])
+            ))[:20],
+        },
+        "action_plan": actions[:10],
+        "prohibited_actions": [
+            "Не применять изменения в Яндекс.Директе автоматически.",
+            "Не изменять бюджеты, ставки и статусы кампаний без явного подтверждения пользователя.",
+        ],
+        "limitations": limitations,
+        "conclusion": "Доступен безопасный backend-результат по уже собранным и проверенным данным.",
+    }
+    validated = AiAuditResult.model_validate(candidate).model_dump(mode="json")
+    return _enforce_verified_result(validated, snapshot)
+
+
+def _complete_backend_fallback_stage(
+    db: Session,
+    job: AiAuditJob,
+    snapshot: dict[str, Any],
+    diagnostics: dict[str, Any],
+    timings: dict[str, Any],
+    *,
+    reason_code: str,
+    final_status: str,
+    warning: str,
+) -> AiAuditJob:
+    structured = build_backend_fallback_audit_result(snapshot, job, reason_code=reason_code)
+    warnings = _helper_warning_messages(snapshot)
+    warnings.append(warning)
+    _record_final_generation_diagnostics(
+        snapshot,
+        job,
+        diagnostics,
+        status_value=final_status,
+        backend_fallback_used=True,
+    )
+    job.context_snapshot_json = _json_dump(snapshot)
+    job.answer_text = build_audit_answer_markdown(structured, snapshot)
+    job.result_json = _json_dump({
+        "structured": structured,
+        "fallbackMarkdown": None,
+        "technicalResponse": None,
+        "structuredParsing": {
+            "status": "success",
+            "requestedResponseMode": "backend_generated",
+            "actualResponseMode": "backend_generated",
+            "parsingSource": "backend_generated",
+            "fallbackReason": reason_code,
+            "sourceFormat": "backend_generated",
+            "parseOutcome": "backend_generated",
+            "errorCode": reason_code,
+            "validationErrorsCount": 0,
+            "validationErrorPaths": [],
+            "validationErrorTypes": [],
+        },
+        "providerResponseMetadata": None,
+        "warnings": warnings,
+        "finishReason": None,
+        "truncated": False,
+        "compactRetryAvailable": False,
+        "backendFallbackUsed": True,
+        "completeness": "backend_fallback",
+        "analysisPeriod": snapshot.get("analysisPeriod") or {},
+        "cachePolicy": (snapshot.get("metadata") or {}).get("cachePolicy") or "fresh",
+        "directApiKnowledgeVersion": (snapshot.get("metadata") or {}).get("directApiKnowledgeVersion"),
+        "dataCoverage": snapshot.get("dataCoverage") or {},
+        "usage": None,
+        "responseId": None,
+        "requestTrace": {
+            "jobId": job.id,
+            "model": job.model,
+            "systemPromptVersion": job.system_prompt_version,
+            "systemPromptHash": job.system_prompt_hash[:12],
+            "context": _context_metadata(job),
+            "runtime": snapshot.get("auditRuntime") or {},
+            "models": snapshot.get("auditModels") or {},
+            "helperStages": snapshot.get("helperStages") or {},
+        },
+        "safety": {"readOnly": True, "appliedToYandexDirect": False, "requiresHumanApproval": True},
+    })
+    job.error_code = reason_code
+    job.error_message = warning
+    job.retryable = False
+    job.status = "context_ready"
+    job.current_stage = "finalize"
+    job.stage_attempt = 0
+    job.progress_percent = 95
+    _complete_provider_stage(job, "generate_answer")
+    timings["totalElapsedMs"] = max(
+        0, round((_now() - _as_aware(job.created_at or _now())).total_seconds() * 1000),
+    )
+    job.timings_json = _json_dump(timings)
+    job.stage_version += 1
+    db.commit()
+    db.refresh(job)
+    _log_timing(job, "generate_answer")
+    return job
 
 
 def _format_period_line(period: dict[str, Any]) -> str:
@@ -3623,10 +4284,18 @@ async def advance_audit_job(
         return job
     if job.status == "completed" and compact_retry:
         current_result = _json_load(job.result_json, {}) or {}
-        if current_result.get("truncated"):
+        if (
+            current_result.get("truncated")
+            or current_result.get("compactRetryAvailable")
+        ):
             options = _json_load(job.input_options_json, {}) or {}
             options["compact_retry"] = True
             job.input_options_json = _json_dump(options)
+            snapshot = _json_load(job.context_snapshot_json, {}) or {}
+            runtime = _audit_runtime(snapshot)
+            runtime["finalGenerationStatus"] = "compact_retry_pending"
+            runtime["backendFallbackUsed"] = False
+            job.context_snapshot_json = _json_dump(snapshot)
             job.status = "context_ready"
             job.current_stage = "generate_answer"
             job.stage_attempt = 0
@@ -4417,10 +5086,14 @@ async def advance_audit_job(
             execution_token = _claim_provider_stage(db, job, stage, progress_percent=82)
             snapshot = _json_load(job.context_snapshot_json, {})
             input_options = _json_load(job.input_options_json, {}) or {}
-            prompt = build_full_audit_prompt(snapshot, output_budget_tokens=job.max_tokens, compact_retry=bool(input_options.get("compact_retry")))
-            metadata = _prompt_metadata(prompt, job)
-            if metadata["isTooLarge"]:
-                raise HTTPException(status_code=413, detail={"error_code": "ai_prompt_too_large", "message": "Adaptive audit prompt exceeds model context.", "retryable": False})
+            is_compact_retry = bool(input_options.get("compact_retry"))
+            final_bundle = build_final_audit_prompt_bundle(
+                snapshot,
+                job,
+                compact_retry=is_compact_retry,
+            )
+            prompt = str(final_bundle.get("prompt") or "")
+            final_diagnostics = dict(final_bundle.get("diagnostics") or {})
             _save_stage_prompt_metadata(
                 job,
                 stage,
@@ -4429,14 +5102,137 @@ async def advance_audit_job(
                 max_tokens=job.max_tokens,
                 max_tokens_cap=AI_AUDIT_FINAL_MAX_TOKENS,
             )
+            _record_final_generation_diagnostics(
+                snapshot,
+                job,
+                final_diagnostics,
+                status_value="compact_retry_prepared" if is_compact_retry else "prepared",
+            )
+            if not final_diagnostics.get("fitsModelContext"):
+                return _complete_backend_fallback_stage(
+                    db,
+                    job,
+                    snapshot,
+                    final_diagnostics,
+                    timings,
+                    reason_code="final_prompt_too_large",
+                    final_status="backend_fallback",
+                    warning=(
+                        "Финальная проекция не поместилась в контекст выбранной модели; "
+                        "сохранён безопасный backend-результат без вызова OpenRouter."
+                    ),
+                )
+            _record_final_generation_diagnostics(
+                snapshot,
+                job,
+                final_diagnostics,
+                status_value="calling_provider_compact" if is_compact_retry else "calling_provider",
+            )
             _record_provider_attempt(snapshot, "final")
             job.context_snapshot_json = _json_dump(snapshot)
             db.commit()
             openrouter_started_at = perf_counter()
-            response = await _call_audit_provider(
-                stage, job.model, prompt, max_tokens=job.max_tokens,
-                max_tokens_cap=AI_AUDIT_FINAL_MAX_TOKENS, timeout=AUDIT_STAGE_PROVIDER_TIMEOUTS[stage],
-            )
+            try:
+                response = await _call_audit_provider(
+                    stage, job.model, prompt, max_tokens=job.max_tokens,
+                    max_tokens_cap=AI_AUDIT_FINAL_MAX_TOKENS, timeout=AUDIT_STAGE_PROVIDER_TIMEOUTS[stage],
+                )
+            except Exception as provider_exc:
+                if not is_provider_context_overflow(provider_exc):
+                    raise
+                final_diagnostics["providerContextRejected"] = True
+                final_diagnostics["providerContextErrorCode"] = PROVIDER_CONTEXT_OVERFLOW_CODE
+                _record_final_generation_diagnostics(
+                    snapshot,
+                    job,
+                    final_diagnostics,
+                    status_value=PROVIDER_CONTEXT_OVERFLOW_CODE,
+                )
+                current_level = int(final_diagnostics.get("finalCompactionLevel") or 0)
+                if current_level >= 3:
+                    timings["finalAnswerOpenrouterMs"] = _elapsed_ms(openrouter_started_at)
+                    return _complete_backend_fallback_stage(
+                        db,
+                        job,
+                        snapshot,
+                        final_diagnostics,
+                        timings,
+                        reason_code=PROVIDER_CONTEXT_OVERFLOW_CODE,
+                        final_status="backend_fallback_after_provider_context_rejection",
+                        warning=(
+                            "Данные аудита собраны, но провайдер отклонил фактический размер L3-контекста; "
+                            "расширенный AI-текст заменён безопасным backend-результатом."
+                        ),
+                    )
+
+                retry_bundle = build_final_audit_prompt_bundle(
+                    snapshot,
+                    job,
+                    compact_retry=True,
+                    minimum_compaction_level=current_level + 1,
+                )
+                prompt = str(retry_bundle.get("prompt") or "")
+                retry_diagnostics = dict(retry_bundle.get("diagnostics") or {})
+                retry_diagnostics["providerContextRejected"] = True
+                retry_diagnostics["providerContextErrorCode"] = PROVIDER_CONTEXT_OVERFLOW_CODE
+                final_diagnostics = retry_diagnostics
+                _save_stage_prompt_metadata(
+                    job,
+                    stage,
+                    prompt,
+                    model=job.model,
+                    max_tokens=job.max_tokens,
+                    max_tokens_cap=AI_AUDIT_FINAL_MAX_TOKENS,
+                )
+                _record_final_generation_diagnostics(
+                    snapshot,
+                    job,
+                    final_diagnostics,
+                    status_value="retrying_after_provider_context_rejection",
+                )
+                if not final_diagnostics.get("fitsModelContext"):
+                    timings["finalAnswerOpenrouterMs"] = _elapsed_ms(openrouter_started_at)
+                    return _complete_backend_fallback_stage(
+                        db,
+                        job,
+                        snapshot,
+                        final_diagnostics,
+                        timings,
+                        reason_code=PROVIDER_CONTEXT_OVERFLOW_CODE,
+                        final_status="backend_fallback_after_provider_context_rejection",
+                        warning=(
+                            "Данные аудита собраны, но более компактная финальная проекция не поместилась "
+                            "в безопасный бюджет; сохранён backend-результат."
+                        ),
+                    )
+                _record_provider_attempt(snapshot, "final")
+                job.context_snapshot_json = _json_dump(snapshot)
+                db.commit()
+                try:
+                    response = await _call_audit_provider(
+                        stage, job.model, prompt, max_tokens=job.max_tokens,
+                        max_tokens_cap=AI_AUDIT_FINAL_MAX_TOKENS,
+                        timeout=AUDIT_STAGE_PROVIDER_TIMEOUTS[stage],
+                    )
+                except Exception as retry_exc:
+                    if not is_provider_context_overflow(retry_exc):
+                        raise
+                    final_diagnostics["providerContextRejected"] = True
+                    final_diagnostics["providerContextErrorCode"] = PROVIDER_CONTEXT_OVERFLOW_CODE
+                    timings["finalAnswerOpenrouterMs"] = _elapsed_ms(openrouter_started_at)
+                    return _complete_backend_fallback_stage(
+                        db,
+                        job,
+                        snapshot,
+                        final_diagnostics,
+                        timings,
+                        reason_code=PROVIDER_CONTEXT_OVERFLOW_CODE,
+                        final_status="backend_fallback_after_provider_context_rejection",
+                        warning=(
+                            "Данные аудита собраны, но провайдер повторно отклонил компактный контекст; "
+                            "расширенный AI-текст заменён безопасным backend-результатом."
+                        ),
+                    )
             job, owns_result = _reload_stage_owner(
                 db,
                 job_id,
@@ -4448,6 +5244,12 @@ async def advance_audit_job(
                 return job
             timings["finalAnswerOpenrouterMs"] = _elapsed_ms(openrouter_started_at)
             _record_provider_response(snapshot, response)
+            _record_final_generation_diagnostics(
+                snapshot,
+                job,
+                final_diagnostics,
+                status_value="provider_completed",
+            )
             final_returned_model = str(response.get("model") or job.model)
             _audit_models(snapshot, job.model)["final_returned_model"] = final_returned_model
             job.context_snapshot_json = _json_dump(snapshot)
@@ -4485,6 +5287,8 @@ async def advance_audit_job(
                 "warnings": warnings,
                 "finishReason": finish_reason,
                 "truncated": truncated,
+                "compactRetryAvailable": truncated,
+                "backendFallbackUsed": False,
                 "completeness": "truncated" if truncated else ("structured" if structured else "fallback"),
                 "analysisPeriod": snapshot.get("analysisPeriod") or {},
                 "cachePolicy": (snapshot.get("metadata") or {}).get("cachePolicy") or "fresh",
