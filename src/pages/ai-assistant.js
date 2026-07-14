@@ -277,6 +277,7 @@ function renderAuditTechnicalDiagnostics(metadata, runtime, escapeHtml, result =
     retrying_after_provider_context_rejection: 'повторяем с более компактным контекстом',
     provider_completed: 'AI-отчёт сформирован',
     backend_fallback: 'сохранён безопасный backend-результат',
+    backend_fallback_missing_mandatory_evidence: 'аудит завершён с неполным покрытием обязательных данных',
     backend_fallback_after_provider_context_rejection: 'сохранён backend-результат после отказа провайдера',
     backend_fallback_after_json_parse: 'ответ модели не удалось разобрать; показан безопасный backend-отчёт',
     backend_fallback_after_schema_validation: 'ответ модели не прошёл структурный контракт; показан безопасный backend-отчёт',
@@ -359,6 +360,55 @@ function renderAuditInvestigationTree(rounds, escapeHtml) {
       </div>
     </details>
   `;
+}
+
+function renderAuditEvidenceCoverage(job, escapeHtml) {
+  const coverage = job?.context_metadata?.evidenceCoverage || job?.result?.evidenceCoverage;
+  if (!coverage) return '';
+  const summary = coverage.summary || {};
+  const state = coverage.completionState || 'legacy_unknown';
+  const stateLabels = {
+    complete: 'Обязательные данные собраны',
+    partial_coverage: 'Аудит завершён с частичным покрытием',
+    blocked_missing_evidence: 'Аудит не получил часть обязательных данных',
+    legacy_unknown: 'Полнота старого аудита не определена',
+  };
+  const statusLabels = {
+    satisfied: 'Собрано', partial: 'Частично', blocked: 'Заблокировано',
+    missing: 'Не собрано', processing: 'Загружается', not_applicable: 'Неприменимо',
+  };
+  const signalLabels = {
+    high_cpa: 'Высокий CPA', spend_without_conversions: 'Расход без конверсий',
+    low_data_volume: 'Мало данных', good_campaign_do_not_touch: 'Стабильная кампания',
+    tracking_issue_suspected: 'Проверка трекинга', brand_campaign_cannibalization: 'Брендовая каннибализация',
+    yan_low_quality_placements: 'Некачественные площадки РСЯ', search_query_waste: 'Нерелевантные запросы',
+    budget_spike: 'Скачок расхода', learning_strategy_do_not_touch: 'Обучение стратегии',
+  };
+  const rows = (coverage.requirements || []).map((item) => `<tr>
+    <td>${escapeHtml(item.campaignName || 'Кампания')}</td>
+    <td>${escapeHtml(signalLabels[item.signal] || item.signal || 'Сигнал')}</td>
+    <td>${escapeHtml(auditDimensionLabel(item.dimension))}</td>
+    <td>${escapeHtml(statusLabels[item.status] || item.status || 'Не собрано')}</td>
+    <td>${escapeHtml(auditSourceLabel(item.source))}</td>
+    <td>${escapeHtml(item.limitations?.[0] || item.reasonCode || '—')}</td>
+  </tr>`).join('');
+  const isOpen = ['partial_coverage', 'blocked_missing_evidence'].includes(state);
+  return `<details class="quietDetails" ${isOpen ? 'open' : ''} data-audit-evidence-coverage>
+    <summary>Полнота обязательных данных · ${escapeHtml(stateLabels[state] || state)}</summary>
+    <div class="aiAuditRequestCounters">
+      <span><strong>${escapeHtml(String(summary.requiredTotal || 0))}</strong> обязательно</span>
+      <span><strong>${escapeHtml(String(summary.satisfied || 0))}</strong> собрано</span>
+      <span><strong>${escapeHtml(String(summary.partial || 0))}</strong> частично</span>
+      <span><strong>${escapeHtml(String(summary.unavailable || 0))}</strong> недоступно</span>
+      <span><strong>${escapeHtml(String(summary.notApplicable || 0))}</strong> неприменимо</span>
+      <span><strong>${escapeHtml(String(summary.blocked || 0))}</strong> заблокировано</span>
+      <span><strong>${escapeHtml(String(summary.missing || 0))}</strong> не собрано</span>
+      <span><strong>${escapeHtml(String(summary.processing || 0))}</strong> в обработке</span>
+    </div>
+    ${state === 'blocked_missing_evidence' ? '<aside class="aiAuditNotice">Полный причинный аудит ограничен: недостающие обязательные данные не заменяются предположениями.</aside>' : ''}
+    ${state === 'partial_coverage' ? '<aside class="aiAuditNotice">Часть срезов доступна не полностью. Выводы по ним помечены как ограниченные.</aside>' : ''}
+    ${rows ? `<div class="markdownTableWrap"><table><thead><tr><th>Кампания</th><th>Сигнал</th><th>Обязательные данные</th><th>Статус</th><th>Источник</th><th>Причина / ограничение</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<p>Для старого аудита детальный реестр не сохранён.</p>'}
+  </details>`;
 }
 
 function safeAuditJobErrorMessage(job) {
@@ -458,6 +508,7 @@ export function renderAiAuditJob({
             ${dataRequests.freshestDataAt ? `<small>Свежесть данных: ${escapeHtml(String(dataRequests.freshestDataAt))}.</small>` : ''}
           </div>
         ` : ''}
+        ${renderAuditEvidenceCoverage(aiAuditJob, escapeHtml)}
         ${renderAuditInvestigationTree(publicRounds, escapeHtml)}
         ${renderAuditRequestTrace(aiAuditJob.context_metadata || {}, escapeHtml)}
         ${renderAuditTechnicalDiagnostics(aiAuditJob.context_metadata || {}, runtime, escapeHtml, aiAuditJob.result)}
@@ -569,7 +620,12 @@ function auditVerificationLabel(status) {
 
 function auditDimensionLabel(value) {
   return {
+    campaign_performance: 'эффективность кампании', conversions_by_goal: 'конверсии по выбранным целям',
+    campaign_daily_dynamics: 'дневная динамика кампании', campaign_settings: 'настройки кампании',
+    campaign_strategy: 'стратегия кампании', campaign_status: 'статус кампании',
     ad_groups: 'группы', keywords: 'ключевые фразы', search_queries: 'поисковые запросы',
+    ad_group_performance: 'эффективность групп', keyword_performance: 'эффективность ключевых фраз',
+    autotargeting: 'автотаргетинг', bid_modifiers: 'корректировки ставок',
     ads: 'объявления и креативы', landing_pages: 'посадочные страницы', placements: 'площадки',
     audiences: 'аудитории', retargeting_segments: 'сегменты ретаргетинга',
     audience_exclusions: 'исключения аудиторий', devices: 'устройства', geo: 'география',

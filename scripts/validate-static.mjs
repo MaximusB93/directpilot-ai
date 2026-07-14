@@ -247,6 +247,36 @@ if (providerContextFallbackSmoke.includes('data-ai-audit-compact-retry')
   || !providerContextFallbackSmoke.includes('L3')) {
   failed.push(['provider context fallback UI smoke', false]);
 }
+const evidenceCoverageSmoke = renderAiAuditJob({
+  selectedClientId: 'client-1',
+  aiAuditJob: {
+    job_id: 'audit-coverage', status: 'completed', current_stage: 'finalize', progress_percent: 100,
+    result: { backendFallbackUsed: true, compactRetryAvailable: false },
+    context_metadata: {
+      evidenceCoverage: {
+        completionState: 'blocked_missing_evidence',
+        summary: {
+          requiredTotal: 4, satisfied: 1, partial: 1, unavailable: 1,
+          notApplicable: 1, blocked: 1, missing: 0, processing: 0,
+        },
+        requirements: [{
+          campaignName: 'Search A', signal: 'high_cpa', dimension: 'search_queries',
+          status: 'blocked', source: null, reasonCode: 'mandatory_request_budget_exhausted',
+        }],
+      },
+      runtime: { finalGenerationStatus: 'backend_fallback_missing_mandatory_evidence' },
+    },
+  },
+  escapeHtml,
+});
+if (!evidenceCoverageSmoke.includes('Полнота обязательных данных')
+  || !evidenceCoverageSmoke.includes('Аудит не получил часть обязательных данных')
+  || !evidenceCoverageSmoke.includes('недоступно')
+  || !evidenceCoverageSmoke.includes('неприменимо')
+  || !evidenceCoverageSmoke.includes('Search A')
+  || evidenceCoverageSmoke.includes('requestIds')) {
+  failed.push(['audit evidence coverage UI smoke', false]);
+}
 const schemaFallbackSmoke = renderAiAuditJob({
   selectedClientId: 'client-1',
   aiAuditJob: {

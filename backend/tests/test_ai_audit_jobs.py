@@ -429,10 +429,13 @@ def test_full_staged_flow_runs_planning_verification_and_final_answer(monkeypatc
         if job.status == "completed":
             break
     assert job.status == "completed"
-    assert stages[:8] == [
+    expected_order = [
         "create_investigation_plan", "validate_data_requests", "collect_live_data",
-        "verify_hypotheses", "plan_next_investigation_round", "generate_answer", "finalize", "finalize",
+        "verify_hypotheses", "plan_next_investigation_round", "generate_answer", "finalize",
     ]
+    cursor = -1
+    for expected_stage in expected_order:
+        cursor = stages.index(expected_stage, cursor + 1)
     assert audit_jobs._json_load(job.prompt_snapshot_json, {})["fullPromptStored"] is False
     assert job.answer_text.startswith("Период анализа: 10.06.2026–09.07.2026, 30 дней.")
     assert audit_jobs.audit_job_response(job).result["structured"]["critical_findings"][0]["campaign_name"] == "Search"
@@ -444,7 +447,10 @@ def test_full_staged_flow_runs_planning_verification_and_final_answer(monkeypatc
     assert runtime["finalProviderCallsCount"] == 1
     assert runtime["helperFallbacksCount"] == 0
     assert runtime["investigationRound"] == 1
-    assert runtime["requestsCount"] == 2
+    assert runtime["requestsCount"] >= 2
+    assert runtime["policyVersion"] == "audit-evidence-v1"
+    assert runtime["policyRequestsAdded"] > 0
+    assert runtime["mandatoryRequirementsCount"] > 0
     assert runtime["plannerPromptTokensEstimated"] > 0
     assert runtime["verificationPromptTokensEstimated"] > 0
     snapshot = audit_jobs._json_load(job.context_snapshot_json, {})
@@ -2472,6 +2478,7 @@ def test_compact_retry_reuses_existing_evidence_and_starts_from_l2(monkeypatch):
 
 def test_final_projection_is_an_allowlist_without_private_ids_or_samples():
     snapshot = _realistic_oversized_final_snapshot()
+    audit_jobs.ensure_evidence_coverage_registry(snapshot)
     snapshot["client_id"] = "private-client-id"
     snapshot["organization_id"] = "private-organization-id"
     snapshot["access_token"] = "private-access-token"
@@ -2492,6 +2499,10 @@ def test_final_projection_is_an_allowlist_without_private_ids_or_samples():
     assert "embedded-oauth" not in serialized
     assert "embedded-hash" not in serialized
     assert "drilldownResults" not in serialized
+    assert projection["evidenceCoverageSummary"]["required"] > 0
+    assert isinstance(projection["missingRequiredEvidence"], list)
+    assert isinstance(projection["partialRequiredEvidence"], list)
+    assert "requestIds" not in serialized
 
 
 def test_cancel_before_generation_and_preserve_completed_result():
@@ -2634,3 +2645,42 @@ def test_production_like_result_is_structured_and_unsafe_unverified_actions_are_
     assert structured["action_plan"][1]["action"] == "review_search_queries"
     assert structured["tracking_and_goals"]["goal_conversions"] != 999999
     assert any("missing_hypothesis_id" in item for item in structured["limitations"])
+
+
+def test_completion_gate_blocks_final_provider_when_mandatory_evidence_is_missing(monkeypatch):
+    db = _db()
+    job = _create(db)
+    snapshot = _realistic_oversized_final_snapshot()
+    audit_jobs.ensure_evidence_coverage_registry(snapshot)
+    runtime = audit_jobs._audit_runtime(snapshot)
+    runtime["requestsCount"] = audit_jobs.MAX_AUDIT_DATA_REQUESTS
+    runtime["completionGateRemediationAttempted"] = True
+    job.status = "context_ready"
+    job.current_stage = "generate_answer"
+    job.context_snapshot_json = audit_jobs._json_dump(snapshot)
+    db.commit()
+    calls = {"provider": 0, "direct": 0}
+
+    async def forbidden_provider(*args, **kwargs):
+        calls["provider"] += 1
+        raise AssertionError("Blocked evidence coverage must not call the final provider")
+
+    def forbidden_direct(*args, **kwargs):
+        calls["direct"] += 1
+        raise AssertionError("Completion fallback must not recollect Direct evidence")
+
+    monkeypatch.setattr(audit_jobs, "generate_openrouter_response", forbidden_provider)
+    monkeypatch.setattr(audit_jobs, "collect_audit_data_requests", forbidden_direct)
+    generated = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
+    completed = asyncio.run(audit_jobs.advance_audit_job(db, generated.id, organization_id="org-a"))
+    result = audit_jobs._json_load(completed.result_json, {})
+    public = audit_jobs.audit_job_response(completed, db).model_dump(mode="json")
+
+    assert completed.status == "completed"
+    assert calls == {"provider": 0, "direct": 0}
+    assert result["backendFallbackUsed"] is True
+    assert result["auditCompletionState"] == "blocked_missing_evidence"
+    assert result["completeness"] == "blocked_missing_evidence"
+    assert result["structured"]["action_plan"] == []
+    assert public["context_metadata"]["evidenceCoverage"]["completionState"] == "blocked_missing_evidence"
+    assert "requestIds" not in audit_jobs._json_dump(public["context_metadata"]["evidenceCoverage"])
