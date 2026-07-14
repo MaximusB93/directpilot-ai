@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any, Iterable, get_args
 
-from app.schemas import AuditDataRequest
+from app.schemas import AuditDataRequest, AuditInvestigationHypothesis
 from app.services.yandex_direct_read_capabilities import (
     ALL_SUBTYPES,
     YANDEX_DIRECT_READ_CAPABILITIES,
@@ -25,6 +25,65 @@ CANONICAL_AUDIT_SIGNALS = frozenset({
     "learning_strategy_do_not_touch",
 })
 
+SIGNAL_PRIORITY_TIERS: dict[str, int] = {
+    "tracking_issue_suspected": 0,
+    "spend_without_conversions": 0,
+    "high_cpa": 1,
+    "search_query_waste": 1,
+    "yan_low_quality_placements": 1,
+    "budget_spike": 1,
+    "brand_campaign_cannibalization": 1,
+    "learning_strategy_do_not_touch": 2,
+    "low_data_volume": 2,
+    "good_campaign_do_not_touch": 3,
+}
+
+SIGNAL_PRIORITY_ORDER = {
+    signal: rank
+    for rank, signal in enumerate((
+        "tracking_issue_suspected",
+        "spend_without_conversions",
+        "high_cpa",
+        "search_query_waste",
+        "yan_low_quality_placements",
+        "budget_spike",
+        "brand_campaign_cannibalization",
+        "learning_strategy_do_not_touch",
+        "low_data_volume",
+        "good_campaign_do_not_touch",
+    ))
+}
+
+# These are the metrics that the current deterministic build_observed_facts()
+# implementation can actually emit. Keep this allowlist synchronized in tests;
+# a policy string alone is not a runtime activation path.
+RUNTIME_OBSERVED_FACT_METRICS = frozenset({
+    "campaign_health",
+    "conversion_data_unknown",
+    "spend_without_goal_conversions",
+    "cpa_above_target",
+    "low_ctr",
+    "low_data",
+    "good_campaign",
+    "goal_conversions_drop",
+    "budget_spike",
+    "stable_efficiency",
+    "tracking_inconsistency",
+})
+
+NOT_AUTO_DETECTABLE_SIGNALS: dict[str, dict[str, str]] = {
+    "learning_strategy_do_not_touch": {
+        "status": "not_auto_detectable",
+        "reasonCode": "trusted_strategy_learning_status_unavailable",
+        "description": "DirectPilot не получает надёжный статус обучения стратегии из текущего baseline.",
+    },
+    "brand_campaign_cannibalization": {
+        "status": "not_auto_detectable",
+        "reasonCode": "trusted_brand_share_or_incrementality_unavailable",
+        "description": "DirectPilot не рассчитывает brand share/incrementality и не подтверждает каннибализацию по названию.",
+    },
+}
+
 _FACT_SIGNAL_MAP = {
     "cpa_above_target": "high_cpa",
     "spend_without_goal_conversions": "spend_without_conversions",
@@ -34,8 +93,6 @@ _FACT_SIGNAL_MAP = {
     "tracking_inconsistency": "tracking_issue_suspected",
     "conversion_data_unknown": "tracking_issue_suspected",
     "budget_spike": "budget_spike",
-    "strategy_learning": "learning_strategy_do_not_touch",
-    "brand_share_too_high": "brand_campaign_cannibalization",
 }
 
 _HYPOTHESIS_SIGNAL_MAP = {
@@ -97,12 +154,12 @@ _YAN_RETARGETING_DETAIL = (
 AUDIT_EVIDENCE_POLICY: dict[str, dict[str, EvidenceRule]] = {
     "high_cpa": {
         "search": EvidenceRule(
-            _BASE_PERFORMANCE + _SEARCH_DETAIL + _SEARCH_SEGMENTS + ("campaign_daily_dynamics",),
+            ("conversions_by_goal", "campaign_performance") + _SEARCH_DETAIL + _SEARCH_SEGMENTS + ("campaign_daily_dynamics",),
             ("autotargeting", "bid_modifiers", "landing_pages"),
             ("placements", "retargeting_segments", "frequency"),
         ),
         "brand_search": EvidenceRule(
-            _BASE_PERFORMANCE + _SEARCH_DETAIL + _SEARCH_SEGMENTS + ("campaign_daily_dynamics",),
+            ("conversions_by_goal", "campaign_performance") + _SEARCH_DETAIL + _SEARCH_SEGMENTS + ("campaign_daily_dynamics",),
             ("autotargeting", "bid_modifiers", "landing_pages"),
             ("placements", "retargeting_segments", "frequency"),
         ),
@@ -123,27 +180,27 @@ AUDIT_EVIDENCE_POLICY: dict[str, dict[str, EvidenceRule]] = {
     },
     "spend_without_conversions": {
         "search": EvidenceRule(
-            _BASE_PERFORMANCE + ("goals",) + _SEARCH_DETAIL + _SEARCH_SEGMENTS,
+            ("goals", "conversions_by_goal", "campaign_performance") + _SEARCH_DETAIL + _SEARCH_SEGMENTS,
             ("conversion_sources", "landing_pages", "campaign_strategy", "autotargeting"),
             ("placements", "retargeting_segments", "frequency"),
         ),
         "brand_search": EvidenceRule(
-            _BASE_PERFORMANCE + ("goals",) + _SEARCH_DETAIL + _SEARCH_SEGMENTS,
+            ("goals", "conversions_by_goal", "campaign_performance") + _SEARCH_DETAIL + _SEARCH_SEGMENTS,
             ("conversion_sources", "landing_pages", "campaign_strategy", "autotargeting"),
             ("placements", "retargeting_segments", "frequency"),
         ),
         "yan_prospecting": EvidenceRule(
-            _BASE_PERFORMANCE + ("goals",) + _YAN_PROSPECTING_DETAIL,
+            ("goals", "conversions_by_goal", "campaign_performance") + _YAN_PROSPECTING_DETAIL,
             ("conversion_sources", "landing_pages", "campaign_strategy"),
             ("search_queries", "keywords", "keyword_performance"),
         ),
         "yan_retargeting": EvidenceRule(
-            _BASE_PERFORMANCE + ("goals",) + _YAN_RETARGETING_DETAIL,
+            ("goals", "conversions_by_goal", "campaign_performance") + _YAN_RETARGETING_DETAIL,
             ("conversion_sources", "landing_pages", "campaign_strategy"),
             ("search_queries", "keywords", "keyword_performance"),
         ),
         "unknown": EvidenceRule(
-            _BASE_PERFORMANCE + ("goals", "campaign_status"),
+            ("goals", "conversions_by_goal", "campaign_performance", "campaign_status"),
             ("conversion_sources", "landing_pages", "campaign_strategy"),
         ),
     },
@@ -264,6 +321,37 @@ RECOMMENDATION_EVIDENCE_DIMENSIONS: dict[str, tuple[str, ...]] = {
 }
 
 
+def canonical_signal_activation_status() -> dict[str, dict[str, Any]]:
+    hypothesis_types = set(get_args(
+        AuditInvestigationHypothesis.model_fields["hypothesis_type"].annotation
+    ))
+    result: dict[str, dict[str, Any]] = {}
+    for signal in sorted(CANONICAL_AUDIT_SIGNALS):
+        fact_metrics = sorted(
+            metric
+            for metric, mapped_signal in _FACT_SIGNAL_MAP.items()
+            if mapped_signal == signal and metric in RUNTIME_OBSERVED_FACT_METRICS
+        )
+        hypothesis_types_for_signal = sorted(
+            hypothesis_type
+            for hypothesis_type, mapped_signal in _HYPOTHESIS_SIGNAL_MAP.items()
+            if mapped_signal == signal and hypothesis_type in hypothesis_types
+        )
+        if fact_metrics or hypothesis_types_for_signal:
+            result[signal] = {
+                "status": "auto_detectable",
+                "factMetrics": fact_metrics,
+                "hypothesisTypes": hypothesis_types_for_signal,
+            }
+        else:
+            result[signal] = dict(NOT_AUTO_DETECTABLE_SIGNALS.get(signal) or {
+                "status": "unsupported",
+                "reasonCode": "runtime_activation_path_missing",
+                "description": "Для canonical signal не определён trusted runtime activation path.",
+            })
+    return result
+
+
 def resolve_capability(dimension: str, campaign_subtype: str) -> str | None:
     candidates = DIMENSION_CAPABILITY_CANDIDATES.get(dimension, ())
     applicable = [
@@ -315,9 +403,19 @@ def detect_canonical_audit_signals(snapshot: dict[str, Any]) -> list[dict[str, A
             "campaignSubtype": subtype,
             "factIds": [],
             "hypothesisId": hypothesis_id,
+            "trustedDeviation": 0.0,
         })
-        current["factIds"] = list(dict.fromkeys(current["factIds"] + [str(item) for item in fact_ids if item]))[:5]
+        trusted_fact_ids = [str(item) for item in fact_ids if item]
+        current["factIds"] = list(dict.fromkeys(current["factIds"] + trusted_fact_ids))[:5]
         current["hypothesisId"] = current.get("hypothesisId") or hypothesis_id
+        deviations = []
+        for fact_id in trusted_fact_ids:
+            try:
+                deviations.append(abs(float(facts.get(fact_id, {}).get("deviation"))))
+            except (TypeError, ValueError):
+                continue
+        if deviations:
+            current["trustedDeviation"] = max(float(current.get("trustedDeviation") or 0), *deviations)
 
     for fact_id, fact in facts.items():
         signal = _FACT_SIGNAL_MAP.get(str(fact.get("metric") or ""))
@@ -343,7 +441,12 @@ def detect_canonical_audit_signals(snapshot: dict[str, Any]) -> list[dict[str, A
         trusted = any(bool(facts[item].get("sufficient_data")) for item in linked)
         if signal and classification and (trusted or signal == "tracking_issue_suspected"):
             add(signal, campaign_name, classification, linked, str(hypothesis_id))
-    return sorted(detected.values(), key=lambda item: (item["campaignName"], item["signal"]))
+    return sorted(detected.values(), key=lambda item: (
+        SIGNAL_PRIORITY_TIERS[item["signal"]],
+        SIGNAL_PRIORITY_ORDER[item["signal"]],
+        -float(item.get("trustedDeviation") or 0),
+        item["campaignName"].casefold(),
+    ))
 
 
 def _requirement_id(signal: str, subtype: str, campaign_name: str, dimension: str) -> str:
@@ -390,7 +493,9 @@ def ensure_evidence_coverage_registry(snapshot: dict[str, Any]) -> list[dict[str
         rule = AUDIT_EVIDENCE_POLICY.get(signal, {}).get(subtype)
         if rule is None:
             continue
-        for dimension in rule.required:
+        priority_tier = SIGNAL_PRIORITY_TIERS[signal]
+        priority_label = "high" if priority_tier <= 1 else "medium" if priority_tier == 2 else "low"
+        for dimension_rank, dimension in enumerate(rule.required):
             requirement_id = _requirement_id(signal, subtype, signal_item["campaignName"], dimension)
             prior = existing.get(requirement_id, {})
             status, source, rows = _baseline_status(snapshot, signal_item["campaignName"], dimension)
@@ -409,7 +514,15 @@ def ensure_evidence_coverage_registry(snapshot: dict[str, Any]) -> list[dict[str
                 "dimension": dimension,
                 "capabilityCandidates": list(DIMENSION_CAPABILITY_CANDIDATES[dimension]),
                 "resolvedCapability": capability,
-                "priority": "high",
+                "priority": priority_label,
+                "priorityTier": priority_tier,
+                "priorityRank": (
+                    priority_tier * 10_000
+                    + SIGNAL_PRIORITY_ORDER[signal] * 100
+                    + dimension_rank
+                ),
+                "dimensionPriority": dimension_rank,
+                "trustedDeviation": float(signal_item.get("trustedDeviation") or 0),
                 "required": True,
                 "status": status,
                 "requestIds": list(prior.get("requestIds") or []),
@@ -430,6 +543,14 @@ def ensure_evidence_coverage_registry(snapshot: dict[str, Any]) -> list[dict[str
             "campaignSubtype": subtype,
             "dimensions": list(rule.forbidden),
         })
+    registry.sort(key=lambda item: (
+        int(item["priorityTier"]),
+        SIGNAL_PRIORITY_ORDER[item["signal"]],
+        int(item["dimensionPriority"]),
+        -float(item.get("trustedDeviation") or 0),
+        str(item["campaignName"]).casefold(),
+        str(item["requirementId"]),
+    ))
     snapshot["policyVersion"] = AUDIT_EVIDENCE_POLICY_VERSION
     snapshot["signalsDetected"] = signals
     snapshot["evidenceCoverageRegistry"] = registry
@@ -621,7 +742,7 @@ def merge_mandatory_and_ai_requests(
                 },
                 filters={"campaign_name": requirement["campaignName"]},
                 metrics=list(capability_definition.allowed_metrics)[:12],
-                priority="high",
+                priority=str(requirement["priority"]),
                 required_for_conclusion=True,
                 data_preference="live_preferred",
             )
@@ -631,7 +752,7 @@ def merge_mandatory_and_ai_requests(
             request.hypothesis_id = str(requirement["hypothesisId"])
             request.reason = f"Обязательный срез policy: {requirement['reasonCode']}."
             request.required_for_conclusion = True
-            request.priority = "high"
+            request.priority = str(requirement["priority"])
             stats["aiRequestsAdded"] += 1
         requirement["status"] = "planned"
         requirement["requestIds"] = list(dict.fromkeys(requirement["requestIds"] + [request.request_id]))
@@ -744,6 +865,30 @@ def validate_audit_evidence_policy() -> list[str]:
                 for capability in DIMENSION_CAPABILITY_CANDIDATES.get(dimension, ()):
                     if capability not in YANDEX_DIRECT_READ_CAPABILITIES:
                         errors.append(f"unknown capability: {capability}")
+    missing_rules = CANONICAL_AUDIT_SIGNALS - set(AUDIT_EVIDENCE_POLICY)
+    for signal in sorted(missing_rules):
+        errors.append(f"canonical signal has no policy rule: {signal}")
+    for metric, signal in sorted(_FACT_SIGNAL_MAP.items()):
+        if metric not in RUNTIME_OBSERVED_FACT_METRICS:
+            errors.append(f"fact activation metric is not emitted at runtime: {signal}.{metric}")
+    schema_hypothesis_types = set(get_args(
+        AuditInvestigationHypothesis.model_fields["hypothesis_type"].annotation
+    ))
+    for hypothesis_type, signal in sorted(_HYPOTHESIS_SIGNAL_MAP.items()):
+        if hypothesis_type not in schema_hypothesis_types:
+            errors.append(
+                f"hypothesis activation type is absent from schema: {signal}.{hypothesis_type}"
+            )
+    activation = canonical_signal_activation_status()
+    for signal in sorted(CANONICAL_AUDIT_SIGNALS):
+        status = str((activation.get(signal) or {}).get("status") or "unsupported")
+        if status not in {"auto_detectable", "not_auto_detectable"}:
+            errors.append(f"canonical signal has no runtime activation contract: {signal}")
+        if status == "not_auto_detectable" and not (
+            (activation[signal].get("reasonCode") or "").strip()
+            and (activation[signal].get("description") or "").strip()
+        ):
+            errors.append(f"not_auto_detectable signal is undocumented: {signal}")
     for code, dimensions in RECOMMENDATION_EVIDENCE_DIMENSIONS.items():
         if not code:
             errors.append("empty recommendation code")

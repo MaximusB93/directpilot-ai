@@ -12,6 +12,7 @@ sys.path.insert(0, str(REPO_ROOT / "backend"))
 from app.services.audit_evidence_policy import (  # noqa: E402
     AUDIT_EVIDENCE_POLICY,
     RECOMMENDATION_EVIDENCE_DIMENSIONS,
+    canonical_signal_activation_status,
     validate_audit_evidence_policy,
 )
 
@@ -141,11 +142,16 @@ def main() -> None:
     if dataset is None or dataset.suffix.lower() != ".xlsx" or not dataset.is_file():
         raise SystemExit("Provide an existing XLSX dataset path.")
     counts = validate_dataset(dataset.resolve())
+    activation = canonical_signal_activation_status()
+    auto_detectable = sum(1 for item in activation.values() if item["status"] == "auto_detectable")
+    explicitly_limited = sum(1 for item in activation.values() if item["status"] == "not_auto_detectable")
     print(
         "Audit evidence policy validated: "
         f"dev={counts[ALLOWED_DESIGN_SPLIT]}, "
         f"test={counts[REGRESSION_SPLIT]}, "
-        f"holdout_count_only={counts[HOLDOUT_SPLIT]}."
+        f"holdout_count_only={counts[HOLDOUT_SPLIT]}, "
+        f"auto_detectable={auto_detectable}, "
+        f"explicitly_limited={explicitly_limited}."
     )
 
 
