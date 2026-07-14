@@ -361,6 +361,19 @@ function renderAuditInvestigationTree(rounds, escapeHtml) {
   `;
 }
 
+function safeAuditJobErrorMessage(job) {
+  const message = String(job?.error_message || '').trim();
+  if (!message) return '';
+  const normalized = message.toLowerCase();
+  const internalValidationError = ['validation error for', 'validation errors for', 'errors.pydantic.dev', 'input_value=']
+    .some((marker) => normalized.includes(marker));
+  if (job?.error_code === 'ai_audit_result_schema_error' || internalValidationError) {
+    return 'Не удалось сформировать итоговый структурированный отчёт. Собранные данные сохранены.';
+  }
+  return message;
+}
+
+
 export function renderAiAuditJob({
   selectedClientId,
   aiAuditJob = null,
@@ -421,6 +434,7 @@ export function renderAiAuditJob({
     .includes(runtime.finalGenerationStatus);
   const helperWarnings = (aiAuditJob?.context_metadata?.warnings || [])
     .filter((item) => item?.code === 'planner_fallback_used' || item?.code === 'verification_fallback_used');
+  const publicErrorMessage = safeAuditJobErrorMessage(aiAuditJob);
   return `
     <section class="panel aiAuditJobPanel" data-ai-audit-panel>
       <div class="panelHeader">
@@ -450,7 +464,7 @@ export function renderAiAuditJob({
         ${compactGenerationActive ? '<aside class="aiAuditNotice"><strong>Компактная генерация использует уже собранные доказательства.</strong><p>Повторные запросы к Яндекс.Директу не выполняются.</p></aside>' : ''}
         ${helperWarnings.length && !aiAuditJob.result ? `<aside class="aiAuditNotice"><strong>Аудит продолжен безопасно.</strong>${helperWarnings.map((item) => `<p>${escapeHtml(item.message || '')}</p>`).join('')}</aside>` : ''}
         ${aiAuditJob.status === 'completed' && tokenUsage.total ? `<div class="aiAuditUsage"><span>Prompt tokens: ${escapeHtml(String(tokenUsage.prompt || 0))}</span><span>Completion tokens: ${escapeHtml(String(tokenUsage.completion || 0))}</span><span>Total tokens: ${escapeHtml(String(tokenUsage.total || 0))}</span></div>` : ''}
-        ${aiAuditJob.error_message ? `<div class="authStatus integrationStatus">${escapeHtml(aiAuditJob.error_message)}</div>` : ''}
+        ${publicErrorMessage ? `<div class="authStatus integrationStatus">${escapeHtml(publicErrorMessage)}</div>` : ''}
         ${aiAuditJob.answer || aiAuditJob.result ? `<div><h4>Результат аудита</h4>${renderAiAuditResult(aiAuditJob.result, aiAuditJob.answer, escapeHtml, aiAuditJob)}</div>` : ''}
         <div class="heroActions">
           ${!terminal ? '<button class="secondaryButton" data-ai-audit-cancel>Отменить</button>' : ''}
