@@ -63,6 +63,15 @@ from app.services.audit_evidence_store import (
     load_audit_evidence_results,
     save_audit_evidence_results,
 )
+from app.services.audit_evidence_policy import (
+    AUDIT_EVIDENCE_POLICY_VERSION,
+    evidence_dimension_forbidden,
+    ensure_evidence_coverage_registry,
+    evaluate_audit_evidence_coverage,
+    merge_mandatory_and_ai_requests,
+    public_evidence_coverage,
+    refresh_evidence_coverage_registry,
+)
 from app.services.audit_public_trace import build_public_audit_trace
 from app.services.cascade_investigation import (
     MAX_DATA_REQUESTS_PER_AUDIT,
@@ -1831,6 +1840,19 @@ def _next_round_requests_from_plan(
             return
         if item.capability_id in set(hypothesis.get("forbidden_capabilities") or []):
             return
+        if evidence_dimension_forbidden(
+            snapshot,
+            str(hypothesis.get("campaign_name") or ""),
+            item.capability_id,
+        ):
+            reject_plan_item(
+                item.hypothesis_id,
+                item.capability_id,
+                str(hypothesis.get("campaign_name") or ""),
+                "forbidden_dimension_for_campaign_subtype",
+                "Capability запрещён deterministic evidence policy для этого типа кампании.",
+            )
+            return
         if not _capability_matches_hypothesis(hypothesis, item.capability_id):
             reject_plan_item(
                 item.hypothesis_id,
@@ -2521,6 +2543,20 @@ def build_final_audit_projection(
         if isinstance(item, dict) and item.get("message")
     )
     limitations = list(dict.fromkeys(value for value in warnings if value))[:limitation_limit]
+    policy_coverage = public_evidence_coverage(snapshot)
+    incomplete_requirements = [
+        item
+        for item in policy_coverage.get("requirements") or []
+        if item.get("status") in {"partial", "blocked", "missing", "processing"}
+    ][:20 if level < 2 else 10]
+    missing_requirements = [
+        item for item in incomplete_requirements
+        if item.get("status") in {"blocked", "missing", "processing"}
+    ]
+    partial_requirements = [
+        item for item in incomplete_requirements
+        if item.get("status") == "partial"
+    ]
 
     coverage = {}
     for key, value in (snapshot.get("dataCoverage") or {}).items():
@@ -2558,6 +2594,14 @@ def build_final_audit_projection(
         },
         "dataQualitySummaries": {"numericStateCounts": numeric_counts},
         "sourceSummaries": source_counts,
+        "auditCompletionState": policy_coverage.get("completionState"),
+        "evidenceCoverageSummary": {
+            **(policy_coverage.get("summary") or {}),
+            "required": int((policy_coverage.get("summary") or {}).get("requiredTotal") or 0),
+        },
+        "missingRequiredEvidence": missing_requirements,
+        "partialRequiredEvidence": partial_requirements,
+        "incompleteRequiredEvidence": incomplete_requirements,
         "limitations": limitations,
         "stopReason": _safe_final_text(
             (snapshot.get("auditRuntime") or {}).get("stopReason"), max_chars=300,
@@ -2681,6 +2725,11 @@ Scope: {scope_instruction}
 
 Final audit projection:
 {json.dumps(snapshot, ensure_ascii=False, indent=2)}
+
+Evidence policy обязателен: сначала проверь auditCompletionState и evidenceCoverageSummary.
+Если auditCompletionState=partial_coverage, явно перечисли ограничения и не выдавай частично подтверждённую причину за установленный факт.
+Если auditCompletionState=blocked_missing_evidence, полный причинный аудит не завершён: не формируй уверенный action_plan по затронутым сигналам и укажи недостающие обязательные данные.
+Статусы unavailable, partial и missing не заменяй нулевыми значениями.
 
 Верни только один валидный JSON-объект без Markdown fences и текста до/после JSON.
 Строгий контракт результата:
@@ -3268,6 +3317,27 @@ def build_backend_fallback_audit_result(
                 "next_data_needed": _bounded_strings(item.get("remainingDataNeeded"), 5),
             })
 
+    policy_coverage = public_evidence_coverage(snapshot)
+    completion_state = str(policy_coverage.get("completionState") or "complete")
+    incomplete_requirements = [
+        item
+        for item in policy_coverage.get("requirements") or []
+        if item.get("status") in {"partial", "blocked", "missing", "processing"}
+    ]
+    if completion_state == "blocked_missing_evidence":
+        findings = []
+        actions = []
+        for item in incomplete_requirements[:25]:
+            insufficient.append({
+                "campaign_name": str(item.get("campaignName") or "Аккаунт"),
+                "reason": (
+                    "Не собран обязательный срез данных "
+                    f"«{item.get('dimension') or 'unknown'}» для сигнала «{item.get('signal') or 'unknown'}»."
+                ),
+                "recommendation": "Проверить доступность read-only данных и повторить аудит.",
+                "next_data_needed": [str(item.get("dimension") or "unknown")],
+            })
+
     totals = projection.get("accountTotals") or {}
     raw_goal_conversions = (
         totals.get("goalConversions")
@@ -3290,6 +3360,14 @@ def build_backend_fallback_audit_result(
         f"Конверсии по выбранным целям: {goal_conversions_label}.",
     ]
     limitations = list(projection.get("limitations") or [])
+    if completion_state == "partial_coverage":
+        limitations.append(
+            "Часть обязательных срезов доступна не полностью; причинные выводы по ним ограничены."
+        )
+    elif completion_state == "blocked_missing_evidence":
+        limitations.append(
+            "Обязательные данные собраны не полностью; полный причинный аудит и план действий не сформированы."
+        )
     if reason_code == PROVIDER_CONTEXT_OVERFLOW_CODE:
         fallback_limitation = (
             "Провайдер отклонил фактический размер контекста; расширенный AI-отчёт заменён "
@@ -3321,6 +3399,11 @@ def build_backend_fallback_audit_result(
         executive_summary = (
             "Аудит завершён по собранным и проверенным read-only данным. Ответ модели не удалось "
             "безопасно разобрать, поэтому показан backend-результат."
+        )
+    if completion_state == "blocked_missing_evidence":
+        executive_summary = (
+            "Аудит завершён с неполным покрытием обязательных данных. Доступные факты сохранены, "
+            "но уверенные причинные выводы и план действий не сформированы."
         )
     if fallback_limitation not in limitations:
         limitations.append(fallback_limitation)
@@ -3356,7 +3439,11 @@ def build_backend_fallback_audit_result(
             "Не изменять бюджеты, ставки и статусы кампаний без явного подтверждения пользователя.",
         ],
         "limitations": limitations,
-        "conclusion": "Доступен безопасный backend-результат по уже собранным и проверенным данным.",
+        "conclusion": (
+            "Для полного вывода нужно собрать перечисленные обязательные данные."
+            if completion_state == "blocked_missing_evidence"
+            else "Доступен безопасный backend-результат по уже собранным и проверенным данным."
+        ),
     }
     validated = AiAuditResult.model_validate(candidate).model_dump(mode="json")
     return _enforce_verified_result(validated, snapshot)
@@ -3379,6 +3466,7 @@ def _complete_backend_fallback_stage(
     preserve_job_error: bool = True,
 ) -> AiAuditJob:
     structured = build_backend_fallback_audit_result(snapshot, job, reason_code=reason_code)
+    evidence_coverage = public_evidence_coverage(snapshot)
     warnings = _helper_warning_messages(snapshot)
     warnings.append(warning)
     _record_final_generation_diagnostics(
@@ -3414,7 +3502,13 @@ def _complete_backend_fallback_stage(
         "truncated": False,
         "compactRetryAvailable": False,
         "backendFallbackUsed": True,
-        "completeness": "backend_fallback",
+        "completeness": (
+            evidence_coverage["completionState"]
+            if snapshot.get("evidenceCoverageRegistry")
+            else "backend_fallback"
+        ),
+        "auditCompletionState": evidence_coverage["completionState"],
+        "evidenceCoverage": evidence_coverage,
         "analysisPeriod": snapshot.get("analysisPeriod") or {},
         "cachePolicy": (snapshot.get("metadata") or {}).get("cachePolicy") or "fresh",
         "directApiKnowledgeVersion": (snapshot.get("metadata") or {}).get("directApiKnowledgeVersion"),
@@ -3537,12 +3631,58 @@ def _audit_runtime(snapshot: dict[str, Any]) -> dict[str, Any]:
         "savedFallbacks": 0,
         "liveFailureReasons": {},
         "unavailableCapabilities": [],
+        "policyVersion": AUDIT_EVIDENCE_POLICY_VERSION,
+        "signalsDetected": 0,
+        "mandatoryRequirementsCount": 0,
+        "policyRequestsAdded": 0,
+        "aiRequestsAdded": 0,
+        "duplicateRequestsRemoved": 0,
+        "forbiddenRequestsRejected": 0,
+        "requirementsSatisfied": 0,
+        "requirementsPartial": 0,
+        "requirementsBlocked": 0,
+        "completionState": "complete",
+        "completionGateRuns": 0,
         "tokenUsage": {"prompt": 0, "completion": 0, "total": 0},
     }
     runtime = snapshot.setdefault("auditRuntime", {})
     for key, value in defaults.items():
         runtime.setdefault(key, value.copy() if isinstance(value, dict) else value)
     return runtime
+
+
+def _sync_policy_runtime(snapshot: dict[str, Any], coverage: dict[str, Any] | None = None) -> dict[str, Any]:
+    coverage = coverage or evaluate_audit_evidence_coverage(snapshot)
+    diagnostics = snapshot.get("evidencePolicyDiagnostics") or {}
+    runtime = _audit_runtime(snapshot)
+    runtime.update({
+        "policyVersion": AUDIT_EVIDENCE_POLICY_VERSION,
+        "signalsDetected": len(snapshot.get("signalsDetected") or []),
+        "mandatoryRequirementsCount": int(coverage.get("requiredTotal") or 0),
+        "policyRequestsAdded": int(diagnostics.get("policyRequestsAdded") or 0),
+        "aiRequestsAdded": int(diagnostics.get("aiRequestsAdded") or 0),
+        "duplicateRequestsRemoved": int(diagnostics.get("duplicateRequestsRemoved") or 0),
+        "forbiddenRequestsRejected": int(diagnostics.get("forbiddenRequestsRejected") or 0),
+        "requirementsSatisfied": int(coverage.get("satisfied") or 0),
+        "requirementsPartial": int(coverage.get("partial") or 0),
+        "requirementsBlocked": int(coverage.get("blocked") or 0) + int(coverage.get("missing") or 0),
+        "completionState": str(coverage.get("completionState") or "complete"),
+    })
+    return runtime
+
+
+def _policy_rejection_result(item: dict[str, Any]) -> dict[str, Any]:
+    return AuditDataRequestResult(
+        request_id=f"policy_rejected_{uuid.uuid4().hex[:12]}",
+        hypothesis_id="policy_validation",
+        capability_id=str(item.get("dimension") or "") or None,
+        dimension=str(item.get("dimension") or "policy_validation"),
+        campaign_name=str(item.get("campaignName") or "") or None,
+        status="not_applicable",
+        source="backend_evidence_policy",
+        summary="Запрос отклонён deterministic evidence policy.",
+        error_code=str(item.get("reasonCode") or "forbidden_dimension_for_campaign_subtype"),
+    ).model_dump(mode="json")
 
 
 def _record_provider_attempt(snapshot: dict[str, Any], provider_kind: str) -> None:
@@ -4179,6 +4319,10 @@ def _context_metadata(job: AiAuditJob, db: Session | None = None) -> dict[str, A
         }
         for hypothesis_id, item in _verification_registry(snapshot).items()
     ]
+    evidence_coverage = public_evidence_coverage(
+        snapshot,
+        legacy_completed=job.status == "completed",
+    )
     return {
         **(snapshot.get("metadata") or {}),
         "analysisPeriod": snapshot.get("analysisPeriod") or {},
@@ -4246,6 +4390,8 @@ def _context_metadata(job: AiAuditJob, db: Session | None = None) -> dict[str, A
         "activeHypothesisIds": _active_hypothesis_ids(snapshot),
         "dataSourceSummary": public_trace["dataSourceSummary"],
         "dataQualitySummary": public_trace["dataQualitySummary"],
+        "auditCompletionState": evidence_coverage["completionState"],
+        "evidenceCoverage": evidence_coverage,
         "auditStopReason": runtime.get("stopReason"),
         "baselineEvidenceSummary": snapshot.get("baselineEvidenceSummary") or [],
         "runtime": runtime,
@@ -4658,6 +4804,8 @@ async def advance_audit_job(
             snapshot["observedFacts"] = [item.model_dump(mode="json") for item in observed_facts]
             base_plan = build_rule_based_investigation_plan(snapshot)
             snapshot["ruleBasedInvestigationPlan"] = base_plan.model_dump(mode="json")
+            ensure_evidence_coverage_registry(snapshot)
+            _sync_policy_runtime(snapshot)
             logger.info(
                 "CASCADE_AUDIT_FACTS_CREATED audit_job_id=%s round=1 campaign_count=%s fact_count=%s",
                 job.id,
@@ -4810,7 +4958,12 @@ async def advance_audit_job(
             snapshot = _json_load(job.context_snapshot_json, {})
             plan = AuditInvestigationPlan.model_validate(snapshot.get("investigationPlan") or {})
             _initialize_hypothesis_state(snapshot)
-            requests = [request for hypothesis in plan.hypotheses for request in hypothesis.data_requests]
+            ai_requests = [request for hypothesis in plan.hypotheses for request in hypothesis.data_requests]
+            requests, policy_rejections, _ = merge_mandatory_and_ai_requests(
+                snapshot,
+                ai_requests,
+                request_budget=MAX_AUDIT_DATA_REQUESTS,
+            )
             _log_audit_event(
                 "AUDIT_REQUEST_PLANNED", job,
                 round=1, request_count=len(requests), status="pending",
@@ -4823,7 +4976,9 @@ async def advance_audit_job(
             runtime = _audit_runtime(snapshot)
             runtime["requestsCount"] = len(requests)
             snapshot["validatedDataRequests"] = [item.model_dump(mode="json") for item in accepted]
+            policy_rejection_results = [_policy_rejection_result(item) for item in policy_rejections]
             initial_full_results = [item.model_dump(mode="json") for item in rejected]
+            initial_full_results.extend(policy_rejection_results)
             _save_full_drilldown_results(db, job, initial_full_results)
             _refresh_drilldown_projections(snapshot, initial_full_results)
             snapshot["pendingDataRequests"] = [item.model_dump(mode="json") for item in accepted]
@@ -4831,6 +4986,9 @@ async def advance_audit_job(
             snapshot["completedDataRequests"] = []
             snapshot["failedDataRequests"] = []
             snapshot["unavailableDataRequests"] = [item.model_dump(mode="json") for item in rejected]
+            snapshot["unavailableDataRequests"].extend(policy_rejection_results)
+            coverage = refresh_evidence_coverage_registry(snapshot, initial_full_results)
+            _sync_policy_runtime(snapshot, coverage)
             facts = build_observed_facts(snapshot)
             cascade_hypotheses = build_cascade_hypotheses(plan, facts, round_number=1)
             round_state = create_investigation_round(
@@ -4886,6 +5044,8 @@ async def advance_audit_job(
             )
             _save_full_drilldown_results(db, job, full_results)
             _refresh_drilldown_projections(snapshot, full_results)
+            coverage = refresh_evidence_coverage_registry(snapshot, full_results)
+            _sync_policy_runtime(snapshot, coverage)
             for item in collected:
                 event_name = {
                     "processing": "AUDIT_REQUEST_PROCESSING",
@@ -5284,8 +5444,95 @@ async def advance_audit_job(
             job.stage_attempt = 0
             job.progress_percent = 68 if next_requests else 78
         elif stage == "generate_answer":
-            execution_token = _claim_provider_stage(db, job, stage, progress_percent=82)
             snapshot = _json_load(job.context_snapshot_json, {})
+            policy_active = (
+                snapshot.get("policyVersion") == AUDIT_EVIDENCE_POLICY_VERSION
+                or "evidenceCoverageRegistry" in snapshot
+            )
+            full_results = _load_full_drilldown_results(db, job) if policy_active else []
+            if policy_active:
+                coverage = refresh_evidence_coverage_registry(snapshot, full_results)
+                runtime = _sync_policy_runtime(snapshot, coverage)
+                runtime["completionGateRuns"] = int(runtime.get("completionGateRuns") or 0) + 1
+            else:
+                coverage = {"completionState": "legacy_unknown"}
+                runtime = _audit_runtime(snapshot)
+
+            if policy_active and coverage.get("completionState") == "blocked_missing_evidence":
+                remediation_attempted = bool(runtime.get("completionGateRemediationAttempted"))
+                if not remediation_attempted:
+                    used_requests = int(runtime.get("requestsCount") or 0)
+                    remaining_budget = max(0, MAX_AUDIT_DATA_REQUESTS - used_requests)
+                    remediation, policy_rejections, _ = merge_mandatory_and_ai_requests(
+                        snapshot,
+                        [],
+                        request_budget=remaining_budget,
+                    )
+                    existing_keys = {
+                        (
+                            str(item.get("campaign_name") or ""),
+                            str(item.get("capability_id") or item.get("dimension") or ""),
+                        )
+                        for item in (snapshot.get("validatedDataRequests") or [])
+                        if isinstance(item, dict)
+                    }
+                    remediation = [
+                        item
+                        for item in remediation
+                        if (item.campaign_name, item.capability_id or item.dimension) not in existing_keys
+                    ]
+                    accepted, rejected = validate_audit_data_requests(remediation)
+                    runtime["completionGateRemediationAttempted"] = True
+                    if policy_rejections or rejected:
+                        rejected_payloads = [_policy_rejection_result(item) for item in policy_rejections]
+                        rejected_payloads.extend(item.model_dump(mode="json") for item in rejected)
+                        full_results = _merge_full_drilldown_results(full_results, rejected_payloads)
+                        _save_full_drilldown_results(db, job, full_results)
+                        _refresh_drilldown_projections(snapshot, full_results)
+                    if accepted:
+                        _apply_next_round_requests(snapshot, accepted)
+                        refreshed = refresh_evidence_coverage_registry(snapshot, full_results)
+                        _sync_policy_runtime(snapshot, refreshed)
+                        job.context_snapshot_json = _json_dump(snapshot)
+                        job.status = "context_ready"
+                        job.current_stage = "collect_live_data"
+                        job.stage_attempt = 0
+                        job.progress_percent = 68
+                        timings["completionGateMs"] = _elapsed_ms(started_at)
+                        timings["totalElapsedMs"] = max(
+                            0,
+                            round((_now() - _as_aware(job.created_at or _now())).total_seconds() * 1000),
+                        )
+                        job.timings_json = _json_dump(timings)
+                        job.stage_version += 1
+                        db.commit()
+                        db.refresh(job)
+                        return job
+
+                coverage = refresh_evidence_coverage_registry(snapshot, full_results)
+                _sync_policy_runtime(snapshot, coverage)
+                diagnostics = {
+                    "finalCompactionLevel": None,
+                    "fitsModelContext": None,
+                    "preflightFitsModelContext": None,
+                    "completionGateBlocked": True,
+                }
+                return _complete_backend_fallback_stage(
+                    db,
+                    job,
+                    snapshot,
+                    diagnostics,
+                    timings,
+                    reason_code="mandatory_evidence_blocked",
+                    final_status="backend_fallback_missing_mandatory_evidence",
+                    warning=(
+                        "Часть обязательных данных недоступна или не поместилась в безопасный бюджет запросов. "
+                        "Аудит завершён с ограничениями без уверенных причинных выводов по этим сигналам."
+                    ),
+                    preserve_job_error=False,
+                )
+
+            execution_token = _claim_provider_stage(db, job, stage, progress_percent=82)
             input_options = _json_load(job.input_options_json, {}) or {}
             is_compact_retry = bool(input_options.get("compact_retry"))
             final_bundle = build_final_audit_prompt_bundle(
@@ -5524,6 +5771,7 @@ async def advance_audit_job(
                 warnings.append("Ответ модели достиг лимита и мог быть обрезан.")
             fallback_markdown = None if structured else _UNSUPPORTED_AUDIT_FORMAT_MESSAGE
             job.answer_text = build_audit_answer_markdown(structured, snapshot) if structured else fallback_markdown
+            evidence_coverage = public_evidence_coverage(snapshot)
             job.result_json = _json_dump({
                 "structured": structured,
                 "fallbackMarkdown": fallback_markdown,
@@ -5535,7 +5783,15 @@ async def advance_audit_job(
                 "truncated": truncated,
                 "compactRetryAvailable": truncated,
                 "backendFallbackUsed": False,
-                "completeness": "truncated" if truncated else ("structured" if structured else "fallback"),
+                "completeness": (
+                    "truncated"
+                    if truncated
+                    else evidence_coverage["completionState"]
+                    if snapshot.get("evidenceCoverageRegistry")
+                    else ("structured" if structured else "fallback")
+                ),
+                "auditCompletionState": evidence_coverage["completionState"],
+                "evidenceCoverage": evidence_coverage,
                 "analysisPeriod": snapshot.get("analysisPeriod") or {},
                 "cachePolicy": (snapshot.get("metadata") or {}).get("cachePolicy") or "fresh",
                 "directApiKnowledgeVersion": (snapshot.get("metadata") or {}).get("directApiKnowledgeVersion"),

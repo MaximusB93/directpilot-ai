@@ -170,7 +170,10 @@ def validate_audit_data_requests(
             or request.campaign_subtype not in capability.supported_subtypes
         ):
             status, code = "not_applicable", "dimension_not_applicable"
-        elif len(accepted) >= MAX_AUDIT_DATA_REQUESTS or hypothesis_counts[request.hypothesis_id] >= MAX_REQUESTS_PER_HYPOTHESIS:
+        elif len(accepted) >= MAX_AUDIT_DATA_REQUESTS or (
+            hypothesis_counts[request.hypothesis_id] >= MAX_REQUESTS_PER_HYPOTHESIS
+            and not request.request_id.startswith("policy_")
+        ):
             status, code = "skipped_budget_limit", "audit_request_budget_exceeded"
         else:
             request.capability_id = capability_id
