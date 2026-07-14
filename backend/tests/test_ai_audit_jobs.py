@@ -340,6 +340,7 @@ def test_full_staged_flow_runs_planning_verification_and_final_answer(monkeypatc
 
 def test_helper_model_is_in_production_allowlist_and_planner_context_is_compact():
     snapshot = audit_jobs.build_compact_audit_context(_context())
+    snapshot["publicRequestTrace"] = [{"reason": "frontend-only-trace"}]
     snapshot["campaignClassifications"] = audit_jobs.classify_audit_campaigns(snapshot)
     base_plan = audit_jobs.build_rule_based_investigation_plan(snapshot)
     snapshot["ruleBasedInvestigationPlan"] = base_plan.model_dump(mode="json")
@@ -359,6 +360,7 @@ def test_helper_model_is_in_production_allowlist_and_planner_context_is_compact(
     }
     for excluded in ("businessContext", "auditFramework", "draftActions", "periodComparison", "searchQueryRisks"):
         assert excluded not in serialized
+    assert "frontend-only-trace" not in serialized
 
 
 @pytest.mark.parametrize("failure_mode", ["timeout", "rate_limit", "provider_error", "invalid_json"])
@@ -393,6 +395,8 @@ def test_planner_failure_uses_rule_based_fallback_and_continues(monkeypatch, fai
     assert snapshot["helperStages"]["planner"]["warningCode"] == "planner_fallback_used"
     assert snapshot["auditRuntime"]["helperFallbacksCount"] == 1
     assert snapshot["auditRuntime"]["helperProviderCallsCount"] == 1
+    if failure_mode == "invalid_json":
+        assert snapshot["helperStages"]["planner"]["parsing"]["errorCode"] == "json_parse_failed"
 
 
 def test_planner_total_timeout_uses_fallback_instead_of_failing_job(monkeypatch):
@@ -1958,6 +1962,217 @@ def test_finish_reason_length_marks_result_truncated_and_allows_compact_retry(mo
     retrying = asyncio.run(audit_jobs.advance_audit_job(db, generated.id, organization_id="org-a", compact_retry=True))
     assert (retrying.status, retrying.current_stage) == ("context_ready", "generate_answer")
     assert audit_jobs._json_load(retrying.input_options_json, {})["compact_retry"] is True
+
+
+def _realistic_oversized_final_snapshot() -> dict:
+    snapshot = audit_jobs.build_compact_audit_context(_context())
+    snapshot["campaignClassifications"] = [
+        {
+            "campaign_name": f"Campaign {index}",
+            "campaign_family": "search" if index % 2 else "yan",
+            "campaign_subtype": "search" if index % 2 else "yan_prospecting",
+        }
+        for index in range(12)
+    ]
+    snapshot["observedFacts"] = []
+    snapshot["hypothesisRegistry"] = {}
+    snapshot["verificationRegistry"] = {}
+    snapshot["drilldownEvidenceSummaries"] = []
+    for index in range(12):
+        fact_id = f"fact-{index}"
+        hypothesis_id = f"hyp-{index}"
+        snapshot["observedFacts"].append({
+            "fact_id": fact_id,
+            "campaign_name": f"Campaign {index}",
+            "metric": "spend_without_goal_conversions",
+            "evidence": [f"Расход {1000 + index} ₽, конверсий по цели 0."],
+            "sufficient_data": True,
+        })
+        snapshot["hypothesisRegistry"][hypothesis_id] = {
+            "hypothesis_id": hypothesis_id,
+            "fact_ids": [fact_id],
+            "campaign_name": f"Campaign {index}",
+            "campaign_family": "search",
+            "campaign_subtype": "search",
+            "hypothesis_type": "search_query_waste",
+            "observed_fact": "Расход без выбранных конверсий.",
+            "priority": "high" if index < 3 else "medium",
+            "current_status": "confirmed" if index < 3 else "unverified",
+        }
+        snapshot["verificationRegistry"][hypothesis_id] = {
+            "hypothesis_id": hypothesis_id,
+            "status": "confirmed" if index < 3 else "unverified",
+            "supporting_evidence": [f"Backend подтвердил метрику кампании {index}."],
+            "contradicting_evidence": [],
+            "limitations": ["Нет данных по качеству лида."],
+            "remaining_data_needed": [] if index < 3 else ["search_queries"],
+        }
+        snapshot["drilldownEvidenceSummaries"].append({
+            "hypothesis_id": hypothesis_id,
+            "capability_id": "search_queries",
+            "status": "collected",
+            "rows_total": 76,
+            "metrics": {"cost": 1000 + index, "clicks": 20, "goal_conversions": 0},
+            "numeric_state_counts": {"known": 25, "missing": 1, "invalid": 0},
+            "matched_confirmation_rules": [{
+                "rule_code": "search_queries_waste_without_goals",
+                "passed": index < 3,
+                "summary": "Проверено backend-правилом.",
+            }],
+            "limitations": ["Доступен ограниченный срез."],
+        })
+    huge_private_value = "private-ui-trace-" + ("x" * 60000)
+    snapshot["publicRequestTrace"] = [
+        {"requestId": f"request-{index}", "reason": huge_private_value, "request_hash": "secret-request-hash"}
+        for index in range(11)
+    ]
+    snapshot["aiDrilldownSamples"] = [{
+        "request_id": "request-1",
+        "data": [{"CampaignId": "private-campaign-id", "query": "sample"}] * 202,
+    }]
+    snapshot["drilldownResults"] = snapshot["aiDrilldownSamples"]
+    snapshot["investigationRounds"] = [{
+        "round_number": index,
+        "requestLifecycle": [huge_private_value],
+        "statusHistory": ["processing", "completed"],
+    } for index in range(1, 4)]
+    snapshot.setdefault("auditRuntime", {}).update({
+        "requestsCount": 11,
+        "rowsReceived": 839,
+        "rowsAnalyzed": 839,
+        "rowsSentToAi": 202,
+        "directApiCallsCount": 18,
+        "stopReason": "low_expected_information_gain",
+    })
+    return snapshot
+
+
+def test_final_projection_excludes_runtime_noise_and_completes_without_direct_recall(monkeypatch):
+    db = _db()
+    job = _create(db)
+    snapshot = _realistic_oversized_final_snapshot()
+    job.status = "context_ready"
+    job.current_stage = "generate_answer"
+    job.context_snapshot_json = audit_jobs._json_dump(snapshot)
+    db.commit()
+    calls = {"provider": 0, "direct": 0}
+    full_prompt = audit_jobs.build_full_audit_prompt(snapshot, output_budget_tokens=job.max_tokens)
+    assert audit_jobs.estimate_tokens(f"{audit_jobs.DEFAULT_SYSTEM_PROMPT}\n{full_prompt}") > audit_jobs.context_limit_for_model(job.model)
+
+    def forbidden_direct(*args, **kwargs):
+        calls["direct"] += 1
+        raise AssertionError("Final generation must not recollect Direct evidence")
+
+    async def final_provider(model, prompt, **kwargs):
+        calls["provider"] += 1
+        assert "private-ui-trace" not in prompt
+        assert "private-campaign-id" not in prompt
+        assert "secret-request-hash" not in prompt
+        assert "publicRequestTrace" not in prompt
+        assert "aiDrilldownSamples" not in prompt
+        assert "search_queries" in prompt
+        assert "search_queries_waste_without_goals" in prompt
+        return {"model": model, "content": _structured_answer(), "finish_reason": "stop"}
+
+    monkeypatch.setattr(audit_jobs, "collect_audit_data_requests", forbidden_direct)
+    monkeypatch.setattr(audit_jobs, "generate_openrouter_response", final_provider)
+    generated = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
+    completed = asyncio.run(audit_jobs.advance_audit_job(db, generated.id, organization_id="org-a"))
+
+    assert completed.status == "completed"
+    assert calls == {"provider": 1, "direct": 0}
+    runtime = audit_jobs._json_load(completed.context_snapshot_json, {})["auditRuntime"]
+    assert runtime["finalPromptEstimatedTokens"] + runtime["reservedOutputTokens"] + runtime["safetyMarginTokens"] <= runtime["modelContextLimit"]
+    assert runtime["finalGenerationStatus"] == "provider_completed"
+
+
+def test_final_projection_l3_uses_backend_fallback_instead_of_failed_job(monkeypatch):
+    db = _db()
+    job = _create(db)
+    job.status = "context_ready"
+    job.current_stage = "generate_answer"
+    job.context_snapshot_json = audit_jobs._json_dump(_realistic_oversized_final_snapshot())
+    db.commit()
+
+    async def forbidden_provider(*args, **kwargs):
+        raise AssertionError("Oversized L3 projection must not be sent to OpenRouter")
+
+    monkeypatch.setattr(audit_jobs, "context_limit_for_model", lambda model: 500)
+    monkeypatch.setattr(audit_jobs, "generate_openrouter_response", forbidden_provider)
+    generated = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
+    completed = asyncio.run(audit_jobs.advance_audit_job(db, generated.id, organization_id="org-a"))
+    result = audit_jobs._json_load(completed.result_json, {})
+
+    assert completed.status == "completed"
+    assert result["backendFallbackUsed"] is True
+    assert result["compactRetryAvailable"] is True
+    assert result["structured"]["conclusion"]
+    assert result["safety"]["appliedToYandexDirect"] is False
+    runtime = audit_jobs._json_load(completed.context_snapshot_json, {})["auditRuntime"]
+    assert runtime["finalCompactionLevel"] == 3
+    assert runtime["finalGenerationStatus"] == "backend_fallback"
+
+
+def test_compact_retry_reuses_existing_evidence_and_starts_from_l2(monkeypatch):
+    db = _db()
+    job = _create(db)
+    job.status = "completed"
+    job.current_stage = "finalize"
+    job.completed_at = datetime.now(UTC)
+    job.context_snapshot_json = audit_jobs._json_dump(_realistic_oversized_final_snapshot())
+    job.result_json = audit_jobs._json_dump({
+        "structured": None,
+        "backendFallbackUsed": True,
+        "compactRetryAvailable": True,
+        "truncated": False,
+    })
+    db.commit()
+    direct_calls = {"count": 0}
+
+    def forbidden_direct(*args, **kwargs):
+        direct_calls["count"] += 1
+        raise AssertionError("Compact retry must reuse persisted evidence")
+
+    async def compact_provider(model, prompt, **kwargs):
+        assert "private-ui-trace" not in prompt
+        return {"model": model, "content": _structured_answer(), "finish_reason": "stop"}
+
+    monkeypatch.setattr(audit_jobs, "collect_audit_data_requests", forbidden_direct)
+    monkeypatch.setattr(audit_jobs, "generate_openrouter_response", compact_provider)
+    retrying = asyncio.run(audit_jobs.advance_audit_job(
+        db, job.id, organization_id="org-a", compact_retry=True,
+    ))
+    assert (retrying.status, retrying.current_stage) == ("context_ready", "generate_answer")
+    generated = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
+    runtime = audit_jobs._json_load(generated.context_snapshot_json, {})["auditRuntime"]
+
+    assert generated.current_stage == "finalize"
+    assert runtime["finalCompactionLevel"] >= 2
+    assert direct_calls["count"] == 0
+
+
+def test_final_projection_is_an_allowlist_without_private_ids_or_samples():
+    snapshot = _realistic_oversized_final_snapshot()
+    snapshot["client_id"] = "private-client-id"
+    snapshot["organization_id"] = "private-organization-id"
+    snapshot["access_token"] = "private-access-token"
+    snapshot["observedFacts"][0]["evidence"].append(
+        "CampaignId=embedded-campaign-id access_token=embedded-oauth request_hash=embedded-hash"
+    )
+
+    projection = audit_jobs.build_final_audit_projection(snapshot, compaction_level=1)
+    serialized = audit_jobs._json_dump(projection)
+
+    assert "private-client-id" not in serialized
+    assert "private-organization-id" not in serialized
+    assert "private-access-token" not in serialized
+    assert "private-campaign-id" not in serialized
+    assert "secret-request-hash" not in serialized
+    assert "private-ui-trace" not in serialized
+    assert "embedded-campaign-id" not in serialized
+    assert "embedded-oauth" not in serialized
+    assert "embedded-hash" not in serialized
+    assert "drilldownResults" not in serialized
 
 
 def test_cancel_before_generation_and_preserve_completed_result():

@@ -261,6 +261,15 @@ function renderAuditTechnicalDiagnostics(metadata, runtime, escapeHtml) {
   const baselineRows = baseline.reduce((sum, item) => sum + Number(item.rowsReceived || 0), 0);
   const baselineAnalyzed = baseline.reduce((sum, item) => sum + Number(item.rowsAnalyzed || 0), 0);
   const baselineSent = baseline.reduce((sum, item) => sum + Number(item.rowsSentToAi || 0), 0);
+  const finalStatusLabel = {
+    prepared: 'финальная проекция подготовлена',
+    compact_retry_pending: 'компактный повтор ожидает запуска',
+    compact_retry_prepared: 'компактная проекция подготовлена',
+    calling_provider: 'формируется финальный AI-отчёт',
+    calling_provider_compact: 'формируется компактный AI-отчёт',
+    provider_completed: 'AI-отчёт сформирован',
+    backend_fallback: 'сохранён безопасный backend-результат',
+  }[runtime.finalGenerationStatus] || 'финальная генерация ещё не началась';
   return `
     <details class="quietDetails">
       <summary>Техническая диагностика аудита</summary>
@@ -288,7 +297,8 @@ function renderAuditTechnicalDiagnostics(metadata, runtime, escapeHtml) {
       </div>
       ${baseline.length ? `<p><b>Fresh baseline:</b> получено ${escapeHtml(String(baselineRows))}, проанализировано backend ${escapeHtml(String(baselineAnalyzed))}, передано AI ${escapeHtml(String(baselineSent))}.</p>` : ''}
       <p>Источники: ${Object.entries(metadata?.dataSourceSummary || {}).map(([source, count]) => `${escapeHtml(auditSourceLabel(source))}: ${escapeHtml(String(count))}`).join(' · ') || 'ожидаются'}.</p>
-      <p>Prompt estimate: ${escapeHtml(String(metadata?.estimatedTokens || 0))} токенов. Фактическое использование: ${escapeHtml(String(runtime.tokenUsage?.total || 0))}. Время этапов: ${escapeHtml(String(Object.values(runtime.timings || {}).reduce((sum, value) => sum + Number(value || 0), 0)))} мс.</p>
+      <p>Финальная проекция: ${escapeHtml(String(runtime.finalProjectionEstimatedTokens || 0))} токенов. Финальный prompt: ${escapeHtml(String(runtime.finalPromptEstimatedTokens || 0))}. Лимит модели: ${escapeHtml(String(runtime.modelContextLimit || 0))}. Резерв ответа: ${escapeHtml(String(runtime.reservedOutputTokens || 0))}. Запас безопасности: ${escapeHtml(String(runtime.safetyMarginTokens || 0))}.</p>
+      <p>Уровень сжатия: L${escapeHtml(String(runtime.finalCompactionLevel ?? '—'))}. Статус: ${escapeHtml(finalStatusLabel)}. Backend fallback: ${runtime.backendFallbackUsed ? 'да' : 'нет'}. Фактическое использование: ${escapeHtml(String(runtime.tokenUsage?.total || 0))}. Время этапов: ${escapeHtml(String(Object.values(runtime.timings || {}).reduce((sum, value) => sum + Number(value || 0), 0)))} мс.</p>
       <p>Качество числовых данных: известно ${escapeHtml(String(quality.known || 0))}, отсутствует ${escapeHtml(String(quality.missing || 0))}, некорректно ${escapeHtml(String(quality.invalid || 0))}. Причина остановки: ${escapeHtml(metadata?.auditStopReason || 'аудит продолжается')}.</p>
     </details>
   `;
@@ -369,8 +379,14 @@ export function renderAiAuditJob({
     collecting_context: 'Собираем данные',
     context_ready: aiAuditJob?.current_stage === 'wait_for_offline_reports'
       ? 'Яндекс.Директ формирует отчёты'
-      : 'Контекст готов',
-    generating: aiAuditJob?.current_stage === 'generate_answer' ? 'AI формирует результат' : 'AI анализирует',
+      : aiAuditJob?.current_stage === 'generate_answer' && String(aiAuditJob?.context_metadata?.runtime?.finalGenerationStatus || '').startsWith('compact_retry')
+        ? 'Готовим компактный финальный отчёт'
+        : 'Контекст готов',
+    generating: aiAuditJob?.current_stage === 'generate_answer'
+      ? String(aiAuditJob?.context_metadata?.runtime?.finalGenerationStatus || '').includes('compact')
+        ? 'AI формирует компактный результат'
+        : 'AI формирует результат'
+      : 'AI анализирует',
     completed: 'Готово',
     failed: 'Ошибка',
     cancelled: 'Отменено',
@@ -383,6 +399,8 @@ export function renderAiAuditJob({
   const publicRounds = aiAuditJob?.context_metadata?.investigationTree || rounds;
   const cachePolicy = aiAuditJob?.context_metadata?.cachePolicy || 'fresh';
   const tokenUsage = runtime.tokenUsage || {};
+  const compactGenerationActive = ['compact_retry_pending', 'compact_retry_prepared', 'calling_provider_compact']
+    .includes(runtime.finalGenerationStatus);
   const helperWarnings = (aiAuditJob?.context_metadata?.warnings || [])
     .filter((item) => item?.code === 'planner_fallback_used' || item?.code === 'verification_fallback_used');
   return `
@@ -411,6 +429,7 @@ export function renderAiAuditJob({
         ${renderAuditInvestigationTree(publicRounds, escapeHtml)}
         ${renderAuditRequestTrace(aiAuditJob.context_metadata || {}, escapeHtml)}
         ${renderAuditTechnicalDiagnostics(aiAuditJob.context_metadata || {}, runtime, escapeHtml)}
+        ${compactGenerationActive ? '<aside class="aiAuditNotice"><strong>Компактная генерация использует уже собранные доказательства.</strong><p>Повторные запросы к Яндекс.Директу не выполняются.</p></aside>' : ''}
         ${helperWarnings.length && !aiAuditJob.result ? `<aside class="aiAuditNotice"><strong>Аудит продолжен безопасно.</strong>${helperWarnings.map((item) => `<p>${escapeHtml(item.message || '')}</p>`).join('')}</aside>` : ''}
         ${aiAuditJob.status === 'completed' && tokenUsage.total ? `<div class="aiAuditUsage"><span>Prompt tokens: ${escapeHtml(String(tokenUsage.prompt || 0))}</span><span>Completion tokens: ${escapeHtml(String(tokenUsage.completion || 0))}</span><span>Total tokens: ${escapeHtml(String(tokenUsage.total || 0))}</span></div>` : ''}
         ${aiAuditJob.error_message ? `<div class="authStatus integrationStatus">${escapeHtml(aiAuditJob.error_message)}</div>` : ''}
@@ -419,7 +438,7 @@ export function renderAiAuditJob({
           ${!terminal ? '<button class="secondaryButton" data-ai-audit-cancel>Отменить</button>' : ''}
           ${aiAuditJob.status === 'failed' && aiAuditJob.retryable ? '<button class="approveButton" data-ai-audit-retry>Повторить этап</button>' : ''}
           ${aiAuditJob.status === 'failed' ? '<button class="secondaryButton" data-ai-audit-reset>Завершить и начать новый аудит</button>' : ''}
-          ${aiAuditJob.result?.truncated ? '<button class="approveButton" data-ai-audit-compact-retry>Повторить в более компактном формате</button>' : ''}
+          ${(aiAuditJob.result?.truncated || aiAuditJob.result?.compactRetryAvailable) ? '<button class="approveButton" data-ai-audit-compact-retry>Повторить компактную генерацию</button>' : ''}
           ${['completed', 'cancelled'].includes(aiAuditJob.status) ? '<button class="secondaryButton" data-ai-audit-new>Новый аудит</button>' : ''}
         </div>
       ` : `<div class="heroActions"><label>Данные аудита <select data-ai-audit-cache-policy><option value="fresh" selected>Свежие live-данные</option><option value="prefer_cache">Кеш с обновлением</option><option value="cache_only">Только кеш</option></select></label><button class="approveButton" data-ai-audit-start="full_account" ${selectedClientId && !aiAuditLoading ? '' : 'disabled'}>${aiAuditLoading ? 'Создаём...' : 'Запустить полный аудит'}</button></div>`}
