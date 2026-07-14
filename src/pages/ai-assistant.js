@@ -253,7 +253,7 @@ function renderAuditRequestTrace(metadata, escapeHtml) {
   `;
 }
 
-function renderAuditTechnicalDiagnostics(metadata, runtime, escapeHtml) {
+function renderAuditTechnicalDiagnostics(metadata, runtime, escapeHtml, result = null) {
   const diagnostics = metadata?.requestDiagnostics || {};
   const statuses = diagnostics.statusCounts || {};
   const quality = metadata?.dataQualitySummary?.numericStateCounts || {};
@@ -261,17 +261,25 @@ function renderAuditTechnicalDiagnostics(metadata, runtime, escapeHtml) {
   const baselineRows = baseline.reduce((sum, item) => sum + Number(item.rowsReceived || 0), 0);
   const baselineAnalyzed = baseline.reduce((sum, item) => sum + Number(item.rowsAnalyzed || 0), 0);
   const baselineSent = baseline.reduce((sum, item) => sum + Number(item.rowsSentToAi || 0), 0);
+  const modelParsing = result?.modelResponseParsing || null;
+  const finalTokenUsage = result?.finalTokenUsage || null;
+  const validationPaths = (modelParsing?.validationErrorPaths || []).slice(0, 20);
   const finalStatusLabel = {
     prepared: 'финальная проекция подготовлена',
     compact_retry_pending: 'компактный повтор ожидает запуска',
     compact_retry_prepared: 'компактная проекция подготовлена',
     calling_provider: 'формируется финальный AI-отчёт',
     calling_provider_compact: 'формируется компактный AI-отчёт',
+    provider_response_received: 'ответ AI-провайдера получен',
+    validating_schema: 'проверяется структура AI-отчёта',
+    provider_response_truncated: 'ответ AI-провайдера обрезан по лимиту',
     provider_context_limit_rejected: 'провайдер отклонил размер контекста',
     retrying_after_provider_context_rejection: 'повторяем с более компактным контекстом',
     provider_completed: 'AI-отчёт сформирован',
     backend_fallback: 'сохранён безопасный backend-результат',
     backend_fallback_after_provider_context_rejection: 'сохранён backend-результат после отказа провайдера',
+    backend_fallback_after_json_parse: 'ответ модели не удалось разобрать; показан безопасный backend-отчёт',
+    backend_fallback_after_schema_validation: 'ответ модели не прошёл структурный контракт; показан безопасный backend-отчёт',
   }[runtime.finalGenerationStatus] || 'финальная генерация ещё не началась';
   return `
     <details class="quietDetails">
@@ -302,7 +310,10 @@ function renderAuditTechnicalDiagnostics(metadata, runtime, escapeHtml) {
       <p>Источники: ${Object.entries(metadata?.dataSourceSummary || {}).map(([source, count]) => `${escapeHtml(auditSourceLabel(source))}: ${escapeHtml(String(count))}`).join(' · ') || 'ожидаются'}.</p>
       <p>Финальная проекция: ${escapeHtml(String(runtime.finalProjectionEstimatedTokens || 0))} токенов. Финальный prompt: ${escapeHtml(String(runtime.finalPromptEstimatedTokens || 0))}. Лимит модели: ${escapeHtml(String(runtime.modelContextLimit || 0))}. Резерв ответа: ${escapeHtml(String(runtime.reservedOutputTokens || 0))}. Запас безопасности: ${escapeHtml(String(runtime.safetyMarginTokens || 0))}.</p>
       <p>Уровень сжатия: L${escapeHtml(String(runtime.finalCompactionLevel ?? '—'))}. Preflight помещается: ${runtime.preflightFitsModelContext === true ? 'да' : runtime.preflightFitsModelContext === false ? 'нет' : 'ещё не проверено'}. Провайдер отклонил контекст: ${runtime.providerContextRejected ? 'да' : 'нет'}. Backend fallback: ${runtime.backendFallbackUsed ? 'да' : 'нет'}.</p>
-      <p>Статус финальной генерации: ${escapeHtml(finalStatusLabel)}${runtime.providerContextErrorCode ? ` · код: ${escapeHtml(String(runtime.providerContextErrorCode))}` : ''}. Фактическое использование: ${escapeHtml(String(runtime.tokenUsage?.total || 0))}. Время этапов: ${escapeHtml(String(Object.values(runtime.timings || {}).reduce((sum, value) => sum + Number(value || 0), 0)))} мс.</p>
+      <p>Статус финальной генерации: ${escapeHtml(finalStatusLabel)}${runtime.providerContextErrorCode ? ` · код: ${escapeHtml(String(runtime.providerContextErrorCode))}` : ''}. Суммарное использование всех AI-вызовов: ${escapeHtml(String(runtime.tokenUsage?.total || 0))} токенов. Время этапов: ${escapeHtml(String(Object.values(runtime.timings || {}).reduce((sum, value) => sum + Number(value || 0), 0)))} мс.</p>
+      ${finalTokenUsage ? `<p>Финальный AI-вызов: prompt ${escapeHtml(String(finalTokenUsage.prompt || 0))}, completion ${escapeHtml(String(finalTokenUsage.completion || 0))}, всего ${escapeHtml(String(finalTokenUsage.total || 0))} токенов.</p>` : ''}
+      ${result?.backendFallbackUsed ? `<p>Backend fallback: да. Причина: ${escapeHtml(String(result?.structuredParsing?.fallbackReason || modelParsing?.errorCode || 'не указана'))}.${modelParsing ? ` Ошибок структурной проверки: ${escapeHtml(String(modelParsing.validationErrorsCount || 0))}.` : ''}</p>` : ''}
+      ${modelParsing ? `<p>Ответ модели: формат ${escapeHtml(String(modelParsing.sourceFormat || 'unknown'))}, результат проверки ${escapeHtml(String(modelParsing.parseOutcome || 'unknown'))}${validationPaths.length ? `, безопасные пути ошибок: ${validationPaths.map((value) => escapeHtml(String(value))).join(', ')}` : ''}. Finish reason: ${escapeHtml(String(result?.finishReason || 'не указан'))}.</p>` : ''}
       <p>Качество числовых данных: известно ${escapeHtml(String(quality.known || 0))}, отсутствует ${escapeHtml(String(quality.missing || 0))}, некорректно ${escapeHtml(String(quality.invalid || 0))}. Причина остановки: ${escapeHtml(metadata?.auditStopReason || 'аудит продолжается')}.</p>
     </details>
   `;
@@ -435,7 +446,7 @@ export function renderAiAuditJob({
         ` : ''}
         ${renderAuditInvestigationTree(publicRounds, escapeHtml)}
         ${renderAuditRequestTrace(aiAuditJob.context_metadata || {}, escapeHtml)}
-        ${renderAuditTechnicalDiagnostics(aiAuditJob.context_metadata || {}, runtime, escapeHtml)}
+        ${renderAuditTechnicalDiagnostics(aiAuditJob.context_metadata || {}, runtime, escapeHtml, aiAuditJob.result)}
         ${compactGenerationActive ? '<aside class="aiAuditNotice"><strong>Компактная генерация использует уже собранные доказательства.</strong><p>Повторные запросы к Яндекс.Директу не выполняются.</p></aside>' : ''}
         ${helperWarnings.length && !aiAuditJob.result ? `<aside class="aiAuditNotice"><strong>Аудит продолжен безопасно.</strong>${helperWarnings.map((item) => `<p>${escapeHtml(item.message || '')}</p>`).join('')}</aside>` : ''}
         ${aiAuditJob.status === 'completed' && tokenUsage.total ? `<div class="aiAuditUsage"><span>Prompt tokens: ${escapeHtml(String(tokenUsage.prompt || 0))}</span><span>Completion tokens: ${escapeHtml(String(tokenUsage.completion || 0))}</span><span>Total tokens: ${escapeHtml(String(tokenUsage.total || 0))}</span></div>` : ''}

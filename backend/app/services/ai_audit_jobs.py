@@ -2786,6 +2786,41 @@ def _validation_error_diagnostics(exc: ValidationError) -> dict[str, Any]:
     }
 
 
+def _safe_model_response_parsing(parsing: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(parsing, dict):
+        return None
+    paths = [str(item)[:300] for item in (parsing.get("validationErrorPaths") or [])[:20]]
+    error_types = [str(item)[:100] for item in (parsing.get("validationErrorTypes") or [])[:20]]
+    return {
+        "status": str(parsing.get("status") or "fallback")[:50],
+        "errorCode": str(parsing.get("errorCode") or "")[:100] or None,
+        "validationErrorsCount": max(0, int(parsing.get("validationErrorsCount") or 0)),
+        "validationErrorPaths": paths,
+        "validationErrorTypes": error_types,
+        "sourceFormat": str(parsing.get("sourceFormat") or "unknown")[:100],
+        "parseOutcome": str(parsing.get("parseOutcome") or "unknown")[:100],
+    }
+
+
+def _safe_provider_token_usage(response: dict[str, Any] | None) -> dict[str, int] | None:
+    usage = response.get("usage") if isinstance(response, dict) else None
+    if not isinstance(usage, dict):
+        return None
+
+    def count(*keys: str) -> int:
+        for key in keys:
+            try:
+                return max(0, int(usage.get(key)))
+            except (TypeError, ValueError):
+                continue
+        return 0
+
+    prompt = count("prompt_tokens", "input_tokens")
+    completion = count("completion_tokens", "output_tokens")
+    total = count("total_tokens") or (prompt + completion)
+    return {"prompt": prompt, "completion": completion, "total": total}
+
+
 def _parse_model_json(answer: str, model_type: Any) -> tuple[Any | None, dict[str, Any]]:
     parsed, source_format = extract_model_json_object(answer)
     metadata: dict[str, Any] = {
@@ -3150,22 +3185,43 @@ def build_backend_fallback_audit_result(
         f"Конверсии по выбранным целям: {goal_conversions_label}.",
     ]
     limitations = list(projection.get("limitations") or [])
-    fallback_limitation = (
-        "Провайдер отклонил фактический размер контекста; расширенный AI-отчёт заменён безопасным backend-результатом."
-        if reason_code == PROVIDER_CONTEXT_OVERFLOW_CODE
-        else "Расширенный AI-отчёт не сформирован из-за размера финального контекста."
-    )
+    if reason_code == PROVIDER_CONTEXT_OVERFLOW_CODE:
+        fallback_limitation = (
+            "Провайдер отклонил фактический размер контекста; расширенный AI-отчёт заменён "
+            "безопасным backend-результатом."
+        )
+        executive_summary = (
+            "Аудит завершён по собранным read-only данным. Провайдер отклонил финальный контекст, "
+            "поэтому расширенный AI-текст заменён безопасным backend-результатом."
+        )
+    elif reason_code == "final_prompt_too_large":
+        fallback_limitation = "Расширенный AI-отчёт не сформирован из-за размера финального контекста."
+        executive_summary = (
+            "Аудит завершён по собранным read-only данным. Финальный AI-запрос не отправлялся: "
+            "контекст не поместился в безопасный бюджет выбранной модели."
+        )
+    elif reason_code == "json_schema_validation_failed":
+        fallback_limitation = (
+            "Ответ модели не прошёл структурный контракт AiAuditResult; показан безопасный "
+            "backend-отчёт по уже собранным данным."
+        )
+        executive_summary = (
+            "Аудит завершён по собранным и проверенным read-only данным. Ответ модели не прошёл "
+            "структурный контракт, поэтому показан безопасный backend-результат."
+        )
+    else:
+        fallback_limitation = (
+            "Ответ модели не удалось безопасно разобрать; показан backend-отчёт по уже собранным данным."
+        )
+        executive_summary = (
+            "Аудит завершён по собранным и проверенным read-only данным. Ответ модели не удалось "
+            "безопасно разобрать, поэтому показан backend-результат."
+        )
     if fallback_limitation not in limitations:
         limitations.append(fallback_limitation)
     candidate = {
         "meta": _trusted_result_meta(snapshot, job, {"model": job.model}),
-        "executive_summary": (
-            "Аудит завершён по собранным read-only данным. Провайдер отклонил финальный контекст, "
-            "поэтому расширенный AI-текст заменён безопасным backend-результатом."
-            if reason_code == PROVIDER_CONTEXT_OVERFLOW_CODE
-            else "Аудит завершён по собранным read-only данным. Финальный AI-запрос не отправлялся: "
-            "контекст не поместился в безопасный бюджет выбранной модели."
-        ),
+        "executive_summary": executive_summary,
         "data_quality": {
             "status": "partial",
             "facts": data_facts,
@@ -3211,6 +3267,11 @@ def _complete_backend_fallback_stage(
     reason_code: str,
     final_status: str,
     warning: str,
+    model_response_parsing: dict[str, Any] | None = None,
+    provider_response_metadata: dict[str, Any] | None = None,
+    finish_reason: str | None = None,
+    final_token_usage: dict[str, int] | None = None,
+    preserve_job_error: bool = True,
 ) -> AiAuditJob:
     structured = build_backend_fallback_audit_result(snapshot, job, reason_code=reason_code)
     warnings = _helper_warning_messages(snapshot)
@@ -3241,9 +3302,10 @@ def _complete_backend_fallback_stage(
             "validationErrorPaths": [],
             "validationErrorTypes": [],
         },
-        "providerResponseMetadata": None,
+        "modelResponseParsing": _safe_model_response_parsing(model_response_parsing),
+        "providerResponseMetadata": provider_response_metadata,
         "warnings": warnings,
-        "finishReason": None,
+        "finishReason": finish_reason,
         "truncated": False,
         "compactRetryAvailable": False,
         "backendFallbackUsed": True,
@@ -3252,7 +3314,8 @@ def _complete_backend_fallback_stage(
         "cachePolicy": (snapshot.get("metadata") or {}).get("cachePolicy") or "fresh",
         "directApiKnowledgeVersion": (snapshot.get("metadata") or {}).get("directApiKnowledgeVersion"),
         "dataCoverage": snapshot.get("dataCoverage") or {},
-        "usage": None,
+        "usage": final_token_usage,
+        "finalTokenUsage": final_token_usage,
         "responseId": None,
         "requestTrace": {
             "jobId": job.id,
@@ -3266,8 +3329,8 @@ def _complete_backend_fallback_stage(
         },
         "safety": {"readOnly": True, "appliedToYandexDirect": False, "requiresHumanApproval": True},
     })
-    job.error_code = reason_code
-    job.error_message = warning
+    job.error_code = reason_code if preserve_job_error else None
+    job.error_message = warning if preserve_job_error else None
     job.retryable = False
     job.status = "context_ready"
     job.current_stage = "finalize"
@@ -4121,7 +4184,7 @@ def _public_audit_result(job: AiAuditJob) -> tuple[dict[str, Any] | None, str | 
             result["structured"] = structured
             result["fallbackMarkdown"] = None
             result.pop("technicalResponse", None)
-            if not result.get("truncated"):
+            if not result.get("truncated") and not result.get("backendFallbackUsed"):
                 result["completeness"] = "structured"
             result["structuredParsing"] = parsing or {
                 "status": "success", "sourceFormat": "plain_json", "errorCode": None, "validationErrorsCount": 0,
@@ -5248,13 +5311,19 @@ async def advance_audit_job(
                 snapshot,
                 job,
                 final_diagnostics,
-                status_value="provider_completed",
+                status_value="provider_response_received",
             )
             final_returned_model = str(response.get("model") or job.model)
             _audit_models(snapshot, job.model)["final_returned_model"] = final_returned_model
             job.context_snapshot_json = _json_dump(snapshot)
             answer = str(response.get("content") or "")
             finish_reason = str(response.get("finish_reason") or "") or None
+            _record_final_generation_diagnostics(
+                snapshot,
+                job,
+                final_diagnostics,
+                status_value="validating_schema",
+            )
             structured, parsing = _validate_structured_result_with_metadata(
                 answer,
                 snapshot=snapshot,
@@ -5263,6 +5332,51 @@ async def advance_audit_job(
                 finish_reason=finish_reason,
             )
             truncated = finish_reason == "length"
+            final_token_usage = _safe_provider_token_usage(response)
+            provider_response_metadata = {
+                "sha256": hashlib.sha256(answer.encode("utf-8")).hexdigest() if answer else None,
+                "length": len(answer),
+                "sourceFormat": parsing["sourceFormat"],
+                "fullResponseStored": False,
+            }
+            job.returned_model = final_returned_model
+            if structured is None and not truncated:
+                parsing_error_code = str(parsing.get("errorCode") or "json_parse_failed")
+                schema_failed = parsing_error_code == "json_schema_validation_failed"
+                fallback_status = (
+                    "backend_fallback_after_schema_validation"
+                    if schema_failed
+                    else "backend_fallback_after_json_parse"
+                )
+                fallback_warning = (
+                    "Ответ модели не прошёл структурный контракт. Данные аудита сохранены, показан "
+                    "безопасный backend-отчёт без повторных внешних запросов."
+                    if schema_failed
+                    else "Ответ модели не удалось безопасно разобрать. Данные аудита сохранены, показан "
+                    "backend-отчёт без повторных внешних запросов."
+                )
+                return _complete_backend_fallback_stage(
+                    db,
+                    job,
+                    snapshot,
+                    final_diagnostics,
+                    timings,
+                    reason_code=parsing_error_code,
+                    final_status=fallback_status,
+                    warning=fallback_warning,
+                    model_response_parsing=parsing,
+                    provider_response_metadata=provider_response_metadata,
+                    finish_reason=finish_reason,
+                    final_token_usage=final_token_usage,
+                    preserve_job_error=False,
+                )
+            _record_final_generation_diagnostics(
+                snapshot,
+                job,
+                final_diagnostics,
+                status_value="provider_completed" if structured is not None else "provider_response_truncated",
+            )
+            job.context_snapshot_json = _json_dump(snapshot)
             warnings = _helper_warning_messages(snapshot)
             if not (snapshot.get("analysisPeriod") or {}).get("requestedMatchesAvailableData"):
                 warnings.append("Фактический период отличается от запрошенного или доступен не полностью.")
@@ -5271,19 +5385,13 @@ async def advance_audit_job(
             if truncated:
                 warnings.append("Ответ модели достиг лимита и мог быть обрезан.")
             fallback_markdown = None if structured else _UNSUPPORTED_AUDIT_FORMAT_MESSAGE
-            job.returned_model = final_returned_model
             job.answer_text = build_audit_answer_markdown(structured, snapshot) if structured else fallback_markdown
             job.result_json = _json_dump({
                 "structured": structured,
                 "fallbackMarkdown": fallback_markdown,
                 "technicalResponse": None,
                 "structuredParsing": parsing,
-                "providerResponseMetadata": {
-                    "sha256": hashlib.sha256(answer.encode("utf-8")).hexdigest() if answer else None,
-                    "length": len(answer),
-                    "sourceFormat": parsing["sourceFormat"],
-                    "fullResponseStored": False,
-                },
+                "providerResponseMetadata": provider_response_metadata,
                 "warnings": warnings,
                 "finishReason": finish_reason,
                 "truncated": truncated,
@@ -5294,7 +5402,8 @@ async def advance_audit_job(
                 "cachePolicy": (snapshot.get("metadata") or {}).get("cachePolicy") or "fresh",
                 "directApiKnowledgeVersion": (snapshot.get("metadata") or {}).get("directApiKnowledgeVersion"),
                 "dataCoverage": snapshot.get("dataCoverage") or {},
-                "usage": response.get("usage"),
+                "usage": final_token_usage,
+                "finalTokenUsage": final_token_usage,
                 "responseId": response.get("id"),
                 "requestTrace": {
                     "jobId": job.id,
