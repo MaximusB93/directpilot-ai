@@ -1634,26 +1634,130 @@ def test_invalid_provider_format_is_not_exposed(monkeypatch):
     job = _create(db)
     job.status = "context_ready"
     job.current_stage = "generate_answer"
-    job.context_snapshot_json = audit_jobs._json_dump(audit_jobs.build_compact_audit_context(_context()))
+    snapshot = audit_jobs.build_compact_audit_context(_context())
+    initial_direct_calls = (snapshot.get("auditRuntime") or {}).get("directApiCallsCount", 0)
+    job.context_snapshot_json = audit_jobs._json_dump(snapshot)
     prompt = audit_jobs.build_full_audit_prompt(audit_jobs._json_load(job.context_snapshot_json, {}), output_budget_tokens=job.max_tokens)
     job.prompt_snapshot_json = audit_jobs._json_dump(audit_jobs._prompt_metadata(prompt, job))
     db.commit()
 
-    async def invalid(*args, **kwargs):
-        return {"model": "qwen/qwen3-14b", "content": "## Итог\nБезопасный fallback", "finish_reason": "stop"}
+    calls = {"provider": 0, "direct": 0}
+    raw_answer = "## Итог\nraw-model-answer-must-not-leak"
 
+    def forbidden_direct(*args, **kwargs):
+        calls["direct"] += 1
+        raise AssertionError("Parse fallback must not recollect Direct evidence")
+
+    async def invalid(*args, **kwargs):
+        calls["provider"] += 1
+        return {
+            "model": "qwen/qwen3-14b",
+            "content": raw_answer,
+            "finish_reason": "stop",
+            "usage": {"prompt_tokens": 111, "completion_tokens": 22, "total_tokens": 133},
+        }
+
+    monkeypatch.setattr(audit_jobs, "collect_audit_data_requests", forbidden_direct)
     monkeypatch.setattr(audit_jobs, "generate_openrouter_response", invalid)
     generated = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
-    result = audit_jobs._json_load(generated.result_json, {})
-    assert result["structured"] is None
-    assert result["fallbackMarkdown"] == audit_jobs._UNSUPPORTED_AUDIT_FORMAT_MESSAGE
+    completed = asyncio.run(audit_jobs.advance_audit_job(db, generated.id, organization_id="org-a"))
+    result = audit_jobs._json_load(completed.result_json, {})
+    public = audit_jobs.audit_job_response(completed, db).model_dump(mode="json")
+    runtime = audit_jobs._json_load(completed.context_snapshot_json, {})["auditRuntime"]
+
+    assert completed.status == "completed"
+    assert completed.error_code is None
+    assert calls == {"provider": 1, "direct": 0}
+    assert result["structured"] is not None
+    assert result["fallbackMarkdown"] is None
     assert result["technicalResponse"] is None
-    assert result["structuredParsing"]["status"] == "fallback"
-    assert result["structuredParsing"]["sourceFormat"] == "invalid"
-    assert result["structuredParsing"]["errorCode"] == "json_parse_failed"
-    assert result["structuredParsing"]["validationErrorsCount"] == 0
+    assert result["backendFallbackUsed"] is True
+    assert result["compactRetryAvailable"] is False
+    assert result["completeness"] == "backend_fallback"
+    assert public["result"]["completeness"] == "backend_fallback"
+    assert result["structuredParsing"]["status"] == "success"
+    assert result["structuredParsing"]["fallbackReason"] == "json_parse_failed"
+    assert result["modelResponseParsing"]["status"] == "fallback"
+    assert result["modelResponseParsing"]["sourceFormat"] == "invalid"
+    assert result["modelResponseParsing"]["errorCode"] == "json_parse_failed"
     assert result["providerResponseMetadata"]["fullResponseStored"] is False
-    assert result["completeness"] == "fallback"
+    assert result["finalTokenUsage"] == {"prompt": 111, "completion": 22, "total": 133}
+    assert runtime["finalGenerationStatus"] == "backend_fallback_after_json_parse"
+    assert runtime["backendFallbackUsed"] is True
+    assert runtime["directApiCallsCount"] == initial_direct_calls
+    assert "rawResponse" not in result
+    assert raw_answer not in audit_jobs._json_dump(public)
+
+
+def test_schema_invalid_final_response_uses_backend_fallback_without_external_retries(monkeypatch):
+    db = _db()
+    job = _create(db)
+    job.status = "context_ready"
+    job.current_stage = "generate_answer"
+    snapshot = _realistic_oversized_final_snapshot()
+    initial_direct_calls = snapshot["auditRuntime"]["directApiCallsCount"]
+    original_verification = {
+        key: value["status"] for key, value in snapshot["verificationRegistry"].items()
+    }
+    job.context_snapshot_json = audit_jobs._json_dump(snapshot)
+    db.commit()
+    calls = {"provider": 0, "direct": 0}
+    raw_marker = "raw-schema-answer access_token=secret CampaignId=123 request_hash=private"
+    raw_answer = json.dumps({"executive_summary": raw_marker}, ensure_ascii=False)
+
+    def forbidden_direct(*args, **kwargs):
+        calls["direct"] += 1
+        raise AssertionError("Schema fallback must not recollect Direct evidence")
+
+    async def schema_invalid(*args, **kwargs):
+        calls["provider"] += 1
+        return {
+            "model": "deepseek/deepseek-chat",
+            "content": raw_answer,
+            "finish_reason": "stop",
+            "usage": {"prompt_tokens": 10918, "completion_tokens": 1800, "total_tokens": 12718},
+        }
+
+    monkeypatch.setattr(audit_jobs, "collect_audit_data_requests", forbidden_direct)
+    monkeypatch.setattr(audit_jobs, "generate_openrouter_response", schema_invalid)
+    generated = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
+    completed = asyncio.run(audit_jobs.advance_audit_job(db, generated.id, organization_id="org-a"))
+    result = audit_jobs._json_load(completed.result_json, {})
+    persisted_snapshot = audit_jobs._json_load(completed.context_snapshot_json, {})
+    runtime = persisted_snapshot["auditRuntime"]
+    public_dump = audit_jobs._json_dump(
+        audit_jobs.audit_job_response(completed, db).model_dump(mode="json")
+    )
+    public_result = audit_jobs.audit_job_response(completed, db).model_dump(mode="json")["result"]
+
+    assert completed.status == "completed"
+    assert completed.error_code is None
+    assert calls == {"provider": 1, "direct": 0}
+    assert result["structured"] is not None
+    assert result["structured"]["critical_findings"]
+    assert result["backendFallbackUsed"] is True
+    assert result["completeness"] == "backend_fallback"
+    assert public_result["completeness"] == "backend_fallback"
+    assert result["compactRetryAvailable"] is False
+    assert result["truncated"] is False
+    assert result["modelResponseParsing"]["errorCode"] == "json_schema_validation_failed"
+    assert result["modelResponseParsing"]["validationErrorsCount"] > 0
+    assert len(result["modelResponseParsing"]["validationErrorPaths"]) <= 20
+    assert len(result["modelResponseParsing"]["validationErrorTypes"]) <= 20
+    assert result["structuredParsing"]["status"] == "success"
+    assert result["structuredParsing"]["fallbackReason"] == "json_schema_validation_failed"
+    assert result["providerResponseMetadata"]["fullResponseStored"] is False
+    assert result["finalTokenUsage"] == {"prompt": 10918, "completion": 1800, "total": 12718}
+    assert runtime["finalGenerationStatus"] == "backend_fallback_after_schema_validation"
+    assert runtime["backendFallbackUsed"] is True
+    assert runtime["directApiCallsCount"] == initial_direct_calls
+    assert {
+        key: value["status"] for key, value in persisted_snapshot["verificationRegistry"].items()
+    } == original_verification
+    assert raw_marker not in public_dump
+    assert "access_token=secret" not in public_dump
+    assert "CampaignId=123" not in public_dump
+    assert "request_hash=private" not in public_dump
     assert "rawResponse" not in result
 
 
@@ -1739,13 +1843,16 @@ def test_generate_stage_stores_fenced_json_as_structured_without_raw_answer(monk
     monkeypatch.setattr(audit_jobs, "generate_openrouter_response", fenced_provider)
     generated = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
     result = audit_jobs._json_load(generated.result_json, {})
+    runtime = audit_jobs._json_load(generated.context_snapshot_json, {})["auditRuntime"]
 
     assert calls["count"] == 1
     assert result["structured"] is not None
+    assert result["backendFallbackUsed"] is False
     assert result["fallbackMarkdown"] is None
     assert result["technicalResponse"] is None
     assert result["structuredParsing"]["sourceFormat"] == "markdown_fenced_json"
     assert result["providerResponseMetadata"]["fullResponseStored"] is False
+    assert runtime["finalGenerationStatus"] == "provider_completed"
     assert "```json" not in generated.answer_text
 
 

@@ -247,6 +247,55 @@ if (providerContextFallbackSmoke.includes('data-ai-audit-compact-retry')
   || !providerContextFallbackSmoke.includes('L3')) {
   failed.push(['provider context fallback UI smoke', false]);
 }
+const schemaFallbackSmoke = renderAiAuditJob({
+  selectedClientId: 'client-1',
+  aiAuditJob: {
+    job_id: 'audit-schema-fallback',
+    status: 'completed',
+    current_stage: 'finalize',
+    progress_percent: 100,
+    result: {
+      structured: {
+        meta: { period: { date_from: '2026-06-10', date_to: '2026-07-09', days: 30 } },
+        executive_summary: 'backend-safe-report',
+        data_quality: { status: 'partial' },
+        critical_findings: [], opportunities: [], insufficient_data_campaigns: [],
+        action_plan: [], prohibited_actions: [], limitations: [], conclusion: 'safe-conclusion',
+      },
+      backendFallbackUsed: true,
+      compactRetryAvailable: false,
+      truncated: false,
+      technicalResponse: 'raw-provider-response-must-not-render',
+      structuredParsing: { status: 'success', fallbackReason: 'json_schema_validation_failed' },
+      modelResponseParsing: {
+        status: 'fallback', errorCode: 'json_schema_validation_failed',
+        validationErrorsCount: 7, validationErrorPaths: ['critical_findings.0.fact'],
+        sourceFormat: 'plain_json', parseOutcome: 'schema_validation_failed',
+      },
+      finalTokenUsage: { prompt: 500, completion: 277, total: 777 },
+      finishReason: 'stop',
+    },
+    context_metadata: {
+      runtime: {
+        finalCompactionLevel: 0,
+        preflightFitsModelContext: true,
+        backendFallbackUsed: true,
+        finalGenerationStatus: 'backend_fallback_after_schema_validation',
+        tokenUsage: { total: 900 },
+      },
+    },
+  },
+  escapeHtml,
+});
+if (!schemaFallbackSmoke.includes('backend-safe-report')
+  || !schemaFallbackSmoke.includes('json_schema_validation_failed')
+  || !schemaFallbackSmoke.includes('critical_findings.0.fact')
+  || !schemaFallbackSmoke.includes('777')
+  || schemaFallbackSmoke.includes('data-ai-audit-compact-retry')
+  || schemaFallbackSmoke.includes('raw-provider-response-must-not-render')
+  || schemaFallbackSmoke.includes('AI-отчёт сформирован')) {
+  failed.push(['schema fallback UI smoke', false]);
+}
 if (failed.length > 0) {
   console.error(`Static validation failed: ${failed.map(([name]) => name).join(', ')}`);
   process.exit(1);
