@@ -275,6 +275,82 @@ def test_rows_without_numeric_signal_do_not_confirm_hypothesis():
     assert enforced.supporting_evidence == []
 
 
+def test_goal_availability_is_prerequisite_not_query_confirmation():
+    proposed = AuditHypothesisVerification(
+        hypothesis_id="hyp-query", status="confirmed", verification_summary="Model claimed confirmation."
+    )
+    request = _request(1, "goals").model_copy(update={
+        "request_id": "req-goals", "hypothesis_id": "hyp-query",
+    }).model_dump(mode="json")
+    result = {
+        "request_id": "req-goals", "hypothesis_id": "hyp-query", "capability_id": "goals",
+        "dimension": "goals", "status": "collected", "rows_analyzed": 1,
+        "data": [{"campaign_name": "Search", "goal_conversions": 3}],
+    }
+
+    enforced = enforce_hypothesis_verification(
+        proposed,
+        hypothesis={
+            "fact_sufficient_data": True,
+            "prerequisite_rule_codes": ["selected_goal_data_available"],
+            "confirmation_rule_codes": ["search_queries_waste_without_goals"],
+        },
+        requests=[request],
+        results=[result],
+    )
+
+    assert enforced.status == "unverified"
+    assert enforced.supporting_evidence == []
+
+
+def test_only_matching_confirmation_rule_can_confirm_hypothesis():
+    proposed = AuditHypothesisVerification(
+        hypothesis_id="hyp-query", status="confirmed", verification_summary="Model claimed confirmation."
+    )
+    request = _request(1, "devices").model_copy(update={
+        "request_id": "req-devices", "hypothesis_id": "hyp-query",
+    }).model_dump(mode="json")
+    result = {
+        "request_id": "req-devices", "hypothesis_id": "hyp-query", "capability_id": "devices",
+        "dimension": "devices", "status": "collected", "rows_analyzed": 2,
+        "data": [
+            {"device": "MOBILE", "clicks": 30, "cost": 3000, "conversions": 2},
+            {"device": "DESKTOP", "clicks": 30, "cost": 1000, "conversions": 2},
+        ],
+    }
+    hypothesis = {
+        "fact_sufficient_data": True,
+        "confirmation_rule_codes": ["search_queries_waste_without_goals"],
+    }
+
+    unrelated = enforce_hypothesis_verification(
+        proposed, hypothesis=hypothesis, requests=[request], results=[result],
+    )
+    matching = enforce_hypothesis_verification(
+        proposed,
+        hypothesis={**hypothesis, "confirmation_rule_codes": ["devices_cpa_segment_gap"]},
+        requests=[request],
+        results=[result],
+    )
+
+    assert unrelated.status == "unverified"
+    assert matching.status == "confirmed"
+
+
+def test_rejected_hypothesis_is_immutable():
+    proposed = AuditHypothesisVerification(
+        hypothesis_id="hyp-1", status="confirmed", verification_summary="Model tried to reopen it."
+    )
+    enforced = enforce_hypothesis_verification(
+        proposed,
+        hypothesis={"status": "rejected", "fact_sufficient_data": True},
+        requests=[],
+        results=[],
+    )
+
+    assert enforced.status == "rejected"
+
+
 def test_ten_clicks_are_not_a_universal_sufficient_sample():
     decision = evaluate_metric_sufficiency(
         "high_cpa",

@@ -267,10 +267,11 @@ def test_full_staged_flow_runs_planning_verification_and_final_answer(monkeypatc
         if "Plan the next read-only investigation round" in prompt:
             return {
                 "model": model,
-                "content": json.dumps({
-                    "continue_investigation": False,
-                    "requests": [],
-                    "stop_reason": "enough_evidence",
+                    "content": json.dumps({
+                        "continue_investigation": False,
+                        "existing_hypothesis_requests": [],
+                        "new_hypotheses": [],
+                        "stop_reason": "enough_evidence",
                 }),
                 "usage": {"total_tokens": 50},
                 "finish_reason": "stop",
@@ -430,7 +431,7 @@ def test_planner_is_skipped_when_no_investigation_is_needed(monkeypatch):
     assert snapshot["auditRuntime"]["providerCallsCount"] == 0
 
 
-def test_ai_next_round_selects_devices_after_rejected_query_hypothesis():
+def test_ai_next_round_creates_device_child_after_rejected_query_hypothesis():
     snapshot = {
         "analysisPeriod": {"dateFrom": "2026-06-10", "dateTo": "2026-07-09", "days": 30},
         "auditRuntime": {"investigationRound": 1, "requestsCount": 1},
@@ -453,13 +454,16 @@ def test_ai_next_round_selects_devices_after_rejected_query_hypothesis():
     }
     plan = AuditNextRoundPlan.model_validate({
         "continue_investigation": True,
-        "requests": [{
-            "hypothesis_id": "hyp-1",
-            "capability_id": "devices",
-            "reason": "Compare device efficiency after the query explanation was rejected.",
-            "expected_information_gain": "A device CPA gap can explain the account-level deviation.",
-            "required_for_conclusion": True,
-            "stop_if": ["No material device gap"],
+        "existing_hypothesis_requests": [],
+        "new_hypotheses": [{
+            "hypothesis_id": "hyp-2",
+            "parent_hypothesis_id": "hyp-1",
+            "campaign_name": "Search Brand",
+            "hypothesis": "Mobile traffic may explain high CPA.",
+            "rationale": "The search-query hypothesis was rejected.",
+            "required_capabilities": ["devices"],
+            "confirmation_rule_codes": ["devices_cpa_segment_gap"],
+            "requests": [],
         }],
         "stop_reason": None,
     })
@@ -468,13 +472,18 @@ def test_ai_next_round_selects_devices_after_rejected_query_hypothesis():
 
     assert rejected == []
     assert [item.capability_id for item in accepted] == ["devices"]
+    assert accepted[0].hypothesis_id == "hyp-2"
     assert accepted[0].request_id == "req_r2_001"
+    hypotheses = snapshot["investigationPlan"]["hypotheses"]
+    assert next(item for item in hypotheses if item["hypothesis_id"] == "hyp-1")["hypothesis"] == "Search queries may explain high CPA."
+    assert next(item for item in hypotheses if item["hypothesis_id"] == "hyp-2")["parent_hypothesis_id"] == "hyp-1"
 
 
 def test_valid_next_round_stop_does_not_require_backend_fallback():
     plan, valid, parsing = audit_jobs._parse_next_round_plan(json.dumps({
         "continue_investigation": False,
-        "requests": [],
+        "existing_hypothesis_requests": [],
+        "new_hypotheses": [],
         "stop_reason": "low_data",
     }))
 
@@ -509,12 +518,20 @@ def test_planner_docs_lookup_is_local_bounded_and_non_executing(monkeypatch):
         ],
     }
 
-    trace = audit_jobs._planner_docs_lookup(snapshot)
+    knowledge = audit_jobs._planner_docs_lookup(snapshot)
 
     assert len(calls) == 2
+    assert len(knowledge) == 1
+    assert knowledge[0]["capability_id"] == "devices"
+    assert knowledge[0]["permitted_metrics"]
+    trace = snapshot["docsLookupTrace"][-1]["lookups"]
     assert len(trace) == 2
     assert all(item["apiExecuted"] is False for item in trace)
     assert all("query" not in item for item in trace)
+    prompt = audit_jobs.build_next_round_prompt(snapshot)
+    assert '"local_documentation"' in prompt
+    assert '"permitted_metrics"' in prompt
+    assert len(calls) == 4  # two bounded lookups per planner invocation
 
 
 def test_fresh_baseline_is_live_required_and_never_silently_uses_saved_campaigns():
@@ -543,15 +560,118 @@ def test_fresh_baseline_is_live_required_and_never_silently_uses_saved_campaigns
     assert snapshot["accountTotals"]["cost"] == 0
 
 
+def test_fresh_baseline_with_150_campaigns_is_recompacted_with_full_aggregates():
+    rows = [
+        {
+            "campaign_name": f"Campaign {index}", "cost": 1000 + index,
+            "clicks": 40, "impressions": 2000, "conversions_123_auto": 0,
+        }
+        for index in range(150)
+    ]
+    snapshot = {
+        "analysisPeriod": {"dateFrom": "2026-06-10", "dateTo": "2026-07-09", "days": 30},
+        "targetKpis": {"targetCpa": 500},
+        "selectedGoals": {"ids": ["123"], "hasGoalData": False},
+        "metadata": {"tokenTarget": audit_jobs.CONTEXT_TOKEN_TARGET},
+        "baselineResults": [{"capability_id": "campaign_performance", "data": rows}],
+    }
+
+    audit_jobs._apply_live_baseline(
+        snapshot,
+        [
+            {"capability_id": "campaigns", "status": "collected", "data": []},
+            {"capability_id": "campaign_performance", "status": "collected", "data": rows},
+        ],
+        allow_saved_fallback=False,
+    )
+
+    assert snapshot["metadata"]["campaignsTotal"] == 150
+    assert snapshot["metadata"]["campaignsIncluded"] <= 25
+    assert snapshot["metadata"]["estimatedTokens"] <= audit_jobs.CONTEXT_TOKEN_TARGET
+    assert snapshot["freshBaseline"]["campaignAggregates"]["campaignsTotal"] == 150
+    assert len(snapshot["baselineResults"][0]["data"]) == 150
+    assert snapshot["dataCoverage"]["campaigns"]["source"] == "yandex_direct_live"
+
+
 def test_api_campaign_type_wins_when_name_is_unknown_and_conflict_is_explicit():
-    api_classified = audit_jobs._campaign_classification("Campaign 1", "SMART_CAMPAIGN")
-    conflict = audit_jobs._campaign_classification("Search Brand", "SMART_CAMPAIGN")
+    api_classified = audit_jobs._campaign_classification("Campaign 1", {
+        "type": "UNIFIED_CAMPAIGN",
+        "unified_campaign": {"bidding_strategy": {
+            "search": {"bidding_strategy_type": "SERVING_OFF"},
+            "network": {"bidding_strategy_type": "AVERAGE_CPA"},
+        }},
+    })
+    conflict = audit_jobs._campaign_classification("Search Brand", {
+        "type": "TEXT_CAMPAIGN",
+        "text_campaign": {"bidding_strategy": {
+            "search": {"bidding_strategy_type": "SERVING_OFF"},
+            "network": {"bidding_strategy_type": "AVERAGE_CPA"},
+        }},
+    })
 
     assert api_classified["campaign_family"] == "yan"
-    assert api_classified["classification_source"] == "direct_api_type"
+    assert api_classified["classification_source"] == "direct_api_strategy"
     assert conflict["campaign_family"] == "unknown"
     assert conflict["classification_source"] == "api_name_conflict"
     assert conflict["warnings"]
+
+
+def test_text_and_unified_mixed_campaigns_use_current_strategy_metadata():
+    text_search = audit_jobs._campaign_classification("Campaign 1", {
+        "type": "TEXT_CAMPAIGN",
+        "text_campaign": {"bidding_strategy": {
+            "search": {"bidding_strategy_type": "AVERAGE_CPA"},
+            "network": {"bidding_strategy_type": "SERVING_OFF"},
+        }},
+    })
+    unified_mixed = audit_jobs._campaign_classification("РСЯ prospecting", {
+        "type": "UNIFIED_CAMPAIGN",
+        "unified_campaign": {"bidding_strategy": {
+            "search": {"bidding_strategy_type": "AVERAGE_CPA"},
+            "network": {"bidding_strategy_type": "AVERAGE_CPA"},
+        }},
+    })
+
+    assert text_search["campaign_family"] == "search"
+    assert text_search["classification_source"] == "direct_api_strategy"
+    assert unified_mixed["campaign_family"] == "unknown"
+    assert unified_mixed["classification_source"] == "direct_api_mixed"
+    assert unified_mixed["warnings"]
+
+
+def test_multiple_hypotheses_for_same_campaign_are_not_collapsed():
+    snapshot = {
+        "analysisPeriod": {"dateFrom": "2026-06-10", "dateTo": "2026-07-09", "days": 30},
+        "targetKpis": {"targetCpa": 500},
+        "campaignGroups": {
+            "critical": [{
+                "name": "Search Brand", "cost": 5000, "clicks": 80, "impressions": 5000,
+                "goalConversions": 0, "flags": ["spend_without_conversions"],
+                "diagnostic": "Spend without selected-goal conversions.",
+            }],
+            "warning": [], "opportunity": [], "low_data": [], "stable": [],
+        },
+        "campaignClassifications": [{
+            "campaign_name": "Search Brand", "campaign_family": "search",
+            "campaign_subtype": "brand_search", "classification_source": "name_fallback",
+        }],
+        "observedFacts": [],
+    }
+    fallback = audit_jobs.build_rule_based_investigation_plan(snapshot)
+    first = fallback.hypotheses[0]
+    proposed = audit_jobs.AuditInvestigationPlan(hypotheses=[
+        first.model_copy(update={"hypothesis": "Search-query intent is weak."}),
+        first.model_copy(update={
+            "hypothesis_id": "hyp_device",
+            "hypothesis": "Mobile device traffic may be inefficient.",
+        }),
+    ])
+
+    merged = audit_jobs._merge_investigation_plans(proposed, snapshot, fallback)
+
+    assert len(merged.hypotheses) == 2
+    assert len({item.hypothesis_id for item in merged.hypotheses}) == 2
+    assert {item.campaign_name for item in merged.hypotheses} == {"Search Brand"}
 
 
 def test_verification_timeout_uses_unverified_fallback_and_continues(monkeypatch):

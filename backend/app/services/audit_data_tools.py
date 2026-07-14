@@ -237,6 +237,7 @@ def collect_audit_data_requests(
     audit_job_id: str | None = None,
     max_live_requests: int = MAX_LIVE_REQUESTS_PER_ADVANCE,
     cache_policy: str = "prefer_cache",
+    allow_saved_fallback: bool = True,
 ) -> tuple[list[AuditDataRequestResult], int]:
     results: list[AuditDataRequestResult] = []
     direct_api_calls = 0
@@ -333,8 +334,12 @@ def collect_audit_data_requests(
                     error_code="adapter_failed",
                     retryable=True,
                 )
+        if result.live_attempted and result.status in {"failed", "unavailable", "insufficient_data", "partial"}:
+            result.source = result.source or "yandex_direct_live"
+            result.freshness = result.freshness or "live_failed"
         if (
-            request.data_preference == "live_preferred"
+            allow_saved_fallback
+            and request.data_preference == "live_preferred"
             and result.status in {"failed", "unavailable", "insufficient_data"}
         ):
             saved = _saved_result(

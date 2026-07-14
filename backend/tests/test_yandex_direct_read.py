@@ -133,7 +133,7 @@ def test_object_get_is_allowlisted_forces_get_and_paginates(monkeypatch):
 
     assert len(rows) == 2
     assert [item[1]["method"] for item in payloads] == ["get", "get"]
-    assert all(item[0] == "https://api.direct.yandex.com/json/v5/campaigns" for item in payloads)
+    assert all(item[0] == "https://api.direct.yandex.com/json/v501/campaigns" for item in payloads)
     assert all(item[2]["Authorization"] == "Bearer secret" for item in payloads)
     with pytest.raises(YandexDirectReadError, match="allowlisted"):
         connector.request_service_get("https://attacker.invalid", {})
@@ -287,6 +287,44 @@ def test_live_preferred_saved_fallback_preserves_safe_live_diagnostics(monkeypat
     assert results[0].saved_fallback is True
 
 
+def test_fresh_drilldown_does_not_use_saved_fallback_without_explicit_permission(monkeypatch):
+    db = _db()
+    request = _request("goals", preference="live_preferred")
+    accepted, _ = validate_audit_data_requests([request])
+
+    def failed_live(*args, **kwargs):
+        raise YandexDirectReadError("direct_rate_limited", "rate limited", retryable=True)
+
+    monkeypatch.setattr("app.services.audit_data_tools.execute_direct_read", failed_live)
+    results, _ = collect_audit_data_requests(
+        db, "client-a", accepted, cache_policy="fresh", allow_saved_fallback=False,
+    )
+
+    assert results[0].status == "failed"
+    assert results[0].source == "unavailable"
+    assert results[0].freshness == "live_failed"
+    assert results[0].saved_fallback is False
+
+
+def test_fresh_drilldown_uses_saved_fallback_only_when_explicitly_allowed(monkeypatch):
+    db = _db()
+    request = _request("goals", preference="live_preferred")
+    accepted, _ = validate_audit_data_requests([request])
+
+    def failed_live(*args, **kwargs):
+        raise YandexDirectReadError("direct_rate_limited", "rate limited", retryable=True)
+
+    monkeypatch.setattr("app.services.audit_data_tools.execute_direct_read", failed_live)
+    results, _ = collect_audit_data_requests(
+        db, "client-a", accepted, cache_policy="fresh", allow_saved_fallback=True,
+    )
+
+    assert results[0].status == "collected"
+    assert results[0].source == "directpilot_saved_stats"
+    assert results[0].saved_fallback is True
+    assert results[0].live_error_code == "direct_rate_limited"
+
+
 def test_capability_validation_rejects_unknown_report_type_and_incompatible_fields():
     base = YANDEX_DIRECT_READ_CAPABILITIES["campaign_performance"]
     with pytest.raises(ValueError, match="Unsupported Yandex Direct report type"):
@@ -426,6 +464,8 @@ def test_prefer_cache_reuses_valid_cache_and_fresh_bypasses_it(monkeypatch):
 
     def fake_get(self, service, params, *, maximum_rows, page_size):
         calls["count"] += 1
+        assert params["TextCampaignFieldNames"] == ["BiddingStrategy"]
+        assert params["UnifiedCampaignFieldNames"] == ["BiddingStrategy"]
         return [{"Id": 101, "Name": "Поиск Бренд", "Status": "ACCEPTED", "Type": "TEXT_CAMPAIGN"}]
 
     monkeypatch.setattr(YandexDirectConnector, "paginate_service_get", fake_get)

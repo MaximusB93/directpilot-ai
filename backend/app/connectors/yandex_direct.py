@@ -41,7 +41,7 @@ class YandexDirectAccount:
 class YandexDirectConnector:
     """Read-only connector for Yandex Direct API v5."""
 
-    campaigns_url = "https://api.direct.yandex.com/json/v5/campaigns"
+    campaigns_url = "https://api.direct.yandex.com/json/v501/campaigns"
     reports_url = "https://api.direct.yandex.com/json/v5/reports"
 
     def __init__(self, access_token: str | None = None, client_login: str | None = None) -> None:
@@ -96,8 +96,9 @@ class YandexDirectConnector:
         if not self.is_configured:
             raise YandexDirectReadError("direct_auth_error", "Yandex Direct access token is not configured.")
         try:
+            api_version = "v501" if service_id == "campaigns" else "v5"
             response = httpx.post(
-                f"https://api.direct.yandex.com/json/v5/{service_id}",
+                f"https://api.direct.yandex.com/json/{api_version}/{service_id}",
                 json={"method": "get", "params": params},
                 headers=self._headers(),
                 timeout=30,

@@ -63,9 +63,15 @@ def describe_direct_capability(capability_id: str) -> dict[str, Any]:
     if capability is None:
         return {
             "capability_id": capability_id,
+            "purpose": (docs or {}).get("purpose"),
+            "campaign_families": (docs or {}).get("supported_campaign_families") or [],
+            "campaign_subtypes": (docs or {}).get("supported_campaign_subtypes") or [],
+            "semantic_metrics": (docs or {}).get("permitted_metrics") or [],
+            "source_type": (docs or {}).get("source_type"),
+            "prerequisites": (docs or {}).get("prerequisites") or [],
+            "limitations": (docs or {}).get("limitations") or ["requires_backend_implementation"],
             "supported_now": False,
             "requires_backend_implementation": True,
-            "documentation": docs,
         }
     return {
         "capability_id": capability.id,
@@ -95,6 +101,12 @@ def search_direct_api_docs(question: str) -> dict[str, Any]:
         matches.append({
             "capability_id": capability_id,
             "purpose": item.get("purpose"),
+            "permitted_metrics": item.get("permitted_metrics") or [],
+            "supported_campaign_families": item.get("supported_campaign_families") or [],
+            "supported_campaign_subtypes": item.get("supported_campaign_subtypes") or [],
+            "prerequisites": item.get("prerequisites") or [],
+            "limitations": item.get("limitations") or [],
+            "source_type": item.get("source_type"),
             "supported_now": executable,
             "capability_candidate": not executable,
             "requires_backend_implementation": not executable,

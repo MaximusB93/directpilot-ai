@@ -218,6 +218,8 @@ def build_cascade_hypotheses(
         optional = [request.capability_id or request.dimension for request in item.data_requests if not request.required_for_conclusion]
         hypotheses.append(AuditHypothesis(
             hypothesis_id=item.hypothesis_id,
+            parent_hypothesis_id=item.parent_hypothesis_id,
+            supersedes_hypothesis_id=item.supersedes_hypothesis_id,
             fact_ids=[fact.fact_id for fact in campaign_facts[:5]],
             campaign_name=item.campaign_name,
             hypothesis=item.hypothesis,
@@ -230,6 +232,9 @@ def build_cascade_hypotheses(
             forbidden_capabilities=list(FORBIDDEN_BY_SUBTYPE.get(item.campaign_subtype, ())),
             confirmation_rules=["Обязательные данные получены и содержат подтверждающий измеримый сигнал."],
             rejection_rules=["Доверенные данные противоречат предполагаемой причине."],
+            prerequisite_rule_codes=item.prerequisite_rule_codes,
+            confirmation_rule_codes=item.confirmation_rule_codes,
+            rejection_rule_codes=item.rejection_rule_codes,
             stop_conditions=["Доказательств достаточно", "Следующие данные недоступны", "Достигнут лимит расследования"],
             investigation_round=round_number,
             remaining_data_needed=required,
@@ -286,19 +291,25 @@ def enforce_hypothesis_verification(
     )
     trusted = [
         evidence
-        for rule in backend_evaluation["confirmation_rules"]
-        if rule.get("passed")
+        for rule in backend_evaluation["matched_confirmation_rules"]
         for evidence in rule.get("evidence") or []
     ][:8]
     statuses = {item.get("status") for item in related}
     fact_sufficient = bool(hypothesis.get("fact_sufficient_data", True))
     status = proposed.status
     limitations = list(proposed.limitations)
-    if related and statuses == {"not_applicable"}:
+    if hypothesis.get("status") == "rejected" or hypothesis.get("current_status") == "rejected":
+        status = "rejected"
+        limitations.append("Отклонённая гипотеза неизменяема; новые причины проверяются отдельной дочерней гипотезой.")
+    elif related and statuses == {"not_applicable"}:
         status = "not_applicable"
     elif proposed.contradicting_evidence and proposed.status == "rejected":
         status = "rejected"
-    elif not backend_evaluation["has_passed_confirmation_rule"] or not fact_sufficient:
+    elif (
+        not backend_evaluation["has_passed_confirmation_rule"]
+        or not backend_evaluation["required_prerequisites_passed"]
+        or not fact_sufficient
+    ):
         status = "unverified"
         limitations.append("Backend не нашёл достаточного подтверждения в доверенных данных.")
     elif status == "confirmed" and (

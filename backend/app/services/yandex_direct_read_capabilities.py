@@ -120,6 +120,14 @@ def _report(
 
 
 _CAMPAIGN_FIELDS = ("Id", "Name", "Status", "State", "Type")
+_CAMPAIGN_TYPE_FIELDS = (
+    ("TextCampaignFieldNames", ("BiddingStrategy",)),
+    ("MobileAppCampaignFieldNames", ("BiddingStrategy",)),
+    ("CpmBannerCampaignFieldNames", ("BiddingStrategy",)),
+    ("UnifiedCampaignFieldNames", ("BiddingStrategy",)),
+    ("TextCampaignSearchStrategyPlacementTypesFieldNames", ("SearchResults", "ProductGallery", "DynamicPlaces")),
+    ("UnifiedCampaignSearchStrategyPlacementTypesFieldNames", ("SearchResults", "ProductGallery", "DynamicPlaces", "Maps", "SearchOrganizationList")),
+)
 _AD_GROUP_FIELDS = ("Id", "CampaignId", "Name", "Status", "ServingStatus", "Type", "RegionIds", "NegativeKeywords")
 _KEYWORD_FIELDS = ("Id", "CampaignId", "AdGroupId", "Keyword", "Status", "ServingStatus", "State", "StrategyPriority")
 _AD_FIELDS = ("Id", "CampaignId", "AdGroupId", "Status", "State", "Type", "StatusClarification")
@@ -127,9 +135,9 @@ _TEXT_AD_FIELDS = ("Title", "Title2", "Text", "Href", "DisplayDomain", "Mobile",
 
 
 YANDEX_DIRECT_READ_CAPABILITIES: dict[str, DirectReadCapability] = {
-    "campaigns": _service("campaigns", "Кампании", "campaigns", _CAMPAIGN_FIELDS, ("name", "status", "state", "type"), families=ALL_FAMILIES, subtypes=ALL_SUBTYPES, limit=3000),
-    "campaign_settings": _service("campaign_settings", "Настройки кампании", "campaigns", _CAMPAIGN_FIELDS, ("name", "status", "state", "type"), families=ALL_FAMILIES, subtypes=ALL_SUBTYPES),
-    "campaign_status": _service("campaign_status", "Статус кампании", "campaigns", _CAMPAIGN_FIELDS, ("status", "state", "type"), families=ALL_FAMILIES, subtypes=ALL_SUBTYPES),
+    "campaigns": _service("campaigns", "Кампании", "campaigns", _CAMPAIGN_FIELDS, ("name", "status", "state", "type", "bidding_strategy"), families=ALL_FAMILIES, subtypes=ALL_SUBTYPES, extra_params=_CAMPAIGN_TYPE_FIELDS, limit=3000),
+    "campaign_settings": _service("campaign_settings", "Настройки кампании", "campaigns", _CAMPAIGN_FIELDS, ("name", "status", "state", "type", "bidding_strategy"), families=ALL_FAMILIES, subtypes=ALL_SUBTYPES, extra_params=_CAMPAIGN_TYPE_FIELDS),
+    "campaign_status": _service("campaign_status", "Статус кампании", "campaigns", _CAMPAIGN_FIELDS, ("status", "state", "type", "bidding_strategy"), families=ALL_FAMILIES, subtypes=ALL_SUBTYPES, extra_params=_CAMPAIGN_TYPE_FIELDS),
     "campaign_performance": _report("campaign_performance", "Эффективность кампании", "CAMPAIGN_PERFORMANCE_REPORT", ("CampaignId", "CampaignName") + PERFORMANCE_FIELDS),
     "campaign_daily_dynamics": _report("campaign_daily_dynamics", "Динамика кампании по дням", "CAMPAIGN_PERFORMANCE_REPORT", ("Date", "CampaignId", "CampaignName") + PERFORMANCE_FIELDS),
     "goals": _report("goals", "Конверсии по выбранным целям", "CAMPAIGN_PERFORMANCE_REPORT", ("CampaignId", "CampaignName") + PERFORMANCE_FIELDS),

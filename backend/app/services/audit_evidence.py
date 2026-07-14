@@ -5,6 +5,16 @@ from typing import Any
 
 
 AVAILABLE_STATUSES = {"collected", "cached", "partial"}
+PREREQUISITE_RULE_CODES = {"selected_goal_data_available"}
+CONFIRMATION_RULE_BY_CAPABILITY = {
+    "search_queries": "search_queries_waste_without_goals",
+    "ad_group_performance": "ad_group_performance_waste_without_goals",
+    "keyword_performance": "keyword_performance_waste_without_goals",
+    "placements": "placements_waste_without_goals",
+    "devices": "devices_cpa_segment_gap",
+    "geo": "geo_cpa_segment_gap",
+    "retargeting_lists": "retargeting_list_unavailable",
+}
 
 
 @dataclass(frozen=True)
@@ -222,10 +232,41 @@ def evaluate_hypothesis_evidence(
         )
         summaries.append(summary)
         rules.extend(result_rules)
+    requested_capabilities = {
+        str(item.get("capability_id") or item.get("dimension") or "") for item in requests
+    }
+    prerequisite_codes = set(hypothesis.get("prerequisite_rule_codes") or [])
+    confirmation_codes = set(hypothesis.get("confirmation_rule_codes") or [])
+    rejection_codes = set(hypothesis.get("rejection_rule_codes") or [])
+    if not prerequisite_codes and "goals" in requested_capabilities:
+        prerequisite_codes.add("selected_goal_data_available")
+    if not confirmation_codes:
+        confirmation_codes.update(
+            rule_code
+            for capability, rule_code in CONFIRMATION_RULE_BY_CAPABILITY.items()
+            if capability in requested_capabilities
+        )
+    rules_by_code = {str(item.get("rule_code") or ""): item for item in rules}
+    prerequisite_results = [rules_by_code.get(code) for code in sorted(prerequisite_codes)]
+    required_prerequisites_passed = all(
+        item is not None and bool(item.get("passed")) for item in prerequisite_results
+    )
+    matching_confirmation_rules = [
+        item for item in rules if item.get("rule_code") in confirmation_codes and item.get("passed")
+    ]
+    matching_rejection_rules = [
+        item for item in rules if item.get("rule_code") in rejection_codes and item.get("passed")
+    ]
     return {
         "required_data_available": required_available,
+        "required_prerequisites_passed": required_prerequisites_passed,
+        "prerequisite_rule_codes": sorted(prerequisite_codes),
+        "confirmation_rule_codes": sorted(confirmation_codes),
+        "rejection_rule_codes": sorted(rejection_codes),
         "evidence_summaries": summaries,
         "confirmation_rules": rules,
-        "has_passed_confirmation_rule": any(item.get("passed") for item in rules),
+        "matched_confirmation_rules": matching_confirmation_rules,
+        "matched_rejection_rules": matching_rejection_rules,
+        "has_passed_confirmation_rule": bool(matching_confirmation_rules),
         "has_sufficient_evidence": any(item.get("sufficient_data") for item in summaries),
     }

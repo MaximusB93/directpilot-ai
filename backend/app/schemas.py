@@ -738,12 +738,16 @@ class AuditInvestigationHypothesis(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     hypothesis_id: str
+    parent_hypothesis_id: str | None = None
+    supersedes_hypothesis_id: str | None = None
     campaign_name: str
     campaign_family: Literal["search", "yan", "unknown"]
     campaign_subtype: Literal["search", "brand_search", "yan_prospecting", "yan_retargeting", "unknown"]
     observed_fact: str
     hypothesis: str
-    current_status: Literal["unverified"] = "unverified"
+    current_status: Literal[
+        "confirmed", "partially_confirmed", "rejected", "unverified", "not_applicable",
+    ] = "unverified"
     fact_ids: list[str] = Field(default_factory=list, max_length=5)
     rationale: str = ""
     confidence_before_verification: Literal["low", "medium", "high"] = "low"
@@ -752,6 +756,9 @@ class AuditInvestigationHypothesis(BaseModel):
     forbidden_capabilities: list[str] = Field(default_factory=list, max_length=12)
     confirmation_rules: list[str] = Field(default_factory=list, max_length=5)
     rejection_rules: list[str] = Field(default_factory=list, max_length=5)
+    prerequisite_rule_codes: list[str] = Field(default_factory=list, max_length=8)
+    confirmation_rule_codes: list[str] = Field(default_factory=list, max_length=8)
+    rejection_rule_codes: list[str] = Field(default_factory=list, max_length=8)
     stop_conditions: list[str] = Field(default_factory=list, max_length=5)
     data_requests: list[AuditDataRequest] = Field(default_factory=list, max_length=4)
 
@@ -785,6 +792,8 @@ class AuditHypothesis(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     hypothesis_id: str
+    parent_hypothesis_id: str | None = None
+    supersedes_hypothesis_id: str | None = None
     fact_ids: list[str] = Field(default_factory=list, max_length=5)
     campaign_name: str
     hypothesis: str
@@ -800,6 +809,9 @@ class AuditHypothesis(BaseModel):
     forbidden_capabilities: list[str] = Field(default_factory=list, max_length=12)
     confirmation_rules: list[str] = Field(default_factory=list, max_length=5)
     rejection_rules: list[str] = Field(default_factory=list, max_length=5)
+    prerequisite_rule_codes: list[str] = Field(default_factory=list, max_length=8)
+    confirmation_rule_codes: list[str] = Field(default_factory=list, max_length=8)
+    rejection_rule_codes: list[str] = Field(default_factory=list, max_length=8)
     stop_conditions: list[str] = Field(default_factory=list, max_length=5)
     investigation_round: int = Field(default=1, ge=1, le=3)
     evidence: list[str] = Field(default_factory=list, max_length=8)
@@ -855,11 +867,28 @@ class AuditNextRoundRequest(BaseModel):
     stop_if: list[str] = Field(default_factory=list, max_length=5)
 
 
+class AuditNextRoundHypothesis(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    hypothesis_id: str
+    parent_hypothesis_id: str | None = None
+    supersedes_hypothesis_id: str | None = None
+    campaign_name: str
+    hypothesis: str
+    rationale: str
+    required_capabilities: list[str] = Field(default_factory=list, max_length=4)
+    prerequisite_rule_codes: list[str] = Field(default_factory=list, max_length=8)
+    confirmation_rule_codes: list[str] = Field(default_factory=list, max_length=8)
+    rejection_rule_codes: list[str] = Field(default_factory=list, max_length=8)
+    requests: list[AuditNextRoundRequest] = Field(default_factory=list, max_length=4)
+
+
 class AuditNextRoundPlan(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     continue_investigation: bool
-    requests: list[AuditNextRoundRequest] = Field(default_factory=list, max_length=8)
+    existing_hypothesis_requests: list[AuditNextRoundRequest] = Field(default_factory=list, max_length=8)
+    new_hypotheses: list[AuditNextRoundHypothesis] = Field(default_factory=list, max_length=5)
     stop_reason: str | None = None
 
 
