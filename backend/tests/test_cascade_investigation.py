@@ -20,7 +20,7 @@ from app.services.cascade_investigation import (
     next_cascade_capabilities,
     round_stop_reason,
 )
-from app.services.audit_evidence import evaluate_metric_sufficiency
+from app.services.audit_evidence import evaluate_capability_evidence, evaluate_metric_sufficiency
 from app.services.yandex_direct_api_knowledge import search_direct_api_docs
 from app.services.yandex_direct_read_capabilities import (
     YANDEX_DIRECT_READ_CAPABILITIES,
@@ -213,7 +213,7 @@ def test_confirmed_requires_trusted_collected_evidence():
     }
     enforced = enforce_hypothesis_verification(
         proposed,
-        hypothesis={"fact_sufficient_data": True},
+        hypothesis={"hypothesis_type": "device_segment_gap", "fact_sufficient_data": True},
         requests=[request],
         results=[unavailable],
     )
@@ -233,7 +233,7 @@ def test_confirmed_requires_trusted_collected_evidence():
     }
     enforced = enforce_hypothesis_verification(
         proposed,
-        hypothesis={"fact_sufficient_data": True},
+        hypothesis={"hypothesis_type": "device_segment_gap", "fact_sufficient_data": True},
         requests=[request],
         results=[collected],
     )
@@ -265,7 +265,7 @@ def test_rows_without_numeric_signal_do_not_confirm_hypothesis():
 
     enforced = enforce_hypothesis_verification(
         proposed,
-        hypothesis={"fact_sufficient_data": True},
+        hypothesis={"hypothesis_type": "device_segment_gap", "fact_sufficient_data": True},
         requests=[request],
         results=[result],
     )
@@ -273,6 +273,88 @@ def test_rows_without_numeric_signal_do_not_confirm_hypothesis():
     assert enforced.status == "unverified"
     assert enforced.confirmation_rules[0]["passed"] is False
     assert enforced.supporting_evidence == []
+
+
+def test_missing_conversion_placeholder_is_not_zero_or_material_waste():
+    result = {
+        "request_id": "req-query",
+        "hypothesis_id": "hyp-query",
+        "capability_id": "search_queries",
+        "dimension": "search_queries",
+        "status": "collected",
+        "rows_analyzed": 2,
+        "data": [
+            {"query": "unknown", "clicks": 30, "cost": 1000, "conversions": "--"},
+            {"query": "known", "clicks": 30, "cost": 1000, "conversions": "0"},
+        ],
+    }
+
+    summary, rules = evaluate_capability_evidence(result, target_cpa=500, period_days=30)
+
+    assert summary["rows_with_known_conversions"] == 1
+    assert summary["rows_with_unknown_conversions"] == 1
+    assert summary["known_conversion_coverage"] == 0.5
+    assert summary["sufficient_data"] is False
+    assert summary["stop_reason"] == "unknown_conversion_metric"
+    assert not any(item["passed"] for item in rules)
+
+
+def test_real_zero_conversion_remains_zero_and_can_confirm_waste():
+    result = {
+        "request_id": "req-query",
+        "hypothesis_id": "hyp-query",
+        "capability_id": "search_queries",
+        "dimension": "search_queries",
+        "status": "collected",
+        "rows_analyzed": 2,
+        "data": [
+            {"query": "zero-a", "clicks": 30, "cost": 1000, "conversions": "0"},
+            {"query": "zero-b", "clicks": 30, "cost": 1000, "conversions": 0},
+        ],
+    }
+
+    summary, rules = evaluate_capability_evidence(result, target_cpa=500, period_days=30)
+    waste = next(item for item in rules if item["rule_code"] == "search_queries_waste_without_goals")
+
+    assert summary["metrics"]["conversions"] == 0
+    assert summary["known_conversion_coverage"] == 1
+    assert waste["passed"] is True
+
+
+@pytest.mark.parametrize("proposed_status", ["confirmed", "rejected"])
+def test_unknown_conversions_block_confirmation_and_rejection(proposed_status):
+    proposed = AuditHypothesisVerification(
+        hypothesis_id="hyp-query", status=proposed_status, verification_summary="Model conclusion.",
+    )
+    request = _request(1, "search_queries").model_copy(update={
+        "request_id": "req-query", "hypothesis_id": "hyp-query",
+    }).model_dump(mode="json")
+    result = {
+        "request_id": "req-query",
+        "hypothesis_id": "hyp-query",
+        "capability_id": "search_queries",
+        "dimension": "search_queries",
+        "status": "collected",
+        "rows_analyzed": 2,
+        "data": [
+            {"query": "unknown-a", "clicks": 30, "cost": 1000, "conversions": "--"},
+            {"query": "unknown-b", "clicks": 30, "cost": 1000, "conversions": None},
+        ],
+    }
+    hypothesis = {
+        "hypothesis_type": "search_query_waste",
+        "fact_sufficient_data": True,
+        "confirmation_rule_codes": ["search_queries_waste_without_goals"],
+        "rejection_rule_codes": ["search_queries_no_material_waste"],
+    }
+
+    enforced = enforce_hypothesis_verification(
+        proposed, hypothesis=hypothesis, requests=[request], results=[result], target_cpa=500,
+    )
+
+    assert enforced.status == "unverified"
+    assert enforced.supporting_evidence == []
+    assert enforced.contradicting_evidence == []
 
 
 def test_goal_availability_is_prerequisite_not_query_confirmation():
@@ -319,6 +401,7 @@ def test_only_matching_confirmation_rule_can_confirm_hypothesis():
         ],
     }
     hypothesis = {
+        "hypothesis_type": "device_segment_gap",
         "fact_sufficient_data": True,
         "confirmation_rule_codes": ["search_queries_waste_without_goals"],
     }
@@ -361,6 +444,7 @@ def test_model_rejection_without_backend_rule_stays_unverified():
     enforced = enforce_hypothesis_verification(
         proposed,
         hypothesis={
+            "hypothesis_type": "device_segment_gap",
             "fact_sufficient_data": True,
             "rejection_rule_codes": ["devices_cpa_segments_comparable"],
         },
@@ -394,6 +478,7 @@ def test_matching_backend_rejection_rule_authorizes_rejection():
     enforced = enforce_hypothesis_verification(
         proposed,
         hypothesis={
+            "hypothesis_type": "device_segment_gap",
             "fact_sufficient_data": True,
             "confirmation_rule_codes": ["devices_cpa_segment_gap"],
             "rejection_rule_codes": ["devices_cpa_segments_comparable"],

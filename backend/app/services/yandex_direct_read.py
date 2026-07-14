@@ -74,13 +74,24 @@ def _snake_case(value: str) -> str:
     return value.replace("-", "_").lower()
 
 
-def _number_or_zero(value: Any) -> float:
-    if value is None or str(value).strip() in {"", "--", "—"}:
-        return 0.0
+def _number_or_none(value: Any) -> float | None:
+    if value is None or str(value).strip() in {"", "--", "\u2014", "\ufffd"}:
+        return None
     try:
         return float(str(value).replace("\u00a0", "").replace(" ", "").replace(",", "."))
     except (TypeError, ValueError):
-        return 0.0
+        return None
+
+
+def _number_or_zero(value: Any) -> float:
+    parsed = _number_or_none(value)
+    return float(parsed) if parsed is not None else 0.0
+
+
+def _numeric_state(value: Any) -> str:
+    if value is None or str(value).strip() in {"", "--", "\u2014", "\ufffd"}:
+        return "missing"
+    return "known" if _number_or_none(value) is not None else "invalid"
 
 
 def _int_or_zero(value: Any) -> int:
@@ -91,6 +102,15 @@ def _is_numeric_metric(key: str) -> bool:
     return key in {
         "impressions", "clicks", "cost", "ctr", "avg_cpc", "conversions",
         "goal_conversions", "cost_per_conversion", "conversion_rate", "revenue", "goals_roi",
+    } or key.startswith((
+        "conversions_", "cost_per_conversion_", "conversion_rate_", "revenue_", "goals_roi_",
+    ))
+
+
+def _is_causal_numeric_metric(key: str) -> bool:
+    return key in {
+        "conversions", "goal_conversions", "cost_per_conversion", "conversion_rate",
+        "revenue", "goals_roi",
     } or key.startswith((
         "conversions_", "cost_per_conversion_", "conversion_rate_", "revenue_", "goals_roi_",
     ))
@@ -118,7 +138,10 @@ def _safe_value(value: Any) -> Any:
             ):
                 continue
             if _is_numeric_metric(normalized_key):
-                safe[normalized_key] = _number_or_zero(item)
+                safe[normalized_key] = (
+                    _number_or_none(item) if _is_causal_numeric_metric(normalized_key)
+                    else _number_or_zero(item)
+                )
                 continue
             safe[normalized_key] = _safe_value(item)
         return safe
@@ -140,14 +163,16 @@ def _numeric_data_quality_warnings(rows: list[dict[str, Any]]) -> list[str]:
         for key, value in row.items():
             if not _is_numeric_metric(_snake_case(str(key))):
                 continue
-            if value is None or str(value).strip() in {"", "--", "—"}:
+            if value is None or str(value).strip() in {"", "--", "—", "�"}:
                 invalid += 1
                 continue
             try:
                 float(str(value).replace("\u00a0", "").replace(" ", "").replace(",", "."))
             except (TypeError, ValueError):
                 invalid += 1
-    return [f"Некорректные или пустые числовые значения нормализованы в 0: {invalid}."] if invalid else []
+    return [
+        f"Некорректные или пустые числовые значения отмечены как неизвестные: {invalid}."
+    ] if invalid else []
 
 
 def _goal_result_metadata(rows: list[dict[str, Any]], goal_ids: list[str]) -> dict[str, Any]:
@@ -157,9 +182,10 @@ def _goal_result_metadata(rows: list[dict[str, Any]], goal_ids: list[str]) -> di
         metrics: dict[str, Any] = {}
         for metric in ("conversions", "cost_per_conversion", "conversion_rate", "revenue", "goals_roi"):
             values = [
-                _number_or_zero(value)
+                parsed
                 for row in rows
                 for key, value in row.items()
+                if (parsed := _number_or_none(value)) is not None
                 if _snake_case(str(key)).startswith(f"{metric}_{goal_id}_")
                 or _snake_case(str(key)) == f"{metric}_{goal_id}"
             ]
@@ -170,7 +196,10 @@ def _goal_result_metadata(rows: list[dict[str, Any]], goal_ids: list[str]) -> di
                     metrics[f"{metric}_reported_values"] = list(dict.fromkeys(round(value, 4) for value in values))[:20]
         if metrics:
             per_goal[goal_id] = metrics
-    has_provider_aggregate = bool(selected and len(selected) <= MAX_REPORT_GOALS and any("conversions" in row for row in rows))
+    has_provider_aggregate = bool(
+        selected and len(selected) <= MAX_REPORT_GOALS
+        and any(_number_or_none(row.get("conversions")) is not None for row in rows)
+    )
     policy = (
         "total_conversions" if not selected
         else "single_selected_goal" if len(selected) == 1

@@ -11,7 +11,15 @@ import app.services.ai_audit_jobs as audit_jobs
 from app.api.routers.ai import chat_with_ai
 from app.db import Base
 from app.models import AiAuditJob, ClientAccount, Organization, User
-from app.schemas import AiAuditCreateRequest, AiChatRequest, AuditDataRequestResult, AuditNextRoundPlan
+from app.schemas import (
+    AiAuditCreateRequest,
+    AiChatRequest,
+    AuditDataRequestResult,
+    AuditHypothesisVerification,
+    AuditHypothesisVerificationSet,
+    AuditNextRoundPlan,
+)
+from app.services.audit_evidence import evaluate_hypothesis_evidence
 from app.core.config import normalize_ai_request_options, production_ai_model_ids, DEFAULT_PRODUCTION_AI_MODEL
 
 
@@ -437,6 +445,7 @@ def test_ai_next_round_creates_device_child_after_rejected_query_hypothesis():
         "auditRuntime": {"investigationRound": 1, "requestsCount": 1},
         "investigationPlan": {"hypotheses": [{
             "hypothesis_id": "hyp-1",
+            "hypothesis_type": "search_query_waste",
             "campaign_name": "Search Brand",
             "campaign_family": "search",
             "campaign_subtype": "search",
@@ -457,6 +466,7 @@ def test_ai_next_round_creates_device_child_after_rejected_query_hypothesis():
         "existing_hypothesis_requests": [],
         "new_hypotheses": [{
             "hypothesis_id": "hyp-2",
+            "hypothesis_type": "device_segment_gap",
             "parent_hypothesis_id": "hyp-1",
             "campaign_name": "Search Brand",
             "hypothesis": "Mobile traffic may explain high CPA.",
@@ -484,6 +494,7 @@ def test_hypothesis_registry_keeps_rejected_parent_and_activates_child():
     hypotheses = [
         {
             "hypothesis_id": f"hyp-{index}",
+            "hypothesis_type": "search_query_waste",
             "campaign_name": f"Search {index}",
             "campaign_family": "search",
             "campaign_subtype": "search",
@@ -515,6 +526,7 @@ def test_hypothesis_registry_keeps_rejected_parent_and_activates_child():
         "existing_hypothesis_requests": [],
         "new_hypotheses": [{
             "hypothesis_id": "hyp-child",
+            "hypothesis_type": "device_segment_gap",
             "parent_hypothesis_id": "hyp-1",
             "campaign_name": "Search 1",
             "hypothesis": "Device mix may explain the deviation.",
@@ -540,9 +552,10 @@ def test_hypothesis_registry_keeps_rejected_parent_and_activates_child():
     assert '"hypothesis_id": "hyp-1"' not in prompt
 
 
-def test_existing_follow_up_extends_trusted_evidence_contract():
+def test_existing_follow_up_for_another_cause_is_rejected():
     hypothesis = {
         "hypothesis_id": "hyp-query",
+        "hypothesis_type": "search_query_waste",
         "campaign_name": "Search Brand",
         "campaign_family": "search",
         "campaign_subtype": "search",
@@ -576,35 +589,231 @@ def test_existing_follow_up_extends_trusted_evidence_contract():
     })
 
     accepted, rejected = audit_jobs._next_round_requests_from_plan(snapshot, plan)
-    audit_jobs._apply_next_round_requests(snapshot, accepted)
     canonical = snapshot["hypothesisRegistry"]["hyp-query"]
 
-    assert rejected == []
-    assert "devices" in canonical["required_capabilities"]
-    assert "devices_cpa_segment_gap" in canonical["confirmation_rule_codes"]
-    assert "devices_cpa_segments_comparable" in canonical["rejection_rule_codes"]
-    assert accepted[0].expected_information_gain.startswith("A material CPA gap")
-    proposed = audit_jobs.AuditHypothesisVerification(
-        hypothesis_id="hyp-query", status="confirmed", verification_summary="Device gap found."
-    )
-    result = {
-        "request_id": accepted[0].request_id,
+    assert accepted == []
+    assert rejected[0].error_code == "hypothesis_type_capability_mismatch"
+    assert canonical["required_capabilities"] == ["search_queries"]
+    assert "devices_cpa_segment_gap" not in canonical["confirmation_rule_codes"]
+
+
+def test_new_hypothesis_without_parent_or_trusted_facts_is_rejected():
+    snapshot = {
+        "analysisPeriod": {"dateFrom": "2026-06-10", "dateTo": "2026-07-09", "days": 30},
+        "auditRuntime": {"investigationRound": 1, "requestsCount": 0},
+        "investigationPlan": {"hypotheses": []},
+        "observedFacts": [],
+        "validatedDataRequests": [],
+    }
+    plan = AuditNextRoundPlan.model_validate({
+        "continue_investigation": True,
+        "existing_hypothesis_requests": [],
+        "new_hypotheses": [{
+            "hypothesis_id": "hyp-unbound",
+            "hypothesis_type": "device_segment_gap",
+            "campaign_name": "Search Brand",
+            "hypothesis": "Device mix may explain the deviation.",
+            "rationale": "Model-only idea without trusted binding.",
+            "required_capabilities": ["devices"],
+            "requests": [],
+        }],
+        "stop_reason": None,
+    })
+
+    accepted, rejected = audit_jobs._next_round_requests_from_plan(snapshot, plan)
+
+    assert accepted == []
+    assert rejected[0].error_code == "untrusted_fact_binding"
+    assert "hyp-unbound" not in snapshot.get("hypothesisRegistry", {})
+
+
+def test_child_with_parent_cannot_bind_unknown_fact_id():
+    snapshot = {
+        "analysisPeriod": {"dateFrom": "2026-06-10", "dateTo": "2026-07-09", "days": 30},
+        "auditRuntime": {"investigationRound": 1, "requestsCount": 0},
+        "investigationPlan": {"hypotheses": [{
+            "hypothesis_id": "hyp-parent",
+            "hypothesis_type": "search_query_waste",
+            "campaign_name": "Search Brand",
+            "campaign_family": "search",
+            "campaign_subtype": "search",
+            "hypothesis": "Query waste may explain CPA.",
+            "fact_ids": ["fact-trusted"],
+            "forbidden_capabilities": [],
+        }]},
+        "observedFacts": [{
+            "fact_id": "fact-trusted", "campaign_name": "Search Brand", "sufficient_data": True,
+        }],
+        "validatedDataRequests": [],
+    }
+    plan = AuditNextRoundPlan.model_validate({
+        "continue_investigation": True,
+        "existing_hypothesis_requests": [],
+        "new_hypotheses": [{
+            "hypothesis_id": "hyp-child",
+            "hypothesis_type": "device_segment_gap",
+            "parent_hypothesis_id": "hyp-parent",
+            "fact_ids": ["fact-invented"],
+            "campaign_name": "Search Brand",
+            "hypothesis": "Device mix may explain CPA.",
+            "rationale": "Check another cause.",
+            "required_capabilities": ["devices"],
+            "requests": [],
+        }],
+        "stop_reason": None,
+    })
+
+    accepted, rejected = audit_jobs._next_round_requests_from_plan(snapshot, plan)
+
+    assert accepted == []
+    assert rejected[0].error_code == "untrusted_fact_binding"
+
+
+def test_full_drilldown_evidence_is_not_limited_by_ai_sample_budget():
+    rows = [
+        {
+            "query": f"query-{index}-" + ("x" * 180),
+            "impressions": 100,
+            "clicks": 25,
+            "cost": 10,
+            "conversions": 0,
+        }
+        for index in range(1200)
+    ]
+    full_result = {
+        "request_id": "req-query",
         "hypothesis_id": "hyp-query",
-        "capability_id": "devices",
-        "dimension": "devices",
+        "capability_id": "search_queries",
+        "dimension": "search_queries",
         "status": "collected",
-        "data": [
-            {"device": "MOBILE", "clicks": 40, "cost": 4000, "conversions": 2},
-            {"device": "DESKTOP", "clicks": 40, "cost": 1000, "conversions": 2},
+        "source": "yandex_direct_live_report",
+        "rows_analyzed": 1200,
+        "rows_total": 1200,
+        "data": rows,
+    }
+    snapshot = {
+        "analysisPeriod": {"days": 30},
+        "targetKpis": {"targetCpa": 5},
+    }
+    db = _db()
+    job = _create(db)
+    audit_jobs._save_full_drilldown_results(job, [full_result])
+
+    audit_jobs._refresh_drilldown_projections(snapshot, [full_result])
+    sample = snapshot["aiDrilldownSamples"][0]
+    summary = snapshot["drilldownEvidenceSummaries"][0]
+    backend = evaluate_hypothesis_evidence(
+        {
+            "hypothesis_id": "hyp-query",
+            "hypothesis_type": "search_query_waste",
+            "confirmation_rule_codes": ["search_queries_waste_without_goals"],
+            "rejection_rule_codes": ["search_queries_no_material_waste"],
+        },
+        [{
+            "request_id": "req-query",
+            "hypothesis_id": "hyp-query",
+            "capability_id": "search_queries",
+            "required_for_conclusion": True,
+        }],
+        [full_result],
+        target_cpa=5,
+        period_days=30,
+    )
+
+    assert sample["ai_sample_rows"] < 1200
+    assert len(audit_jobs._load_full_drilldown_results(job)[0]["data"]) == 1200
+    assert sample["rows_analyzed"] == 1200
+    assert summary["rows_total"] == 1200
+    assert summary["metrics"]["cost"] == 12000
+    assert summary["segments"] == 1200
+    assert backend["evidence_summaries"][0]["rows_total"] == 1200
+    assert backend["matched_confirmation_rules"][0]["result"]["matching_rows"] == 1200
+
+
+def test_verification_registry_preserves_prior_round_and_filters_active_prompt():
+    snapshot = {
+        "hypothesisRegistry": {
+            "hyp-001": {"hypothesis_id": "hyp-001", "hypothesis": "First", "current_status": "unverified"},
+            "hyp-006": {"hypothesis_id": "hyp-006", "hypothesis": "Child", "current_status": "unverified"},
+        },
+        "activeHypothesisIds": ["hyp-001"],
+        "investigationPlan": {"hypotheses": []},
+        "drilldownEvidenceSummaries": [
+            {"hypothesis_id": "hyp-001", "marker": "old-summary"},
+            {"hypothesis_id": "hyp-006", "marker": "active-summary"},
+        ],
+        "aiDrilldownSamples": [
+            {"hypothesis_id": "hyp-001", "marker": "old-sample"},
+            {"hypothesis_id": "hyp-006", "marker": "active-sample"},
         ],
     }
-    verified = audit_jobs.enforce_hypothesis_verification(
-        proposed,
-        hypothesis={**canonical, "fact_sufficient_data": True},
-        requests=canonical["data_requests"],
-        results=[result],
-    )
-    assert verified.status == "confirmed"
+    audit_jobs._apply_verification_statuses(snapshot, AuditHypothesisVerificationSet(
+        verifications=[AuditHypothesisVerification(
+            hypothesis_id="hyp-001", status="confirmed", verification_summary="Confirmed in round one.",
+        )],
+    ))
+    snapshot["activeHypothesisIds"] = ["hyp-006"]
+    audit_jobs._sync_active_investigation_plan(snapshot)
+    audit_jobs._apply_verification_statuses(snapshot, AuditHypothesisVerificationSet(
+        verifications=[AuditHypothesisVerification(
+            hypothesis_id="hyp-006", status="unverified", verification_summary="Needs more data.",
+        )],
+    ))
+
+    assert snapshot["verificationRegistry"]["hyp-001"]["status"] == "confirmed"
+    assert snapshot["verificationRegistry"]["hyp-006"]["status"] == "unverified"
+    assert [item["hypothesis_id"] for item in snapshot["activeVerifications"]] == ["hyp-006"]
+    prompt = audit_jobs.build_verification_prompt(snapshot)
+    assert "hyp-006" in prompt and "active-summary" in prompt and "active-sample" in prompt
+    assert "hyp-001" not in prompt and "old-summary" not in prompt and "old-sample" not in prompt
+
+    safe_result = audit_jobs._enforce_verified_result({
+        "critical_findings": [{
+            "hypothesis_id": "hyp-001",
+            "hypothesis": "First",
+            "recommendation": "Review manually",
+            "next_data_needed": [],
+        }],
+        "opportunities": [],
+        "action_plan": [],
+        "limitations": [],
+    }, snapshot)
+    assert safe_result["critical_findings"][0]["verification_status"] == "confirmed"
+
+
+def test_rejected_verification_is_immutable_in_registry_and_active_round():
+    snapshot = {
+        "hypothesisRegistry": {
+            "hyp-001": {"hypothesis_id": "hyp-001", "hypothesis": "First", "current_status": "rejected"},
+        },
+        "activeHypothesisIds": ["hyp-001"],
+        "verificationRegistry": {
+            "hyp-001": {"hypothesis_id": "hyp-001", "status": "rejected", "verification_summary": "Rejected."},
+        },
+        "investigationPlan": {"hypotheses": []},
+        "investigationRounds": [{
+            "hypotheses": [{"hypothesis_id": "hyp-001", "status": "rejected"}],
+        }],
+    }
+    audit_jobs._apply_verification_statuses(snapshot, AuditHypothesisVerificationSet(
+        verifications=[AuditHypothesisVerification(
+            hypothesis_id="hyp-001", status="confirmed", verification_summary="Model tried to reopen.",
+        )],
+    ))
+
+    assert snapshot["verificationRegistry"]["hyp-001"]["status"] == "rejected"
+    assert snapshot["activeVerifications"][0]["status"] == "rejected"
+    assert snapshot["investigationRounds"][0]["hypotheses"][0]["status"] == "rejected"
+
+
+def test_live_source_wording_does_not_claim_saved_snapshot():
+    prompt = audit_jobs.build_full_audit_prompt({
+        "analysisPeriod": {"source": "yandex_direct_live_report"},
+        "metadata": {},
+    })
+
+    assert "fresh report" in prompt
+    assert "сохранённая read-only статистика" not in prompt
 
 
 @pytest.mark.parametrize(

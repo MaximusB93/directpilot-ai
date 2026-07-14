@@ -480,9 +480,71 @@ def test_goal_report_batches_preserve_all_23_goals_without_cross_goal_sum(monkey
         row, outcome.result.selected_goal_ids,
     )
     assert available is True
-    assert conversions == 0
+    assert conversions is None
     assert len(per_goal) == 23
     assert policy == "per_goal_only_no_cross_goal_sum"
+
+
+def test_multiple_per_goal_columns_do_not_create_false_aggregate_rejection():
+    row = {
+        "query": "hotel",
+        "clicks": 40,
+        "cost": 1000,
+        **{f"conversions_{goal_id}_auto": 1 for goal_id in range(1, 24)},
+    }
+    result = {
+        "request_id": "req-query",
+        "hypothesis_id": "hyp-query",
+        "capability_id": "search_queries",
+        "dimension": "search_queries",
+        "status": "collected",
+        "rows_analyzed": 1,
+        "rows_total": 1,
+        "selected_goal_ids": [str(goal_id) for goal_id in range(1, 24)],
+        "aggregation_policy": "per_goal_only_no_cross_goal_sum",
+        "data": [row],
+    }
+
+    summary, rules = evaluate_capability_evidence(result, target_cpa=500, period_days=30)
+
+    assert summary["metrics"]["conversions"] is None
+    assert summary["rows_with_known_conversions"] == 0
+    assert summary["rows_with_unknown_conversions"] == 1
+    assert summary["aggregation_policy"] == "per_goal_only_no_cross_goal_sum"
+    assert summary["selected_goal_ids"] == [str(goal_id) for goal_id in range(1, 24)]
+    assert not any(item["passed"] for item in rules)
+
+
+def test_partial_multi_goal_response_does_not_become_aggregate_conversion():
+    selected_goal_ids = [str(goal_id) for goal_id in range(1, 24)]
+    row = {
+        "campaign_name": "Search Brand",
+        "cost": 1000,
+        "clicks": 40,
+        "conversions_1_auto": 2,
+    }
+
+    conversions, available, per_goal, policy = audit_jobs._row_goal_conversion_details(
+        row, selected_goal_ids,
+    )
+
+    assert available is True
+    assert conversions is None
+    assert per_goal == {"1": {"conversions": 2.0}}
+    assert policy == "per_goal_only_no_cross_goal_sum"
+
+
+@pytest.mark.parametrize("value", [None, "", "--", "—", "invalid"])
+def test_public_normalization_keeps_unknown_causal_metrics_null(value):
+    normalized = direct_read._safe_value({
+        "conversions": value,
+        "goal_conversions": value,
+        "cost_per_conversion": value,
+        "revenue": value,
+        "goals_roi": value,
+    })
+
+    assert set(normalized.values()) == {None}
 
 
 def test_report_pagination_persists_500_500_200_rows(monkeypatch):

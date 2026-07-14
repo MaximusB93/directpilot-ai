@@ -25,6 +25,65 @@ REJECTION_RULE_BY_CAPABILITY = {
     "retargeting_lists": "retargeting_lists_available",
 }
 
+HYPOTHESIS_EVIDENCE_POLICY = {
+    "search_query_waste": {
+        "allowed_capabilities": {"search_queries", "goals"},
+        "confirmation_rule_codes": {"search_queries_waste_without_goals"},
+        "rejection_rule_codes": {"search_queries_no_material_waste"},
+        "required_fact_metrics": {"cost", "clicks", "goal_conversions"},
+    },
+    "ad_group_concentration": {
+        "allowed_capabilities": {"ad_group_performance", "ad_groups", "goals"},
+        "confirmation_rule_codes": {"ad_group_performance_waste_without_goals"},
+        "rejection_rule_codes": {"ad_group_performance_no_material_waste"},
+        "required_fact_metrics": {"cost", "clicks", "goal_conversions"},
+    },
+    "keyword_waste": {
+        "allowed_capabilities": {"keyword_performance", "keywords", "goals"},
+        "confirmation_rule_codes": {"keyword_performance_waste_without_goals"},
+        "rejection_rule_codes": {"keyword_performance_no_material_waste"},
+        "required_fact_metrics": {"cost", "clicks", "goal_conversions"},
+    },
+    "device_segment_gap": {
+        "allowed_capabilities": {"devices", "goals"},
+        "confirmation_rule_codes": {"devices_cpa_segment_gap"},
+        "rejection_rule_codes": {"devices_cpa_segments_comparable"},
+        "required_fact_metrics": {"cost", "clicks", "goal_conversions"},
+    },
+    "geo_segment_gap": {
+        "allowed_capabilities": {"geo", "goals"},
+        "confirmation_rule_codes": {"geo_cpa_segment_gap"},
+        "rejection_rule_codes": {"geo_cpa_segments_comparable"},
+        "required_fact_metrics": {"cost", "clicks", "goal_conversions"},
+    },
+    "placement_waste": {
+        "allowed_capabilities": {"placements", "goals"},
+        "confirmation_rule_codes": {"placements_waste_without_goals"},
+        "rejection_rule_codes": {"placements_no_material_waste"},
+        "required_fact_metrics": {"cost", "clicks", "goal_conversions"},
+    },
+    "retargeting_segment_issue": {
+        "allowed_capabilities": {"retargeting_lists", "retargeting_segments", "audiences", "goals"},
+        "confirmation_rule_codes": {"retargeting_list_unavailable"},
+        "rejection_rule_codes": {"retargeting_lists_available"},
+        "required_fact_metrics": set(),
+    },
+    "tracking_issue": {
+        "allowed_capabilities": {"goals"},
+        "confirmation_rule_codes": set(),
+        "rejection_rule_codes": set(),
+        "required_fact_metrics": {"goal_conversions"},
+    },
+    "campaign_metadata_issue": {
+        "allowed_capabilities": {
+            "campaigns", "campaign_settings", "campaign_strategy", "campaign_status",
+        },
+        "confirmation_rule_codes": set(),
+        "rejection_rule_codes": set(),
+        "required_fact_metrics": set(),
+    },
+}
+
 
 @dataclass(frozen=True)
 class SufficiencyDecision:
@@ -33,11 +92,25 @@ class SufficiencyDecision:
     parameters: dict[str, Any]
 
 
-def _number(value: Any) -> float:
+@dataclass(frozen=True)
+class NumericMetric:
+    state: str
+    value: float | None
+
+
+def parse_numeric_metric(value: Any) -> NumericMetric:
+    if value is None or str(value).strip() in {"", "--", "\u2014", "\ufffd"}:
+        return NumericMetric("missing", None)
     try:
-        return float(str(value or 0).replace(" ", "").replace(",", "."))
+        parsed = float(str(value).replace("\u00a0", "").replace(" ", "").replace(",", "."))
     except (TypeError, ValueError):
-        return 0.0
+        return NumericMetric("invalid", None)
+    return NumericMetric("known", parsed)
+
+
+def _number(value: Any) -> float:
+    parsed = parse_numeric_metric(value)
+    return float(parsed.value) if parsed.state == "known" else 0.0
 
 
 def _row_number(row: dict[str, Any], *keys: str) -> float:
@@ -49,25 +122,42 @@ def _row_number(row: dict[str, Any], *keys: str) -> float:
 
 def _has_goal_metric(row: dict[str, Any]) -> bool:
     return any(
-        str(key).lower() in {"conversions", "goal_conversions"}
-        or str(key).lower().startswith((
-            "conversions_", "cost_per_conversion_", "conversion_rate_",
-            "revenue_", "goals_roi_",
-        ))
-        for key in row
+        (
+            str(key).lower() in {"conversions", "goal_conversions"}
+            or str(key).lower().startswith((
+                "conversions_", "cost_per_conversion_", "conversion_rate_",
+                "revenue_", "goals_roi_",
+            ))
+        )
+        and parse_numeric_metric(value).state == "known"
+        for key, value in row.items()
     )
 
 
-def _row_conversion_value(row: dict[str, Any]) -> float | None:
+def _row_conversion_metric(
+    row: dict[str, Any], aggregation_policy: str | None = None,
+) -> NumericMetric:
+    if aggregation_policy == "per_goal_only_no_cross_goal_sum":
+        return NumericMetric("missing", None)
     for key in ("goal_conversions", "conversions"):
-        if key in row and row[key] not in (None, "", "--", "—"):
-            return _number(row[key])
+        if key in row:
+            return parse_numeric_metric(row[key])
     dynamic = [
-        _number(value)
+        parse_numeric_metric(value)
         for key, value in row.items()
-        if str(key).lower().startswith("conversions_") and value not in (None, "", "--", "—")
+        if str(key).lower().startswith("conversions_")
     ]
-    return dynamic[0] if len(dynamic) == 1 else None
+    if len(dynamic) == 1:
+        return dynamic[0]
+    if dynamic and any(item.state == "invalid" for item in dynamic):
+        return NumericMetric("invalid", None)
+    return NumericMetric("missing", None)
+
+
+def _row_conversion_value(
+    row: dict[str, Any], aggregation_policy: str | None = None,
+) -> float | None:
+    return _row_conversion_metric(row, aggregation_policy).value
 
 
 def evaluate_metric_sufficiency(
@@ -115,14 +205,19 @@ def evaluate_metric_sufficiency(
     )
 
 
-def _aggregate_rows(rows: list[dict[str, Any]]) -> dict[str, float | int]:
-    conversion_values = [value for row in rows if (value := _row_conversion_value(row)) is not None]
+def _aggregate_rows(
+    rows: list[dict[str, Any]], aggregation_policy: str | None = None,
+) -> dict[str, float | int | None]:
+    conversion_metrics = [_row_conversion_metric(row, aggregation_policy) for row in rows]
+    conversion_values = [item.value for item in conversion_metrics if item.state == "known"]
     return {
         "rows": len(rows),
         "impressions": int(sum(_row_number(row, "impressions") for row in rows)),
         "clicks": int(sum(_row_number(row, "clicks") for row in rows)),
         "cost": round(sum(_row_number(row, "cost") for row in rows), 2),
-        "conversions": round(sum(conversion_values), 4),
+        "conversions": round(sum(conversion_values), 4) if conversion_values else None,
+        "rows_with_known_conversions": sum(1 for item in conversion_metrics if item.state == "known"),
+        "rows_with_unknown_conversions": sum(1 for item in conversion_metrics if item.state != "known"),
     }
 
 
@@ -152,7 +247,20 @@ def evaluate_capability_evidence(
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     capability_id = str(result.get("capability_id") or result.get("dimension") or "")
     rows = [row for row in (result.get("data") or []) if isinstance(row, dict)]
-    totals = _aggregate_rows(rows)
+    aggregation_policy = str(result.get("aggregation_policy") or "") or None
+    selected_goal_ids = [str(item) for item in (result.get("selected_goal_ids") or [])]
+    totals = _aggregate_rows(rows, aggregation_policy)
+    rows_total = int(result.get("rows_analyzed") or result.get("rows_total") or len(rows))
+    known_conversions = int(totals["rows_with_known_conversions"])
+    unknown_conversions = max(0, rows_total - known_conversions)
+    conversion_coverage = known_conversions / rows_total if rows_total else 0.0
+    conversion_required = capability_id in {
+        "search_queries", "ad_group_performance", "keyword_performance", "placements",
+        "devices", "geo", "goals",
+    }
+    conversion_evidence_complete = not conversion_required or (
+        rows_total > 0 and known_conversions == rows_total
+    )
     segment_names = {_segment_key(capability_id, row) for row in rows}
     metric = {
         "search_queries": "queries",
@@ -169,31 +277,48 @@ def evaluate_capability_evidence(
         cost=float(totals["cost"]),
         clicks=int(totals["clicks"]),
         impressions=int(totals["impressions"]),
-        conversions=float(totals["conversions"]),
+        conversions=float(totals["conversions"] or 0),
         target_cpa=target_cpa,
         period_days=period_days,
         segments=len(segment_names),
     )
     available = result.get("status") in AVAILABLE_STATUSES
     summary = {
+        "request_id": result.get("request_id"),
+        "hypothesis_id": result.get("hypothesis_id"),
         "capability_id": capability_id,
         "status": result.get("status"),
         "rows_analyzed": len(rows),
+        "rows_total": rows_total,
+        "rows_with_known_conversions": known_conversions,
+        "rows_with_unknown_conversions": unknown_conversions,
+        "known_conversion_coverage": round(conversion_coverage, 4),
+        "aggregation_policy": aggregation_policy,
+        "selected_goal_ids": selected_goal_ids,
+        "data_quality_warnings": list(result.get("warnings") or []) + (
+            ["Conversion coverage is incomplete; causal confirmation and rejection are blocked."]
+            if conversion_required and not conversion_evidence_complete else []
+        ),
         "metrics": totals,
         "segments": len(segment_names),
-        "sufficient_data": bool(available and sufficiency.sufficient),
-        "stop_reason": None if available and sufficiency.sufficient else "low_data",
+        "sufficient_data": bool(available and sufficiency.sufficient and conversion_evidence_complete),
+        "stop_reason": (
+            None if available and sufficiency.sufficient and conversion_evidence_complete
+            else "unknown_conversion_metric" if available and not conversion_evidence_complete
+            else "low_data"
+        ),
     }
     rules: list[dict[str, Any]] = []
     if capability_id in {"search_queries", "ad_group_performance", "keyword_performance", "placements"}:
         waste_rows = [
             row for row in rows
-            if _row_conversion_value(row) == 0
+            if _row_conversion_metric(row, aggregation_policy).state == "known"
+            and _row_conversion_value(row, aggregation_policy) == 0
             and _row_number(row, "clicks") >= 20
             and _row_number(row, "cost") >= (target_cpa if target_cpa > 0 else 500)
         ]
         waste_cost = round(sum(_row_number(row, "cost") for row in waste_rows), 2)
-        passed = bool(available and sufficiency.sufficient and waste_rows)
+        passed = bool(available and sufficiency.sufficient and conversion_evidence_complete and waste_rows)
         rules.append({
             "rule_code": f"{capability_id}_waste_without_goals",
             "parameters": {**sufficiency.parameters, "minimum_clicks": 20},
@@ -201,7 +326,9 @@ def evaluate_capability_evidence(
             "passed": passed,
             "evidence": [f"rows={len(waste_rows)}", f"waste_cost={waste_cost:.2f}"],
         })
-        no_material_waste = bool(available and sufficiency.sufficient and rows and not waste_rows)
+        no_material_waste = bool(
+            available and sufficiency.sufficient and conversion_evidence_complete and rows and not waste_rows
+        )
         rules.append({
             "rule_code": f"{capability_id}_no_material_waste",
             "parameters": {**sufficiency.parameters, "minimum_clicks": 20},
@@ -210,13 +337,19 @@ def evaluate_capability_evidence(
             "evidence": [f"rows_checked={len(rows)}", "material_waste_rows=0"],
         })
     elif capability_id in {"devices", "geo"}:
-        comparable = [row for row in rows if _row_number(row, "clicks") >= 15]
+        comparable = [
+            row for row in rows
+            if _row_number(row, "clicks") >= 15
+            and _row_conversion_metric(row, aggregation_policy).state == "known"
+        ]
         cpas = [
-            _row_number(row, "cost") / float(_row_conversion_value(row) or 0)
-            for row in comparable if float(_row_conversion_value(row) or 0) > 0
+            _row_number(row, "cost") / float(_row_conversion_value(row, aggregation_policy) or 0)
+            for row in comparable if float(_row_conversion_value(row, aggregation_policy) or 0) > 0
         ]
         ratio = max(cpas) / min(cpas) if len(cpas) >= 2 and min(cpas) > 0 else 0
-        passed = bool(available and sufficiency.sufficient and ratio >= 1.5)
+        passed = bool(
+            available and sufficiency.sufficient and conversion_evidence_complete and ratio >= 1.5
+        )
         rules.append({
             "rule_code": f"{capability_id}_cpa_segment_gap",
             "parameters": {**sufficiency.parameters, "minimum_ratio": 1.5},
@@ -225,7 +358,8 @@ def evaluate_capability_evidence(
             "evidence": [f"comparable_segments={len(comparable)}", f"cpa_ratio={ratio:.3f}"],
         })
         comparable_cpas = bool(
-            available and sufficiency.sufficient and len(cpas) >= 2 and 0 < ratio <= 1.2
+            available and sufficiency.sufficient and conversion_evidence_complete
+            and len(cpas) >= 2 and 0 < ratio <= 1.2
         )
         rules.append({
             "rule_code": f"{capability_id}_cpa_segments_comparable",
@@ -275,9 +409,26 @@ def evaluate_hypothesis_evidence(
     period_days: int = 30,
 ) -> dict[str, Any]:
     hypothesis_id = str(hypothesis.get("hypothesis_id") or "")
-    related = [item for item in results if item.get("hypothesis_id") == hypothesis_id]
+    hypothesis_type = str(hypothesis.get("hypothesis_type") or "campaign_metadata_issue")
+    policy = HYPOTHESIS_EVIDENCE_POLICY.get(
+        hypothesis_type, HYPOTHESIS_EVIDENCE_POLICY["campaign_metadata_issue"],
+    )
+    policy_capabilities = set(policy["allowed_capabilities"])
+    requested_capabilities = {
+        str(item.get("capability_id") or item.get("dimension") or "") for item in requests
+    }
+    trusted_requested_capabilities = requested_capabilities & policy_capabilities
+    trusted_requests = [
+        item for item in requests
+        if str(item.get("capability_id") or item.get("dimension") or "") in policy_capabilities
+    ]
+    related = [
+        item for item in results
+        if item.get("hypothesis_id") == hypothesis_id
+        and str(item.get("capability_id") or item.get("dimension") or "") in policy_capabilities
+    ]
     by_request = {item.get("request_id"): item for item in related}
-    required = [item for item in requests if item.get("required_for_conclusion")]
+    required = [item for item in trusted_requests if item.get("required_for_conclusion")]
     required_available = all(
         (by_request.get(item.get("request_id")) or {}).get("status") in AVAILABLE_STATUSES
         for item in required
@@ -290,25 +441,26 @@ def evaluate_hypothesis_evidence(
         )
         summaries.append(summary)
         rules.extend(result_rules)
-    requested_capabilities = {
-        str(item.get("capability_id") or item.get("dimension") or "") for item in requests
-    }
     prerequisite_codes = set(hypothesis.get("prerequisite_rule_codes") or [])
-    confirmation_codes = set(hypothesis.get("confirmation_rule_codes") or [])
-    rejection_codes = set(hypothesis.get("rejection_rule_codes") or [])
+    confirmation_codes = set(hypothesis.get("confirmation_rule_codes") or []) & set(
+        policy["confirmation_rule_codes"]
+    )
+    rejection_codes = set(hypothesis.get("rejection_rule_codes") or []) & set(
+        policy["rejection_rule_codes"]
+    )
     if not prerequisite_codes and "goals" in requested_capabilities:
         prerequisite_codes.add("selected_goal_data_available")
-    if not confirmation_codes:
+    if "confirmation_rule_codes" not in hypothesis:
         confirmation_codes.update(
             rule_code
             for capability, rule_code in CONFIRMATION_RULE_BY_CAPABILITY.items()
-            if capability in requested_capabilities
+            if capability in trusted_requested_capabilities
         )
-    if not rejection_codes:
+    if "rejection_rule_codes" not in hypothesis:
         rejection_codes.update(
             rule_code
             for capability, rule_code in REJECTION_RULE_BY_CAPABILITY.items()
-            if capability in requested_capabilities
+            if capability in trusted_requested_capabilities
         )
     rules_by_code = {str(item.get("rule_code") or ""): item for item in rules}
     prerequisite_results = [rules_by_code.get(code) for code in sorted(prerequisite_codes)]
@@ -327,6 +479,8 @@ def evaluate_hypothesis_evidence(
         "prerequisite_rule_codes": sorted(prerequisite_codes),
         "confirmation_rule_codes": sorted(confirmation_codes),
         "rejection_rule_codes": sorted(rejection_codes),
+        "hypothesis_type": hypothesis_type,
+        "ignored_capabilities": sorted(requested_capabilities - trusted_requested_capabilities),
         "evidence_summaries": summaries,
         "confirmation_rules": rules,
         "matched_confirmation_rules": matching_confirmation_rules,

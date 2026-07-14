@@ -222,6 +222,7 @@ def build_cascade_hypotheses(
         optional = [request.capability_id or request.dimension for request in item.data_requests if not request.required_for_conclusion]
         hypotheses.append(AuditHypothesis(
             hypothesis_id=item.hypothesis_id,
+            hypothesis_type=item.hypothesis_type,
             parent_hypothesis_id=item.parent_hypothesis_id,
             supersedes_hypothesis_id=item.supersedes_hypothesis_id,
             fact_ids=[fact.fact_id for fact in campaign_facts[:5]],

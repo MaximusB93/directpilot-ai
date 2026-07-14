@@ -742,6 +742,11 @@ class AuditInvestigationHypothesis(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     hypothesis_id: str
+    hypothesis_type: Literal[
+        "search_query_waste", "ad_group_concentration", "keyword_waste",
+        "device_segment_gap", "geo_segment_gap", "placement_waste",
+        "retargeting_segment_issue", "tracking_issue", "campaign_metadata_issue",
+    ] = "campaign_metadata_issue"
     parent_hypothesis_id: str | None = None
     supersedes_hypothesis_id: str | None = None
     campaign_name: str
@@ -796,6 +801,11 @@ class AuditHypothesis(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     hypothesis_id: str
+    hypothesis_type: Literal[
+        "search_query_waste", "ad_group_concentration", "keyword_waste",
+        "device_segment_gap", "geo_segment_gap", "placement_waste",
+        "retargeting_segment_issue", "tracking_issue", "campaign_metadata_issue",
+    ] = "campaign_metadata_issue"
     parent_hypothesis_id: str | None = None
     supersedes_hypothesis_id: str | None = None
     fact_ids: list[str] = Field(default_factory=list, max_length=5)
@@ -876,11 +886,17 @@ class AuditNextRoundHypothesis(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     hypothesis_id: str
+    hypothesis_type: Literal[
+        "search_query_waste", "ad_group_concentration", "keyword_waste",
+        "device_segment_gap", "geo_segment_gap", "placement_waste",
+        "retargeting_segment_issue", "tracking_issue", "campaign_metadata_issue",
+    ] = "campaign_metadata_issue"
     parent_hypothesis_id: str | None = None
     supersedes_hypothesis_id: str | None = None
     campaign_name: str
     hypothesis: str
     rationale: str
+    fact_ids: list[str] = Field(default_factory=list, max_length=5)
     required_capabilities: list[str] = Field(default_factory=list, max_length=4)
     prerequisite_rule_codes: list[str] = Field(default_factory=list, max_length=8)
     confirmation_rule_codes: list[str] = Field(default_factory=list, max_length=8)
