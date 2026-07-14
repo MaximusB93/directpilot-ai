@@ -2698,6 +2698,111 @@ Not_applicable не показывай как проблему. Action plan ос
 Не выдумывай отсутствующие данные. Все действия — dry-run черновики; изменения в Яндекс.Директ не применялись."""
 
 
+_COVERAGE_AVAILABLE_TRUE = {"true", "available", "collected", "partial", "live"}
+_COVERAGE_AVAILABLE_FALSE = {"false", "unavailable", "missing", "failed", "not_applicable"}
+_COVERAGE_PERIOD_KEYS = ("dateFrom", "dateTo", "date_from", "date_to", "days")
+_COVERAGE_MAX_COUNT = 2_147_483_647
+
+
+def _safe_coverage_count(value: Any, *, default: int | None) -> int | None:
+    if value is None or isinstance(value, bool):
+        return default
+    try:
+        parsed_float = float(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+    if not parsed_float.is_integer():
+        return default
+    parsed = int(parsed_float)
+    if parsed < 0 or parsed > _COVERAGE_MAX_COUNT:
+        return default
+    return parsed
+
+
+def _safe_coverage_text(value: Any, *, max_chars: int) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = _safe_final_text(value, max_chars=max_chars)
+    return text or None
+
+
+def _safe_coverage_period(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    period: dict[str, Any] = {}
+    for key in _COVERAGE_PERIOD_KEYS:
+        raw_value = value.get(key)
+        if key == "days":
+            days = _safe_coverage_count(raw_value, default=None)
+            if days is not None:
+                period[key] = days
+        elif isinstance(raw_value, str) and raw_value.strip():
+            period[key] = raw_value.strip()[:100]
+    return period or None
+
+
+def build_trusted_result_data_coverage(snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Convert internal coverage diagnostics to the strict public audit-result contract."""
+    raw_coverage = snapshot.get("dataCoverage") if isinstance(snapshot, dict) else None
+    if not isinstance(raw_coverage, dict):
+        return {}
+
+    normalized: dict[str, dict[str, Any]] = {}
+    for raw_name, raw_item in raw_coverage.items():
+        if not isinstance(raw_item, dict):
+            continue
+        name = str(raw_name).strip()[:100]
+        if not name:
+            continue
+
+        analyzed = _safe_coverage_count(raw_item.get("analyzed"), default=0)
+        total = _safe_coverage_count(raw_item.get("total"), default=None)
+        raw_available = raw_item.get("available")
+        numeric_available = (
+            _safe_coverage_count(raw_available, default=None)
+            if not isinstance(raw_available, (bool, str))
+            else None
+        )
+        if name == "campaigns" and total is None and numeric_available is not None:
+            # The live campaign builder stores the number of fetched campaigns in this field.
+            total = numeric_available
+
+        inferred_available = bool((analyzed or 0) > 0 or (total or 0) > 0)
+        if isinstance(raw_available, bool):
+            available = raw_available
+        elif numeric_available is not None:
+            available = numeric_available > 0
+        elif isinstance(raw_available, str):
+            normalized_available = raw_available.strip().lower()
+            if normalized_available in _COVERAGE_AVAILABLE_TRUE:
+                available = True
+            elif normalized_available in _COVERAGE_AVAILABLE_FALSE:
+                available = False
+            else:
+                available = inferred_available
+        else:
+            available = inferred_available
+
+        raw_limitations = raw_item.get("limitations")
+        limitations = _bounded_strings(
+            [item for item in raw_limitations if isinstance(item, str)]
+            if isinstance(raw_limitations, list)
+            else [],
+            20,
+            max_chars=500,
+        )
+        normalized[name] = {
+            "available": available,
+            "total": total,
+            "analyzed": analyzed or 0,
+            "source": _safe_coverage_text(raw_item.get("source"), max_chars=200),
+            "period": _safe_coverage_period(raw_item.get("period")),
+            "reason": _safe_coverage_text(raw_item.get("reason"), max_chars=500),
+            "limitations": limitations,
+        }
+    return normalized
+
+
 def _trusted_result_meta(snapshot: dict[str, Any], job: AiAuditJob, response: dict[str, Any]) -> dict[str, Any]:
     period = snapshot.get("analysisPeriod") or {}
     return {
@@ -2708,7 +2813,7 @@ def _trusted_result_meta(snapshot: dict[str, Any], job: AiAuditJob, response: di
             "comparison_date_from": period.get("comparisonDateFrom"),
             "comparison_date_to": period.get("comparisonDateTo"),
         },
-        "data_coverage": snapshot.get("dataCoverage") or {},
+        "data_coverage": build_trusted_result_data_coverage(snapshot),
         "model": response.get("model") or job.model,
         "output_budget_tokens": job.max_tokens,
     }
@@ -4210,6 +4315,30 @@ def _public_audit_result(job: AiAuditJob) -> tuple[dict[str, Any] | None, str | 
     return result, answer
 
 
+_INTERNAL_RESULT_SCHEMA_ERROR_MESSAGE = (
+    "Не удалось сформировать итоговый структурированный отчёт. Собранные данные сохранены."
+)
+_INTERNAL_VALIDATION_ERROR_MARKERS = (
+    "validation error for",
+    "validation errors for",
+    "errors.pydantic.dev",
+    "input_value=",
+)
+
+
+def _public_audit_error_message(job: AiAuditJob) -> str | None:
+    message = str(job.error_message or "").strip()
+    if not message:
+        return None
+    normalized = message.lower()
+    if job.error_code == "ai_audit_result_schema_error" or (
+        job.current_stage in {"generate_answer", "finalize"}
+        and any(marker in normalized for marker in _INTERNAL_VALIDATION_ERROR_MARKERS)
+    ):
+        return _INTERNAL_RESULT_SCHEMA_ERROR_MESSAGE
+    return message[:1000]
+
+
 def audit_job_response(job: AiAuditJob, db: Session | None = None) -> AiAuditJobResponse:
     result, answer = _public_audit_result(job)
     return AiAuditJobResponse(
@@ -4233,7 +4362,7 @@ def audit_job_response(job: AiAuditJob, db: Session | None = None) -> AiAuditJob
         result=result,
         answer=answer,
         error_code=job.error_code,
-        error_message=job.error_message,
+        error_message=_public_audit_error_message(job),
         retryable=job.retryable,
         stage_started_at=_iso(job.stage_started_at),
         stage_lease_expires_at=_iso(job.stage_lease_expires_at),
@@ -4297,12 +4426,21 @@ def create_audit_job(
 
 
 def _save_failure(db: Session, job: AiAuditJob, exc: Exception, *, stage: str) -> AiAuditJob:
-    detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+    internal_result_validation_error = isinstance(exc, ValidationError) and stage in {"generate_answer", "finalize"}
+    detail = (
+        _INTERNAL_RESULT_SCHEMA_ERROR_MESSAGE
+        if internal_result_validation_error
+        else (exc.detail if isinstance(exc, HTTPException) else str(exc))
+    )
     error_code = detail.get("error_code") if isinstance(detail, dict) else None
     retryable = bool(detail.get("retryable")) if isinstance(detail, dict) else False
     job.status = "failed"
     job.current_stage = stage
-    job.error_code = str(error_code or "ai_audit_stage_failed")
+    job.error_code = str(
+        "ai_audit_result_schema_error"
+        if internal_result_validation_error
+        else (error_code or "ai_audit_stage_failed")
+    )
     job.error_message = str(detail.get("message") if isinstance(detail, dict) else detail)[:1000]
     job.retryable = retryable
     job.stage_execution_token = None

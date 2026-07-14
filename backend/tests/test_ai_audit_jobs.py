@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi import HTTPException
+from pydantic import ValidationError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
@@ -13,6 +14,8 @@ from app.db import Base
 from app.models import AiAuditJob, ClientAccount, DirectReportJob, Organization, User
 from app.schemas import (
     AiAuditCreateRequest,
+    AiAuditMeta,
+    AiAuditResult,
     AiChatRequest,
     AuditDataRequestResult,
     AuditHypothesisVerification,
@@ -109,6 +112,26 @@ def _create(db: Session, client_id: str = "client-a") -> AiAuditJob:
     )
 
 
+def _production_data_coverage() -> dict:
+    return {
+        "campaigns": {
+            "available": 8,
+            "analyzed": 8,
+            "source": "yandex_direct_live",
+            "period": {
+                "dateFrom": "2026-06-15",
+                "dateTo": "2026-07-14",
+                "days": 30,
+                "request_hash": "must-not-leak",
+            },
+            "limitations": ["Ограниченный срез", "Ограниченный срез", 123],
+            "freshness": "live",
+            "fetchedAt": "2026-07-14T13:33:51.497016+00:00",
+            "requestId": "private-request-id",
+        }
+    }
+
+
 def _structured_answer() -> str:
     return json.dumps(
         {
@@ -186,6 +209,106 @@ def _verification_answer() -> str:
             "remaining_data_needed": [],
         }]
     }, ensure_ascii=False)
+
+
+def test_trusted_result_data_coverage_normalizes_production_shape():
+    snapshot = {
+        "dataCoverage": {
+            **_production_data_coverage(),
+            "keywords": {"available": "unexpected", "total": "invalid", "analyzed": -2},
+            "goals": {"available": "partial", "total": 1, "analyzed": "1"},
+            "ignored": "not-an-item",
+        }
+    }
+
+    coverage = audit_jobs.build_trusted_result_data_coverage(snapshot)
+    campaigns = coverage["campaigns"]
+
+    assert campaigns == {
+        "available": True,
+        "total": 8,
+        "analyzed": 8,
+        "source": "yandex_direct_live",
+        "period": {"dateFrom": "2026-06-15", "dateTo": "2026-07-14", "days": 30},
+        "reason": None,
+        "limitations": ["Ограниченный срез"],
+    }
+    assert coverage["keywords"]["available"] is False
+    assert coverage["keywords"]["total"] is None
+    assert coverage["keywords"]["analyzed"] == 0
+    assert coverage["goals"]["available"] is True
+    assert "ignored" not in coverage
+    AiAuditMeta.model_validate({"data_coverage": coverage})
+    serialized = json.dumps(coverage, ensure_ascii=False)
+    assert "freshness" not in serialized
+    assert "fetchedAt" not in serialized
+    assert "request_hash" not in serialized
+    assert "private-request-id" not in serialized
+
+
+def test_valid_provider_result_accepts_normalized_trusted_coverage(monkeypatch):
+    db = _db()
+    job = _create(db)
+    job.status = "context_ready"
+    job.current_stage = "generate_answer"
+    snapshot = audit_jobs.build_compact_audit_context(_context())
+    snapshot["dataCoverage"] = _production_data_coverage()
+    job.context_snapshot_json = audit_jobs._json_dump(snapshot)
+    db.commit()
+    calls = {"provider": 0}
+
+    async def valid_provider(*args, **kwargs):
+        calls["provider"] += 1
+        return {
+            "model": "deepseek/deepseek-chat",
+            "content": _structured_answer(),
+            "finish_reason": "stop",
+        }
+
+    monkeypatch.setattr(audit_jobs, "generate_openrouter_response", valid_provider)
+    generated = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
+    completed = asyncio.run(audit_jobs.advance_audit_job(db, generated.id, organization_id="org-a"))
+    result = audit_jobs._json_load(completed.result_json, {})
+    coverage = result["structured"]["meta"]["data_coverage"]["campaigns"]
+
+    assert completed.status == "completed"
+    assert calls["provider"] == 1
+    assert result["backendFallbackUsed"] is False
+    assert result["structured"] is not None
+    assert coverage["available"] is True
+    assert coverage["total"] == 8
+    assert coverage["analyzed"] == 8
+    assert "freshness" not in coverage
+    assert "fetchedAt" not in coverage
+    runtime = audit_jobs._json_load(completed.context_snapshot_json, {})["auditRuntime"]
+    assert runtime["finalGenerationStatus"] == "provider_completed"
+
+
+def test_internal_final_validation_error_is_not_exposed_publicly():
+    db = _db()
+    job = _create(db)
+    with pytest.raises(ValidationError) as exc_info:
+        AiAuditMeta.model_validate({
+            "data_coverage": {
+                "campaigns": {
+                    "available": 8,
+                    "freshness": "live",
+                    "fetchedAt": "2026-07-14T13:33:51.497016+00:00",
+                }
+            }
+        })
+
+    failed = audit_jobs._save_failure(db, job, exc_info.value, stage="generate_answer")
+    public = audit_jobs.audit_job_response(failed, db).model_dump(mode="json")
+    public_dump = json.dumps(public, ensure_ascii=False)
+
+    assert failed.error_code == "ai_audit_result_schema_error"
+    assert public["error_message"] == "Не удалось сформировать итоговый структурированный отчёт. Собранные данные сохранены."
+    assert "input_value=8" not in public_dump
+    assert "errors.pydantic.dev" not in public_dump
+    assert "validation errors for" not in public_dump
+    assert "freshness" not in public_dump
+    assert "fetchedAt" not in public_dump
 
 
 def test_job_creation_and_organization_isolation():
@@ -1695,6 +1818,7 @@ def test_schema_invalid_final_response_uses_backend_fallback_without_external_re
     job.status = "context_ready"
     job.current_stage = "generate_answer"
     snapshot = _realistic_oversized_final_snapshot()
+    snapshot["dataCoverage"] = _production_data_coverage()
     initial_direct_calls = snapshot["auditRuntime"]["directApiCallsCount"]
     original_verification = {
         key: value["status"] for key, value in snapshot["verificationRegistry"].items()
@@ -1734,6 +1858,7 @@ def test_schema_invalid_final_response_uses_backend_fallback_without_external_re
     assert completed.error_code is None
     assert calls == {"provider": 1, "direct": 0}
     assert result["structured"] is not None
+    AiAuditResult.model_validate(result["structured"])
     assert result["structured"]["critical_findings"]
     assert result["backendFallbackUsed"] is True
     assert result["completeness"] == "backend_fallback"
@@ -1747,6 +1872,11 @@ def test_schema_invalid_final_response_uses_backend_fallback_without_external_re
     assert result["structuredParsing"]["status"] == "success"
     assert result["structuredParsing"]["fallbackReason"] == "json_schema_validation_failed"
     assert result["providerResponseMetadata"]["fullResponseStored"] is False
+    coverage = result["structured"]["meta"]["data_coverage"]["campaigns"]
+    assert coverage["available"] is True
+    assert coverage["total"] == 8
+    assert "freshness" not in coverage
+    assert "fetchedAt" not in coverage
     assert result["finalTokenUsage"] == {"prompt": 10918, "completion": 1800, "total": 12718}
     assert runtime["finalGenerationStatus"] == "backend_fallback_after_schema_validation"
     assert runtime["backendFallbackUsed"] is True

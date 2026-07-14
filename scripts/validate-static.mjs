@@ -296,6 +296,24 @@ if (!schemaFallbackSmoke.includes('backend-safe-report')
   || schemaFallbackSmoke.includes('AI-отчёт сформирован')) {
   failed.push(['schema fallback UI smoke', false]);
 }
+const internalValidationErrorSmoke = renderAiAuditJob({
+  selectedClientId: 'client-1',
+  aiAuditJob: {
+    job_id: 'audit-internal-validation-error',
+    status: 'failed',
+    current_stage: 'generate_answer',
+    progress_percent: 82,
+    error_code: 'ai_audit_stage_failed',
+    error_message: '3 validation errors for AiAuditResult input_value=8 https://errors.pydantic.dev/2.11/v/bool_type',
+  },
+  escapeHtml,
+});
+if (!internalValidationErrorSmoke.includes('Собранные данные сохранены')
+  || internalValidationErrorSmoke.includes('input_value=8')
+  || internalValidationErrorSmoke.includes('errors.pydantic.dev')
+  || internalValidationErrorSmoke.includes('validation errors for AiAuditResult')) {
+  failed.push(['internal audit validation error UI smoke', false]);
+}
 if (failed.length > 0) {
   console.error(`Static validation failed: ${failed.map(([name]) => name).join(', ')}`);
   process.exit(1);
