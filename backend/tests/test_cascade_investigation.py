@@ -199,6 +199,28 @@ def test_rule_engine_uses_period_comparison_and_marks_missing_goal_data_as_fact(
     assert tracking.analysis_level == "tracking"
 
 
+@pytest.mark.parametrize(("goal_value", "expected_metric"), [(None, "conversion_data_unknown"), ("bad", "conversion_data_unknown"), (0, "spend_without_goal_conversions")])
+def test_unknown_goal_conversion_is_not_treated_as_zero(goal_value, expected_metric):
+    snapshot = {
+        "analysisPeriod": {"dateFrom": "2026-06-01", "dateTo": "2026-06-30", "days": 30},
+        "campaignClassifications": [{
+            "campaign_name": "Search", "campaign_family": "search", "campaign_subtype": "search",
+        }],
+        "campaignAnalysisRows": [{
+            "name": "Search", "cost": 5000, "clicks": 50, "impressions": 2000,
+            "goalConversions": goal_value, "goalCpa": None, "flags": [],
+        }],
+    }
+
+    facts = build_observed_facts(snapshot)
+
+    assert facts[0].metric == expected_metric
+    if goal_value is None or goal_value == "bad":
+        assert facts[0].sufficient_data is False
+        assert "недоступна" in facts[0].evidence[0]
+        assert not any(item.metric == "spend_without_goal_conversions" for item in facts)
+
+
 def test_confirmed_requires_trusted_collected_evidence():
     proposed = AuditHypothesisVerification(
         hypothesis_id="hyp-1",

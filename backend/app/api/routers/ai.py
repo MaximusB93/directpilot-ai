@@ -632,7 +632,7 @@ def create_staged_audit(
         user_id=current.user.id,
         user_email=current.email,
     )
-    return audit_job_response(job)
+    return audit_job_response(job, db)
 
 
 @router.get("/audits/{job_id}", response_model=AiAuditJobResponse)
@@ -641,7 +641,7 @@ def read_staged_audit(
     db: Session = Depends(get_db),
     current: CurrentUser = Depends(get_current_session_user),
 ) -> AiAuditJobResponse:
-    return audit_job_response(get_audit_job(db, job_id, organization_id=current.organization.id))
+    return audit_job_response(get_audit_job(db, job_id, organization_id=current.organization.id), db)
 
 
 @router.post("/audits/{job_id}/advance", response_model=AiAuditJobResponse)
@@ -658,7 +658,7 @@ async def advance_staged_audit(
         retry=bool(payload and payload.retry),
         compact_retry=bool(payload and payload.compact_retry),
     )
-    return audit_job_response(job)
+    return audit_job_response(job, db)
 
 
 @router.post("/audits/{job_id}/cancel", response_model=AiAuditJobResponse)
@@ -667,7 +667,7 @@ def cancel_staged_audit(
     db: Session = Depends(get_db),
     current: CurrentUser = Depends(get_current_session_user),
 ) -> AiAuditJobResponse:
-    return audit_job_response(cancel_audit_job(db, job_id, organization_id=current.organization.id))
+    return audit_job_response(cancel_audit_job(db, job_id, organization_id=current.organization.id), db)
 
 
 @router.post("/audits/{job_id}/reset", response_model=AiAuditJobResponse)
@@ -676,7 +676,7 @@ def reset_staged_audit(
     db: Session = Depends(get_db),
     current: CurrentUser = Depends(get_current_session_user),
 ) -> AiAuditJobResponse:
-    return audit_job_response(reset_audit_job(db, job_id, organization_id=current.organization.id))
+    return audit_job_response(reset_audit_job(db, job_id, organization_id=current.organization.id), db)
 
 
 @router.post("/openrouter/generate", response_model=AiPromptResponse)

@@ -63,7 +63,9 @@ HYPOTHESIS_EVIDENCE_POLICY = {
         "required_fact_metrics": {"cost", "clicks", "goal_conversions"},
     },
     "retargeting_segment_issue": {
-        "allowed_capabilities": {"retargeting_lists", "retargeting_segments", "audiences", "goals"},
+        "allowed_capabilities": {
+            "retargeting_lists", "retargeting_segments", "audience_targets", "audiences", "goals",
+        },
         "confirmation_rule_codes": {"retargeting_list_unavailable"},
         "rejection_rule_codes": {"retargeting_lists_available"},
         "required_fact_metrics": set(),

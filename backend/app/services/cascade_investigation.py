@@ -14,7 +14,11 @@ from app.schemas import (
     AuditInvestigationRound,
     AuditObservedFact,
 )
-from app.services.audit_evidence import evaluate_hypothesis_evidence, evaluate_metric_sufficiency
+from app.services.audit_evidence import (
+    evaluate_hypothesis_evidence,
+    evaluate_metric_sufficiency,
+    parse_numeric_metric,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -66,11 +70,13 @@ def build_observed_facts(snapshot: dict[str, Any]) -> list[AuditObservedFact]:
         for item in (comparison.get(key) or [])
         if item.get("name")
     }
-    campaigns = [
-        campaign
-        for group in (snapshot.get("campaignGroups") or {}).values()
-        for campaign in (group or [])
-    ]
+    campaigns = snapshot.get("campaignAnalysisRows")
+    if campaigns is None:
+        campaigns = [
+            campaign
+            for group in (snapshot.get("campaignGroups") or {}).values()
+            for campaign in (group or [])
+        ]
     seen: set[str] = set()
     for campaign in campaigns:
         name = str(campaign.get("name") or "Кампания без названия")
@@ -83,14 +89,22 @@ def build_observed_facts(snapshot: dict[str, Any]) -> list[AuditObservedFact]:
         cost = float(campaign.get("cost") or 0)
         clicks = int(campaign.get("clicks") or 0)
         impressions = int(campaign.get("impressions") or 0)
-        conversions = float(campaign.get("goalConversions") or 0)
-        cpa = float(campaign.get("goalCpa") or 0) if conversions else None
+        conversion_metric = parse_numeric_metric(campaign.get("goalConversions"))
+        conversions = conversion_metric.value
+        cpa_metric = parse_numeric_metric(campaign.get("goalCpa"))
+        cpa = cpa_metric.value if conversion_metric.state == "known" and conversions and cpa_metric.state == "known" else None
         flags = set(campaign.get("flags") or [])
         metric = "campaign_health"
-        evidence = [f"Расход {cost:.2f}; клики {clicks}; конверсии по целям {conversions:g}."]
+        evidence = [
+            f"Расход {cost:.2f}; клики {clicks}; конверсии по целям {conversions:g}."
+            if conversion_metric.state == "known"
+            else "Конверсионная метрика недоступна или некорректна; эффективность по целям не оценивалась."
+        ]
         benchmark: float | None = None
         deviation: float | None = None
-        if cost > 0 and conversions == 0:
+        if conversion_metric.state != "known":
+            metric = "conversion_data_unknown"
+        elif cost > 0 and conversions == 0:
             metric = "spend_without_goal_conversions"
         elif target_cpa and cpa is not None and cpa > target_cpa:
             metric = "cpa_above_target"
@@ -100,19 +114,21 @@ def build_observed_facts(snapshot: dict[str, Any]) -> list[AuditObservedFact]:
             metric = "low_ctr"
         elif "low_data" in flags:
             metric = "low_data"
-        elif conversions > 0 and (not target_cpa or (cpa or 0) <= target_cpa):
+        elif conversions and conversions > 0 and (not target_cpa or (cpa or 0) <= target_cpa):
             metric = "good_campaign"
         sufficiency = evaluate_metric_sufficiency(
             metric,
             cost=cost,
             clicks=clicks,
             impressions=impressions,
-            conversions=conversions,
+            conversions=float(conversions or 0),
             target_cpa=target_cpa,
             period_days=int(period.days or 0),
         )
         sufficient = sufficiency.sufficient
-        if not sufficient and metric not in {"tracking_inconsistency", "strategy_learning"}:
+        if conversion_metric.state != "known":
+            sufficient = False
+        elif not sufficient and metric not in {"tracking_inconsistency", "strategy_learning"}:
             metric = "low_data"
         facts.append(AuditObservedFact(
             fact_id=f"fact_{len(facts) + 1:03d}",
@@ -139,7 +155,16 @@ def build_observed_facts(snapshot: dict[str, Any]) -> list[AuditObservedFact]:
         current_value = None
         benchmark_value = None
         dynamic_deviation = None
-        if "conversion_drop" in dynamics_flags:
+        current_conversion_metric = parse_numeric_metric(current.get("goalConversions"))
+        previous_conversion_metric = parse_numeric_metric(previous.get("goalConversions"))
+        if "conversion_drop" in dynamics_flags and (
+            current_conversion_metric.state != "known" or previous_conversion_metric.state != "known"
+        ):
+            dynamic_metric = "conversion_data_unknown"
+            current_value = current_conversion_metric.state
+            benchmark_value = previous_conversion_metric.state
+            dynamic_deviation = None
+        elif "conversion_drop" in dynamics_flags:
             dynamic_metric = "goal_conversions_drop"
             current_value = current.get("goalConversions")
             benchmark_value = previous.get("goalConversions")
@@ -154,12 +179,21 @@ def build_observed_facts(snapshot: dict[str, Any]) -> list[AuditObservedFact]:
             current_value = current.get("cost")
             benchmark_value = previous.get("cost")
             dynamic_deviation = changes.get("costDeltaPct")
-        elif dynamics.get("severity") in {"ok", "opportunity"} and float(current.get("goalConversions") or 0) > 0:
+        elif dynamics.get("severity") in {"ok", "opportunity"} and current_conversion_metric.state == "known" and float(current_conversion_metric.value or 0) > 0:
             dynamic_metric = "stable_efficiency"
             current_value = current.get("goalCpa")
             benchmark_value = previous.get("goalCpa")
             dynamic_deviation = changes.get("goalCpaDeltaPct")
         if dynamic_metric:
+            dynamic_sufficient = False if dynamic_metric == "conversion_data_unknown" else evaluate_metric_sufficiency(
+                "high_cpa" if dynamic_metric == "goal_conversions_drop" else "ctr",
+                cost=float(current.get("cost") or 0),
+                clicks=int(current.get("clicks") or 0),
+                impressions=int(current.get("impressions") or 0),
+                conversions=float(current_conversion_metric.value or 0),
+                target_cpa=target_cpa,
+                period_days=7,
+            ).sufficient
             facts.append(AuditObservedFact(
                 fact_id=f"fact_{len(facts) + 1:03d}",
                 campaign_name=name,
@@ -171,15 +205,7 @@ def build_observed_facts(snapshot: dict[str, Any]) -> list[AuditObservedFact]:
                 benchmark_value=benchmark_value,
                 deviation=dynamic_deviation,
                 sample_size=int(current.get("clicks") or current.get("impressions") or 0),
-                sufficient_data=evaluate_metric_sufficiency(
-                    "high_cpa" if dynamic_metric == "goal_conversions_drop" else "ctr",
-                    cost=float(current.get("cost") or 0),
-                    clicks=int(current.get("clicks") or 0),
-                    impressions=int(current.get("impressions") or 0),
-                    conversions=float(current.get("goalConversions") or 0),
-                    target_cpa=target_cpa,
-                    period_days=7,
-                ).sufficient,
+                sufficient_data=dynamic_sufficient,
                 evidence=[
                     f"Текущие 7 дней: {current_value}; предыдущие 7 дней: {benchmark_value}; изменение: {dynamic_deviation}%.",
                 ],
@@ -225,7 +251,7 @@ def build_cascade_hypotheses(
             hypothesis_type=item.hypothesis_type,
             parent_hypothesis_id=item.parent_hypothesis_id,
             supersedes_hypothesis_id=item.supersedes_hypothesis_id,
-            fact_ids=[fact.fact_id for fact in campaign_facts[:5]],
+            fact_ids=list(item.fact_ids or ([fact.fact_id] if fact else []))[:5],
             campaign_name=item.campaign_name,
             hypothesis=item.hypothesis,
             rationale=item.observed_fact,

@@ -89,6 +89,31 @@ AI_AUDIT_JOB_SCHEMA_STATEMENTS = (
     "ALTER TABLE ai_audit_jobs ADD COLUMN IF NOT EXISTS stage_execution_token VARCHAR(36)",
     "ALTER TABLE ai_audit_jobs ADD COLUMN IF NOT EXISTS stage_attempt INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE ai_audit_jobs ADD COLUMN IF NOT EXISTS cancel_requested BOOLEAN NOT NULL DEFAULT FALSE",
+    """
+    CREATE TABLE IF NOT EXISTS ai_audit_evidence_results (
+        id VARCHAR(36) PRIMARY KEY,
+        audit_job_id VARCHAR(36) NOT NULL,
+        organization_id VARCHAR(36) NOT NULL,
+        client_id VARCHAR(64) NOT NULL,
+        evidence_kind VARCHAR(32) NOT NULL,
+        request_id VARCHAR(128) NOT NULL,
+        hypothesis_id VARCHAR(128),
+        capability_id VARCHAR(64),
+        status VARCHAR(32) NOT NULL,
+        result_json TEXT NOT NULL DEFAULT '{}',
+        rows_count INTEGER NOT NULL DEFAULT 0,
+        fetched_at TIMESTAMPTZ,
+        expires_at TIMESTAMPTZ NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        CONSTRAINT uq_ai_audit_evidence_request UNIQUE (audit_job_id, evidence_kind, request_id)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_ai_audit_evidence_job_id ON ai_audit_evidence_results (audit_job_id)",
+    "CREATE INDEX IF NOT EXISTS ix_ai_audit_evidence_organization_id ON ai_audit_evidence_results (organization_id)",
+    "CREATE INDEX IF NOT EXISTS ix_ai_audit_evidence_client_id ON ai_audit_evidence_results (client_id)",
+    "CREATE INDEX IF NOT EXISTS ix_ai_audit_evidence_kind ON ai_audit_evidence_results (evidence_kind)",
+    "CREATE INDEX IF NOT EXISTS ix_ai_audit_evidence_expires_at ON ai_audit_evidence_results (expires_at)",
 )
 
 DIRECT_READ_SCHEMA_STATEMENTS = (

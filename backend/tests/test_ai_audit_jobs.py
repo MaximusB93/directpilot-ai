@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 import app.services.ai_audit_jobs as audit_jobs
 from app.api.routers.ai import chat_with_ai
 from app.db import Base
-from app.models import AiAuditJob, ClientAccount, Organization, User
+from app.models import AiAuditJob, ClientAccount, DirectReportJob, Organization, User
 from app.schemas import (
     AiAuditCreateRequest,
     AiChatRequest,
@@ -697,7 +697,7 @@ def test_full_drilldown_evidence_is_not_limited_by_ai_sample_budget():
     }
     db = _db()
     job = _create(db)
-    audit_jobs._save_full_drilldown_results(job, [full_result])
+    audit_jobs._save_full_drilldown_results(db, job, [full_result])
 
     audit_jobs._refresh_drilldown_projections(snapshot, [full_result])
     sample = snapshot["aiDrilldownSamples"][0]
@@ -721,7 +721,8 @@ def test_full_drilldown_evidence_is_not_limited_by_ai_sample_budget():
     )
 
     assert sample["ai_sample_rows"] < 1200
-    assert len(audit_jobs._load_full_drilldown_results(job)[0]["data"]) == 1200
+    assert len(audit_jobs._load_full_drilldown_results(db, job)[0]["data"]) == 1200
+    assert "fullDrilldownResults" not in (job.prompt_snapshot_json or "")
     assert sample["rows_analyzed"] == 1200
     assert summary["rows_total"] == 1200
     assert summary["metrics"]["cost"] == 12000
@@ -779,6 +780,15 @@ def test_verification_registry_preserves_prior_round_and_filters_active_prompt()
         "limitations": [],
     }, snapshot)
     assert safe_result["critical_findings"][0]["verification_status"] == "confirmed"
+
+    db = _db()
+    job = _create(db)
+    job.context_snapshot_json = audit_jobs._json_dump(snapshot)
+    db.commit()
+    public_registry = audit_jobs.audit_job_response(job, db).context_metadata["verificationRegistryPublic"]
+    assert {item["hypothesisId"]: item["status"] for item in public_registry} == {
+        "hyp-001": "confirmed", "hyp-006": "unverified",
+    }
 
 
 def test_rejected_verification_is_immutable_in_registry_and_active_round():
@@ -918,7 +928,6 @@ def test_fresh_baseline_with_150_campaigns_is_recompacted_with_full_aggregates()
         "targetKpis": {"targetCpa": 500},
         "selectedGoals": {"ids": ["123"], "hasGoalData": False},
         "metadata": {"tokenTarget": audit_jobs.CONTEXT_TOKEN_TARGET},
-        "baselineResults": [{"capability_id": "campaign_performance", "data": rows}],
     }
 
     audit_jobs._apply_live_baseline(
@@ -934,7 +943,8 @@ def test_fresh_baseline_with_150_campaigns_is_recompacted_with_full_aggregates()
     assert snapshot["metadata"]["campaignsIncluded"] <= 25
     assert snapshot["metadata"]["estimatedTokens"] <= audit_jobs.CONTEXT_TOKEN_TARGET
     assert snapshot["freshBaseline"]["campaignAggregates"]["campaignsTotal"] == 150
-    assert len(snapshot["baselineResults"][0]["data"]) == 150
+    assert len(snapshot["campaignAnalysisRows"]) == 150
+    assert snapshot["dataCoverage"]["campaigns"]["analyzed"] == 150
     assert snapshot["dataCoverage"]["campaigns"]["source"] == "yandex_direct_live_report"
     assert snapshot["analysisPeriod"]["source"] == "yandex_direct_live_report"
 
@@ -985,7 +995,7 @@ def test_text_and_unified_mixed_campaigns_use_current_strategy_metadata():
     assert unified_mixed["warnings"]
 
 
-def test_multiple_hypotheses_for_same_campaign_are_not_collapsed():
+def test_initial_planner_cannot_add_independent_hypothesis():
     snapshot = {
         "analysisPeriod": {"dateFrom": "2026-06-10", "dateTo": "2026-07-09", "days": 30},
         "targetKpis": {"targetCpa": 500},
@@ -1001,10 +1011,13 @@ def test_multiple_hypotheses_for_same_campaign_are_not_collapsed():
             "campaign_name": "Search Brand", "campaign_family": "search",
             "campaign_subtype": "brand_search", "classification_source": "name_fallback",
         }],
-        "observedFacts": [],
+        "observedFacts": [{
+            "fact_id": "fact-1", "campaign_name": "Search Brand", "metric": "spend_without_goal_conversions",
+            "sufficient_data": True,
+        }],
     }
     fallback = audit_jobs.build_rule_based_investigation_plan(snapshot)
-    first = fallback.hypotheses[0]
+    first = fallback.hypotheses[0].model_copy(update={"fact_ids": ["fact-1"]})
     proposed = audit_jobs.AuditInvestigationPlan(hypotheses=[
         first.model_copy(update={"hypothesis": "Search-query intent is weak."}),
         first.model_copy(update={
@@ -1015,9 +1028,264 @@ def test_multiple_hypotheses_for_same_campaign_are_not_collapsed():
 
     merged = audit_jobs._merge_investigation_plans(proposed, snapshot, fallback)
 
-    assert len(merged.hypotheses) == 2
-    assert len({item.hypothesis_id for item in merged.hypotheses}) == 2
-    assert {item.campaign_name for item in merged.hypotheses} == {"Search Brand"}
+    assert len(merged.hypotheses) == 1
+    assert merged.hypotheses[0].hypothesis_id == first.hypothesis_id
+    assert snapshot["validationRejections"][0]["status"] == "rejected_by_validation"
+    assert snapshot["validationRejections"][0]["errorCode"] == "untrusted_fact_binding"
+
+
+def test_initial_planner_rejects_cross_campaign_fact_binding():
+    snapshot = {
+        "analysisPeriod": {"days": 30},
+        "campaignGroups": {"critical": [{
+            "name": "Campaign A", "cost": 5000, "clicks": 80, "impressions": 5000,
+            "goalConversions": 0, "flags": ["spend_without_conversions"],
+        }], "warning": [], "opportunity": [], "low_data": [], "stable": []},
+        "campaignClassifications": [{
+            "campaign_name": "Campaign A", "campaign_family": "search", "campaign_subtype": "search",
+        }],
+        "observedFacts": [{
+            "fact_id": "fact-a", "campaign_name": "Campaign A",
+            "metric": "spend_without_goal_conversions", "sufficient_data": True,
+        }],
+    }
+    fallback = audit_jobs.build_rule_based_investigation_plan(snapshot)
+    base = fallback.hypotheses[0]
+    proposed = audit_jobs.AuditInvestigationPlan(hypotheses=[
+        base.model_copy(update={"campaign_name": "Campaign B", "fact_ids": ["fact-a"]}),
+    ])
+
+    merged = audit_jobs._merge_investigation_plans(proposed, snapshot, fallback)
+
+    assert merged.hypotheses[0].campaign_name == "Campaign A"
+    assert merged.hypotheses[0].fact_ids == ["fact-a"]
+    assert snapshot["validationRejections"] == [{
+        "hypothesisId": base.hypothesis_id,
+        "campaignName": "Campaign B",
+        "status": "rejected_by_validation",
+        "errorCode": "untrusted_fact_binding",
+        "message": "AI-гипотеза отклонена backend-валидатором: отсутствует trusted fact той же кампании.",
+    }]
+
+
+def test_fresh_baseline_advance_uses_all_rows_but_limits_ai_sample(monkeypatch):
+    db = _db()
+    job = _create(db)
+    rows = [{
+        "campaign_name": f"Campaign {index}",
+        "cost": index + 1,
+        "clicks": 30,
+        "impressions": 1000,
+        "conversions_123_auto": 0,
+        "provider_note": "x" * 1000,
+    } for index in range(150)]
+    snapshot = audit_jobs.build_compact_audit_context(_context())
+    snapshot["analysisPeriod"] = {"dateFrom": "2026-06-10", "dateTo": "2026-07-09", "days": 30}
+    snapshot["selectedGoals"] = {"ids": ["123"], "hasGoalData": True}
+    job.context_snapshot_json = audit_jobs._json_dump(snapshot)
+    job.status = "context_ready"
+    job.current_stage = "collect_fresh_baseline"
+    db.commit()
+
+    def fake_collect(*args, **kwargs):
+        return [
+            AuditDataRequestResult(
+                request_id="baseline_campaigns", hypothesis_id="baseline", capability_id="campaigns",
+                dimension="campaigns", status="collected", source="yandex_direct_live_report",
+                source_type="report", data=[], rows_analyzed=0, rows_total=0,
+            ),
+            AuditDataRequestResult(
+                request_id="baseline_campaign_performance", hypothesis_id="baseline",
+                capability_id="campaign_performance", dimension="campaign_performance", status="collected",
+                source="yandex_direct_live_report", source_type="report", data=rows,
+                rows_analyzed=150, rows_total=150,
+            ),
+        ], 1
+
+    monkeypatch.setattr(audit_jobs, "collect_audit_data_requests", fake_collect)
+    job = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
+    assert job.current_stage == "classify_campaigns"
+    job = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
+    snapshot = audit_jobs._json_load(job.context_snapshot_json, {})
+    sample_names = {
+        row.get("campaign_name")
+        for result in snapshot["aiBaselineSamples"]
+        for row in result.get("data") or []
+    }
+    facts_by_campaign = {item["campaign_name"] for item in snapshot["observedFacts"]}
+
+    assert snapshot["metadata"]["campaignsTotal"] == 150
+    assert snapshot["accountTotals"]["cost"] == sum(range(1, 151))
+    assert snapshot["metadata"]["rowsReceived"] == 150
+    assert snapshot["metadata"]["rowsAnalyzed"] == 150
+    assert snapshot["metadata"]["rowsSentToAi"] < 150
+    assert len(snapshot["campaignClassifications"]) == 150
+    assert len(facts_by_campaign) == 150
+    assert facts_by_campaign - sample_names
+
+
+def test_public_trace_is_safe_and_distinguishes_backend_and_ai_rows():
+    db = _db()
+    job = _create(db)
+    result = {
+        "request_id": "req-safe", "hypothesis_id": "hyp-safe", "capability_id": "search_queries",
+        "dimension": "search_queries", "status": "collected", "source": "yandex_direct_live_report",
+        "source_type": "report", "request_hash": "must-not-leak", "rows_total": 2,
+        "data": [
+            {"query": "one", "cost": "0", "conversions": None, "CampaignId": "secret-id"},
+            {"query": "two", "cost": "bad", "conversions": "1"},
+        ],
+    }
+    snapshot = audit_jobs.build_compact_audit_context(_context())
+    snapshot.update({
+        "validatedDataRequests": [{
+            "request_id": "req-safe", "hypothesis_id": "hyp-safe", "campaign_name": "Search",
+            "campaign_family": "search", "campaign_subtype": "search", "dimension": "search_queries",
+            "capability_id": "search_queries", "reason": "Проверить запросы", "period": {}, "filters": {"campaign_name": "Search"},
+            "metrics": ["clicks", "cost", "conversions"], "priority": "high", "required_for_conclusion": True,
+            "data_preference": "live_required",
+        }],
+        "hypothesisRegistry": {"hyp-safe": {
+            "hypothesis_id": "hyp-safe", "hypothesis_type": "search_query_waste", "campaign_name": "Search",
+        }},
+        "activeHypothesisIds": ["hyp-safe"],
+        "aiDrilldownSamples": [{**result, "data": result["data"][:1]}],
+    })
+    job.context_snapshot_json = audit_jobs._json_dump(snapshot)
+    audit_jobs._save_full_drilldown_results(db, job, [result])
+    db.add(DirectReportJob(
+        audit_job_id=job.id, client_id=job.client_id, capability_id="search_queries",
+        request_hash="must-not-leak", report_name="safe", report_spec_json="{}",
+        status="ready", attempts=3, rows_count=2, rows_collected=2, limited_by=1,
+        pages_completed=3, partial=False,
+    ))
+    db.commit()
+
+    metadata = audit_jobs.audit_job_response(job, db).context_metadata
+    serialized = json.dumps(metadata, ensure_ascii=False)
+    trace = metadata["publicRequestTrace"][0]
+
+    assert trace["rowsReceived"] == 2
+    assert trace["rowsAnalyzedByBackend"] == 2
+    assert trace["rowsSentToAi"] == 1
+    assert trace["dataQuality"]["numericStateCounts"] == {"known": 2, "missing": 1, "invalid": 1}
+    assert [item["status"] for item in trace["statusHistory"]] == ["pending", "processing", "completed"]
+    assert trace["pagination"]["pagesCompleted"] == 3
+    for forbidden in ("must-not-leak", "secret-id", "request_hash", "CampaignId", "result_json", "Authorization"):
+        assert forbidden not in serialized
+
+
+def test_public_trace_includes_full_baseline_with_bounded_ai_sample():
+    db = _db()
+    job = _create(db)
+    rows = [{"campaign_name": f"Campaign {index}", "cost": index} for index in range(150)]
+    baseline = [{
+        "request_id": "baseline-performance", "capability_id": "campaign_performance",
+        "status": "collected", "source": "yandex_direct_live_report", "rows_total": 150,
+        "data": rows,
+    }]
+    snapshot = audit_jobs.build_compact_audit_context(_context())
+    snapshot["aiBaselineSamples"] = [{**baseline[0], "data": rows[:10]}]
+    job.context_snapshot_json = audit_jobs._json_dump(snapshot)
+    audit_jobs._save_full_baseline_results(db, job, baseline)
+    db.commit()
+
+    trace = audit_jobs.audit_job_response(job, db).context_metadata["publicRequestTrace"]
+    baseline_trace = next(item for item in trace if item["capabilityId"] == "campaign_performance")
+
+    assert baseline_trace["rowsReceived"] == 150
+    assert baseline_trace["rowsAnalyzedByBackend"] == 150
+    assert baseline_trace["rowsSentToAi"] == 10
+
+
+def test_ai_sample_removes_private_execution_fields_recursively():
+    sample = audit_jobs._safe_ai_sample({
+        "CampaignId": "123", "request_hash": "hash", "cost": 10,
+        "nested": {"Authorization": "Bearer secret", "goal_conversions": 2},
+    })
+
+    assert sample == {"cost": 10, "nested": {"goal_conversions": 2}}
+
+
+def test_large_persistent_evidence_does_not_expand_prompt_snapshot():
+    db = _db()
+    job = _create(db)
+    results = [{
+        "request_id": f"req-{index}", "hypothesis_id": f"hyp-{index}",
+        "capability_id": "search_queries", "dimension": "search_queries", "status": "collected",
+        "data": [{"query": f"q-{row_index}", "cost": row_index} for row_index in range(2000)],
+        "rows_total": 2000, "rows_analyzed": 2000,
+    } for index in range(20)]
+
+    audit_jobs._save_full_drilldown_results(db, job, results)
+    db.commit()
+
+    loaded = audit_jobs._load_full_drilldown_results(db, job)
+    assert len(loaded) == 20
+    assert sum(len(item["data"]) for item in loaded) == 40000
+    assert len(job.prompt_snapshot_json or "") < 1000
+    assert "q-1999" not in (job.prompt_snapshot_json or "")
+    assert "request_hash" not in (job.prompt_snapshot_json or "")
+    public_payload = json.dumps(
+        audit_jobs.audit_job_response(job, db).model_dump(mode="json"),
+        ensure_ascii=False,
+    )
+    assert len(public_payload) < 250_000
+    assert "q-1999" not in public_payload
+    assert '"data"' not in public_payload
+
+
+def test_rule_plan_separates_retargeting_and_placement_hypotheses():
+    snapshot = {
+        "analysisPeriod": {"dateFrom": "2026-06-10", "dateTo": "2026-07-09", "days": 30},
+        "targetKpis": {"targetCpa": 500},
+        "campaignGroups": {"critical": [{
+            "name": "РСЯ Ретаргетинг", "cost": 5000, "clicks": 80, "impressions": 5000,
+            "goalConversions": 0, "flags": ["spend_without_conversions"],
+            "diagnostic": "Расход без конверсий.",
+        }], "warning": [], "opportunity": [], "low_data": [], "stable": []},
+        "campaignClassifications": [{
+            "campaign_name": "РСЯ Ретаргетинг", "campaign_family": "yan",
+            "campaign_subtype": "yan_retargeting", "classification_source": "name_fallback",
+        }],
+        "observedFacts": [{
+            "fact_id": "fact-retargeting", "campaign_name": "РСЯ Ретаргетинг",
+            "metric": "spend_without_goal_conversions", "sufficient_data": True,
+        }],
+    }
+
+    plan = audit_jobs.build_rule_based_investigation_plan(snapshot)
+    retargeting = next(item for item in plan.hypotheses if item.hypothesis_type == "retargeting_segment_issue")
+    placement = next(item for item in plan.hypotheses if item.hypothesis_type == "placement_waste")
+    retargeting_capabilities = {item.capability_id or item.dimension for item in retargeting.data_requests}
+
+    assert {"retargeting_lists", "retargeting_segments", "audience_targets"} <= retargeting_capabilities
+    assert "search_queries" not in retargeting_capabilities
+    assert {item.capability_id or item.dimension for item in placement.data_requests} == {"placements"}
+    assert retargeting.fact_ids == ["fact-retargeting"]
+    assert placement.fact_ids == ["fact-retargeting"]
+
+
+def test_rule_plan_uses_only_sufficient_triggering_fact():
+    snapshot = {
+        "analysisPeriod": {"days": 30},
+        "targetKpis": {"targetCpa": 500},
+        "campaignGroups": {"critical": [{
+            "name": "Search", "cost": 10000, "clicks": 100, "impressions": 5000,
+            "goalConversions": 5, "goalCpa": 2000, "flags": ["high_cpa"],
+        }], "warning": [], "opportunity": [], "low_data": [], "stable": []},
+        "campaignClassifications": [{
+            "campaign_name": "Search", "campaign_family": "search", "campaign_subtype": "search",
+        }],
+        "observedFacts": [
+            {"fact_id": "fact-high-cpa", "campaign_name": "Search", "metric": "cpa_above_target", "sufficient_data": True},
+            {"fact_id": "fact-dynamics-low", "campaign_name": "Search", "metric": "low_data", "sufficient_data": False},
+        ],
+    }
+
+    plan = audit_jobs.build_rule_based_investigation_plan(snapshot)
+
+    assert plan.hypotheses[0].fact_ids == ["fact-high-cpa"]
 
 
 def test_verification_timeout_uses_unverified_fallback_and_continues(monkeypatch):
