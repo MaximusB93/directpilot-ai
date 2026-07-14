@@ -1,0 +1,9 @@
+{
+  "id": "cascade-yan-retargeting-no-search-queries",
+  "title": "РСЯ ретаргетинг: поисковые запросы неприменимы",
+  "description": "Backend должен отклонить search_queries для retargeting.",
+  "task": "Проверь применимость capability search_queries.",
+  "input_data": {"campaign_family": "yan", "campaign_subtype": "yan_retargeting", "requested_capability": "search_queries"},
+  "expected": {"should_find": ["capability неприменима"], "should_not_do": ["анализировать поисковый интент", "предлагать минус-слова"], "expected_first_capabilities": ["retargeting_lists"], "forbidden_capabilities": ["search_queries", "keywords", "autotargeting"], "expected_verification_status": "not_applicable"},
+  "tags": ["cascade", "yan", "guardrail"]
+}

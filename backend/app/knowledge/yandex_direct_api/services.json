@@ -1,0 +1,14 @@
+{
+  "schema_version": "v1",
+  "source": "https://yandex.com/dev/direct/doc/en/get",
+  "services": [
+    {"id": "campaigns", "allowed_method": "get", "read_only": true},
+    {"id": "adgroups", "allowed_method": "get", "read_only": true},
+    {"id": "ads", "allowed_method": "get", "read_only": true},
+    {"id": "keywords", "allowed_method": "get", "read_only": true},
+    {"id": "bidmodifiers", "allowed_method": "get", "read_only": true},
+    {"id": "audiencetargets", "allowed_method": "get", "read_only": true},
+    {"id": "retargetinglists", "allowed_method": "get", "read_only": true}
+  ],
+  "forbidden_methods": ["add", "update", "delete", "suspend", "resume", "archive", "setBids"]
+}

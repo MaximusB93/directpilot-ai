@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ClientSummary(BaseModel):
@@ -540,6 +540,8 @@ class AiAuditCreateRequest(BaseModel):
     model: str | None = None
     ai_preset: str | None = None
     max_tokens: int | None = Field(default=None, ge=1, le=10000)
+    cache_policy: Literal["fresh", "prefer_cache", "cache_only"] = "fresh"
+    allow_saved_fallback: bool = False
     options: AiAuditOptions = Field(default_factory=AiAuditOptions)
 
 
@@ -669,7 +671,7 @@ class AuditDataRequest(BaseModel):
         "ad_groups", "ad_group_performance", "ad_group_settings", "keywords", "keyword_performance",
         "autotargeting", "criteria_performance", "search_queries", "audience_targets", "audiences",
         "retargeting_segments", "retargeting_lists", "audience_exclusions", "targeting_conditions",
-        "ads", "ad_performance", "ad_texts", "ad_urls", "creatives", "images", "videos",
+        "ads", "ad_performance", "ad_texts", "ad_urls", "ad_creative_metadata", "creatives", "images", "videos",
         "sitelinks", "callouts", "landing_pages", "placements", "placement_or_network_breakdown",
         "devices", "geo", "location_of_presence", "demographics", "age", "gender", "ad_format",
         "mobile_platform", "carrier", "frequency", "frequency_and_reach", "goals",
@@ -678,12 +680,20 @@ class AuditDataRequest(BaseModel):
     ]
     capability_id: str | None = None
     reason: str
+    expected_information_gain: str | None = None
     period: AiAuditPeriod = Field(default_factory=AiAuditPeriod)
     filters: dict = Field(default_factory=dict)
     metrics: list[str] = Field(default_factory=list)
     priority: Literal["low", "medium", "high"] = "medium"
     required_for_conclusion: bool = False
     data_preference: Literal["live_required", "live_preferred", "saved_allowed"] = "live_preferred"
+
+    @field_validator("filters")
+    @classmethod
+    def semantic_filters_only(cls, value: dict) -> dict:
+        if set(value) - {"campaign_name"}:
+            raise ValueError("Only semantic campaign_name filter is allowed")
+        return value
 
 
 class AuditDataRequestResult(BaseModel):
@@ -700,6 +710,9 @@ class AuditDataRequestResult(BaseModel):
     source: str | None = None
     source_type: Literal["report", "service_get", "saved_data", "external"] | None = None
     source_required: str | None = None
+    capability_schema_version: str | None = None
+    direct_api_knowledge_version: str | None = None
+    normalization_version: str | None = None
     live: bool = False
     live_attempted: bool = False
     live_error_code: str | None = None
@@ -720,25 +733,121 @@ class AuditDataRequestResult(BaseModel):
     error_code: str | None = None
     retryable: bool = False
     next_retry_at: str | None = None
+    selected_goal_ids: list[str] = Field(default_factory=list)
+    per_goal_metrics: dict = Field(default_factory=dict)
+    aggregation_policy: str | None = None
 
 
 class AuditInvestigationHypothesis(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     hypothesis_id: str
+    hypothesis_type: Literal[
+        "search_query_waste", "ad_group_concentration", "keyword_waste",
+        "device_segment_gap", "geo_segment_gap", "placement_waste",
+        "retargeting_segment_issue", "tracking_issue", "campaign_metadata_issue",
+    ] = "campaign_metadata_issue"
+    parent_hypothesis_id: str | None = None
+    supersedes_hypothesis_id: str | None = None
     campaign_name: str
     campaign_family: Literal["search", "yan", "unknown"]
     campaign_subtype: Literal["search", "brand_search", "yan_prospecting", "yan_retargeting", "unknown"]
     observed_fact: str
     hypothesis: str
-    current_status: Literal["unverified"] = "unverified"
-    data_requests: list[AuditDataRequest] = Field(default_factory=list, max_length=4)
+    current_status: Literal[
+        "confirmed", "partially_confirmed", "rejected", "unverified", "not_applicable",
+    ] = "unverified"
+    fact_ids: list[str] = Field(default_factory=list, max_length=5)
+    rationale: str = ""
+    confidence_before_verification: Literal["low", "medium", "high"] = "low"
+    required_capabilities: list[str] = Field(default_factory=list, max_length=4)
+    optional_capabilities: list[str] = Field(default_factory=list, max_length=4)
+    forbidden_capabilities: list[str] = Field(default_factory=list, max_length=12)
+    confirmation_rules: list[str] = Field(default_factory=list, max_length=5)
+    rejection_rules: list[str] = Field(default_factory=list, max_length=5)
+    prerequisite_rule_codes: list[str] = Field(default_factory=list, max_length=8)
+    confirmation_rule_codes: list[str] = Field(default_factory=list, max_length=8)
+    rejection_rule_codes: list[str] = Field(default_factory=list, max_length=8)
+    stop_conditions: list[str] = Field(default_factory=list, max_length=5)
+    data_requests: list[AuditDataRequest] = Field(default_factory=list, max_length=12)
 
 
 class AuditInvestigationPlan(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     hypotheses: list[AuditInvestigationHypothesis] = Field(default_factory=list, max_length=5)
+
+
+class AuditObservedFact(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    fact_id: str
+    campaign_name: str
+    campaign_family: Literal["search", "yan", "unknown"]
+    campaign_subtype: Literal["search", "brand_search", "yan_prospecting", "yan_retargeting", "unknown"]
+    analysis_level: Literal["account", "campaign", "ad_group", "keyword", "query", "placement", "audience", "device", "geo", "demographic", "tracking"]
+    metric: str
+    current_value: float | int | str | None = None
+    benchmark_value: float | int | str | None = None
+    deviation: float | int | str | None = None
+    sample_size: int = 0
+    sufficient_data: bool = False
+    evidence: list[str] = Field(default_factory=list, max_length=5)
+    source: str
+    period: AiAuditPeriod = Field(default_factory=AiAuditPeriod)
+
+
+class AuditHypothesis(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    hypothesis_id: str
+    hypothesis_type: Literal[
+        "search_query_waste", "ad_group_concentration", "keyword_waste",
+        "device_segment_gap", "geo_segment_gap", "placement_waste",
+        "retargeting_segment_issue", "tracking_issue", "campaign_metadata_issue",
+    ] = "campaign_metadata_issue"
+    parent_hypothesis_id: str | None = None
+    supersedes_hypothesis_id: str | None = None
+    fact_ids: list[str] = Field(default_factory=list, max_length=5)
+    campaign_name: str
+    hypothesis: str
+    rationale: str
+    status: Literal[
+        "proposed", "collecting_data", "confirmed", "partially_confirmed",
+        "rejected", "unverified", "not_applicable",
+    ] = "proposed"
+    priority: Literal["low", "medium", "high"] = "medium"
+    confidence_before_verification: Literal["low", "medium", "high"] = "low"
+    required_capabilities: list[str] = Field(default_factory=list, max_length=4)
+    optional_capabilities: list[str] = Field(default_factory=list, max_length=4)
+    forbidden_capabilities: list[str] = Field(default_factory=list, max_length=12)
+    confirmation_rules: list[str] = Field(default_factory=list, max_length=5)
+    rejection_rules: list[str] = Field(default_factory=list, max_length=5)
+    prerequisite_rule_codes: list[str] = Field(default_factory=list, max_length=8)
+    confirmation_rule_codes: list[str] = Field(default_factory=list, max_length=8)
+    rejection_rule_codes: list[str] = Field(default_factory=list, max_length=8)
+    stop_conditions: list[str] = Field(default_factory=list, max_length=5)
+    investigation_round: int = Field(default=1, ge=1, le=3)
+    evidence: list[str] = Field(default_factory=list, max_length=8)
+    contradictory_evidence: list[str] = Field(default_factory=list, max_length=8)
+    remaining_data_needed: list[str] = Field(default_factory=list, max_length=8)
+
+
+class AuditInvestigationRound(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    round_number: int = Field(ge=1, le=3)
+    observed_facts: list[AuditObservedFact] = Field(default_factory=list)
+    hypotheses: list[AuditHypothesis] = Field(default_factory=list)
+    planned_requests: list[AuditDataRequest] = Field(default_factory=list)
+    completed_requests: list[AuditDataRequestResult] = Field(default_factory=list)
+    pending_requests: list[AuditDataRequest] = Field(default_factory=list)
+    processing_requests: list[AuditDataRequest] = Field(default_factory=list)
+    failed_requests: list[AuditDataRequestResult] = Field(default_factory=list)
+    verification_results: list["AuditHypothesisVerification"] = Field(default_factory=list)
+    started_at: str | None = None
+    completed_at: str | None = None
+    stop_reason: str | None = None
 
 
 class AuditHypothesisVerification(BaseModel):
@@ -751,12 +860,57 @@ class AuditHypothesisVerification(BaseModel):
     contradicting_evidence: list[str] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
     remaining_data_needed: list[str] = Field(default_factory=list)
+    evidence_summaries: list[dict] = Field(default_factory=list)
+    confirmation_rules: list[dict] = Field(default_factory=list)
+    rejection_rules: list[dict] = Field(default_factory=list)
 
 
 class AuditHypothesisVerificationSet(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     verifications: list[AuditHypothesisVerification] = Field(default_factory=list, max_length=5)
+
+
+class AuditNextRoundRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    hypothesis_id: str
+    capability_id: str
+    reason: str
+    expected_information_gain: str
+    required_for_conclusion: bool = True
+    stop_if: list[str] = Field(default_factory=list, max_length=5)
+
+
+class AuditNextRoundHypothesis(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    hypothesis_id: str
+    hypothesis_type: Literal[
+        "search_query_waste", "ad_group_concentration", "keyword_waste",
+        "device_segment_gap", "geo_segment_gap", "placement_waste",
+        "retargeting_segment_issue", "tracking_issue", "campaign_metadata_issue",
+    ] = "campaign_metadata_issue"
+    parent_hypothesis_id: str | None = None
+    supersedes_hypothesis_id: str | None = None
+    campaign_name: str
+    hypothesis: str
+    rationale: str
+    fact_ids: list[str] = Field(default_factory=list, max_length=5)
+    required_capabilities: list[str] = Field(default_factory=list, max_length=4)
+    prerequisite_rule_codes: list[str] = Field(default_factory=list, max_length=8)
+    confirmation_rule_codes: list[str] = Field(default_factory=list, max_length=8)
+    rejection_rule_codes: list[str] = Field(default_factory=list, max_length=8)
+    requests: list[AuditNextRoundRequest] = Field(default_factory=list, max_length=4)
+
+
+class AuditNextRoundPlan(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    continue_investigation: bool
+    existing_hypothesis_requests: list[AuditNextRoundRequest] = Field(default_factory=list, max_length=8)
+    new_hypotheses: list[AuditNextRoundHypothesis] = Field(default_factory=list, max_length=5)
+    stop_reason: str | None = None
 
 
 class AiAuditJobResponse(BaseModel):

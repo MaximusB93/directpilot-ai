@@ -16,8 +16,8 @@ from app.services.yandex_direct_read_capabilities import (
     public_direct_read_manifest,
 )
 
-MAX_AUDIT_DATA_REQUESTS = 15
-MAX_REQUESTS_PER_CAMPAIGN = 4
+MAX_AUDIT_DATA_REQUESTS = 20
+MAX_REQUESTS_PER_HYPOTHESIS = 4
 MAX_TOOL_ROWS = 200
 
 DIMENSION_ALIASES = {
@@ -150,7 +150,7 @@ def validate_audit_data_requests(
     ordered = sorted(requests, key=lambda item: (priority_rank[item.priority], not item.required_for_conclusion))
     accepted: list[AuditDataRequest] = []
     rejected: list[AuditDataRequestResult] = []
-    campaign_counts: dict[str, int] = defaultdict(int)
+    hypothesis_counts: dict[str, int] = defaultdict(int)
     seen: set[tuple[str, str, str, str]] = set()
     for request in ordered:
         capability_id = _capability_id(request)
@@ -170,14 +170,14 @@ def validate_audit_data_requests(
             or request.campaign_subtype not in capability.supported_subtypes
         ):
             status, code = "not_applicable", "dimension_not_applicable"
-        elif len(accepted) >= MAX_AUDIT_DATA_REQUESTS or campaign_counts[request.campaign_name] >= MAX_REQUESTS_PER_CAMPAIGN:
+        elif len(accepted) >= MAX_AUDIT_DATA_REQUESTS or hypothesis_counts[request.hypothesis_id] >= MAX_REQUESTS_PER_HYPOTHESIS:
             status, code = "skipped_budget_limit", "audit_request_budget_exceeded"
         else:
             request.capability_id = capability_id
             request.filters = {"campaign_name": request.campaign_name}
             request.metrics = [metric for metric in request.metrics if metric in capability.allowed_metrics][:12]
             accepted.append(request)
-            campaign_counts[request.campaign_name] += 1
+            hypothesis_counts[request.hypothesis_id] += 1
             continue
         rejected.append(_rejected_result(
             request, status=status, code=code, capability_id=capability_id,
@@ -236,6 +236,8 @@ def collect_audit_data_requests(
     *,
     audit_job_id: str | None = None,
     max_live_requests: int = MAX_LIVE_REQUESTS_PER_ADVANCE,
+    cache_policy: str = "prefer_cache",
+    allow_saved_fallback: bool = True,
 ) -> tuple[list[AuditDataRequestResult], int]:
     results: list[AuditDataRequestResult] = []
     direct_api_calls = 0
@@ -256,7 +258,7 @@ def collect_audit_data_requests(
             results.append(cloned)
             continue
         saved = None
-        if request.data_preference == "saved_allowed":
+        if request.data_preference == "saved_allowed" and cache_policy != "fresh":
             saved = _saved_result(db, client_id, request)
             if saved and saved.status == "collected":
                 results.append(saved)
@@ -293,7 +295,8 @@ def collect_audit_data_requests(
                     client_id,
                     request,
                     audit_job_id=audit_job_id,
-                    allow_cache=True,
+                    allow_cache=cache_policy != "fresh",
+                    cache_policy=cache_policy,
                 )
                 result = outcome.result
                 result.live_attempted = not result.cached
@@ -331,8 +334,12 @@ def collect_audit_data_requests(
                     error_code="adapter_failed",
                     retryable=True,
                 )
+        if result.live_attempted and result.status in {"failed", "unavailable", "insufficient_data", "partial"}:
+            result.source = result.source or "yandex_direct_live"
+            result.freshness = result.freshness or "live_failed"
         if (
-            request.data_preference == "live_preferred"
+            allow_saved_fallback
+            and request.data_preference == "live_preferred"
             and result.status in {"failed", "unavailable", "insufficient_data"}
         ):
             saved = _saved_result(
@@ -349,3 +356,36 @@ def collect_audit_data_requests(
         results.append(result)
         deduplicated[dedupe_key] = result
     return results, direct_api_calls
+
+
+def estimated_live_calls(request: AuditDataRequest) -> int:
+    capability = YANDEX_DIRECT_READ_CAPABILITIES.get(_capability_id(request))
+    if capability is None or not capability.live_supported:
+        return 0
+    if capability.service == "retargetinglists":
+        return 3
+    if capability.service == "audiencetargets":
+        return 2
+    return 1
+
+
+def select_live_request_batch(
+    requests: list[AuditDataRequest],
+    *, max_live_calls: int = MAX_LIVE_REQUESTS_PER_ADVANCE,
+) -> tuple[list[AuditDataRequest], list[AuditDataRequest]]:
+    """Select a stable prefix-like batch without dropping deferred requests."""
+
+    selected: list[AuditDataRequest] = []
+    pending: list[AuditDataRequest] = []
+    calls = 0
+    for request in requests:
+        estimated = estimated_live_calls(request)
+        if selected and estimated and calls + estimated > max_live_calls:
+            pending.append(request)
+            continue
+        if estimated > max_live_calls:
+            pending.append(request)
+            continue
+        selected.append(request)
+        calls += estimated
+    return selected, pending

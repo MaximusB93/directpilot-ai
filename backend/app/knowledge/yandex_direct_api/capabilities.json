@@ -1,0 +1,12 @@
+{
+  "schema_version": "v1",
+  "capabilities": [
+    {"capability_id": "campaigns", "purpose": "Campaign metadata and status", "source_type": "service_get", "families": ["search", "yan", "unknown"], "metrics": ["name", "status", "state", "type"], "read_only": true, "source": "object_get"},
+    {"capability_id": "campaign_performance", "purpose": "Campaign performance", "source_type": "report", "families": ["search", "yan"], "metrics": ["impressions", "clicks", "cost", "ctr", "avg_cpc", "conversions", "cpa", "conversion_rate"], "read_only": true, "source": "reports"},
+    {"capability_id": "ad_groups", "purpose": "Ad group metadata", "source_type": "service_get", "families": ["search", "yan"], "metrics": ["name", "status", "type", "regions"], "read_only": true, "source": "adgroups_get"},
+    {"capability_id": "search_queries", "purpose": "Actual search queries", "source_type": "report", "families": ["search"], "forbidden_subtypes": ["yan_retargeting"], "metrics": ["query", "impressions", "clicks", "cost", "conversions", "cpa"], "read_only": true, "source": "reports"},
+    {"capability_id": "placements", "purpose": "Network placement performance", "source_type": "report", "families": ["yan"], "metrics": ["impressions", "clicks", "cost", "conversions", "cpa"], "read_only": true, "source": "reports"},
+    {"capability_id": "devices", "purpose": "Device performance", "source_type": "report", "families": ["search", "yan"], "metrics": ["impressions", "clicks", "cost", "conversions", "cpa"], "read_only": true, "source": "reports"},
+    {"capability_id": "landing_pages", "purpose": "Landing page content", "source_type": "external", "families": ["search", "yan"], "metrics": [], "read_only": true, "source": "external", "requires_backend_implementation": true}
+  ]
+}

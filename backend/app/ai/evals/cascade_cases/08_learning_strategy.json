@@ -1,0 +1,9 @@
+{
+  "id": "cascade-learning-strategy-do-not-touch",
+  "title": "Стратегия обучается: не вмешиваться",
+  "description": "Факт обучения не должен превращаться в рекомендацию менять бюджет.",
+  "task": "Оцени кампанию в стадии обучения.",
+  "input_data": {"metric": "learning_strategy", "strategy_status": "learning", "sufficient_data": false},
+  "expected": {"should_find": ["стратегия обучается"], "should_recommend": ["дождаться достаточных данных"], "should_not_do": ["изменить бюджет", "перезапустить обучение"], "observed_facts": ["learning_strategy"], "expected_first_capabilities": ["campaign_status"], "stop_conditions": ["данных недостаточно"], "expected_verification_status": "unverified", "requires_human_approval": true},
+  "tags": ["cascade", "learning", "stop"]
+}

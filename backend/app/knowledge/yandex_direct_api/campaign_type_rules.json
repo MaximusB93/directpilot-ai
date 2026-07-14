@@ -1,0 +1,10 @@
+{
+  "schema_version": "v1",
+  "rules": [
+    {"subtype": "search", "recommended_cascade": ["ad_groups", "keywords", "search_queries", "ads", "devices", "geo", "demographics", "goals"]},
+    {"subtype": "brand_search", "recommended_cascade": ["ad_groups", "search_queries", "goals", "devices", "geo"]},
+    {"subtype": "yan_prospecting", "recommended_cascade": ["ad_groups", "audience_targets", "placements", "ads", "devices", "geo", "demographics", "frequency", "goals"]},
+    {"subtype": "yan_retargeting", "recommended_cascade": ["retargeting_lists", "audience_targets", "placements", "creatives", "devices", "geo", "demographics", "frequency", "goals"], "forbidden": ["search_queries", "keywords", "autotargeting"]},
+    {"subtype": "unknown", "recommended_cascade": ["campaigns"]}
+  ]
+}

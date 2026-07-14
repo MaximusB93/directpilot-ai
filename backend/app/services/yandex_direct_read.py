@@ -13,7 +13,8 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.connectors.yandex_direct import YandexDirectConnector, YandexDirectReadError
-from app.models import ClientAccount, ConnectedAccount, DirectCampaignPeriodStat, DirectReadCache, DirectReportJob
+from app.knowledge.yandex_direct_api import DIRECT_NORMALIZATION_VERSION
+from app.models import AiAuditJob, ClientAccount, ConnectedAccount, DirectCampaignPeriodStat, DirectReadCache, DirectReportJob
 from app.schemas import AuditDataRequest, AuditDataRequestResult
 from app.services.connected_accounts import get_yandex_access_token_for_account
 from app.services.yandex_direct_read_capabilities import (
@@ -26,9 +27,14 @@ from app.services.yandex_metrika import parse_goal_ids
 logger = logging.getLogger(__name__)
 
 MAX_LIVE_REQUESTS_PER_ADVANCE = 5
-MAX_PROCESSING_REPORTS_PER_CLIENT = 2
-MAX_NORMALIZED_ROWS = 500
+MAX_PROCESSING_REPORTS_PER_ACCOUNT = 2
+MAX_REPORT_REQUESTS_PER_ACCOUNT_WINDOW = 20
+REPORT_RATE_WINDOW = timedelta(seconds=10)
+MAX_NORMALIZED_ROWS = 2000
 MAX_NORMALIZED_TEXT = 1200
+MAX_REPORT_GOALS = 10
+REPORT_PAGE_SIZE = 500
+ALL_CAMPAIGNS_SENTINEL = "__all_campaigns__"
 REPORT_JOB_TTL = timedelta(hours=2)
 
 
@@ -68,6 +74,48 @@ def _snake_case(value: str) -> str:
     return value.replace("-", "_").lower()
 
 
+def _number_or_none(value: Any) -> float | None:
+    if value is None or str(value).strip() in {"", "--", "\u2014", "\ufffd"}:
+        return None
+    try:
+        return float(str(value).replace("\u00a0", "").replace(" ", "").replace(",", "."))
+    except (TypeError, ValueError):
+        return None
+
+
+def _number_or_zero(value: Any) -> float:
+    parsed = _number_or_none(value)
+    return float(parsed) if parsed is not None else 0.0
+
+
+def _numeric_state(value: Any) -> str:
+    if value is None or str(value).strip() in {"", "--", "\u2014", "\ufffd"}:
+        return "missing"
+    return "known" if _number_or_none(value) is not None else "invalid"
+
+
+def _int_or_zero(value: Any) -> int:
+    return int(_number_or_zero(value))
+
+
+def _is_numeric_metric(key: str) -> bool:
+    return key in {
+        "impressions", "clicks", "cost", "ctr", "avg_cpc", "conversions",
+        "goal_conversions", "cost_per_conversion", "conversion_rate", "revenue", "goals_roi",
+    } or key.startswith((
+        "conversions_", "cost_per_conversion_", "conversion_rate_", "revenue_", "goals_roi_",
+    ))
+
+
+def _is_causal_numeric_metric(key: str) -> bool:
+    return key in {
+        "conversions", "goal_conversions", "cost_per_conversion", "conversion_rate",
+        "revenue", "goals_roi",
+    } or key.startswith((
+        "conversions_", "cost_per_conversion_", "conversion_rate_", "revenue_", "goals_roi_",
+    ))
+
+
 def _safe_value(value: Any) -> Any:
     if isinstance(value, dict):
         safe: dict[str, Any] = {}
@@ -89,6 +137,12 @@ def _safe_value(value: Any) -> Any:
                 or compact_key.endswith("token")
             ):
                 continue
+            if _is_numeric_metric(normalized_key):
+                safe[normalized_key] = (
+                    _number_or_none(item) if _is_causal_numeric_metric(normalized_key)
+                    else _number_or_zero(item)
+                )
+                continue
             safe[normalized_key] = _safe_value(item)
         return safe
     if isinstance(value, list):
@@ -101,6 +155,144 @@ def _safe_value(value: Any) -> Any:
 def _normalize_rows(rows: list[dict[str, Any]], limit: int) -> tuple[list[dict[str, Any]], bool]:
     bounded = rows[: min(limit, MAX_NORMALIZED_ROWS)]
     return [_safe_value(row) for row in bounded], len(rows) > len(bounded)
+
+
+def _numeric_data_quality_warnings(rows: list[dict[str, Any]]) -> list[str]:
+    invalid = 0
+    for row in rows:
+        for key, value in row.items():
+            if not _is_numeric_metric(_snake_case(str(key))):
+                continue
+            if value is None or str(value).strip() in {"", "--", "—", "�"}:
+                invalid += 1
+                continue
+            try:
+                float(str(value).replace("\u00a0", "").replace(" ", "").replace(",", "."))
+            except (TypeError, ValueError):
+                invalid += 1
+    return [
+        f"Некорректные или пустые числовые значения отмечены как неизвестные: {invalid}."
+    ] if invalid else []
+
+
+def _goal_result_metadata(rows: list[dict[str, Any]], goal_ids: list[str]) -> dict[str, Any]:
+    selected = list(dict.fromkeys(map(str, goal_ids)))
+    per_goal: dict[str, dict[str, Any]] = {}
+    for goal_id in selected:
+        metrics: dict[str, Any] = {}
+        for metric in ("conversions", "cost_per_conversion", "conversion_rate", "revenue", "goals_roi"):
+            values = [
+                parsed
+                for row in rows
+                for key, value in row.items()
+                if (parsed := _number_or_none(value)) is not None
+                if _snake_case(str(key)).startswith(f"{metric}_{goal_id}_")
+                or _snake_case(str(key)) == f"{metric}_{goal_id}"
+            ]
+            if values:
+                if metric in {"conversions", "revenue"}:
+                    metrics[metric] = round(sum(values), 4)
+                else:
+                    metrics[f"{metric}_reported_values"] = list(dict.fromkeys(round(value, 4) for value in values))[:20]
+        if metrics:
+            per_goal[goal_id] = metrics
+    has_provider_aggregate = bool(
+        selected and len(selected) <= MAX_REPORT_GOALS
+        and any(_number_or_none(row.get("conversions")) is not None for row in rows)
+    )
+    policy = (
+        "total_conversions" if not selected
+        else "single_selected_goal" if len(selected) == 1
+        else "provider_selected_goals_aggregate" if has_provider_aggregate
+        else "per_goal_only_no_cross_goal_sum"
+    )
+    return {
+        "selected_goal_ids": selected,
+        "per_goal_metrics": per_goal,
+        "aggregation_policy": policy,
+    }
+
+
+def _raw_campaign_id(row: dict[str, Any]) -> str | None:
+    value = row.get("CampaignId") or row.get("campaign_id") or row.get("Id") or row.get("id")
+    return str(value) if value not in (None, "") else None
+
+
+def _raw_campaign_name(row: dict[str, Any]) -> str | None:
+    value = row.get("CampaignName") or row.get("campaign_name") or row.get("Name") or row.get("name")
+    return str(value) if value not in (None, "") else None
+
+
+def _private_execution_snapshot(job: AiAuditJob) -> tuple[dict[str, Any], dict[str, Any]]:
+    stored = _json_load(job.prompt_snapshot_json, {}) or {}
+    private = stored.setdefault("privateExecution", {})
+    return stored, private
+
+
+def _store_live_campaign_mapping(
+    db: Session, audit_job_id: str | None, rows: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    if not audit_job_id:
+        return []
+    job = db.get(AiAuditJob, audit_job_id)
+    if job is None:
+        return []
+    stored, private = _private_execution_snapshot(job)
+    by_id = {
+        str(item.get("campaignId")): dict(item)
+        for item in private.get("liveCampaignMap") or []
+        if item.get("campaignId")
+    }
+    for row in rows:
+        campaign_id = _raw_campaign_id(row)
+        campaign_name = _raw_campaign_name(row)
+        if not campaign_id or not campaign_name:
+            continue
+        by_id[campaign_id] = {
+            "stableRef": f"campaign_{hashlib.sha256(campaign_id.encode('utf-8')).hexdigest()[:12]}",
+            "campaignId": campaign_id,
+            "sourceName": campaign_name[:255],
+            "displayName": campaign_name[:255],
+        }
+    grouped: dict[str, list[dict[str, str]]] = {}
+    for item in by_id.values():
+        grouped.setdefault(item["sourceName"], []).append(item)
+    for source_name, items in grouped.items():
+        for index, item in enumerate(sorted(items, key=lambda value: value["campaignId"]), start=1):
+            item["displayName"] = source_name if len(items) == 1 else f"{source_name} · вариант {index}"
+    mapping = sorted(by_id.values(), key=lambda item: item["stableRef"])
+    private["liveCampaignMap"] = mapping
+    job.prompt_snapshot_json = _json_dump(stored)
+    db.flush()
+    return mapping
+
+
+def _load_live_campaign_mapping(db: Session, audit_job_id: str | None) -> list[dict[str, str]]:
+    if not audit_job_id:
+        return []
+    job = db.get(AiAuditJob, audit_job_id)
+    if job is None:
+        return []
+    _, private = _private_execution_snapshot(job)
+    return [dict(item) for item in private.get("liveCampaignMap") or [] if isinstance(item, dict)]
+
+
+def _decorate_live_campaign_names(
+    rows: list[dict[str, Any]], mapping: list[dict[str, str]],
+) -> list[dict[str, Any]]:
+    by_id = {str(item.get("campaignId")): item for item in mapping if item.get("campaignId")}
+    decorated: list[dict[str, Any]] = []
+    for source in rows:
+        row = dict(source)
+        campaign_id = _raw_campaign_id(row)
+        item = by_id.get(str(campaign_id)) if campaign_id else None
+        if item:
+            if "Name" in row or "name" in row:
+                row["Name"] = item["displayName"]
+            if "CampaignName" in row or "campaign_name" in row:
+                row["CampaignName"] = item["displayName"]
+        decorated.append(row)
+    return decorated
 
 
 def _period(request: AuditDataRequest) -> dict[str, str | int | None]:
@@ -132,13 +324,28 @@ def _base_result(
         source=source,
         source_type=capability.source_type,
         source_required=capability.source_required,
+        capability_schema_version=capability.capability_schema_version,
+        direct_api_knowledge_version=capability.knowledge_version,
+        normalization_version=DIRECT_NORMALIZATION_VERSION,
         period=_period(request),
         summary=summary,
         **kwargs,
     )
 
 
-def _resolve_campaign_ids(db: Session, client_id: str, campaign_name: str) -> list[str]:
+def _resolve_campaign_ids(
+    db: Session, client_id: str, campaign_name: str, audit_job_id: str | None = None,
+) -> list[str]:
+    if campaign_name == ALL_CAMPAIGNS_SENTINEL:
+        return []
+    live_matches = [
+        item for item in _load_live_campaign_mapping(db, audit_job_id)
+        if campaign_name in {item.get("displayName"), item.get("sourceName")}
+    ]
+    if len(live_matches) == 1:
+        return [str(live_matches[0]["campaignId"])]
+    if len(live_matches) > 1:
+        raise YandexDirectReadError("ambiguous_campaign", "Several live campaigns have the same display name.")
     rows = db.execute(
         select(DirectCampaignPeriodStat.campaign_id).where(
             DirectCampaignPeriodStat.client_id == client_id,
@@ -163,15 +370,27 @@ def _trusted_spec(
     return {
         "client_login_hash": _login_hash(client.direct_login),
         "capability_id": capability.id,
+        "capability_schema_version": capability.capability_schema_version,
+        "direct_api_knowledge_version": capability.knowledge_version,
+        "normalization_version": DIRECT_NORMALIZATION_VERSION,
         "source_type": capability.source_type,
+        "service": capability.service,
+        "report_type": capability.report_type,
+        "api_fields": list(capability.api_fields),
         "campaign_ids": campaign_ids,
         "campaign_family": request.campaign_family,
         "campaign_subtype": request.campaign_subtype,
         "period": _period(request),
         "goal_ids": parse_goal_ids(client.conversion_goal_ids, fallback=client.main_goal_id),
         "metrics": requested_metrics,
+        "filters": {"campaign_name": request.campaign_name},
         "limit": min(capability.maximum_limit, MAX_NORMALIZED_ROWS),
     }
+
+
+def split_report_goal_ids(goal_ids: list[str], maximum: int = MAX_REPORT_GOALS) -> list[list[str]]:
+    normalized = list(dict.fromkeys(str(item).strip() for item in goal_ids if str(item).strip()))
+    return [normalized[index:index + maximum] for index in range(0, len(normalized), maximum)] or [[]]
 
 
 def _service_params(capability: DirectReadCapability, campaign_ids: list[str]) -> dict[str, Any]:
@@ -181,7 +400,7 @@ def _service_params(capability: DirectReadCapability, campaign_ids: list[str]) -
     }
     service = capability.service
     if service == "campaigns":
-        params["SelectionCriteria"] = {"Ids": [int(item) for item in campaign_ids]}
+        params["SelectionCriteria"] = {"Ids": [int(item) for item in campaign_ids]} if campaign_ids else {}
     elif service in {"adgroups", "ads", "keywords", "bidmodifiers"}:
         params["SelectionCriteria"] = {"CampaignIds": [int(item) for item in campaign_ids]}
     elif service == "audiencetargets":
@@ -203,8 +422,9 @@ def _report_spec(
     selection: dict[str, Any] = {
         "DateFrom": period["date_from"],
         "DateTo": period["date_to"],
-        "Filter": [{"Field": "CampaignId", "Operator": "IN", "Values": trusted["campaign_ids"]}],
     }
+    if trusted["campaign_ids"]:
+        selection["Filter"] = [{"Field": "CampaignId", "Operator": "IN", "Values": trusted["campaign_ids"]}]
     spec: dict[str, Any] = {
         "SelectionCriteria": selection,
         "FieldNames": list(capability.api_fields),
@@ -214,16 +434,69 @@ def _report_spec(
         "Format": "TSV",
         "IncludeVAT": "YES",
         "IncludeDiscount": "YES",
-        "Page": {"Limit": trusted["limit"]},
+        "Page": {"Limit": min(REPORT_PAGE_SIZE, int(trusted["limit"])), "Offset": 0},
     }
     if "Cost" in capability.api_fields:
         spec["OrderBy"] = [{"Field": "Cost", "SortOrder": "DESCENDING"}]
     elif "CampaignId" in capability.api_fields:
         spec["OrderBy"] = [{"Field": "CampaignId"}]
     if trusted["goal_ids"] and capability.goal_ids_supported:
-        spec["Goals"] = [int(item) if str(item).isdigit() else str(item) for item in trusted["goal_ids"]]
+        batches = split_report_goal_ids([str(item) for item in trusted["goal_ids"]])
+        spec["Goals"] = [int(item) if str(item).isdigit() else str(item) for item in batches[0]]
         spec["AttributionModels"] = ["AUTO"]
+        if len(batches) > 1:
+            spec["_GoalBatches"] = batches
+            spec["_GoalBatchIndex"] = 0
     return spec
+
+
+def _report_page_spec(stored_spec: dict[str, Any], report_job: DirectReportJob, maximum_rows: int) -> dict[str, Any]:
+    spec = {key: value for key, value in stored_spec.items() if not key.startswith("_")}
+    batches = stored_spec.get("_GoalBatches") or []
+    if batches:
+        index = int(stored_spec.get("_GoalBatchIndex") or 0)
+        batch = batches[min(index, len(batches) - 1)]
+        spec["Goals"] = [int(item) if str(item).isdigit() else str(item) for item in batch]
+    spec["Page"] = {
+        "Limit": min(REPORT_PAGE_SIZE, max(1, int(maximum_rows))),
+        "Offset": int(report_job.next_offset or 0),
+    }
+    return spec
+
+
+def _report_row_key(row: dict[str, Any]) -> tuple[tuple[str, str], ...]:
+    metric_prefixes = (
+        "impressions", "clicks", "cost", "ctr", "avg_cpc", "conversions",
+        "cost_per_conversion", "conversion_rate", "revenue", "goals_roi",
+    )
+    dimensions = [
+        (str(key), str(value)) for key, value in row.items()
+        if not str(key).startswith(metric_prefixes)
+    ]
+    return tuple(sorted(dimensions))
+
+
+def _merge_report_rows(existing: list[dict[str, Any]], page: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged = {_report_row_key(row): dict(row) for row in existing}
+    for row in page:
+        key = _report_row_key(row)
+        if key in merged:
+            merged[key].update(row)
+        else:
+            merged[key] = dict(row)
+    return list(merged.values())
+
+
+def _account_client_ids(db: Session, account_id: str) -> list[str]:
+    return list(db.scalars(select(ClientAccount.id).where(ClientAccount.yandex_account_id == account_id)))
+
+
+def _account_recent_report_attempts(db: Session, client_ids: list[str], now: datetime) -> int:
+    jobs = list(db.scalars(select(DirectReportJob).where(
+        DirectReportJob.client_id.in_(client_ids),
+        DirectReportJob.updated_at >= now - REPORT_RATE_WINDOW,
+    )))
+    return sum(int(item.attempts or 0) for item in jobs)
 
 
 def _cache_result(
@@ -237,6 +510,8 @@ def _cache_result(
     period: dict[str, Any],
     partial: bool,
     warnings: list[str],
+    original_status: str,
+    error_code: str | None = None,
 ) -> None:
     now = _now()
     cached = db.scalar(select(DirectReadCache).where(
@@ -247,38 +522,56 @@ def _cache_result(
         cached = DirectReadCache(client_id=client_id, request_hash=request_hash, capability_id=capability.id)
         db.add(cached)
     cached.source = source
+    cached.original_status = original_status
+    cached.error_code = error_code
+    cached.capability_schema_version = capability.capability_schema_version
+    cached.direct_api_knowledge_version = capability.knowledge_version
+    cached.normalization_version = DIRECT_NORMALIZATION_VERSION
+    cached.source_type = capability.source_type
+    cached.report_type = capability.report_type
+    cached.service = capability.service
+    cached.api_fields_hash = hashlib.sha256(_json_dump(list(capability.api_fields)).encode("utf-8")).hexdigest()
     cached.result_json = _json_dump(rows)
     cached.period_json = _json_dump(period)
     cached.rows_count = len(rows)
     cached.partial = partial
     cached.warnings_json = _json_dump(warnings)
     cached.fetched_at = now
-    cached.expires_at = now + timedelta(seconds=capability.cache_ttl_seconds)
+    ttl = min(120, capability.cache_ttl_seconds) if original_status == "insufficient_data" else capability.cache_ttl_seconds
+    cached.expires_at = now + timedelta(seconds=ttl)
     db.flush()
 
 
 def _cached_outcome(
     db: Session,
+    client_id: str,
     request: AuditDataRequest,
     capability: DirectReadCapability,
     request_hash: str,
 ) -> DirectReadOutcome | None:
     cached = db.scalar(select(DirectReadCache).where(
-        DirectReadCache.client_id == request.filters.get("client_id"),
+        DirectReadCache.client_id == client_id,
         DirectReadCache.request_hash == request_hash,
         DirectReadCache.expires_at > _now(),
     ))
     if cached is None:
         return None
     rows = _json_load(cached.result_json, [])
+    client = db.get(ClientAccount, client_id)
+    goal_metadata = _goal_result_metadata(
+        rows,
+        parse_goal_ids(client.conversion_goal_ids, fallback=client.main_goal_id) if client else [],
+    )
     logger.info(
         "DIRECT_READ_CACHE_HIT capability_id=%s request_hash=%s rows=%s",
         capability.id, request_hash, len(rows),
     )
+    original_status = cached.original_status or ("insufficient_data" if not rows else "collected")
+    status = "cached" if original_status == "collected" else original_status
     return DirectReadOutcome(_base_result(
         request,
         capability,
-        status="cached",
+        status=status,
         source="yandex_direct_cached_live",
         live=True,
         cached=True,
@@ -290,12 +583,15 @@ def _cached_outcome(
         truncated=cached.partial,
         data=rows,
         warnings=_json_load(cached.warnings_json, []),
-        summary=f"Получено из свежего кеша: {len(rows)} строк.",
+        summary=f"Получено из свежего кеша: {len(rows)} строк." if rows else "Свежий кеш подтверждает отсутствие строк по запросу.",
+        error_code=cached.error_code,
+        **goal_metadata,
     ))
 
 
 def _completed_outcome(
     db: Session,
+    client_id: str,
     request: AuditDataRequest,
     capability: DirectReadCapability,
     trusted: dict[str, Any],
@@ -304,13 +600,19 @@ def _completed_outcome(
     source: str,
     *,
     api_calls: int,
+    forced_partial: bool = False,
 ) -> DirectReadOutcome:
     normalized, truncated = _normalize_rows(rows, int(trusted["limit"]))
+    truncated = truncated or forced_partial
     now = _now()
-    warnings = ["Результат ограничен безопасным лимитом строк."] if truncated else []
+    warnings = _numeric_data_quality_warnings(rows)
+    if truncated:
+        warnings.append("Результат ограничен безопасным лимитом строк.")
+    goal_metadata = _goal_result_metadata(normalized, [str(item) for item in trusted.get("goal_ids") or []])
+    status = "partial" if truncated else ("collected" if normalized else "insufficient_data")
     _cache_result(
         db,
-        client_id=request.filters["client_id"],
+        client_id=client_id,
         capability=capability,
         request_hash=request_hash,
         source=source,
@@ -318,8 +620,9 @@ def _completed_outcome(
         period=trusted["period"],
         partial=truncated,
         warnings=warnings,
+        original_status=status,
+        error_code=None if normalized else "direct_no_data",
     )
-    status = "partial" if truncated else ("collected" if normalized else "insufficient_data")
     return DirectReadOutcome(_base_result(
         request,
         capability,
@@ -336,11 +639,13 @@ def _completed_outcome(
         warnings=warnings,
         summary=f"Получено live-строк: {len(normalized)}." if normalized else "Яндекс.Директ не вернул строк по запросу.",
         error_code=None if normalized else "direct_no_data",
+        **goal_metadata,
     ), api_calls=api_calls)
 
 
 def _report_outcome(
     db: Session,
+    client_id: str,
     connector: YandexDirectConnector,
     request: AuditDataRequest,
     capability: DirectReadCapability,
@@ -348,12 +653,31 @@ def _report_outcome(
     request_hash: str,
     *,
     audit_job_id: str | None,
+    cache_policy: str,
+    account_id: str,
 ) -> DirectReadOutcome:
     now = _now()
     report_job = db.scalar(select(DirectReportJob).where(
-        DirectReportJob.client_id == request.filters["client_id"],
+        DirectReportJob.client_id == client_id,
         DirectReportJob.request_hash == request_hash,
     ))
+    if cache_policy == "fresh" and report_job and report_job.audit_job_id != audit_job_id:
+        if report_job.status in {"queued", "requested", "processing"}:
+            return DirectReadOutcome(_base_result(
+                request,
+                capability,
+                status="processing",
+                source="yandex_direct_live_report",
+                live=True,
+                request_hash=request_hash,
+                retryable=True,
+                next_retry_at=(now + timedelta(seconds=5)).isoformat(),
+                summary="Другой fresh-аудит формирует такой же отчёт; текущий аудит дождётся своей live-попытки.",
+                error_code="fresh_report_busy",
+            ))
+        db.delete(report_job)
+        db.flush()
+        report_job = None
     if report_job and report_job.expires_at:
         expires_at = report_job.expires_at
         expires_at = expires_at.replace(tzinfo=UTC) if expires_at.tzinfo is None else expires_at
@@ -364,7 +688,8 @@ def _report_outcome(
     if report_job and report_job.status == "completed":
         rows = _json_load(report_job.result_snapshot_json, [])
         return _completed_outcome(
-            db, request, capability, trusted, request_hash, rows, "yandex_direct_cached_live", api_calls=0,
+            db, client_id, request, capability, trusted, request_hash, rows, "yandex_direct_cached_live",
+            api_calls=0, forced_partial=bool(report_job.partial),
         )
     if report_job and report_job.status in {"queued", "requested", "processing"} and report_job.next_retry_at:
         retry_at = report_job.next_retry_at
@@ -398,12 +723,13 @@ def _report_outcome(
                 error_code=report_job.error_code or "direct_temporary_error",
             ))
     if report_job is None:
+        account_client_ids = _account_client_ids(db, account_id)
         active_count = len(list(db.scalars(select(DirectReportJob.id).where(
-            DirectReportJob.client_id == request.filters["client_id"],
+            DirectReportJob.client_id.in_(account_client_ids),
             DirectReportJob.status.in_(("queued", "requested", "processing")),
             or_(DirectReportJob.expires_at.is_(None), DirectReportJob.expires_at > now),
         ))))
-        if active_count >= MAX_PROCESSING_REPORTS_PER_CLIENT:
+        if active_count >= MAX_PROCESSING_REPORTS_PER_ACCOUNT:
             return DirectReadOutcome(_base_result(
                 request, capability, status="processing", source="yandex_direct_live_report", live=True,
                 request_hash=request_hash, retryable=True,
@@ -414,7 +740,7 @@ def _report_outcome(
         report_spec = _report_spec(capability, trusted, request_hash)
         report_job = DirectReportJob(
             audit_job_id=audit_job_id,
-            client_id=request.filters["client_id"],
+            client_id=client_id,
             capability_id=capability.id,
             request_hash=request_hash,
             report_name=report_spec["ReportName"],
@@ -424,7 +750,22 @@ def _report_outcome(
         )
         db.add(report_job)
         db.flush()
-    report_spec = _json_load(report_job.report_spec_json, {})
+    account_client_ids = _account_client_ids(db, account_id)
+    if _account_recent_report_attempts(db, account_client_ids, now) >= MAX_REPORT_REQUESTS_PER_ACCOUNT_WINDOW:
+        return DirectReadOutcome(_base_result(
+            request,
+            capability,
+            status="processing",
+            source="yandex_direct_live_report",
+            live=True,
+            request_hash=request_hash,
+            retryable=True,
+            next_retry_at=(now + REPORT_RATE_WINDOW).isoformat(),
+            summary="Shared Reports API request budget for this Yandex account is temporarily exhausted.",
+            error_code="direct_report_account_rate_budget",
+        ))
+    stored_report_spec = _json_load(report_job.report_spec_json, {})
+    report_spec = _report_page_spec(stored_report_spec, report_job, int(trusted["limit"]))
     report_job.status = "requested"
     report_job.attempts += 1
     started_at = perf_counter()
@@ -463,20 +804,78 @@ def _report_outcome(
             error_code="direct_report_processing",
         ), api_calls=1)
     rows = list(response.get("rows") or [])
-    normalized, _ = _normalize_rows(rows, int(trusted["limit"]))
+    mapping = _store_live_campaign_mapping(db, audit_job_id, rows)
+    rows = _decorate_live_campaign_names(rows, mapping)
+    normalized, _ = _normalize_rows(rows, REPORT_PAGE_SIZE)
+    accumulated = _json_load(report_job.result_snapshot_json, [])
+    accumulated = _merge_report_rows(accumulated, normalized)
+    report_job.pages_completed = int(report_job.pages_completed or 0) + 1
+    report_job.rows_collected = len(accumulated)
+    report_job.rows_count = len(accumulated)
+    report_job.result_snapshot_json = _json_dump(accumulated)
+    limited_by = response.get("limited_by")
+    if limited_by is not None:
+        report_job.limited_by = int(limited_by)
+    row_limit_reached = bool(limited_by is not None and len(accumulated) >= int(trusted["limit"]))
+    batches = stored_report_spec.get("_GoalBatches") or []
+    batch_index = int(stored_report_spec.get("_GoalBatchIndex") or 0)
+    if limited_by is not None and not row_limit_reached:
+        report_job.status = "processing"
+        report_job.partial = True
+        report_job.next_offset = int(limited_by)
+        report_job.next_retry_at = now
+        return DirectReadOutcome(_base_result(
+            request,
+            capability,
+            status="processing",
+            source="yandex_direct_live_report",
+            live=True,
+            request_hash=request_hash,
+            retryable=True,
+            next_retry_at=now.isoformat(),
+            rows_analyzed=len(accumulated),
+            rows_total=len(accumulated),
+            truncated=True,
+            summary=f"Получена страница {report_job.pages_completed}; продолжение отчёта сохранено.",
+            error_code="direct_report_pagination_pending",
+        ), api_calls=1)
+    if batches and batch_index + 1 < len(batches) and not row_limit_reached:
+        stored_report_spec["_GoalBatchIndex"] = batch_index + 1
+        report_job.report_spec_json = _json_dump(stored_report_spec)
+        report_job.status = "processing"
+        report_job.partial = True
+        report_job.next_offset = 0
+        report_job.next_retry_at = now
+        return DirectReadOutcome(_base_result(
+            request,
+            capability,
+            status="processing",
+            source="yandex_direct_live_report",
+            live=True,
+            request_hash=request_hash,
+            retryable=True,
+            next_retry_at=now.isoformat(),
+            rows_analyzed=len(accumulated),
+            rows_total=len(accumulated),
+            truncated=True,
+            summary=f"Получена партия целей {batch_index + 1} из {len(batches)}.",
+            error_code="direct_report_goal_batch_pending",
+        ), api_calls=1)
     report_job.status = "completed"
-    report_job.rows_count = len(rows)
-    report_job.result_snapshot_json = _json_dump(normalized)
+    report_job.row_limit_reached = row_limit_reached
+    report_job.partial = row_limit_reached
+    report_job.next_offset = 0
     report_job.next_retry_at = None
     report_job.completed_at = now
     report_job.expires_at = now + timedelta(seconds=capability.cache_ttl_seconds)
     logger.info(
         "DIRECT_READ_REQUEST_COMPLETED audit_job_id=%s capability_id=%s request_hash=%s "
         "source_type=report elapsed_ms=%s rows=%s status=completed",
-        audit_job_id, capability.id, request_hash, elapsed_ms, len(rows),
+        audit_job_id, capability.id, request_hash, elapsed_ms, len(accumulated),
     )
     return _completed_outcome(
-        db, request, capability, trusted, request_hash, rows, "yandex_direct_live_report", api_calls=1,
+        db, client_id, request, capability, trusted, request_hash, accumulated,
+        "yandex_direct_live_report", api_calls=1, forced_partial=row_limit_reached,
     )
 
 
@@ -487,6 +886,7 @@ def execute_direct_read(
     *,
     audit_job_id: str | None = None,
     allow_cache: bool = True,
+    cache_policy: str = "prefer_cache",
 ) -> DirectReadOutcome:
     capability_id = request.capability_id or request.dimension
     capability = YANDEX_DIRECT_READ_CAPABILITIES.get(capability_id)
@@ -511,6 +911,25 @@ def execute_direct_read(
     client = db.get(ClientAccount, client_id)
     if client is None:
         raise YandexDirectReadError("direct_no_data", "Client was not found.")
+    campaign_ids = _resolve_campaign_ids(db, client_id, request.campaign_name, audit_job_id)
+    trusted = _trusted_spec(client, capability, request, campaign_ids)
+    request_hash = _request_hash(trusted)
+    if allow_cache and cache_policy != "fresh":
+        cached = _cached_outcome(db, client_id, request, capability, request_hash)
+        if cached:
+            return cached
+    if cache_policy == "cache_only":
+        return DirectReadOutcome(_base_result(
+            request,
+            capability,
+            status="insufficient_data",
+            source="cache_only",
+            request_hash=request_hash,
+            freshness="cache_miss",
+            summary="В кеше нет подходящих данных; live API отключён политикой cache_only.",
+            limitations=["Для получения свежих данных запустите аудит с политикой fresh."],
+            error_code="cache_miss",
+        ))
     if not client.yandex_account_id or not client.direct_login:
         raise YandexDirectReadError("direct_auth_error", "Yandex account is not bound to this client.")
     account = db.get(ConnectedAccount, client.yandex_account_id)
@@ -521,14 +940,6 @@ def execute_direct_read(
     token = get_yandex_access_token_for_account(db, client.yandex_account_id)
     if not token:
         raise YandexDirectReadError("direct_auth_error", "Yandex OAuth token is unavailable.")
-    campaign_ids = _resolve_campaign_ids(db, client_id, request.campaign_name)
-    trusted = _trusted_spec(client, capability, request, campaign_ids)
-    request_hash = _request_hash(trusted)
-    request.filters = {"campaign_name": request.campaign_name, "client_id": client_id}
-    if allow_cache:
-        cached = _cached_outcome(db, request, capability, request_hash)
-        if cached:
-            return cached
     connector = YandexDirectConnector(access_token=token, client_login=client.direct_login)
     logger.info(
         "DIRECT_READ_REQUEST_STARTED audit_job_id=%s capability_id=%s client_login_hash=%s "
@@ -538,7 +949,9 @@ def execute_direct_read(
     try:
         if capability.source_type == "report":
             return _report_outcome(
-                db, connector, request, capability, trusted, request_hash, audit_job_id=audit_job_id,
+                db, client_id, connector, request, capability, trusted, request_hash,
+                audit_job_id=audit_job_id, cache_policy=cache_policy,
+                account_id=client.yandex_account_id,
             )
         started_at = perf_counter()
         api_calls = 1
@@ -592,13 +1005,15 @@ def execute_direct_read(
                 maximum_rows=int(trusted["limit"]),
                 page_size=min(200, int(trusted["limit"])),
             )
+        mapping = _store_live_campaign_mapping(db, audit_job_id, rows)
+        rows = _decorate_live_campaign_names(rows, mapping)
         logger.info(
             "DIRECT_READ_REQUEST_COMPLETED audit_job_id=%s capability_id=%s request_hash=%s "
             "source_type=service_get elapsed_ms=%s rows=%s status=completed",
             audit_job_id, capability.id, request_hash, round((perf_counter() - started_at) * 1000), len(rows),
         )
         return _completed_outcome(
-            db, request, capability, trusted, request_hash, rows, "yandex_direct_live_service", api_calls=api_calls,
+            db, client_id, request, capability, trusted, request_hash, rows, "yandex_direct_live_service", api_calls=api_calls,
         )
     except YandexDirectReadError as exc:
         logger.warning(

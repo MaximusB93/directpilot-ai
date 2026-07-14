@@ -1,0 +1,9 @@
+{
+  "id": "cascade-tracking-issue",
+  "title": "Проблема трекинга",
+  "description": "Отсутствие goal data ограничивает вывод о рекламе.",
+  "task": "Проверь возможную проблему целей.",
+  "input_data": {"metric": "tracking_inconsistency", "goal_data_available": false},
+  "expected": {"should_find": ["данные по целям недоступны"], "should_recommend": ["проверить цели и синхронизацию"], "should_not_do": ["объявить рекламу неэффективной", "отключить кампанию"], "observed_facts": ["tracking_inconsistency"], "expected_first_capabilities": ["goals"], "stop_conditions": ["источник недоступен"], "expected_verification_status": "unverified", "requires_human_approval": true},
+  "tags": ["cascade", "tracking", "insufficient-data"]
+}

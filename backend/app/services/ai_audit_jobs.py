@@ -25,27 +25,64 @@ from app.core.config import (
     AI_AUDIT_VERIFICATION_READ_TIMEOUT_SECONDS,
     normalize_ai_audit_request_options,
 )
-from app.models import AiAuditJob, ClientAccount
+from app.models import AiAuditJob, ClientAccount, DirectReportJob
 from app.schemas import (
     AiAuditCreateRequest,
+    AiAuditAction,
+    AiAuditDataQuality,
+    AiAuditDrilldownSummary,
+    AiAuditFinding,
+    AiAuditInsufficientDataCampaign,
     AiAuditJobResponse,
     AiAuditResult,
     AuditDataRequest,
+    AuditDataRequestResult,
     AuditHypothesisVerification,
     AuditHypothesisVerificationSet,
     AuditInvestigationHypothesis,
     AuditInvestigationPlan,
+    AuditNextRoundPlan,
+    AuditNextRoundRequest,
 )
 from app.services.audit_data_tools import (
     MAX_AUDIT_DATA_REQUESTS,
     collect_audit_data_requests,
     public_audit_tool_manifest,
+    select_live_request_batch,
     validate_audit_data_requests,
+)
+from app.services.audit_evidence import (
+    CONFIRMATION_RULE_BY_CAPABILITY,
+    HYPOTHESIS_EVIDENCE_POLICY,
+    REJECTION_RULE_BY_CAPABILITY,
+    evaluate_capability_evidence,
+    evaluate_metric_sufficiency,
+    parse_numeric_metric,
+)
+from app.services.audit_evidence_store import (
+    load_audit_evidence_results,
+    save_audit_evidence_results,
+)
+from app.services.audit_public_trace import build_public_audit_trace
+from app.services.cascade_investigation import (
+    MAX_DATA_REQUESTS_PER_AUDIT,
+    MAX_INVESTIGATION_ROUNDS,
+    build_cascade_hypotheses,
+    build_observed_facts,
+    create_investigation_round,
+    enforce_hypothesis_verification,
+    next_cascade_capabilities,
+    round_stop_reason,
 )
 from app.services.ai_prompt_debug import build_prompt_debug_snapshot, estimate_tokens
 from app.services.ai_recommendations import build_client_ai_context_from_db
 from app.services.direct_analyst_playbook import build_direct_analyst_instructions
 from app.services.knowledge_base import select_knowledge_snippets
+from app.services.yandex_direct_api_knowledge import (
+    DIRECT_API_KNOWLEDGE_VERSION,
+    describe_direct_capability,
+    search_direct_api_docs,
+)
 from app.services.openrouter import (
     DEFAULT_SYSTEM_PROMPT,
     OPENROUTER_AUDIT_TIMEOUT,
@@ -62,11 +99,13 @@ DRILLDOWN_TOKEN_TARGET = 18000
 AUDIT_STAGE_LEASE_SECONDS = {
     "create_investigation_plan": 75,
     "verify_hypotheses": 85,
+    "plan_next_investigation_round": 75,
     "generate_answer": 180,
 }
 AUDIT_STAGE_TOTAL_TIMEOUT_SECONDS = {
     "create_investigation_plan": 55,
     "verify_hypotheses": 65,
+    "plan_next_investigation_round": 55,
     "generate_answer": 165,
 }
 AUDIT_STAGE_PROVIDER_TIMEOUTS = {
@@ -82,8 +121,25 @@ AUDIT_STAGE_PROVIDER_TIMEOUTS = {
         write=10.0,
         pool=10.0,
     ),
+    "plan_next_investigation_round": httpx.Timeout(
+        connect=10.0,
+        read=AI_AUDIT_PLANNER_READ_TIMEOUT_SECONDS,
+        write=10.0,
+        pool=10.0,
+    ),
     "generate_answer": OPENROUTER_AUDIT_TIMEOUT,
 }
+
+
+def _log_audit_event(event: str, job: AiAuditJob, **fields: Any) -> None:
+    safe_fields = " ".join(
+        f"{key}={value}" for key, value in fields.items()
+        if key in {
+            "round", "request_count", "status", "capability", "rows", "pages",
+            "hypothesis_id", "stop_reason",
+        }
+    )
+    logger.info("%s audit_job_id=%s %s", event, job.id, safe_fields)
 HEAVY_AUDIT_MARKERS = (
     "полный аудит",
     "аудит всего аккаунта",
@@ -132,13 +188,22 @@ def requires_staged_audit(message: str) -> bool:
 
 
 def _number(value: Any) -> float | int | None:
-    if value is None:
+    if value is None or str(value).strip() in {"", "--", "—", "�"}:
         return None
     try:
-        parsed = float(value)
+        parsed = float(str(value).replace("\u00a0", "").replace(" ", "").replace(",", "."))
     except (TypeError, ValueError):
         return None
     return int(parsed) if parsed.is_integer() else round(parsed, 2)
+
+
+def _number_or_zero(value: Any) -> float:
+    parsed = _number(value)
+    return float(parsed) if parsed is not None else 0.0
+
+
+def _int_or_zero(value: Any) -> int:
+    return int(_number_or_zero(value))
 
 
 def _flags(value: Any) -> list[str]:
@@ -147,6 +212,100 @@ def _flags(value: Any) -> list[str]:
     if isinstance(value, str):
         return [item.strip()[:100] for item in value.split(",") if item.strip()][:10]
     return []
+
+
+def _hypothesis_registry(snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    registry = snapshot.get("hypothesisRegistry")
+    if not isinstance(registry, dict):
+        registry = {}
+        for item in (snapshot.get("investigationPlan") or {}).get("hypotheses", []):
+            hypothesis_id = str(item.get("hypothesis_id") or "")
+            if hypothesis_id:
+                registry[hypothesis_id] = dict(item)
+        snapshot["hypothesisRegistry"] = registry
+    return registry
+
+
+def _active_hypothesis_ids(snapshot: dict[str, Any]) -> list[str]:
+    registry = _hypothesis_registry(snapshot)
+    active = snapshot.get("activeHypothesisIds")
+    if not isinstance(active, list):
+        active = [
+            str(item.get("hypothesis_id"))
+            for item in (snapshot.get("investigationPlan") or {}).get("hypotheses", [])
+            if item.get("hypothesis_id")
+        ]
+    normalized = list(dict.fromkeys(item for item in map(str, active) if item in registry))[:5]
+    snapshot["activeHypothesisIds"] = normalized
+    return normalized
+
+
+def _active_hypotheses(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    registry = _hypothesis_registry(snapshot)
+    return [registry[item] for item in _active_hypothesis_ids(snapshot) if item in registry]
+
+
+def _sync_active_investigation_plan(snapshot: dict[str, Any]) -> None:
+    snapshot["investigationPlan"] = {"hypotheses": [dict(item) for item in _active_hypotheses(snapshot)]}
+
+
+def _initialize_hypothesis_state(snapshot: dict[str, Any]) -> None:
+    plan_hypotheses = [
+        dict(item) for item in (snapshot.get("investigationPlan") or {}).get("hypotheses", [])
+        if item.get("hypothesis_id")
+    ]
+    snapshot["hypothesisRegistry"] = {
+        str(item["hypothesis_id"]): item for item in plan_hypotheses
+    }
+    snapshot["activeHypothesisIds"] = [
+        str(item["hypothesis_id"]) for item in plan_hypotheses[:5]
+    ]
+    _sync_active_investigation_plan(snapshot)
+
+
+def _verification_registry(snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    registry = snapshot.get("verificationRegistry")
+    if not isinstance(registry, dict):
+        registry = {
+            str(item.get("hypothesis_id")): dict(item)
+            for item in (snapshot.get("verifiedHypotheses") or [])
+            if item.get("hypothesis_id")
+        }
+        snapshot["verificationRegistry"] = registry
+    return registry
+
+
+def _active_verifications(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    active_ids = set(_active_hypothesis_ids(snapshot))
+    active = snapshot.get("activeVerifications")
+    if isinstance(active, list):
+        filtered = [
+            dict(item) for item in active
+            if isinstance(item, dict) and str(item.get("hypothesis_id")) in active_ids
+        ][:5]
+        if filtered:
+            return filtered
+    return [
+        dict(item) for hypothesis_id, item in _verification_registry(snapshot).items()
+        if hypothesis_id in active_ids
+    ][:5]
+
+
+def _merge_verification_registry(
+    snapshot: dict[str, Any], verification: AuditHypothesisVerificationSet,
+) -> None:
+    registry = _verification_registry(snapshot)
+    active: list[dict[str, Any]] = []
+    for item in verification.verifications[:5]:
+        payload = item.model_dump(mode="json")
+        previous = registry.get(item.hypothesis_id)
+        if previous and previous.get("status") == "rejected":
+            payload = previous
+        else:
+            registry[item.hypothesis_id] = payload
+        active.append(dict(payload))
+    snapshot["activeVerifications"] = active
+    snapshot["verifiedHypotheses"] = active
 
 
 def _safe_business_fields(value: Any) -> dict[str, str]:
@@ -201,6 +360,38 @@ def _campaign_snapshot(item: dict[str, Any]) -> dict[str, Any]:
         "flags": _flags(item.get("issue_flags")),
         "diagnostic": item.get("diagnostic_explanation"),
         "recommendedFocus": item.get("recommended_focus"),
+    }
+
+
+def _dynamics_campaign_snapshot(item: dict[str, Any]) -> dict[str, Any]:
+    """Keep only aggregate comparison data needed for deterministic facts."""
+
+    def metrics(value: Any) -> dict[str, Any]:
+        source = value if isinstance(value, dict) else {}
+        return {
+            key: _number(source.get(key))
+            for key in (
+                "cost", "impressions", "clicks", "ctr", "avgCpc",
+                "goalConversions", "goalCpa", "conversionRate",
+            )
+        }
+
+    changes = item.get("changes") if isinstance(item.get("changes"), dict) else {}
+    comparison = changes.get("last7VsPrevious7") if isinstance(changes.get("last7VsPrevious7"), dict) else {}
+    return {
+        "name": item.get("campaignName") or item.get("campaign_name") or "Кампания без названия",
+        "severity": item.get("severity") or "ok",
+        "flags": _flags(item.get("issueFlags") or item.get("issue_flags")),
+        "last7": metrics(item.get("last7")),
+        "previous7": metrics(item.get("previous7")),
+        "changes": {
+            key: _number(comparison.get(key))
+            for key in (
+                "costDeltaPct", "clicksDeltaPct", "impressionsDeltaPct",
+                "ctrDeltaPct", "avgCpcDeltaPct", "goalConversionsDeltaPct",
+                "goalCpaDeltaPct",
+            )
+        },
     }
 
 
@@ -324,28 +515,110 @@ def _query_snapshot(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _campaign_classification(name: str, explicit_type: str | None = None) -> dict[str, str]:
-    normalized = f"{explicit_type or ''} {name}".lower().replace("ё", "е")
+def _name_campaign_classification(name: str) -> dict[str, str]:
+    normalized = name.lower().replace("ё", "е")
     is_retargeting = any(marker in normalized for marker in ("ретарг", "retarget", "ремаркет"))
     is_yan = any(marker in normalized for marker in ("рся", "yan", "сети", "network"))
     is_brand = any(marker in normalized for marker in ("бренд", "brand"))
     if is_yan:
-        return {"campaign_name": name, "campaign_family": "yan", "campaign_subtype": "yan_retargeting" if is_retargeting else "yan_prospecting"}
+        return {"campaign_name": name, "campaign_family": "yan", "campaign_subtype": "yan_retargeting" if is_retargeting else "yan_prospecting", "classification_source": "name_heuristic", "warnings": []}
     if any(marker in normalized for marker in ("поиск", "search")) or is_brand:
-        return {"campaign_name": name, "campaign_family": "search", "campaign_subtype": "brand_search" if is_brand else "search"}
-    return {"campaign_name": name, "campaign_family": "unknown", "campaign_subtype": "unknown"}
+        return {"campaign_name": name, "campaign_family": "search", "campaign_subtype": "brand_search" if is_brand else "search", "classification_source": "name_heuristic", "warnings": []}
+    return {"campaign_name": name, "campaign_family": "unknown", "campaign_subtype": "unknown", "classification_source": "unresolved", "warnings": []}
 
 
-def classify_audit_campaigns(snapshot: dict[str, Any]) -> list[dict[str, str]]:
+def _strategy_placement_family(metadata: dict[str, Any]) -> str | None:
+    strategy = None
+    for key in ("text_campaign", "mobile_app_campaign", "cpm_banner_campaign", "unified_campaign"):
+        section = metadata.get(key)
+        if isinstance(section, dict) and isinstance(section.get("bidding_strategy"), dict):
+            strategy = section["bidding_strategy"]
+            break
+    if strategy is None and isinstance(metadata.get("bidding_strategy"), dict):
+        strategy = metadata["bidding_strategy"]
+    if not isinstance(strategy, dict):
+        return None
+
+    def enabled(section: Any) -> bool:
+        if not isinstance(section, dict):
+            return False
+        strategy_type = str(section.get("bidding_strategy_type") or "").upper()
+        return bool(strategy_type and strategy_type not in {"SERVING_OFF", "UNKNOWN"})
+
+    search_enabled = enabled(strategy.get("search"))
+    network_enabled = enabled(strategy.get("network"))
+    if search_enabled and network_enabled:
+        return "mixed"
+    if search_enabled:
+        return "search"
+    if network_enabled:
+        return "yan"
+    return None
+
+
+def _campaign_classification(name: str, explicit_type: str | dict[str, Any] | None = None) -> dict[str, Any]:
+    heuristic = _name_campaign_classification(name)
+    metadata = explicit_type if isinstance(explicit_type, dict) else {"type": explicit_type}
+    api_type = str(metadata.get("type") or "").upper()
+    strategy_family = _strategy_placement_family(metadata)
+    api_family = "yan" if api_type == "CPM_BANNER_CAMPAIGN" else strategy_family
+    if api_family == "mixed":
+        return {
+            "campaign_name": name,
+            "campaign_family": "unknown",
+            "campaign_subtype": "unknown",
+            "classification_source": "direct_api_mixed",
+            "api_type": api_type or None,
+            "warnings": ["Direct API reports both search and network placements; subtype cascade is disabled."],
+        }
+    if api_family is None:
+        return {
+            **heuristic,
+            "classification_source": "name_fallback" if heuristic["campaign_family"] != "unknown" else "unresolved",
+            "api_type": api_type or None,
+            "warnings": (["Campaign API metadata is insufficient; name heuristic was used."] if heuristic["campaign_family"] != "unknown" else []),
+        }
+    if heuristic["campaign_family"] not in {"unknown", api_family}:
+        return {
+            "campaign_name": name,
+            "campaign_family": "unknown",
+            "campaign_subtype": "unknown",
+            "classification_source": "api_name_conflict",
+            "api_type": api_type,
+            "warnings": ["API placement metadata conflicts with the campaign-name heuristic; subtype cascade is disabled."],
+        }
+    subtype = (
+        "brand_search" if api_family == "search" and heuristic["campaign_subtype"] == "brand_search"
+        else "search" if api_family == "search"
+        else "yan_retargeting" if heuristic["campaign_subtype"] == "yan_retargeting"
+        else "yan_prospecting"
+    )
+    return {
+        "campaign_name": name,
+        "campaign_family": api_family,
+        "campaign_subtype": subtype,
+        "classification_source": "direct_api_strategy" if strategy_family else "direct_api_type",
+        "api_type": api_type,
+        "warnings": [],
+    }
+
+
+def classify_audit_campaigns(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     result = []
     seen = set()
-    for items in (snapshot.get("campaignGroups") or {}).values():
+    source_groups = (
+        {"all": snapshot.get("campaignAnalysisRows") or []}
+        if snapshot.get("campaignAnalysisRows") is not None
+        else (snapshot.get("campaignGroups") or {})
+    )
+    for items in source_groups.values():
         for item in items or []:
             name = str(item.get("name") or "Кампания без названия")
             if name in seen:
                 continue
             seen.add(name)
-            result.append(_campaign_classification(name, item.get("type")))
+            api_metadata = (snapshot.get("campaignApiMetadata") or {}).get(name) or {}
+            result.append(_campaign_classification(name, api_metadata or {"type": item.get("type")}))
     return result
 
 
@@ -386,20 +659,420 @@ def _request(
     )
 
 
+def _rule_codes_for_requests(
+    requests: list[AuditDataRequest],
+) -> tuple[list[str], list[str], list[str]]:
+    capabilities = {request.capability_id or request.dimension for request in requests}
+    prerequisites = ["selected_goal_data_available"] if "goals" in capabilities else []
+    confirmation = [
+        rule_code
+        for capability, rule_code in CONFIRMATION_RULE_BY_CAPABILITY.items()
+        if capability in capabilities
+    ]
+    rejection = [
+        rule_code
+        for capability, rule_code in REJECTION_RULE_BY_CAPABILITY.items()
+        if capability in capabilities
+    ]
+    return prerequisites, confirmation, rejection
+
+
+def _hypothesis_type_for_capabilities(capabilities: list[str] | set[str]) -> str:
+    values = set(capabilities)
+    for capability, hypothesis_type in (
+        ("search_queries", "search_query_waste"),
+        ("ad_group_performance", "ad_group_concentration"),
+        ("ad_groups", "ad_group_concentration"),
+        ("keyword_performance", "keyword_waste"),
+        ("keywords", "keyword_waste"),
+        ("devices", "device_segment_gap"),
+        ("geo", "geo_segment_gap"),
+        ("placements", "placement_waste"),
+        ("retargeting_lists", "retargeting_segment_issue"),
+        ("retargeting_segments", "retargeting_segment_issue"),
+        ("goals", "tracking_issue"),
+    ):
+        if capability in values:
+            return hypothesis_type
+    return "campaign_metadata_issue"
+
+
+def _hypothesis_policy(hypothesis: dict[str, Any]) -> dict[str, set[str]]:
+    hypothesis_type = str(hypothesis.get("hypothesis_type") or "campaign_metadata_issue")
+    return HYPOTHESIS_EVIDENCE_POLICY.get(
+        hypothesis_type, HYPOTHESIS_EVIDENCE_POLICY["campaign_metadata_issue"],
+    )
+
+
+def _capability_matches_hypothesis(hypothesis: dict[str, Any], capability: str) -> bool:
+    return capability in _hypothesis_policy(hypothesis)["allowed_capabilities"]
+
+
+def _extend_hypothesis_contract(
+    hypothesis: dict[str, Any], requests: list[AuditDataRequest],
+) -> None:
+    if not requests:
+        return
+    required = list(hypothesis.get("required_capabilities") or [])
+    optional = list(hypothesis.get("optional_capabilities") or [])
+    for request in requests:
+        capability = request.capability_id or request.dimension
+        if not _capability_matches_hypothesis(hypothesis, capability):
+            continue
+        target = required if request.required_for_conclusion else optional
+        if capability not in target:
+            target.append(capability)
+        if request.required_for_conclusion and capability in optional:
+            optional.remove(capability)
+    trusted_requests = [
+        request for request in requests
+        if _capability_matches_hypothesis(hypothesis, request.capability_id or request.dimension)
+    ]
+    prerequisites, confirmations, rejections = _rule_codes_for_requests(trusted_requests)
+    policy = _hypothesis_policy(hypothesis)
+    confirmations = [code for code in confirmations if code in policy["confirmation_rule_codes"]]
+    rejections = [code for code in rejections if code in policy["rejection_rule_codes"]]
+    hypothesis["required_capabilities"] = required[:4]
+    hypothesis["optional_capabilities"] = optional[:4]
+    hypothesis["prerequisite_rule_codes"] = list(dict.fromkeys(
+        list(hypothesis.get("prerequisite_rule_codes") or []) + prerequisites
+    ))[:8]
+    hypothesis["confirmation_rule_codes"] = list(dict.fromkeys(
+        list(hypothesis.get("confirmation_rule_codes") or []) + confirmations
+    ))[:8]
+    hypothesis["rejection_rule_codes"] = list(dict.fromkeys(
+        list(hypothesis.get("rejection_rule_codes") or []) + rejections
+    ))[:8]
+
+
+def _fresh_baseline_requests(snapshot: dict[str, Any]) -> list[AuditDataRequest]:
+    period = snapshot.get("analysisPeriod") or {}
+    common = {
+        "campaign_name": "__all_campaigns__",
+        "period": {
+            "date_from": period.get("dateFrom"),
+            "date_to": period.get("dateTo"),
+            "days": period.get("days"),
+        },
+        "filters": {"campaign_name": "__all_campaigns__"},
+        "priority": "high",
+        "required_for_conclusion": True,
+        "data_preference": "live_required",
+    }
+    return [
+        AuditDataRequest(
+            request_id="baseline_campaigns",
+            hypothesis_id="baseline",
+            campaign_family="unknown",
+            campaign_subtype="unknown",
+            dimension="campaigns",
+            capability_id="campaigns",
+            reason="Load current campaign names, statuses and API types before audit facts.",
+            metrics=["name", "status", "state", "type"],
+            **common,
+        ),
+        AuditDataRequest(
+            request_id="baseline_campaign_performance",
+            hypothesis_id="baseline",
+            campaign_family="search",
+            campaign_subtype="search",
+            dimension="campaign_performance",
+            capability_id="campaign_performance",
+            reason="Load current campaign performance for the requested audit period.",
+            metrics=["impressions", "clicks", "cost", "ctr", "avg_cpc", "conversions", "cpa", "conversion_rate"],
+            **common,
+        ),
+    ]
+
+
+_GOAL_METRIC_PATTERN = re.compile(
+    r"^(conversions|cost_per_conversion|conversion_rate|revenue|goals_roi)_([^_]+)(?:_.+)?$"
+)
+
+
+def _row_per_goal_metrics(
+    row: dict[str, Any], selected_goal_ids: list[str] | None = None,
+) -> dict[str, dict[str, float]]:
+    selected = set(map(str, selected_goal_ids or []))
+    metrics: dict[str, dict[str, float]] = {}
+    for key, value in row.items():
+        match = _GOAL_METRIC_PATTERN.match(str(key).lower())
+        if not match:
+            continue
+        metric, goal_id = match.groups()
+        if selected and goal_id not in selected:
+            continue
+        parsed = _number(value)
+        if parsed is None:
+            continue
+        metrics.setdefault(goal_id, {})[metric] = float(parsed)
+    return metrics
+
+
+def _row_goal_conversion_details(
+    row: dict[str, Any], selected_goal_ids: list[str] | None = None,
+) -> tuple[float | None, bool, dict[str, dict[str, float]], str]:
+    per_goal = _row_per_goal_metrics(row, selected_goal_ids)
+    explicit = _number(row.get("goal_conversions"))
+    provider_aggregate = _number(row.get("conversions"))
+    if explicit is not None:
+        return float(explicit), True, per_goal, "explicit_goal_conversions"
+    if provider_aggregate is not None and len(selected_goal_ids or []) <= 10:
+        return float(provider_aggregate), True, per_goal, "provider_selected_goals_aggregate"
+    conversion_values = [item["conversions"] for item in per_goal.values() if "conversions" in item]
+    if len(conversion_values) == 1 and len(selected_goal_ids or []) <= 1:
+        return float(conversion_values[0]), True, per_goal, "single_selected_goal"
+    if conversion_values:
+        return None, True, per_goal, "per_goal_only_no_cross_goal_sum"
+    return None, False, per_goal, "goal_data_unavailable"
+
+
+def _row_goal_conversions(row: dict[str, Any]) -> tuple[float | None, bool]:
+    conversions, available, _, _ = _row_goal_conversion_details(row)
+    return conversions, available
+
+
+def _apply_live_baseline(
+    snapshot: dict[str, Any],
+    results: list[dict[str, Any]],
+    *,
+    allow_saved_fallback: bool,
+) -> None:
+    by_capability = {str(item.get("capability_id") or item.get("dimension")): item for item in results}
+    campaign_result = by_capability.get("campaigns") or {}
+    performance_result = by_capability.get("campaign_performance") or {}
+    campaign_available = campaign_result.get("status") in AVAILABLE_AUDIT_DATA_STATUSES
+    performance_available = performance_result.get("status") in AVAILABLE_AUDIT_DATA_STATUSES
+    source_values = {
+        str(item.get("source")) for item in (campaign_result, performance_result)
+        if item.get("status") in AVAILABLE_AUDIT_DATA_STATUSES and item.get("source")
+    }
+    if source_values == {"yandex_direct_live_report"}:
+        baseline_source = "yandex_direct_live_report"
+    elif source_values and all(value.startswith("yandex_direct_live") for value in source_values):
+        baseline_source = "yandex_direct_live"
+    elif len(source_values) > 1:
+        baseline_source = "mixed_live_and_saved"
+    elif source_values:
+        baseline_source = next(iter(source_values))
+    else:
+        baseline_source = "unavailable"
+    evidence_source = str(
+        performance_result.get("source")
+        or ("yandex_direct_live_report" if performance_available else baseline_source)
+    )
+    fetched_at = max(
+        (str(item.get("fetched_at")) for item in (campaign_result, performance_result) if item.get("fetched_at")),
+        default=None,
+    )
+    metadata_by_name = {
+        str(row.get("name")): {
+            "type": row.get("type"), "status": row.get("status"), "state": row.get("state"),
+            "text_campaign": row.get("text_campaign"),
+            "mobile_app_campaign": row.get("mobile_app_campaign"),
+            "cpm_banner_campaign": row.get("cpm_banner_campaign"),
+            "unified_campaign": row.get("unified_campaign"),
+        }
+        for row in (campaign_result.get("data") or [])
+        if isinstance(row, dict) and row.get("name")
+    }
+    snapshot["campaignApiMetadata"] = metadata_by_name
+    baseline = {
+        "policy": "fresh",
+        "status": "complete" if campaign_available and performance_available else "partial",
+        "campaignsAvailable": campaign_available,
+        "performanceAvailable": performance_available,
+        "allowSavedFallback": allow_saved_fallback,
+        "savedFallbackUsed": False,
+        "source": evidence_source,
+        "fetchedAt": fetched_at,
+        "failures": [
+            {
+                "capability_id": item.get("capability_id") or item.get("dimension"),
+                "status": item.get("status"),
+                "error_code": item.get("error_code"),
+            }
+            for item in results if item.get("status") not in AVAILABLE_AUDIT_DATA_STATUSES
+        ],
+    }
+    if not performance_available:
+        if allow_saved_fallback:
+            baseline["savedFallbackUsed"] = True
+        else:
+            snapshot["campaignGroups"] = {key: [] for key in ("critical", "warning", "opportunity", "low_data", "stable")}
+            snapshot["accountTotals"] = {
+                "cost": 0, "impressions": 0, "clicks": 0, "goalConversions": None,
+            }
+        snapshot.setdefault("dataCoverage", {})["campaigns"] = {
+            "available": 0, "total": 0, "analyzed": 0,
+            "source": "yandex_direct_live", "freshness": "live_failed",
+        }
+        snapshot["freshBaseline"] = baseline
+        return
+    target_cpa = _number_or_zero((snapshot.get("targetKpis") or {}).get("targetCpa"))
+    selected_goal_ids = [str(item) for item in (snapshot.get("selectedGoals") or {}).get("ids", [])]
+    groups = {key: [] for key in ("critical", "warning", "opportunity", "low_data", "stable")}
+    all_campaigns: list[dict[str, Any]] = []
+    totals = {"cost": 0.0, "impressions": 0, "clicks": 0, "goalConversions": 0.0}
+    has_goal_data = False
+    aggregate_goal_rows_known = 0
+    aggregate_goal_rows_unknown = 0
+    performance_rows = performance_result.get("data") or []
+    for row in performance_rows:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("campaign_name") or "Campaign without name")
+        cost = _number_or_zero(row.get("cost"))
+        clicks = _int_or_zero(row.get("clicks"))
+        impressions = _int_or_zero(row.get("impressions"))
+        conversions, row_has_goals, per_goal_metrics, aggregation_policy = _row_goal_conversion_details(
+            row, selected_goal_ids,
+        )
+        has_goal_data = has_goal_data or row_has_goals
+        conversion_known = conversions is not None
+        aggregate_goal_rows_known += int(conversion_known)
+        aggregate_goal_rows_unknown += int(not conversion_known)
+        ctr = _number_or_zero(row.get("ctr")) or (clicks / impressions * 100 if impressions else 0)
+        cpa = cost / conversions if conversion_known and conversions > 0 else (0 if conversions == 0 else None)
+        flags = []
+        if cost > 0 and conversion_known and conversions == 0:
+            flags.append("spend_without_conversions")
+        if target_cpa and cpa is not None and cpa > target_cpa:
+            flags.append("high_cpa")
+        if impressions >= 1000 and ctr < 1:
+            flags.append("low_ctr")
+        sufficient = evaluate_metric_sufficiency(
+            "spend_without_conversions" if conversions == 0 else "high_cpa",
+            cost=cost, clicks=clicks, impressions=impressions, conversions=conversions or 0,
+            target_cpa=target_cpa, period_days=int((snapshot.get("analysisPeriod") or {}).get("days") or 30),
+        ).sufficient if conversion_known else False
+        group = "low_data" if not sufficient else "critical" if flags[:1] and flags[0] == "spend_without_conversions" else "warning" if flags else "opportunity" if conversions and conversions > 0 else "stable"
+        campaign_projection = {
+            "name": name, "type": (metadata_by_name.get(name) or {}).get("type"),
+            "status": (metadata_by_name.get(name) or {}).get("status"),
+            "cost": cost, "clicks": clicks, "impressions": impressions, "ctr": ctr,
+            "goalConversions": conversions, "goalCpa": cpa, "flags": flags,
+            "selectedGoalIds": selected_goal_ids,
+            "perGoalMetrics": per_goal_metrics,
+            "aggregationPolicy": aggregation_policy,
+            "diagnostic": "; ".join(flags) if flags else "No critical backend signal.",
+        }
+        groups[group].append(campaign_projection)
+        all_campaigns.append(campaign_projection)
+        totals["cost"] += cost
+        totals["clicks"] += clicks
+        totals["impressions"] += impressions
+        if conversion_known:
+            totals["goalConversions"] += conversions
+    totals["ctr"] = totals["clicks"] / totals["impressions"] * 100 if totals["impressions"] else 0
+    if aggregate_goal_rows_unknown:
+        totals["goalConversions"] = None
+        totals["goalCpa"] = None
+    else:
+        totals["goalCpa"] = totals["cost"] / totals["goalConversions"] if totals["goalConversions"] else 0
+    totals["goalRowsKnown"] = aggregate_goal_rows_known
+    totals["goalRowsUnknown"] = aggregate_goal_rows_unknown
+    group_totals = {key: len(items) for key, items in groups.items()}
+    for items in groups.values():
+        items.sort(key=lambda item: float(item.get("cost") or 0), reverse=True)
+        del items[5:]
+    snapshot["campaignGroups"] = groups
+    snapshot["campaignAnalysisRows"] = all_campaigns
+    snapshot["accountTotals"] = totals
+    if snapshot.get("selectedGoals"):
+        snapshot["selectedGoals"]["hasGoalData"] = has_goal_data
+    included = sum(len(items) for items in groups.values())
+    baseline["campaignAggregates"] = {
+        "campaignsTotal": len(performance_rows),
+        "groupCounts": group_totals,
+        "totals": totals,
+    }
+    coverage = snapshot.setdefault("dataCoverage", {})
+    coverage["campaigns"] = {
+        **(coverage.get("campaigns") or {}),
+        "available": len(performance_rows),
+        "total": len(performance_rows),
+        "analyzed": len(performance_rows),
+        "source": evidence_source,
+        "freshness": "live" if evidence_source.startswith("yandex_direct_live") else "mixed_or_saved",
+        "fetchedAt": fetched_at,
+    }
+    metadata = snapshot.setdefault("metadata", {})
+    metadata.update({
+        "campaignsTotal": len(performance_rows),
+        "campaignsIncluded": included,
+        "rowsReceived": len(performance_rows),
+        "rowsAnalyzed": len(performance_rows),
+        "rowsSentToAi": sum(
+            int(item.get("rowsSentToAi") or 0) for item in (snapshot.get("baselineEvidenceSummary") or [])
+        ),
+        "truncated": len(performance_rows) > included,
+        "campaignEvidenceSource": evidence_source,
+        "campaignEvidenceFetchedAt": fetched_at,
+    })
+    analysis_period = snapshot.setdefault("analysisPeriod", {})
+    analysis_period["source"] = evidence_source
+    analysis_period["fetchedAt"] = fetched_at
+    prompt_projection = {
+        "analysisPeriod": snapshot.get("analysisPeriod") or {},
+        "dataCoverage": coverage,
+        "accountTotals": totals,
+        "selectedGoals": snapshot.get("selectedGoals") or {},
+        "campaignGroups": groups,
+        "freshBaseline": baseline,
+    }
+    metadata["estimatedTokens"] = estimate_tokens(_json_dump(prompt_projection))
+    snapshot["freshBaseline"] = baseline
+
+
 def build_rule_based_investigation_plan(snapshot: dict[str, Any]) -> AuditInvestigationPlan:
+    if not snapshot.get("observedFacts"):
+        snapshot["observedFacts"] = [
+            item.model_dump(mode="json") for item in build_observed_facts(snapshot)
+        ]
     classifications = {item["campaign_name"]: item for item in classify_audit_campaigns(snapshot)}
     candidates = []
     for group_name in ("critical", "warning"):
         candidates.extend((snapshot.get("campaignGroups") or {}).get(group_name) or [])
     period = snapshot.get("analysisPeriod") or {}
     hypotheses = []
+    facts_by_campaign: dict[str, list[dict[str, Any]]] = {}
+    for fact_item in (snapshot.get("observedFacts") or []):
+        facts_by_campaign.setdefault(str(fact_item.get("campaign_name") or ""), []).append(fact_item)
+    def triggering_fact_ids(campaign_name: str, hypothesis_type: str) -> list[str]:
+        campaign_facts = facts_by_campaign.get(campaign_name, [])
+        required_metrics = set(HYPOTHESIS_EVIDENCE_POLICY[hypothesis_type]["required_fact_metrics"])
+        fact_metrics = {
+            "spend_without_goal_conversions": {"cost", "clicks", "goal_conversions"},
+            "cpa_above_target": {"cost", "clicks", "goal_conversions"},
+            "good_campaign": {"cost", "clicks", "goal_conversions"},
+            "campaign_health": {"cost", "clicks", "goal_conversions"},
+            "low_ctr": {"clicks"},
+            "low_data": set(),
+            "conversion_data_unknown": set(),
+        }
+        preferred = [
+            fact for fact in campaign_facts
+            if fact.get("sufficient_data") and fact.get("metric") not in {"low_data", "conversion_data_unknown"}
+            and required_metrics <= fact_metrics.get(str(fact.get("metric")), set())
+        ]
+        selected = preferred[:1]
+        return [str(fact["fact_id"]) for fact in selected if fact.get("fact_id")]
+
     for index, item in enumerate(candidates[:5], start=1):
+        if len(hypotheses) >= 5:
+            break
         name = str(item.get("name") or "Кампания без названия")
         classification = classifications[name]
         flags = item.get("flags") or []
         fact = str(item.get("diagnostic") or f"Сигналы: {', '.join(flags) or 'требуется проверка'}")[:700]
         hypothesis_id = f"hyp_{index:03d}"
-        requests = [_request(hypothesis_id, classification, "goals", "Проверить выбранные цели и CPA по ним.", period, priority="high", required=True)]
+        if classification["campaign_subtype"] == "unknown":
+            requests = [
+                _request(hypothesis_id, classification, "campaigns", "Уточнить тип и статус кампании до типоспецифичного анализа.", period, priority="high", required=True)
+            ]
+        else:
+            requests = [_request(hypothesis_id, classification, "goals", "Проверить выбранные цели и CPA по ним.", period, priority="high", required=True)]
         if classification["campaign_subtype"] in {"search", "brand_search"}:
             requests.extend([
                 _request(hypothesis_id, classification, "search_queries", "Проверить интент и расход поисковых запросов.", period, priority="high", required=True),
@@ -408,10 +1081,11 @@ def build_rule_based_investigation_plan(snapshot: dict[str, Any]) -> AuditInvest
             hypothesis = "Качество поискового трафика или отдельных групп может объяснять отклонение метрик."
         elif classification["campaign_subtype"] == "yan_retargeting":
             requests.extend([
+                _request(hypothesis_id, classification, "retargeting_lists", "Проверить доступность списков ретаргетинга.", period, priority="high", required=True),
                 _request(hypothesis_id, classification, "retargeting_segments", "Сравнить сегменты и окна ретаргетинга.", period, priority="high", required=True),
-                _request(hypothesis_id, classification, "placements", "Проверить площадки с расходом без целевых конверсий.", period),
+                _request(hypothesis_id, classification, "audience_targets", "Проверить аудиторные таргетинги кампании.", period),
             ])
-            hypothesis = "Сегменты ретаргетинга или площадки могут снижать эффективность кампании."
+            hypothesis = "Настройки сегментов ретаргетинга могут снижать эффективность кампании."
         elif classification["campaign_family"] == "yan":
             requests.extend([
                 _request(hypothesis_id, classification, "placements", "Проверить площадки с неэффективным расходом.", period, priority="high", required=True),
@@ -420,15 +1094,79 @@ def build_rule_based_investigation_plan(snapshot: dict[str, Any]) -> AuditInvest
             hypothesis = "Качество площадок или аудиторий может объяснять отклонение метрик."
         else:
             hypothesis = "Тип кампании не определён; сначала нужны безопасные данные по целям."
+        hypothesis_type = _hypothesis_type_for_capabilities([
+            request.dimension for request in requests if request.dimension != "goals"
+        ])
+        policy = HYPOTHESIS_EVIDENCE_POLICY[hypothesis_type]
+        bound_fact_ids = triggering_fact_ids(name, hypothesis_type)
+        if hypothesis_type not in {"tracking_issue", "campaign_metadata_issue"} and not bound_fact_ids:
+            continue
+        requests = [
+            request for request in requests
+            if request.dimension in policy["allowed_capabilities"]
+        ]
+        prerequisite_rule_codes, confirmation_rule_codes, rejection_rule_codes = _rule_codes_for_requests(requests)
+        confirmation_rule_codes = [
+            code for code in confirmation_rule_codes if code in policy["confirmation_rule_codes"]
+        ]
+        rejection_rule_codes = [
+            code for code in rejection_rule_codes if code in policy["rejection_rule_codes"]
+        ]
         hypotheses.append(AuditInvestigationHypothesis(
             hypothesis_id=hypothesis_id,
+            hypothesis_type=hypothesis_type,
             campaign_name=name,
             campaign_family=classification["campaign_family"],
             campaign_subtype=classification["campaign_subtype"],
             observed_fact=fact,
             hypothesis=hypothesis,
+            fact_ids=bound_fact_ids,
+            rationale=fact,
+            confidence_before_verification=(
+                "medium" if any(item.get("sufficient_data") for item in facts_by_campaign.get(name, [])) else "low"
+            ),
+            required_capabilities=[request.dimension for request in requests if request.required_for_conclusion],
+            optional_capabilities=[request.dimension for request in requests if not request.required_for_conclusion],
+            forbidden_capabilities=(
+                ["search_queries", "keywords", "autotargeting"]
+                if classification["campaign_subtype"] == "yan_retargeting" else []
+            ),
+            confirmation_rules=["Обязательные read-only данные содержат измеримый подтверждающий сигнал."],
+            rejection_rules=["Полученные данные противоречат предполагаемой причине."],
+            prerequisite_rule_codes=prerequisite_rule_codes,
+            confirmation_rule_codes=confirmation_rule_codes,
+            rejection_rule_codes=rejection_rule_codes,
+            stop_conditions=["Доказательств достаточно", "Следующие данные недоступны"],
             data_requests=requests[:4],
         ))
+        if classification["campaign_subtype"] == "yan_retargeting" and len(hypotheses) < 5:
+            placement_id = f"hyp_{index:03d}_placement"
+            placement_request = _request(
+                placement_id, classification, "placements",
+                "Отдельно проверить площадки с расходом без целевых конверсий.", period,
+                priority="medium", required=True,
+            )
+            hypotheses.append(AuditInvestigationHypothesis(
+                hypothesis_id=placement_id,
+                hypothesis_type="placement_waste",
+                campaign_name=name,
+                campaign_family=classification["campaign_family"],
+                campaign_subtype=classification["campaign_subtype"],
+                observed_fact=fact,
+                hypothesis="Отдельные площадки могут создавать неэффективный расход.",
+                fact_ids=triggering_fact_ids(name, "placement_waste"),
+                rationale=fact,
+                confidence_before_verification="medium",
+                required_capabilities=["placements"],
+                forbidden_capabilities=["search_queries", "keywords", "autotargeting"],
+                confirmation_rules=["Площадки содержат измеримый расход без выбранных конверсий."],
+                rejection_rules=["Данные площадок не показывают материального неэффективного расхода."],
+                prerequisite_rule_codes=[],
+                confirmation_rule_codes=["placements_waste_without_goals"],
+                rejection_rule_codes=["placements_no_material_waste"],
+                stop_conditions=["Доказательств достаточно", "Данные площадок недоступны"],
+                data_requests=[placement_request],
+            ))
     return AuditInvestigationPlan(hypotheses=hypotheses)
 
 
@@ -460,18 +1198,31 @@ def build_investigation_planner_context(snapshot: dict[str, Any]) -> dict[str, A
         ):
             compact_manifest.append({
                 "id": item.get("id"),
-                "metrics": item.get("permitted_metrics") or [],
                 "families": sorted(families & campaign_families) or sorted(families),
                 "subtypes": sorted(subtypes & campaign_subtypes) or sorted(subtypes),
             })
-        elif item.get("source_required"):
-            compact_manifest.append({
-                "id": item.get("id"),
-                "supported": False,
-                "source_required": item.get("source_required"),
-            })
+    planned_capabilities = {
+        str(request.get("capability_id") or request.get("dimension"))
+        for hypothesis in (snapshot.get("ruleBasedInvestigationPlan") or {}).get("hypotheses", [])
+        for request in (hypothesis.get("data_requests") or [])
+    }
+    capability_descriptions = []
+    for capability_id in sorted(planned_capabilities)[:8]:
+        description = describe_direct_capability(capability_id)
+        compact_description = {
+            "id": capability_id,
+            "source_type": description.get("source_type"),
+            "supported_now": description.get("supported_now"),
+        }
+        if description.get("prerequisites"):
+            compact_description["prerequisites"] = description["prerequisites"]
+        if description.get("limitations"):
+            compact_description["limitations"] = description["limitations"]
+        capability_descriptions.append(compact_description)
     return {
+        "directApiKnowledgeVersion": DIRECT_API_KNOWLEDGE_VERSION,
         "analysisPeriod": snapshot.get("analysisPeriod") or {},
+        "observedFacts": (snapshot.get("observedFacts") or [])[:10],
         "accountTotals": snapshot.get("accountTotals") or {},
         "targetKpis": snapshot.get("targetKpis") or {},
         "campaigns": selected_campaigns,
@@ -479,6 +1230,7 @@ def build_investigation_planner_context(snapshot: dict[str, Any]) -> dict[str, A
         "dataCoverage": snapshot.get("dataCoverage") or {},
         "ruleBasedInvestigationPlan": snapshot.get("ruleBasedInvestigationPlan") or {},
         "publicToolManifest": compact_manifest,
+        "capabilityDescriptions": capability_descriptions,
         "missingData": (snapshot.get("missingData") or [])[:10],
         "trackingWarnings": (tracking.get("warnings") or [])[:10],
     }
@@ -512,6 +1264,10 @@ def build_investigation_plan_prompt(snapshot: dict[str, Any], base_plan: AuditIn
 Backend-план обязателен: не удаляй required_for_conclusion запросы. Разрешено кратко уточнить reason/priority,
 убрать только необязательный нерелевантный запрос или добавить dimension из publicToolManifest.
 Максимум 5 гипотез, 4 data requests на гипотезу и {MAX_AUDIT_DATA_REQUESTS} запросов всего.
+Для каждой гипотезы заполни fact_ids, rationale, required_capabilities, optional_capabilities,
+forbidden_capabilities, confirmation_rules, rejection_rules и stop_conditions. Не давай финальных рекомендаций.
+Backend связывает вывод с prerequisite_rule_codes, confirmation_rule_codes и rejection_rule_codes; не используй правило одной capability для подтверждения другой.
+Каждый дополнительный запрос должен объяснять expected information gain: какой результат изменит вывод.
 Не передавай campaign ID, endpoint, token или credentials. Верни только JSON AuditInvestigationPlan без Markdown.
 
 Planner context:
@@ -524,65 +1280,172 @@ def _merge_investigation_plans(
     fallback: AuditInvestigationPlan,
 ) -> AuditInvestigationPlan:
     classifications = {item["campaign_name"]: item for item in (snapshot.get("campaignClassifications") or [])}
-    proposed_by_campaign = {item.campaign_name: item for item in proposed.hypotheses}
     normalized: list[AuditInvestigationHypothesis] = []
-    for hypothesis_index, base_hypothesis in enumerate(fallback.hypotheses[:5], start=1):
-        classification = classifications.get(base_hypothesis.campaign_name)
-        if not classification:
-            continue
-        proposed_hypothesis = proposed_by_campaign.get(base_hypothesis.campaign_name)
-        proposed_requests = {
-            request.dimension: request
-            for request in (proposed_hypothesis.data_requests if proposed_hypothesis else [])
+    used_proposed: set[int] = set()
+    used_ids: set[str] = set()
+    facts_by_id = {
+        str(item.get("fact_id")): item for item in (snapshot.get("observedFacts") or [])
+        if item.get("fact_id")
+    }
+
+    def reject(source: AuditInvestigationHypothesis, code: str, message: str) -> None:
+        rejections = snapshot.setdefault("validationRejections", [])
+        item = {
+            "hypothesisId": source.hypothesis_id,
+            "campaignName": source.campaign_name,
+            "status": "rejected_by_validation",
+            "errorCode": code,
+            "message": message,
         }
+        if item not in rejections:
+            rejections.append(item)
+        warnings = snapshot.setdefault("auditWarnings", [])
+        warning = _helper_warning("create_investigation_plan", code, message)
+        if not any(existing.get("code") == code for existing in warnings if isinstance(existing, dict)):
+            warnings.append(warning)
+
+    def has_trusted_binding(source: AuditInvestigationHypothesis, base: AuditInvestigationHypothesis) -> bool:
+        if source.campaign_name != base.campaign_name or source.hypothesis_type != base.hypothesis_type:
+            return False
+        fact_ids = list(source.fact_ids or base.fact_ids)
+        facts = [facts_by_id.get(str(fact_id)) for fact_id in fact_ids]
+        if not fact_ids or any(fact is None for fact in facts):
+            return False
+        if any(str(fact.get("campaign_name")) != base.campaign_name for fact in facts if fact):
+            return False
+        if source.parent_hypothesis_id and source.parent_hypothesis_id != base.parent_hypothesis_id:
+            return False
+        if base.hypothesis_type not in {"tracking_issue", "campaign_metadata_issue"} and not any(
+            bool(fact.get("sufficient_data")) for fact in facts if fact
+        ):
+            return False
+        return True
+
+    def proposed_for(base: AuditInvestigationHypothesis, index: int) -> AuditInvestigationHypothesis | None:
+        for proposed_index, item in enumerate(proposed.hypotheses):
+            if proposed_index not in used_proposed and item.hypothesis_id == base.hypothesis_id:
+                used_proposed.add(proposed_index)
+                return item
+        if index < len(proposed.hypotheses):
+            item = proposed.hypotheses[index]
+            if index not in used_proposed and item.campaign_name == base.campaign_name:
+                used_proposed.add(index)
+                return item
+        return None
+
+    def normalize_hypothesis(
+        source: AuditInvestigationHypothesis,
+        base: AuditInvestigationHypothesis,
+        stable_id: str,
+    ) -> AuditInvestigationHypothesis | None:
+        classification = classifications.get(base.campaign_name)
+        if not classification:
+            return None
+        proposed_requests = {request.dimension: request for request in source.data_requests}
         requests: list[AuditDataRequest] = []
         included_dimensions: set[str] = set()
-        for base_request in base_hypothesis.data_requests:
+        request_prefix = stable_id[4:] if stable_id.startswith("hyp_") else stable_id
+        for base_request in base.data_requests:
+            if not _capability_matches_hypothesis(base.model_dump(mode="json"), base_request.dimension):
+                continue
             proposed_request = proposed_requests.get(base_request.dimension)
-            if proposed_hypothesis and not base_request.required_for_conclusion and not proposed_request:
+            if source is not base and not base_request.required_for_conclusion and not proposed_request:
                 continue
             payload = base_request.model_dump()
             if proposed_request:
                 payload["reason"] = str(proposed_request.reason)[:500]
                 payload["priority"] = proposed_request.priority
             payload.update({
-                "request_id": f"req_{hypothesis_index:03d}_{len(requests) + 1:02d}",
-                "hypothesis_id": f"hyp_{hypothesis_index:03d}",
-                "campaign_name": base_hypothesis.campaign_name,
+                "request_id": f"req_{request_prefix}_{len(requests) + 1:02d}",
+                "hypothesis_id": stable_id,
+                "campaign_name": base.campaign_name,
                 "campaign_family": classification["campaign_family"],
                 "campaign_subtype": classification["campaign_subtype"],
-                "filters": {"campaign_name": base_hypothesis.campaign_name},
+                "filters": {"campaign_name": base.campaign_name},
             })
             requests.append(AuditDataRequest.model_validate(payload))
             included_dimensions.add(base_request.dimension)
-        for proposed_request in proposed_hypothesis.data_requests if proposed_hypothesis else []:
+        for proposed_request in source.data_requests:
             if proposed_request.dimension in included_dimensions or len(requests) >= 4:
+                continue
+            if not _capability_matches_hypothesis(base.model_dump(mode="json"), proposed_request.dimension):
                 continue
             payload = proposed_request.model_dump()
             payload.update({
-                "request_id": f"req_{hypothesis_index:03d}_{len(requests) + 1:02d}",
-                "hypothesis_id": f"hyp_{hypothesis_index:03d}",
-                "campaign_name": base_hypothesis.campaign_name,
+                "request_id": f"req_{request_prefix}_{len(requests) + 1:02d}",
+                "hypothesis_id": stable_id,
+                "campaign_name": base.campaign_name,
                 "campaign_family": classification["campaign_family"],
                 "campaign_subtype": classification["campaign_subtype"],
-                "filters": {"campaign_name": base_hypothesis.campaign_name},
+                "filters": {"campaign_name": base.campaign_name},
                 "required_for_conclusion": False,
             })
             requests.append(AuditDataRequest.model_validate(payload))
             included_dimensions.add(proposed_request.dimension)
-        normalized.append(AuditInvestigationHypothesis(
-            hypothesis_id=f"hyp_{hypothesis_index:03d}",
-            campaign_name=base_hypothesis.campaign_name,
+        prerequisite_codes, confirmation_codes, rejection_codes = _rule_codes_for_requests(requests)
+        policy = HYPOTHESIS_EVIDENCE_POLICY[base.hypothesis_type]
+        confirmation_codes = [code for code in confirmation_codes if code in policy["confirmation_rule_codes"]]
+        rejection_codes = [code for code in rejection_codes if code in policy["rejection_rule_codes"]]
+        requested_prerequisites = source.prerequisite_rule_codes or base.prerequisite_rule_codes
+        requested_confirmations = source.confirmation_rule_codes or base.confirmation_rule_codes
+        return AuditInvestigationHypothesis(
+            hypothesis_id=stable_id,
+            hypothesis_type=base.hypothesis_type,
+            parent_hypothesis_id=source.parent_hypothesis_id or base.parent_hypothesis_id,
+            supersedes_hypothesis_id=source.supersedes_hypothesis_id or base.supersedes_hypothesis_id,
+            campaign_name=base.campaign_name,
             campaign_family=classification["campaign_family"],
             campaign_subtype=classification["campaign_subtype"],
-            observed_fact=base_hypothesis.observed_fact,
-            hypothesis=(
-                str(proposed_hypothesis.hypothesis)[:700]
-                if proposed_hypothesis
-                else base_hypothesis.hypothesis
-            ),
+            observed_fact=base.observed_fact,
+            hypothesis=str(source.hypothesis or base.hypothesis)[:700],
+            fact_ids=base.fact_ids,
+            rationale=source.rationale or base.rationale,
+            confidence_before_verification=source.confidence_before_verification,
+            required_capabilities=[request.dimension for request in requests if request.required_for_conclusion],
+            optional_capabilities=[request.dimension for request in requests if not request.required_for_conclusion],
+            forbidden_capabilities=base.forbidden_capabilities,
+            confirmation_rules=source.confirmation_rules or base.confirmation_rules,
+            rejection_rules=source.rejection_rules or base.rejection_rules,
+            prerequisite_rule_codes=[
+                code for code in requested_prerequisites if code in prerequisite_codes
+            ] or prerequisite_codes,
+            confirmation_rule_codes=[
+                code for code in requested_confirmations if code in confirmation_codes
+            ] or confirmation_codes,
+            rejection_rule_codes=[
+                code for code in (source.rejection_rule_codes or base.rejection_rule_codes)
+                if code in rejection_codes
+            ] or rejection_codes,
+            stop_conditions=source.stop_conditions or base.stop_conditions,
             data_requests=requests,
-        ))
+        )
+
+    for index, base_hypothesis in enumerate(fallback.hypotheses[:5]):
+        stable_id = base_hypothesis.hypothesis_id
+        if stable_id in used_ids:
+            stable_id = f"hyp_{len(used_ids) + 1:03d}"
+        proposed_source = proposed_for(base_hypothesis, index)
+        if proposed_source is not None and not has_trusted_binding(proposed_source, base_hypothesis):
+            reject(
+                proposed_source,
+                "untrusted_fact_binding",
+                "AI-гипотеза отклонена backend-валидатором: отсутствует trusted fact той же кампании.",
+            )
+            source = base_hypothesis
+        else:
+            source = proposed_source or base_hypothesis
+        item = normalize_hypothesis(source, base_hypothesis, stable_id)
+        if item:
+            normalized.append(item)
+            used_ids.add(stable_id)
+
+    for proposed_index, source in enumerate(proposed.hypotheses):
+        if proposed_index not in used_proposed:
+            reject(
+                source,
+                "untrusted_fact_binding",
+                "Новая независимая AI-гипотеза разрешена только через trusted child-hypothesis lifecycle.",
+            )
     return AuditInvestigationPlan(hypotheses=normalized) if normalized else fallback
 
 
@@ -602,21 +1465,40 @@ def _normalized_investigation_plan(answer: str, snapshot: dict[str, Any], fallba
 
 
 def build_verification_prompt(snapshot: dict[str, Any]) -> str:
+    active_hypotheses = _active_hypotheses(snapshot)
+    active_ids = {str(item.get("hypothesis_id")) for item in active_hypotheses}
+    active_plan = {"hypotheses": active_hypotheses}
+    summaries = [
+        item for item in (snapshot.get("drilldownEvidenceSummaries") or [])
+        if str(item.get("hypothesis_id")) in active_ids
+    ]
+    samples = [
+        item for item in (snapshot.get("aiDrilldownSamples") or snapshot.get("drilldownResults") or [])
+        if str(item.get("hypothesis_id")) in active_ids
+    ]
     return f"""Проверь максимум 5 гипотез только по собранным read-only данным. Ответ должен быть кратким.
 Верни только JSON объекта
 {{"verifications":[{{"hypothesis_id":"hyp_001","status":"confirmed|partially_confirmed|rejected|unverified|not_applicable","verification_summary":"...","supporting_evidence":[],"contradicting_evidence":[],"limitations":[],"remaining_data_needed":[]}}]}}.
 Не подтверждай гипотезу из-за правдоподобия. unavailable/insufficient_data означает unverified; все not_applicable означает not_applicable.
-Investigation plan: {json.dumps(snapshot.get('investigationPlan') or {}, ensure_ascii=False)}
-Data request results: {json.dumps(snapshot.get('drilldownResults') or [], ensure_ascii=False)}"""
+Investigation plan: {json.dumps(active_plan, ensure_ascii=False)}
+Backend evidence summaries: {json.dumps(summaries, ensure_ascii=False)}
+Representative AI samples: {json.dumps(samples, ensure_ascii=False)}"""
 
 
-def _verification_fallback(snapshot: dict[str, Any]) -> AuditHypothesisVerificationSet:
-    results = snapshot.get("drilldownResults") or []
+def _verification_fallback(
+    snapshot: dict[str, Any], full_results: list[dict[str, Any]] | None = None,
+) -> AuditHypothesisVerificationSet:
+    results = full_results if full_results is not None else (snapshot.get("drilldownResults") or [])
+    previous = _verification_registry(snapshot)
     verifications = []
-    for hypothesis in (snapshot.get("investigationPlan") or {}).get("hypotheses", []):
+    for hypothesis in _active_hypotheses(snapshot):
         related = [item for item in results if item.get("hypothesis_id") == hypothesis.get("hypothesis_id")]
         statuses = {item.get("status") for item in related}
-        status_value = "not_applicable" if statuses == {"not_applicable"} else "unverified"
+        status_value = (
+            "rejected" if (previous.get(hypothesis.get("hypothesis_id")) or {}).get("status") == "rejected"
+            else "not_applicable" if statuses == {"not_applicable"}
+            else "unverified"
+        )
         verifications.append(AuditHypothesisVerification(
             hypothesis_id=hypothesis.get("hypothesis_id"), status=status_value,
             verification_summary="AI-проверка недоступна; backend не считает гипотезу подтверждённой.",
@@ -637,36 +1519,61 @@ def _verification_fallback(snapshot: dict[str, Any]) -> AuditHypothesisVerificat
 def _parse_verifications(
     answer: str,
     snapshot: dict[str, Any],
+    full_results: list[dict[str, Any]] | None = None,
 ) -> tuple[AuditHypothesisVerificationSet, bool, dict[str, Any]]:
     parsed, parsing = _parse_model_json(answer, AuditHypothesisVerificationSet)
     if parsed is None:
-        return _verification_fallback(snapshot), False, parsing
-    hypotheses = (snapshot.get("investigationPlan") or {}).get("hypotheses", [])
+        return _verification_fallback(snapshot, full_results), False, parsing
+    hypotheses = _active_hypotheses(snapshot)
     expected = {item.get("hypothesis_id") for item in hypotheses}
-    request_required = {
-        request.get("request_id"): bool(request.get("required_for_conclusion"))
-        for hypothesis in hypotheses
-        for request in hypothesis.get("data_requests", [])
-    }
+    hypotheses_by_id = {item.get("hypothesis_id"): item for item in hypotheses}
+    previous = _verification_registry(snapshot)
+    facts_by_id = {item.get("fact_id"): item for item in (snapshot.get("observedFacts") or [])}
     safe = []
     for item in parsed.verifications:
         if item.hypothesis_id not in expected:
             continue
-        related = [result for result in (snapshot.get("drilldownResults") or []) if result.get("hypothesis_id") == item.hypothesis_id]
-        collected = [result for result in related if result.get("status") in AVAILABLE_AUDIT_DATA_STATUSES]
-        missing_required = any(
-            request_required.get(result.get("request_id")) and result.get("status") not in AVAILABLE_AUDIT_DATA_STATUSES
-            for result in related
-        )
-        if not collected:
-            item.status = "not_applicable" if related and all(result.get("status") == "not_applicable" for result in related) else "unverified"
-        elif item.status == "confirmed" and missing_required:
-            item.status = "partially_confirmed"
-            item.limitations.append("Backend не получил все обязательные data requests; статус понижен до partially_confirmed.")
-        safe.append(item)
+        hypothesis = hypotheses_by_id[item.hypothesis_id]
+        fact_ids = hypothesis.get("fact_ids") or []
+        hypothesis = {
+            **hypothesis,
+            "status": (previous.get(item.hypothesis_id) or {}).get("status") or hypothesis.get("current_status"),
+            "fact_sufficient_data": all(
+                bool((facts_by_id.get(fact_id) or {}).get("sufficient_data")) for fact_id in fact_ids
+            ) if fact_ids else False,
+        }
+        safe.append(enforce_hypothesis_verification(
+            item,
+            hypothesis=hypothesis,
+            requests=hypothesis.get("data_requests") or [],
+            results=full_results if full_results is not None else (snapshot.get("drilldownResults") or []),
+            target_cpa=float((snapshot.get("targetKpis") or {}).get("targetCpa") or 0),
+            period_days=int((snapshot.get("analysisPeriod") or {}).get("days") or 30),
+        ))
     if not safe:
-        return _verification_fallback(snapshot), False, parsing
+        return _verification_fallback(snapshot, full_results), False, parsing
     return AuditHypothesisVerificationSet(verifications=safe), True, parsing
+
+
+def _apply_verification_statuses(snapshot: dict[str, Any], verification: AuditHypothesisVerificationSet) -> None:
+    _merge_verification_registry(snapshot, verification)
+    statuses = {
+        str(item.get("hypothesis_id")): str(item.get("status"))
+        for item in _active_verifications(snapshot)
+    }
+    for hypothesis in _active_hypotheses(snapshot):
+        hypothesis_id = hypothesis.get("hypothesis_id")
+        previous_status = hypothesis.get("current_status")
+        if previous_status == "rejected":
+            continue
+        if hypothesis_id in statuses:
+            hypothesis["current_status"] = statuses[hypothesis_id]
+    if snapshot.get("investigationRounds"):
+        for hypothesis in snapshot["investigationRounds"][-1].get("hypotheses") or []:
+            hypothesis_id = hypothesis.get("hypothesis_id")
+            if hypothesis_id in statuses:
+                hypothesis["status"] = statuses[hypothesis_id]
+    _sync_active_investigation_plan(snapshot)
 
 
 def _normalized_verifications(answer: str, snapshot: dict[str, Any]) -> AuditHypothesisVerificationSet:
@@ -675,49 +1582,454 @@ def _normalized_verifications(answer: str, snapshot: dict[str, Any]) -> AuditHyp
 
 def _second_round_requests(snapshot: dict[str, Any]) -> list[AuditDataRequest]:
     runtime = _audit_runtime(snapshot)
-    if int(runtime.get("investigationRound") or 1) >= 2 or int(runtime.get("requestsCount") or 0) >= 15:
+    round_number = int(runtime.get("investigationRound") or 1)
+    request_count = int(runtime.get("requestsCount") or 0)
+    if round_number >= MAX_INVESTIGATION_ROUNDS or request_count >= MAX_DATA_REQUESTS_PER_AUDIT:
         return []
-    critical_names = {str(item.get("name")) for item in (snapshot.get("campaignGroups") or {}).get("critical", [])}
-    required_request_ids = {
-        request.get("request_id")
-        for hypothesis in (snapshot.get("investigationPlan") or {}).get("hypotheses", [])
-        for request in hypothesis.get("data_requests", [])
-        if request.get("required_for_conclusion")
-    }
-    insufficient_hypotheses = {
-        item.get("hypothesis_id")
-        for item in (snapshot.get("drilldownResults") or [])
-        if item.get("status") == "insufficient_data" and item.get("request_id") in required_request_ids
-    }
-    plan_hypotheses = {
+    hypotheses = {
         item.get("hypothesis_id"): item
-        for item in (snapshot.get("investigationPlan") or {}).get("hypotheses", [])
+        for item in _active_hypotheses(snapshot)
     }
-    eligible_campaigns = {
-        item.get("campaign_name")
-        for hypothesis_id, item in plan_hypotheses.items()
-        if hypothesis_id in insufficient_hypotheses and item.get("campaign_name") in critical_names
-    }
-    if not eligible_campaigns:
-        return []
-    existing = {
-        (item.get("campaign_name"), item.get("dimension"))
+    verifications = _verification_registry(snapshot)
+    existing_by_hypothesis = {
+        (item.get("hypothesis_id"), item.get("capability_id") or item.get("dimension"))
         for item in (snapshot.get("validatedDataRequests") or [])
     }
-    candidates = []
-    for hypothesis in (snapshot.get("ruleBasedInvestigationPlan") or {}).get("hypotheses", []):
-        if hypothesis.get("campaign_name") not in eligible_campaigns:
+    candidates: list[AuditDataRequest] = []
+    for hypothesis_id, hypothesis in hypotheses.items():
+        verification = verifications.get(hypothesis_id) or {}
+        if verification.get("status") not in {"unverified", "partially_confirmed"}:
             continue
-        for request in hypothesis.get("data_requests", []):
-            key = (request.get("campaign_name"), request.get("dimension"))
-            if key in existing or not (request.get("required_for_conclusion") or request.get("priority") == "high"):
-                continue
-            candidates.append(AuditDataRequest.model_validate(request))
-    remaining = max(0, 15 - int(runtime.get("requestsCount") or 0))
+        related = [
+            item for item in (snapshot.get("drilldownResults") or [])
+            if item.get("hypothesis_id") == hypothesis_id
+        ]
+        if not any(item.get("status") in AVAILABLE_AUDIT_DATA_STATUSES for item in related):
+            continue
+        already = {
+            capability for owner, capability in existing_by_hypothesis if owner == hypothesis_id
+        }
+        next_capabilities = next_cascade_capabilities(
+            subtype=str(hypothesis.get("campaign_subtype") or "unknown"),
+            already_requested=already,
+            remaining_budget=MAX_DATA_REQUESTS_PER_AUDIT - request_count - len(candidates),
+        )
+        next_capabilities = [
+            capability for capability in next_capabilities
+            if _capability_matches_hypothesis(hypothesis, capability)
+        ]
+        if not next_capabilities:
+            continue
+        classification = {
+            "campaign_name": hypothesis.get("campaign_name"),
+            "campaign_family": hypothesis.get("campaign_family") or "unknown",
+            "campaign_subtype": hypothesis.get("campaign_subtype") or "unknown",
+        }
+        capability = next_capabilities[0]
+        candidate = _request(
+            str(hypothesis_id), classification, capability,
+            f"Следующий каскадный уровень: проверить {capability}; результат может подтвердить или отклонить гипотезу.",
+            snapshot.get("analysisPeriod") or {}, priority="high", required=True,
+        )
+        candidate.request_id = f"req_r{round_number + 1}_{len(candidates) + 1:03d}"
+        candidates.append(candidate)
+    remaining = max(0, MAX_DATA_REQUESTS_PER_AUDIT - request_count)
     accepted, rejected = validate_audit_data_requests(candidates[:remaining])
     if rejected:
         snapshot["drilldownResults"] = (snapshot.get("drilldownResults") or []) + [item.model_dump(mode="json") for item in rejected]
     return accepted
+
+
+def _planner_docs_lookup(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    """Planner-only local lookup. It never executes a Direct API request."""
+
+    queries: list[str] = []
+    hypotheses = {
+        item.get("hypothesis_id"): item
+        for item in (snapshot.get("investigationPlan") or {}).get("hypotheses", [])
+    }
+    for verification in _verification_registry(snapshot).values():
+        if verification.get("status") not in {"unverified", "partially_confirmed", "rejected"}:
+            continue
+        hypothesis = hypotheses.get(verification.get("hypothesis_id")) or {}
+        queries.append(" ".join([
+            str(hypothesis.get("campaign_subtype") or ""),
+            str(hypothesis.get("hypothesis") or ""),
+            " ".join(str(item) for item in verification.get("remaining_data_needed") or []),
+        ]).strip())
+        if len(queries) >= 2:
+            break
+    trace: list[dict[str, Any]] = []
+    knowledge: list[dict[str, Any]] = []
+    seen_capabilities: set[str] = set()
+    for query in queries[:2]:
+        lookup = search_direct_api_docs(query)
+        matches = lookup.get("matches") or []
+        trace.append({
+            "queryHash": hashlib.sha256(query.encode("utf-8")).hexdigest()[:16],
+            "knowledgeVersion": lookup.get("knowledge_version"),
+            "capabilityIds": [item.get("capability_id") for item in matches[:10]],
+            "apiExecuted": False,
+        })
+        for match in matches[:4]:
+            capability_id = str(match.get("capability_id") or "")
+            if not capability_id or capability_id in seen_capabilities:
+                continue
+            seen_capabilities.add(capability_id)
+            description = describe_direct_capability(capability_id)
+            knowledge.append({
+                "capability_id": capability_id,
+                "purpose": description.get("purpose") or match.get("purpose"),
+                "permitted_metrics": description.get("semantic_metrics") or [],
+                "supported_campaign_families": description.get("campaign_families") or [],
+                "supported_campaign_subtypes": description.get("campaign_subtypes") or [],
+                "prerequisites": description.get("prerequisites") or [],
+                "limitations": description.get("limitations") or [],
+                "source_type": description.get("source_type"),
+                "supported_now": bool(description.get("supported_now")),
+                "requires_backend_implementation": not bool(description.get("supported_now")),
+            })
+    snapshot.setdefault("docsLookupTrace", []).append({
+        "round": int((_audit_runtime(snapshot).get("investigationRound") or 1)),
+        "lookups": trace,
+    })
+    return knowledge
+
+
+def build_next_round_prompt(snapshot: dict[str, Any]) -> str:
+    runtime = _audit_runtime(snapshot)
+    completed = sorted({
+        str(item.get("capability_id") or item.get("dimension"))
+        for item in snapshot.get("drilldownResults") or []
+        if item.get("status") in AVAILABLE_AUDIT_DATA_STATUSES
+    })
+    unavailable = sorted({
+        str(item.get("capability_id") or item.get("dimension"))
+        for item in snapshot.get("drilldownResults") or []
+        if item.get("status") in {"unavailable", "unsupported", "insufficient_data", "failed", "not_applicable"}
+    })
+    compact_manifest = [
+        {
+            "id": item.get("id"),
+            "supported_now": item.get("supported_now"),
+            "campaign_families": item.get("supported_campaign_families"),
+            "campaign_subtypes": item.get("supported_campaign_subtypes"),
+        }
+        for item in public_audit_tool_manifest()
+    ]
+    payload = {
+        "observed_facts": snapshot.get("observedFacts") or [],
+        "hypotheses": _active_hypotheses(snapshot),
+        "verifications": _active_verifications(snapshot),
+        "completed_capabilities": completed,
+        "unavailable_capabilities": unavailable,
+        "public_capability_manifest": compact_manifest,
+        "remaining_request_budget": max(0, MAX_DATA_REQUESTS_PER_AUDIT - int(runtime.get("requestsCount") or 0)),
+        "remaining_rounds": max(0, MAX_INVESTIGATION_ROUNDS - int(runtime.get("investigationRound") or 1)),
+        "local_documentation": _planner_docs_lookup(snapshot),
+    }
+    return """Plan the next read-only investigation round from verified evidence, not from a fixed sequence.
+Return only strict JSON:
+{"continue_investigation":true,"existing_hypothesis_requests":[],"new_hypotheses":[{"hypothesis_id":"hyp_006","hypothesis_type":"device_segment_gap","parent_hypothesis_id":"hyp_001","fact_ids":[],"supersedes_hypothesis_id":null,"campaign_name":"...","hypothesis":"...","rationale":"...","required_capabilities":["devices"],"prerequisite_rule_codes":[],"confirmation_rule_codes":["devices_cpa_segment_gap"],"rejection_rule_codes":["devices_cpa_segments_comparable"],"requests":[]}],"stop_reason":null}
+Use only supported_now capabilities applicable to the campaign subtype. Existing follow-up capability must match hypothesis_type; another cause requires a child hypothesis. Every new hypothesis must reference a trusted parent_hypothesis_id or trusted fact_ids from the same campaign. Never invent rule codes or request write actions. If data is already sufficient, the sample is low, or no executable capability can change the conclusion, return continue_investigation=false with a stop_reason.
+Context: """ + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def _parse_next_round_plan(answer: str) -> tuple[AuditNextRoundPlan | None, bool, dict[str, Any]]:
+    parsed, parsing = _parse_model_json(answer, AuditNextRoundPlan)
+    if parsed is None:
+        return None, False, parsing
+    if parsed.continue_investigation and not (
+        parsed.existing_hypothesis_requests or parsed.new_hypotheses
+    ):
+        return None, False, {**parsing, "errorCode": "empty_next_round_requests"}
+    if not parsed.continue_investigation and not parsed.stop_reason:
+        return None, False, {**parsing, "errorCode": "missing_stop_reason"}
+    return parsed, True, parsing
+
+
+def _next_round_requests_from_plan(
+    snapshot: dict[str, Any], plan: AuditNextRoundPlan,
+) -> tuple[list[AuditDataRequest], list[AuditDataRequestResult]]:
+    if not plan.continue_investigation:
+        return [], []
+    runtime = _audit_runtime(snapshot)
+    remaining = max(0, MAX_DATA_REQUESTS_PER_AUDIT - int(runtime.get("requestsCount") or 0))
+    hypotheses = _hypothesis_registry(snapshot)
+    verifications = _verification_registry(snapshot)
+    manifest = {str(item.get("id")): item for item in public_audit_tool_manifest()}
+    facts_by_id = {
+        str(item.get("fact_id")): item for item in (snapshot.get("observedFacts") or [])
+        if item.get("fact_id")
+    }
+    already = {
+        (item.get("hypothesis_id"), item.get("capability_id") or item.get("dimension"))
+        for item in snapshot.get("validatedDataRequests") or []
+    }
+    candidates: list[AuditDataRequest] = []
+    validation_rejections: list[AuditDataRequestResult] = []
+    new_hypothesis_ids: set[str] = set()
+
+    def reject_plan_item(
+        hypothesis_id: str,
+        capability_id: str,
+        campaign_name: str,
+        error_code: str,
+        summary: str,
+    ) -> None:
+        validation_rejections.append(AuditDataRequestResult(
+            request_id=f"rejected_{hypothesis_id}_{capability_id or 'binding'}",
+            hypothesis_id=hypothesis_id,
+            capability_id=capability_id or None,
+            dimension=capability_id or "campaigns",
+            status="unsupported",
+            campaign_name=campaign_name,
+            summary=summary,
+            limitations=[summary],
+            error_code=error_code,
+        ))
+
+    def append_request(item: Any, hypothesis: dict[str, Any]) -> None:
+        if len(candidates) >= remaining:
+            return
+        capability = manifest.get(item.capability_id) or {}
+        if not capability.get("supported_now"):
+            return
+        if (item.hypothesis_id, item.capability_id) in already:
+            return
+        if item.capability_id in set(hypothesis.get("forbidden_capabilities") or []):
+            return
+        if not _capability_matches_hypothesis(hypothesis, item.capability_id):
+            reject_plan_item(
+                item.hypothesis_id,
+                item.capability_id,
+                str(hypothesis.get("campaign_name") or ""),
+                "hypothesis_type_capability_mismatch",
+                "Capability проверяет другую причину; требуется отдельная дочерняя гипотеза.",
+            )
+            return
+        if hypothesis.get("campaign_family") not in (capability.get("supported_campaign_families") or []):
+            return
+        if hypothesis.get("campaign_subtype") not in (capability.get("supported_campaign_subtypes") or []):
+            return
+        classification = {
+            "campaign_name": hypothesis.get("campaign_name"),
+            "campaign_family": hypothesis.get("campaign_family") or "unknown",
+            "campaign_subtype": hypothesis.get("campaign_subtype") or "unknown",
+        }
+        request = _request(
+            item.hypothesis_id,
+            classification,
+            item.capability_id,
+            f"{item.reason} Expected information gain: {item.expected_information_gain}",
+            snapshot.get("analysisPeriod") or {},
+            priority="high",
+            required=item.required_for_conclusion,
+        )
+        request.request_id = f"req_r{int(runtime.get('investigationRound') or 1) + 1}_{len(candidates) + 1:03d}"
+        request.expected_information_gain = item.expected_information_gain
+        candidates.append(request)
+
+    for new_hypothesis in plan.new_hypotheses:
+        if len(candidates) >= remaining or new_hypothesis.hypothesis_id in hypotheses:
+            continue
+        parent = hypotheses.get(new_hypothesis.parent_hypothesis_id) if new_hypothesis.parent_hypothesis_id else None
+        if new_hypothesis.parent_hypothesis_id and not parent:
+            reject_plan_item(
+                new_hypothesis.hypothesis_id, "", new_hypothesis.campaign_name,
+                "unknown_parent_hypothesis", "Родительская гипотеза отсутствует в trusted registry.",
+            )
+            continue
+        if parent and parent.get("campaign_name") != new_hypothesis.campaign_name:
+            reject_plan_item(
+                new_hypothesis.hypothesis_id, "", new_hypothesis.campaign_name,
+                "parent_campaign_mismatch", "Родительская гипотеза относится к другой кампании.",
+            )
+            continue
+        bound_fact_ids = list(new_hypothesis.fact_ids or (parent or {}).get("fact_ids") or [])
+        bound_facts = [facts_by_id.get(str(fact_id)) for fact_id in bound_fact_ids]
+        if (
+            (not parent and not bound_fact_ids)
+            or any(fact is None for fact in bound_facts)
+            or any(str(fact.get("campaign_name")) != new_hypothesis.campaign_name for fact in bound_facts if fact)
+        ):
+            reject_plan_item(
+                new_hypothesis.hypothesis_id, "", new_hypothesis.campaign_name,
+                "untrusted_fact_binding", "Новая гипотеза не связана с trusted fact той же кампании.",
+            )
+            continue
+        if new_hypothesis.hypothesis_type not in {"tracking_issue", "campaign_metadata_issue"} and any(
+            not bool(fact.get("sufficient_data")) for fact in bound_facts if fact
+        ):
+            reject_plan_item(
+                new_hypothesis.hypothesis_id, "", new_hypothesis.campaign_name,
+                "insufficient_fact_binding", "Trusted fact не имеет достаточного объёма для причинной гипотезы.",
+            )
+            continue
+        classification = parent or next(
+            (
+                item for item in (snapshot.get("campaignClassifications") or [])
+                if item.get("campaign_name") == new_hypothesis.campaign_name
+            ),
+            None,
+        )
+        if not classification:
+            continue
+        trusted_requests = [
+            AuditDataRequest(
+                request_id=f"contract_{new_hypothesis.hypothesis_id}_{index}",
+                hypothesis_id=new_hypothesis.hypothesis_id,
+                campaign_name=new_hypothesis.campaign_name,
+                campaign_family=classification.get("campaign_family") or "unknown",
+                campaign_subtype=classification.get("campaign_subtype") or "unknown",
+                dimension=capability,
+                capability_id=capability,
+                reason=new_hypothesis.rationale,
+            )
+            for index, capability in enumerate(new_hypothesis.required_capabilities)
+            if capability in HYPOTHESIS_EVIDENCE_POLICY[new_hypothesis.hypothesis_type]["allowed_capabilities"]
+        ]
+        expected_prerequisites, expected_confirmations, expected_rejections = _rule_codes_for_requests(trusted_requests)
+        confirmation_codes = [
+            code for code in new_hypothesis.confirmation_rule_codes if code in expected_confirmations
+        ] or expected_confirmations
+        hypothesis_payload = {
+            "hypothesis_id": new_hypothesis.hypothesis_id,
+            "hypothesis_type": new_hypothesis.hypothesis_type,
+            "parent_hypothesis_id": new_hypothesis.parent_hypothesis_id,
+            "supersedes_hypothesis_id": new_hypothesis.supersedes_hypothesis_id,
+            "campaign_name": new_hypothesis.campaign_name,
+            "campaign_family": classification.get("campaign_family") or "unknown",
+            "campaign_subtype": classification.get("campaign_subtype") or "unknown",
+            "observed_fact": new_hypothesis.rationale,
+            "hypothesis": new_hypothesis.hypothesis,
+            "current_status": "unverified",
+            "fact_ids": bound_fact_ids,
+            "rationale": new_hypothesis.rationale,
+            "required_capabilities": new_hypothesis.required_capabilities,
+            "optional_capabilities": [],
+            "forbidden_capabilities": list(classification.get("forbidden_capabilities") or []),
+            "confirmation_rules": [],
+            "rejection_rules": [],
+            "prerequisite_rule_codes": [
+                code for code in new_hypothesis.prerequisite_rule_codes if code in expected_prerequisites
+            ] or expected_prerequisites,
+            "confirmation_rule_codes": confirmation_codes,
+            "rejection_rule_codes": [
+                code for code in new_hypothesis.rejection_rule_codes if code in expected_rejections
+            ] or expected_rejections,
+            "stop_conditions": [],
+            "data_requests": [],
+        }
+        hypotheses[new_hypothesis.hypothesis_id] = hypothesis_payload
+        new_hypothesis_ids.add(new_hypothesis.hypothesis_id)
+        request_items = list(new_hypothesis.requests)
+        if not request_items:
+            request_items = [
+                AuditNextRoundRequest(
+                    hypothesis_id=new_hypothesis.hypothesis_id,
+                    capability_id=capability_id,
+                    reason=new_hypothesis.rationale,
+                    expected_information_gain="Test the new independent causal hypothesis.",
+                    required_for_conclusion=True,
+                )
+                for capability_id in new_hypothesis.required_capabilities
+            ]
+        for item in request_items:
+            if item.hypothesis_id != new_hypothesis.hypothesis_id:
+                continue
+            append_request(item, hypothesis_payload)
+
+    for item in plan.existing_hypothesis_requests[:remaining]:
+        hypothesis = hypotheses.get(item.hypothesis_id)
+        if not hypothesis or (verifications.get(item.hypothesis_id) or {}).get("status") == "rejected":
+            continue
+        append_request(item, hypothesis)
+
+    accepted, rejected = validate_audit_data_requests(candidates)
+    rejected = validation_rejections + rejected
+    active_ids = list(dict.fromkeys(item.hypothesis_id for item in accepted))[:5]
+    active_set = set(active_ids)
+    accepted = [item for item in accepted if item.hypothesis_id in active_set]
+    for hypothesis_id in active_ids:
+        _extend_hypothesis_contract(
+            hypotheses[hypothesis_id],
+            [item for item in accepted if item.hypothesis_id == hypothesis_id],
+        )
+    for hypothesis_id in new_hypothesis_ids - set(active_ids):
+        hypotheses[hypothesis_id]["current_status"] = "unverified"
+        hypotheses[hypothesis_id]["remaining_data_needed"] = list(
+            hypotheses[hypothesis_id].get("required_capabilities") or []
+        )
+    snapshot["activeHypothesisIds"] = active_ids
+    _sync_active_investigation_plan(snapshot)
+    return accepted, rejected
+
+
+def _apply_next_round_requests(snapshot: dict[str, Any], requests: list[AuditDataRequest]) -> None:
+    runtime = _audit_runtime(snapshot)
+    if snapshot.get("investigationRounds"):
+        previous_round = snapshot["investigationRounds"][-1]
+        previous_round["completed_at"] = _now().isoformat()
+        previous_round["stop_reason"] = "next_level_requested"
+    runtime.pop("stopReason", None)
+    runtime["investigationRound"] = int(runtime.get("investigationRound") or 1) + 1
+    runtime["requestsCount"] = int(runtime.get("requestsCount") or 0) + len(requests)
+    snapshot["validatedDataRequests"] = (snapshot.get("validatedDataRequests") or []) + [
+        item.model_dump(mode="json") for item in requests
+    ]
+    snapshot["pendingDataRequests"] = [item.model_dump(mode="json") for item in requests]
+    snapshot["processingDataRequests"] = []
+    names = {request.campaign_name for request in requests}
+    round_facts = [
+        item for item in (snapshot.get("observedFacts") or []) if item.get("campaign_name") in names
+    ]
+    hypothesis_ids = {request.hypothesis_id for request in requests}
+    snapshot["activeHypothesisIds"] = list(dict.fromkeys(request.hypothesis_id for request in requests))[:5]
+    registry = _hypothesis_registry(snapshot)
+    canonical_hypotheses = [registry[item] for item in snapshot["activeHypothesisIds"] if item in registry]
+    for hypothesis in canonical_hypotheses:
+        if hypothesis.get("hypothesis_id") not in hypothesis_ids:
+            continue
+        if hypothesis.get("current_status") != "rejected" and hypothesis.get("status") != "rejected":
+            hypothesis["current_status"] = "unverified"
+        existing_requests = hypothesis.setdefault("data_requests", [])
+        existing_ids = {item.get("request_id") for item in existing_requests}
+        existing_requests.extend(
+            request.model_dump(mode="json")
+            for request in requests
+            if request.hypothesis_id == hypothesis.get("hypothesis_id")
+            and request.request_id not in existing_ids
+        )
+        _extend_hypothesis_contract(
+            hypothesis,
+            [request for request in requests if request.hypothesis_id == hypothesis.get("hypothesis_id")],
+        )
+    prior_hypotheses = list(canonical_hypotheses) + [
+        item
+        for round_item in (snapshot.get("investigationRounds") or [])
+        for item in (round_item.get("hypotheses") or [])
+        if item.get("hypothesis_id") in hypothesis_ids
+    ]
+    round_hypotheses = [
+        {**item, "status": "collecting_data", "investigation_round": runtime["investigationRound"]}
+        for item in {item.get("hypothesis_id"): item for item in prior_hypotheses}.values()
+    ]
+    snapshot.setdefault("investigationRounds", []).append({
+        "round_number": runtime["investigationRound"],
+        "observed_facts": round_facts,
+        "hypotheses": round_hypotheses,
+        "planned_requests": [item.model_dump(mode="json") for item in requests],
+        "completed_requests": [],
+        "pending_requests": [item.model_dump(mode="json") for item in requests],
+        "processing_requests": [],
+        "failed_requests": [],
+        "verification_results": [],
+        "started_at": _now().isoformat(),
+        "completed_at": None,
+        "stop_reason": None,
+    })
+    _sync_active_investigation_plan(snapshot)
 
 
 def build_compact_audit_context(
@@ -756,6 +2068,7 @@ def build_compact_audit_context(
     search_items = search.get("insights") if isinstance(search.get("insights"), list) else []
     query_risks = [_query_snapshot(item) for item in search_items[:10] if isinstance(item, dict)] if options.get("include_search_queries", True) else []
     dynamics = context.get("campaign_dynamics_analysis") if isinstance(context.get("campaign_dynamics_analysis"), dict) else {}
+    dynamics_campaigns = dynamics.get("campaignDynamics") if isinstance(dynamics.get("campaignDynamics"), dict) else {}
     business = context.get("business_context") if isinstance(context.get("business_context"), dict) else {}
     audit = context.get("yandex_direct_audit") if isinstance(context.get("yandex_direct_audit"), dict) else {}
     goals = context.get("goals") if isinstance(context.get("goals"), dict) else {}
@@ -782,7 +2095,6 @@ def build_compact_audit_context(
     snapshot = {
         "client": {
             "name": (context.get("client") or {}).get("name"),
-            "directLogin": (context.get("client") or {}).get("direct_login"),
             "targetCpa": (context.get("client") or {}).get("target_cpa"),
         },
         "businessContext": {
@@ -806,8 +2118,8 @@ def build_compact_audit_context(
         "searchQueryRisks": query_risks,
         "periodComparison": {
             "dataQuality": dynamics.get("dataQuality") or {},
-            "worstCampaigns": [_campaign_snapshot(item) for item in (dynamics.get("worstCampaigns") or [])[:5] if isinstance(item, dict)],
-            "bestCampaigns": [_campaign_snapshot(item) for item in (dynamics.get("bestCampaigns") or [])[:5] if isinstance(item, dict)],
+            "worstCampaigns": [_dynamics_campaign_snapshot(item) for item in (dynamics_campaigns.get("worstCampaigns") or [])[:5] if isinstance(item, dict)],
+            "bestCampaigns": [_dynamics_campaign_snapshot(item) for item in (dynamics_campaigns.get("bestCampaigns") or [])[:5] if isinstance(item, dict)],
         } if options.get("include_dynamics", True) else {},
         "auditFramework": {
             "score": audit.get("score"),
@@ -823,7 +2135,7 @@ def build_compact_audit_context(
         ] if options.get("include_recommendations", True) else [],
         "missingData": list(dict.fromkeys(missing_data)),
         "limitations": [
-            "Аудит использует сохранённые read-only данные DirectPilot и не применяет изменения.",
+            "Аудит использует только доступные read-only данные и не применяет изменения.",
             "Полные сырые ответы Яндекса, журнал и все поисковые запросы в AI-контекст не включаются.",
         ],
         "safeDrillDownPlan": [
@@ -896,6 +2208,22 @@ def _audit_result_contract(output_budget_tokens: int) -> dict[str, Any]:
     }
 
 
+def _audit_source_description(snapshot: dict[str, Any]) -> str:
+    source = str(
+        (snapshot.get("analysisPeriod") or {}).get("source")
+        or (snapshot.get("metadata") or {}).get("campaignEvidenceSource")
+        or "unavailable"
+    )
+    return {
+        "yandex_direct_live_report": "fresh report Яндекс.Директа",
+        "yandex_direct_live_service": "fresh service response Яндекс.Директа",
+        "yandex_direct_cached_live": "кешированный live-отчёт Яндекс.Директа",
+        "directpilot_saved_stats": "сохранённая read-only статистика DirectPilot",
+        "mixed_live_and_saved": "смешанные live и сохранённые read-only данные",
+        "unavailable": "недоступные read-only данные",
+    }.get(source, f"read-only источник {source}")
+
+
 def build_full_audit_prompt(
     snapshot: dict[str, Any],
     *,
@@ -917,7 +2245,8 @@ def build_full_audit_prompt(
         if compact_retry
         else ""
     )
-    return f"""Задача: провести полный read-only аудит Яндекс.Директа по сохранённому compact snapshot DirectPilot.
+    return f"""Задача: провести полный read-only аудит Яндекс.Директа по compact evidence projection DirectPilot.
+Фактический источник данных: {_audit_source_description(snapshot)}.
 Scope: {scope_instruction}
 Доступный максимум ответа — {output_budget_tokens} токенов. Это потолок, а не целевой объём. Дай полный, но компактный ответ.
 Не обрывай разделы и finding. Если данных много, сокращай второстепенные примеры и повторяющиеся evidence.
@@ -1010,6 +2339,10 @@ def _parse_model_json(answer: str, model_type: Any) -> tuple[Any | None, dict[st
     parsed, source_format = extract_model_json_object(answer)
     metadata: dict[str, Any] = {
         "status": "fallback",
+        "requestedResponseMode": "plain_json",
+        "actualResponseMode": "plain_json" if source_format == "plain_json" else "json_parser_fallback",
+        "parsingSource": source_format,
+        "fallbackReason": "provider_structured_output_not_configured",
         "sourceFormat": source_format,
         "parseOutcome": source_format if parsed is not None else "invalid",
         "errorCode": None,
@@ -1042,6 +2375,10 @@ def _validate_structured_result_with_metadata(
     parsed, source_format = extract_model_json_object(answer)
     parsing = {
         "status": "fallback",
+        "requestedResponseMode": "plain_json",
+        "actualResponseMode": "plain_json" if source_format == "plain_json" else "json_parser_fallback",
+        "parsingSource": source_format,
+        "fallbackReason": "provider_structured_output_not_configured",
         "sourceFormat": source_format,
         "parseOutcome": source_format if parsed is not None else "invalid",
         "errorCode": None,
@@ -1060,13 +2397,73 @@ def _validate_structured_result_with_metadata(
     try:
         validated = AiAuditResult.model_validate(parsed).model_dump(mode="json")
     except ValidationError as exc:
-        parsing["errorCode"] = "truncated_provider_response" if finish_reason == "length" else "json_schema_validation_failed"
-        parsing["parseOutcome"] = "schema_validation_failed"
         parsing.update(_validation_error_diagnostics(exc))
-        return None, parsing
+        recovered, recovery_warnings = _recover_partial_audit_result(parsed)
+        if recovered is None:
+            parsing["errorCode"] = "truncated_provider_response" if finish_reason == "length" else "json_schema_validation_failed"
+            parsing["parseOutcome"] = "schema_validation_failed"
+            return None, parsing
+        validated = recovered
+        parsing["status"] = "partial"
+        parsing["parseOutcome"] = "section_validation_recovered"
+        parsing["errorCode"] = "partial_schema_validation"
+        parsing["sectionWarnings"] = recovery_warnings
+        return _enforce_verified_result(validated, snapshot), parsing
     parsing["status"] = "success"
     parsing["errorCode"] = "truncated_provider_response" if finish_reason == "length" else None
     return _enforce_verified_result(validated, snapshot), parsing
+
+
+def _recover_partial_audit_result(parsed: dict[str, Any]) -> tuple[dict[str, Any] | None, list[str]]:
+    """Keep valid audit sections when one model-generated item is malformed."""
+
+    warnings: list[str] = []
+    if not str(parsed.get("conclusion") or "").strip() or not isinstance(parsed.get("data_quality"), dict):
+        return None, warnings
+
+    def valid_items(key: str, model: Any, maximum: int) -> list[dict[str, Any]]:
+        result = []
+        for index, item in enumerate(parsed.get(key) or []):
+            try:
+                result.append(model.model_validate(item).model_dump(mode="json"))
+            except ValidationError:
+                warnings.append(f"{key}.{index} исключён после schema validation")
+        return result[:maximum]
+
+    executive = str(parsed.get("executive_summary") or "Результат восстановлен частично; проверьте ограничения.")[:4000]
+    conclusion = str(parsed.get("conclusion") or "Доступна только валидная часть аудита.")[:4000]
+    try:
+        data_quality = AiAuditDataQuality.model_validate(parsed.get("data_quality") or {}).model_dump(mode="json")
+    except ValidationError:
+        data_quality = AiAuditDataQuality(
+            status="partial", limitations=["Раздел качества данных модели не прошёл проверку."],
+        ).model_dump(mode="json")
+        warnings.append("data_quality восстановлен безопасным fallback")
+    try:
+        drilldown = AiAuditDrilldownSummary.model_validate(parsed.get("drilldown_summary") or {}).model_dump(mode="json")
+    except ValidationError:
+        drilldown = AiAuditDrilldownSummary().model_dump(mode="json")
+        warnings.append("drilldown_summary восстановлен безопасным fallback")
+    candidate = {
+        "meta": parsed.get("meta") or {},
+        "executive_summary": executive,
+        "data_quality": data_quality,
+        "critical_findings": valid_items("critical_findings", AiAuditFinding, 5),
+        "opportunities": valid_items("opportunities", AiAuditFinding, 5),
+        "insufficient_data_campaigns": valid_items(
+            "insufficient_data_campaigns", AiAuditInsufficientDataCampaign, 100,
+        ),
+        "tracking_and_goals": parsed.get("tracking_and_goals") if isinstance(parsed.get("tracking_and_goals"), dict) else {},
+        "drilldown_summary": drilldown,
+        "action_plan": valid_items("action_plan", AiAuditAction, 10),
+        "prohibited_actions": [str(item)[:1000] for item in (parsed.get("prohibited_actions") or []) if isinstance(item, str)],
+        "limitations": [str(item)[:1000] for item in (parsed.get("limitations") or []) if isinstance(item, str)] + warnings,
+        "conclusion": conclusion,
+    }
+    try:
+        return AiAuditResult.model_validate(candidate).model_dump(mode="json"), warnings
+    except ValidationError:
+        return None, warnings
 
 
 def _validate_structured_result(
@@ -1157,7 +2554,7 @@ def _trusted_tracking_and_goals(snapshot: dict[str, Any]) -> dict[str, Any]:
 
 
 def _enforce_verified_result(result: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any]:
-    verification = {item.get("hypothesis_id"): item for item in (snapshot.get("verifiedHypotheses") or [])}
+    verification = _verification_registry(snapshot)
     for key in ("critical_findings", "opportunities"):
         for finding in result.get(key) or []:
             hypothesis_id = finding.get("hypothesis_id")
@@ -1289,7 +2686,7 @@ def _prompt_metadata(
 def _audit_runtime(snapshot: dict[str, Any]) -> dict[str, Any]:
     defaults = {
         "investigationRound": 1,
-        "maxInvestigationRounds": 2,
+        "maxInvestigationRounds": MAX_INVESTIGATION_ROUNDS,
         "requestsCount": 0,
         "providerCallsCount": 0,
         "helperProviderCallsCount": 0,
@@ -1343,6 +2740,7 @@ def _helper_stages(snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]:
     defaults = {
         "planner": {"model": AI_AUDIT_HELPER_MODEL, "status": "pending", "warningCode": None},
         "verification": {"model": AI_AUDIT_HELPER_MODEL, "status": "pending", "warningCode": None},
+        "next_round_planner": {"model": AI_AUDIT_HELPER_MODEL, "status": "pending", "warningCode": None},
     }
     for key, value in defaults.items():
         stages.setdefault(key, dict(value))
@@ -1356,6 +2754,7 @@ def _audit_models(snapshot: dict[str, Any], requested_model: str) -> dict[str, A
         "helper_model": AI_AUDIT_HELPER_MODEL,
         "planner_returned_model": None,
         "verification_returned_model": None,
+        "next_round_planner_returned_model": None,
         "final_returned_model": None,
     }
     for key, value in defaults.items():
@@ -1442,11 +2841,30 @@ def _helper_warning_messages(snapshot: dict[str, Any]) -> list[str]:
     ]
 
 
+_AI_SAMPLE_PRIVATE_KEYS = {
+    "request_hash", "campaign_id", "campaignid", "ad_group_id", "adgroupid",
+    "criterion_id", "criterionid", "organization_id", "client_id", "job_id",
+    "authorization", "client-login", "access_token", "refresh_token",
+}
+
+
+def _safe_ai_sample(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key): _safe_ai_sample(item)
+            for key, item in value.items()
+            if str(key).lower() not in _AI_SAMPLE_PRIVATE_KEYS
+        }
+    if isinstance(value, list):
+        return [_safe_ai_sample(item) for item in value]
+    return value
+
+
 def _cap_drilldown_results(results: list[dict[str, Any]], token_target: int = DRILLDOWN_TOKEN_TARGET) -> list[dict[str, Any]]:
     compact: list[dict[str, Any]] = []
     used = 0
     for original in results:
-        item = dict(original)
+        item = _safe_ai_sample(dict(original))
         rows = list(item.pop("data", []) or [])
         base_tokens = estimate_tokens(_json_dump(item))
         if used + base_tokens > token_target:
@@ -1463,10 +2881,103 @@ def _cap_drilldown_results(results: list[dict[str, Any]], token_target: int = DR
             included.append(row)
             used += row_tokens
         item["data"] = included
+        item["ai_sample_rows"] = len(included)
         if len(included) < len(rows):
             item["limitations"] = list(item.get("limitations") or []) + [f"В AI-контекст включено {len(included)} из {len(rows)} строк."]
         compact.append(item)
     return compact
+
+
+def _merge_full_drilldown_results(
+    existing: list[dict[str, Any]],
+    collected: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for item in existing + collected:
+        request_id = str(item.get("request_id") or "")
+        key = request_id or f"anonymous-{len(order)}"
+        if key not in merged:
+            order.append(key)
+        merged[key] = dict(item)
+    return [merged[key] for key in order]
+
+
+def _load_full_drilldown_results(db: Session, job: AiAuditJob) -> list[dict[str, Any]]:
+    return load_audit_evidence_results(db, job, evidence_kind="drilldown")
+
+
+def _save_full_drilldown_results(db: Session, job: AiAuditJob, results: list[dict[str, Any]]) -> None:
+    save_audit_evidence_results(db, job, evidence_kind="drilldown", results=results)
+    stored = _json_load(job.prompt_snapshot_json, {}) or {}
+    stored.pop("privateExecution", None)
+    stored["evidenceStorage"] = {
+        "kind": "persistent_reference",
+        "resultsCount": len(results),
+        "rowsCount": sum(len(item.get("data") or []) for item in results),
+    }
+    stored["fullPromptStored"] = False
+    job.prompt_snapshot_json = _json_dump(stored)
+
+
+def _load_full_baseline_results(db: Session, job: AiAuditJob) -> list[dict[str, Any]]:
+    return load_audit_evidence_results(db, job, evidence_kind="baseline")
+
+
+def _save_full_baseline_results(db: Session, job: AiAuditJob, results: list[dict[str, Any]]) -> None:
+    save_audit_evidence_results(db, job, evidence_kind="baseline", results=results)
+
+
+def _refresh_baseline_projections(snapshot: dict[str, Any], full_results: list[dict[str, Any]]) -> None:
+    samples = _cap_drilldown_results(full_results)
+    snapshot["baselineEvidenceSummary"] = [{
+        "requestId": item.get("request_id"),
+        "capabilityId": item.get("capability_id") or item.get("dimension"),
+        "status": item.get("status"),
+        "source": item.get("source"),
+        "rowsReceived": int(item.get("rows_total") or len(item.get("data") or [])),
+        "rowsAnalyzed": len(item.get("data") or []),
+        "rowsSentToAi": len((sample.get("data") or [])),
+    } for item, sample in zip(full_results, samples)]
+    snapshot["aiBaselineSamples"] = samples
+
+
+def _drilldown_evidence_summaries(
+    snapshot: dict[str, Any], full_results: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    target_cpa = float((snapshot.get("targetKpis") or {}).get("targetCpa") or 0)
+    period_days = int((snapshot.get("analysisPeriod") or {}).get("days") or 30)
+    summaries = []
+    for item in full_results:
+        summary, rules = evaluate_capability_evidence(
+            item, target_cpa=target_cpa, period_days=period_days,
+        )
+        capability_id = str(item.get("capability_id") or item.get("dimension") or "")
+        confirmation_code = CONFIRMATION_RULE_BY_CAPABILITY.get(capability_id)
+        rejection_code = REJECTION_RULE_BY_CAPABILITY.get(capability_id)
+        numeric_counts = {"known": 0, "missing": 0, "invalid": 0}
+        for row in item.get("data") or []:
+            for key, value in row.items():
+                key_text = str(key).lower()
+                if key_text in {"impressions", "clicks", "cost", "ctr", "avg_cpc", "conversions", "cpa", "goal_conversions", "goal_cpa", "conversion_rate"} or key_text.startswith(("conversions_", "cost_per_conversion_", "conversion_rate_")):
+                    numeric_counts[parse_numeric_metric(value).state] += 1
+        summaries.append({
+            **summary,
+            "numeric_state_counts": numeric_counts,
+            "confirmation_rules": [rule for rule in rules if rule.get("rule_code") == confirmation_code],
+            "rejection_rules": [rule for rule in rules if rule.get("rule_code") == rejection_code],
+        })
+    return summaries
+
+
+def _refresh_drilldown_projections(
+    snapshot: dict[str, Any], full_results: list[dict[str, Any]],
+) -> None:
+    samples = _cap_drilldown_results(full_results)
+    snapshot["drilldownEvidenceSummaries"] = _drilldown_evidence_summaries(snapshot, full_results)
+    snapshot["aiDrilldownSamples"] = samples
+    # Compatibility alias for existing metadata/UI paths. Backend evaluation never reads it.
+    snapshot["drilldownResults"] = samples
 
 
 def _merge_drilldown_results(
@@ -1602,7 +3113,7 @@ def recover_stale_audit_job(job: AiAuditJob, now: datetime | None = None) -> boo
         job.current_stage,
         job.stage_attempt,
     )
-    if job.current_stage in {"create_investigation_plan", "verify_hypotheses"}:
+    if job.current_stage in {"create_investigation_plan", "verify_hypotheses", "plan_next_investigation_round"}:
         snapshot = _json_load(job.context_snapshot_json, {}) or {}
         runtime = _audit_runtime(snapshot)
         if job.current_stage == "create_investigation_plan":
@@ -1614,14 +3125,24 @@ def recover_stale_audit_job(job: AiAuditJob, now: datetime | None = None) -> boo
             next_stage = "validate_data_requests"
             progress_percent = 40
             prompt_tokens = int(runtime.get("plannerPromptTokensEstimated") or 0)
-        else:
-            snapshot["verifiedHypotheses"] = _verification_fallback(snapshot).model_dump(mode="json")["verifications"]
+        elif job.current_stage == "verify_hypotheses":
+            verification = _verification_fallback(snapshot)
+            _apply_verification_statuses(snapshot, verification)
             stage_name = "verification"
             warning_code = "verification_fallback_used"
             message = "AI-проверка гипотез не ответила; неподтверждённые выводы безопасно помечены как требующие проверки."
-            next_stage = "generate_answer"
+            next_stage = "plan_next_investigation_round"
             progress_percent = 78
             prompt_tokens = int(runtime.get("verificationPromptTokensEstimated") or 0)
+        else:
+            stage_name = "next_round_planner"
+            warning_code = "next_round_planner_fallback_used"
+            message = "AI-планировщик следующего раунда не ответил; используется безопасный backend fallback."
+            fallback_requests = _second_round_requests(snapshot)
+            snapshot["fallbackNextRoundRequests"] = [item.model_dump(mode="json") for item in fallback_requests]
+            next_stage = "apply_next_investigation_round"
+            progress_percent = 74
+            prompt_tokens = int(runtime.get("nextRoundPromptTokensEstimated") or 0)
         _append_helper_fallback(
             snapshot,
             job_id=job.id,
@@ -1749,7 +3270,7 @@ def get_audit_job(db: Session, job_id: str, *, organization_id: str) -> AiAuditJ
     return job
 
 
-def _context_metadata(job: AiAuditJob) -> dict[str, Any]:
+def _context_metadata(job: AiAuditJob, db: Session | None = None) -> dict[str, Any]:
     snapshot = _json_load(job.context_snapshot_json, {}) or {}
     drilldowns = snapshot.get("drilldownResults") or []
     runtime = snapshot.get("auditRuntime") or {}
@@ -1758,18 +3279,97 @@ def _context_metadata(job: AiAuditJob) -> dict[str, Any]:
     for item in drilldowns:
         value = str(item.get("status") or "unknown")
         status_counts[value] = status_counts.get(value, 0) + 1
+    result_by_request = {item.get("request_id"): item for item in drilldowns}
+    public_rounds = []
+    for round_item in snapshot.get("investigationRounds") or []:
+        public_rounds.append({
+            "roundNumber": round_item.get("round_number"),
+            "facts": [
+                {
+                    "factId": item.get("fact_id"), "campaignName": item.get("campaign_name"),
+                    "metric": item.get("metric"), "evidence": item.get("evidence") or [],
+                    "sufficientData": bool(item.get("sufficient_data")),
+                }
+                for item in (round_item.get("observed_facts") or [])
+            ],
+            "hypotheses": [
+                {
+                    "hypothesisId": item.get("hypothesis_id"),
+                    "hypothesisType": item.get("hypothesis_type"),
+                    "parentHypothesisId": item.get("parent_hypothesis_id"),
+                    "factIds": item.get("fact_ids") or [],
+                    "campaignName": item.get("campaign_name"),
+                    "hypothesis": item.get("hypothesis"),
+                    "rationale": item.get("rationale"),
+                    "status": item.get("status") or "proposed",
+                    "priority": item.get("priority") or "medium",
+                    "requiredCapabilities": item.get("required_capabilities") or [],
+                    "remainingDataNeeded": item.get("remaining_data_needed") or [],
+                }
+                for item in (round_item.get("hypotheses") or [])
+            ],
+            "requests": [
+                {
+                    "requestId": item.get("request_id"),
+                    "hypothesisId": item.get("hypothesis_id"),
+                    "campaignName": item.get("campaign_name"),
+                    "capabilityId": item.get("capability_id") or item.get("dimension"),
+                    "status": (result_by_request.get(item.get("request_id")) or {}).get("status") or "pending",
+                    "source": (result_by_request.get(item.get("request_id")) or {}).get("source_type"),
+                    "rows": (result_by_request.get(item.get("request_id")) or {}).get("rows_analyzed") or 0,
+                    "freshness": (result_by_request.get(item.get("request_id")) or {}).get("freshness"),
+                }
+                for item in (round_item.get("planned_requests") or [])
+            ],
+            "verifications": round_item.get("verification_results") or [],
+            "stopReason": round_item.get("stop_reason"),
+        })
+    public_trace = {
+        "publicRequestTrace": [], "requestDiagnostics": {},
+        "dataSourceSummary": {}, "dataQualitySummary": {},
+    }
+    if db is not None:
+        evidence_results = _merge_full_drilldown_results(
+            _load_full_baseline_results(db, job),
+            _load_full_drilldown_results(db, job),
+        )
+        report_jobs = list(db.scalars(select(DirectReportJob).where(
+            DirectReportJob.audit_job_id == job.id,
+            DirectReportJob.client_id == job.client_id,
+        )))
+        public_trace = build_public_audit_trace(snapshot, evidence_results, report_jobs)
+    verification_public = [
+        {
+            "hypothesisId": hypothesis_id,
+            "status": item.get("status"),
+            "summary": item.get("verification_summary"),
+            "supportingEvidence": list(item.get("supporting_evidence") or [])[:8],
+            "contradictingEvidence": list(item.get("contradicting_evidence") or [])[:8],
+            "limitations": list(item.get("limitations") or [])[:8],
+            "remainingDataNeeded": list(item.get("remaining_data_needed") or [])[:8],
+        }
+        for hypothesis_id, item in _verification_registry(snapshot).items()
+    ]
     return {
         **(snapshot.get("metadata") or {}),
         "analysisPeriod": snapshot.get("analysisPeriod") or {},
+        "cachePolicy": (snapshot.get("metadata") or {}).get("cachePolicy") or "fresh",
+        "directApiKnowledgeVersion": (snapshot.get("metadata") or {}).get("directApiKnowledgeVersion"),
         "dataCoverage": snapshot.get("dataCoverage") or {},
         "investigation": {
-            "hypothesesCount": len((snapshot.get("investigationPlan") or {}).get("hypotheses", [])),
+            "hypothesesCount": len(_hypothesis_registry(snapshot)),
+            "activeHypothesesCount": len(_active_hypothesis_ids(snapshot)),
             "requestedDimensions": requested_dimensions,
             "requestStatusCounts": status_counts,
             "verifiedStatusCounts": {
-                status_name: sum(1 for item in (snapshot.get("verifiedHypotheses") or []) if item.get("status") == status_name)
+                status_name: sum(
+                    1 for item in _verification_registry(snapshot).values()
+                    if item.get("status") == status_name
+                )
                 for status_name in ("confirmed", "partially_confirmed", "rejected", "unverified", "not_applicable")
             },
+            "rounds": public_rounds,
+            "stopReason": runtime.get("stopReason"),
             "dataRequests": {
                 "planned": int(runtime.get("requestsCount") or 0),
                 "allowed": sum(
@@ -1803,8 +3403,22 @@ def _context_metadata(job: AiAuditJob) -> dict[str, Any]:
                     (str(item.get("fetched_at")) for item in drilldowns if item.get("fetched_at")),
                     default=None,
                 ),
+                "pending": len(snapshot.get("pendingDataRequests") or []),
+                "processing": len(snapshot.get("processingDataRequests") or []),
+                "completed": len(snapshot.get("completedDataRequests") or []),
+                "failed": len(snapshot.get("failedDataRequests") or []),
+                "unavailable": len(snapshot.get("unavailableDataRequests") or []),
             },
         },
+        "investigationTree": public_rounds,
+        "publicRequestTrace": public_trace["publicRequestTrace"],
+        "requestDiagnostics": public_trace["requestDiagnostics"],
+        "verificationRegistryPublic": verification_public,
+        "activeHypothesisIds": _active_hypothesis_ids(snapshot),
+        "dataSourceSummary": public_trace["dataSourceSummary"],
+        "dataQualitySummary": public_trace["dataQualitySummary"],
+        "auditStopReason": runtime.get("stopReason"),
+        "baselineEvidenceSummary": snapshot.get("baselineEvidenceSummary") or [],
         "runtime": runtime,
         "helperStages": snapshot.get("helperStages") or {},
         "models": snapshot.get("auditModels") or {},
@@ -1872,7 +3486,7 @@ def _public_audit_result(job: AiAuditJob) -> tuple[dict[str, Any] | None, str | 
     return result, answer
 
 
-def audit_job_response(job: AiAuditJob) -> AiAuditJobResponse:
+def audit_job_response(job: AiAuditJob, db: Session | None = None) -> AiAuditJobResponse:
     result, answer = _public_audit_result(job)
     return AiAuditJobResponse(
         job_id=job.id,
@@ -1890,7 +3504,7 @@ def audit_job_response(job: AiAuditJob) -> AiAuditJobResponse:
         max_tokens=job.max_tokens,
         system_prompt_version=job.system_prompt_version,
         system_prompt_hash=job.system_prompt_hash,
-        context_metadata=_context_metadata(job),
+        context_metadata=_context_metadata(job, db),
         timings=_json_load(job.timings_json, {}),
         result=result,
         answer=answer,
@@ -1944,7 +3558,11 @@ def create_audit_job(
         max_tokens=int(options["max_tokens"]),
         system_prompt_version=str(prompt_metadata["version"]),
         system_prompt_hash=str(prompt_metadata["hash"]),
-        input_options_json=_json_dump(payload.options.model_dump()),
+        input_options_json=_json_dump({
+            **payload.options.model_dump(),
+            "cache_policy": payload.cache_policy,
+            "allow_saved_fallback": payload.allow_saved_fallback,
+        }),
         timings_json="{}",
         expires_at=now + timedelta(days=30),
     )
@@ -2062,9 +3680,13 @@ async def advance_audit_job(
                 options=_json_load(job.input_options_json, {}),
             )
             snapshot["requestedScope"] = job.requested_scope
+            snapshot.setdefault("metadata", {})["cachePolicy"] = str(
+                (_json_load(job.input_options_json, {}) or {}).get("cache_policy") or "fresh"
+            )
+            snapshot["metadata"]["directApiKnowledgeVersion"] = DIRECT_API_KNOWLEDGE_VERSION
             snapshot["auditRuntime"] = {
                 "investigationRound": 1,
-                "maxInvestigationRounds": 2,
+                "maxInvestigationRounds": MAX_INVESTIGATION_ROUNDS,
                 "requestsCount": 0,
                 "providerCallsCount": 0,
                 "helperProviderCallsCount": 0,
@@ -2100,14 +3722,78 @@ async def advance_audit_job(
             ]
             job.prompt_snapshot_json = _json_dump({"internalCampaignIds": internal_ids[:100]})
             job.status = "context_ready"
-            job.current_stage = "classify_campaigns"
+            job.current_stage = (
+                "collect_fresh_baseline"
+                if snapshot["metadata"]["cachePolicy"] == "fresh"
+                else "classify_campaigns"
+            )
             job.stage_attempt = 0
             job.progress_percent = 15
+        elif stage == "collect_fresh_baseline":
+            snapshot = _json_load(job.context_snapshot_json, {})
+            pending_source = snapshot.get("pendingBaselineRequests")
+            processing_source = snapshot.get("processingBaselineRequests") or []
+            if pending_source is None:
+                pending = _fresh_baseline_requests(snapshot)
+            else:
+                pending = [AuditDataRequest.model_validate(item) for item in pending_source]
+            processing = [AuditDataRequest.model_validate(item) for item in processing_source]
+            selected, deferred = select_live_request_batch(processing + pending)
+            input_options = _json_load(job.input_options_json, {}) or {}
+            collected, direct_api_calls = collect_audit_data_requests(
+                db,
+                job.client_id,
+                selected,
+                audit_job_id=job.id,
+                cache_policy="fresh",
+                allow_saved_fallback=bool(input_options.get("allow_saved_fallback")),
+            )
+            full_baseline_results = _merge_full_drilldown_results(
+                _load_full_baseline_results(db, job),
+                [item.model_dump(mode="json") for item in collected],
+            )
+            _save_full_baseline_results(db, job, full_baseline_results)
+            _refresh_baseline_projections(snapshot, full_baseline_results)
+            selected_by_id = {item.request_id: item for item in selected}
+            pending_ids = {item.request_id for item in pending}
+            processing_ids = {item.request_id for item in processing}
+            next_processing = [
+                selected_by_id[item.request_id].model_dump(mode="json")
+                for item in collected
+                if item.status == "processing" and item.request_id in selected_by_id
+            ]
+            next_processing.extend(item.model_dump(mode="json") for item in deferred if item.request_id in processing_ids)
+            next_pending = [item.model_dump(mode="json") for item in deferred if item.request_id in pending_ids]
+            snapshot["pendingBaselineRequests"] = next_pending
+            snapshot["processingBaselineRequests"] = next_processing
+            _refresh_direct_read_runtime(snapshot, direct_api_calls)
+            if not next_pending and not next_processing:
+                _apply_live_baseline(
+                    snapshot,
+                    full_baseline_results,
+                    allow_saved_fallback=bool(input_options.get("allow_saved_fallback")),
+                )
+            job.context_snapshot_json = _json_dump(snapshot)
+            job.status = "context_ready"
+            job.current_stage = (
+                "collect_fresh_baseline" if next_pending or next_processing else "classify_campaigns"
+            )
+            job.stage_attempt = 0
+            job.progress_percent = 18 if next_pending or next_processing else 22
+            timings["collectFreshBaselineMs"] = int(timings.get("collectFreshBaselineMs") or 0) + _elapsed_ms(started_at)
         elif stage == "classify_campaigns":
             snapshot = _json_load(job.context_snapshot_json, {})
             snapshot["campaignClassifications"] = classify_audit_campaigns(snapshot)
+            observed_facts = build_observed_facts(snapshot)
+            snapshot["observedFacts"] = [item.model_dump(mode="json") for item in observed_facts]
             base_plan = build_rule_based_investigation_plan(snapshot)
             snapshot["ruleBasedInvestigationPlan"] = base_plan.model_dump(mode="json")
+            logger.info(
+                "CASCADE_AUDIT_FACTS_CREATED audit_job_id=%s round=1 campaign_count=%s fact_count=%s",
+                job.id,
+                len(snapshot["campaignClassifications"]),
+                len(observed_facts),
+            )
             job.context_snapshot_json = _json_dump(snapshot)
             job.status = "context_ready"
             job.current_stage = "create_investigation_plan"
@@ -2253,12 +3939,44 @@ async def advance_audit_job(
         elif stage == "validate_data_requests":
             snapshot = _json_load(job.context_snapshot_json, {})
             plan = AuditInvestigationPlan.model_validate(snapshot.get("investigationPlan") or {})
+            _initialize_hypothesis_state(snapshot)
             requests = [request for hypothesis in plan.hypotheses for request in hypothesis.data_requests]
+            _log_audit_event(
+                "AUDIT_REQUEST_PLANNED", job,
+                round=1, request_count=len(requests), status="pending",
+            )
             accepted, rejected = validate_audit_data_requests(requests)
+            _log_audit_event(
+                "AUDIT_REQUEST_VALIDATED", job,
+                round=1, request_count=len(accepted), status="validated",
+            )
             runtime = _audit_runtime(snapshot)
             runtime["requestsCount"] = len(requests)
             snapshot["validatedDataRequests"] = [item.model_dump(mode="json") for item in accepted]
-            snapshot["drilldownResults"] = [item.model_dump(mode="json") for item in rejected]
+            initial_full_results = [item.model_dump(mode="json") for item in rejected]
+            _save_full_drilldown_results(db, job, initial_full_results)
+            _refresh_drilldown_projections(snapshot, initial_full_results)
+            snapshot["pendingDataRequests"] = [item.model_dump(mode="json") for item in accepted]
+            snapshot["processingDataRequests"] = []
+            snapshot["completedDataRequests"] = []
+            snapshot["failedDataRequests"] = []
+            snapshot["unavailableDataRequests"] = [item.model_dump(mode="json") for item in rejected]
+            facts = build_observed_facts(snapshot)
+            cascade_hypotheses = build_cascade_hypotheses(plan, facts, round_number=1)
+            round_state = create_investigation_round(
+                round_number=1, facts=facts, hypotheses=cascade_hypotheses, requests=accepted,
+            )
+            snapshot["investigationRounds"] = [round_state.model_dump(mode="json")]
+            logger.info(
+                "CASCADE_AUDIT_HYPOTHESES_CREATED audit_job_id=%s round=1 hypothesis_count=%s request_count=%s",
+                job.id, len(cascade_hypotheses), len(accepted),
+            )
+            logger.info(
+                "CASCADE_AUDIT_DATA_REQUESTED audit_job_id=%s round=1 capability_ids=%s request_count=%s",
+                job.id,
+                ",".join(sorted({item.capability_id or item.dimension for item in accepted})),
+                len(accepted),
+            )
             job.context_snapshot_json = _json_dump(snapshot)
             job.status = "context_ready"
             job.current_stage = "collect_live_data"
@@ -2267,31 +3985,134 @@ async def advance_audit_job(
             timings["validateDataRequestsMs"] = _elapsed_ms(started_at)
         elif stage in {"collect_drilldowns", "collect_live_data", "wait_for_offline_reports"}:
             snapshot = _json_load(job.context_snapshot_json, {})
-            requests = [AuditDataRequest.model_validate(item) for item in (snapshot.get("validatedDataRequests") or [])]
+            pending_source = (
+                snapshot.get("pendingDataRequests")
+                if "pendingDataRequests" in snapshot
+                else snapshot.get("validatedDataRequests")
+            )
+            pending = [AuditDataRequest.model_validate(item) for item in (pending_source or [])]
+            processing = [AuditDataRequest.model_validate(item) for item in (snapshot.get("processingDataRequests") or [])]
+            requests, deferred = select_live_request_batch(processing + pending)
+            for request in requests:
+                _log_audit_event(
+                    "AUDIT_REQUEST_STARTED", job,
+                    round=_audit_runtime(snapshot).get("investigationRound") or 1,
+                    capability=request.capability_id or request.dimension,
+                    status="processing",
+                )
+            input_options = _json_load(job.input_options_json, {}) or {}
+            cache_policy = str(input_options.get("cache_policy") or "fresh")
             collected, direct_api_calls = collect_audit_data_requests(
                 db,
                 job.client_id,
                 requests,
                 audit_job_id=job.id,
+                cache_policy=cache_policy,
+                allow_saved_fallback=bool(input_options.get("allow_saved_fallback")),
             )
-            snapshot["drilldownResults"] = _merge_drilldown_results(
-                snapshot.get("drilldownResults") or [],
+            full_results = _merge_full_drilldown_results(
+                _load_full_drilldown_results(db, job),
                 [item.model_dump(mode="json") for item in collected],
             )
+            _save_full_drilldown_results(db, job, full_results)
+            _refresh_drilldown_projections(snapshot, full_results)
+            for item in collected:
+                event_name = {
+                    "processing": "AUDIT_REQUEST_PROCESSING",
+                    "collected": "AUDIT_REQUEST_COMPLETED",
+                    "cached": "AUDIT_REQUEST_COMPLETED",
+                    "partial": "AUDIT_REQUEST_PARTIAL",
+                }.get(item.status, "AUDIT_REQUEST_FAILED")
+                _log_audit_event(
+                    event_name, job,
+                    round=_audit_runtime(snapshot).get("investigationRound") or 1,
+                    capability=item.capability_id or item.dimension,
+                    status=item.status,
+                    rows=item.rows_analyzed,
+                )
+                if item.status == "processing" and item.rows_analyzed:
+                    _log_audit_event(
+                        "AUDIT_REPORT_PAGE_COMPLETED", job,
+                        round=_audit_runtime(snapshot).get("investigationRound") or 1,
+                        capability=item.capability_id or item.dimension,
+                        rows=item.rows_analyzed,
+                    )
+                if item.status in AVAILABLE_AUDIT_DATA_STATUSES:
+                    _log_audit_event(
+                        "AUDIT_EVIDENCE_CALCULATED", job,
+                        round=_audit_runtime(snapshot).get("investigationRound") or 1,
+                        capability=item.capability_id or item.dimension,
+                        rows=item.rows_analyzed,
+                    )
+            requests_by_id = {item.request_id: item for item in requests}
+            next_processing = [
+                requests_by_id[item.request_id].model_dump(mode="json")
+                for item in collected
+                if item.status == "processing" and item.request_id in requests_by_id
+            ]
+            pending_ids = {item.request_id for item in pending}
+            processing_ids = {item.request_id for item in processing}
+            next_processing.extend(
+                item.model_dump(mode="json") for item in deferred if item.request_id in processing_ids
+            )
+            next_pending = [
+                item.model_dump(mode="json") for item in deferred if item.request_id in pending_ids
+            ]
+            snapshot["pendingDataRequests"] = next_pending
+            snapshot["processingDataRequests"] = next_processing
+            snapshot["completedDataRequests"] = _merge_drilldown_results(
+                snapshot.get("completedDataRequests") or [],
+                [item.model_dump(mode="json") for item in collected if item.status in AVAILABLE_AUDIT_DATA_STATUSES],
+            )
+            snapshot["failedDataRequests"] = _merge_drilldown_results(
+                snapshot.get("failedDataRequests") or [],
+                [item.model_dump(mode="json") for item in collected if item.status == "failed"],
+            )
+            snapshot["unavailableDataRequests"] = _merge_drilldown_results(
+                snapshot.get("unavailableDataRequests") or [],
+                [
+                    item.model_dump(mode="json") for item in collected
+                    if item.status in {"unavailable", "unsupported", "insufficient_data", "not_applicable"}
+                ],
+            )
+            if snapshot.get("investigationRounds"):
+                current_round = snapshot["investigationRounds"][-1]
+                current_round["pending_requests"] = next_pending
+                current_round["processing_requests"] = next_processing
+                current_round["completed_requests"] = _merge_drilldown_results(
+                    current_round.get("completed_requests") or [],
+                    [item.model_dump(mode="json") for item in collected if item.status in AVAILABLE_AUDIT_DATA_STATUSES],
+                )
+                current_round["failed_requests"] = _merge_drilldown_results(
+                    current_round.get("failed_requests") or [],
+                    [
+                        item.model_dump(mode="json") for item in collected
+                        if item.status in {"failed", "unavailable", "unsupported", "insufficient_data"}
+                    ],
+                )
             _refresh_direct_read_runtime(snapshot, direct_api_calls)
-            has_processing = any(item.status == "processing" for item in collected)
-            has_hypotheses = bool((snapshot.get("investigationPlan") or {}).get("hypotheses"))
+            has_pending = bool(next_pending)
+            has_processing = bool(next_processing)
+            has_hypotheses = bool(_active_hypotheses(snapshot))
             if not has_hypotheses:
+                snapshot["activeVerifications"] = []
                 snapshot["verifiedHypotheses"] = []
                 _set_helper_stage(snapshot, "verification", status_value="skipped_not_needed")
             job.context_snapshot_json = _json_dump(snapshot)
             job.status = "context_ready"
-            if has_processing:
+            if has_pending:
+                job.current_stage = "collect_live_data"
+            elif has_processing:
                 job.current_stage = "wait_for_offline_reports"
             else:
                 job.current_stage = "verify_hypotheses" if has_hypotheses else "generate_answer"
             job.stage_attempt = 0
-            job.progress_percent = 58 if has_processing else (65 if has_hypotheses else 78)
+            job.progress_percent = 58 if (has_pending or has_processing) else (65 if has_hypotheses else 78)
+            logger.info(
+                "CASCADE_AUDIT_DATA_COMPLETED audit_job_id=%s round=%s batch=%s pending=%s processing=%s api_calls=%s",
+                job.id, _audit_runtime(snapshot).get("investigationRound"), len(requests),
+                len(next_pending), len(next_processing), direct_api_calls,
+            )
             timings["collectLiveDataMs"] = int(timings.get("collectLiveDataMs") or 0) + _elapsed_ms(started_at)
         elif stage == "verify_hypotheses":
             execution_token = _claim_provider_stage(db, job, stage, progress_percent=70)
@@ -2340,8 +4161,8 @@ async def advance_audit_job(
                 elapsed_ms = _elapsed_ms(openrouter_started_at)
                 timings["verificationOpenrouterMs"] = elapsed_ms
                 snapshot = _json_load(job.context_snapshot_json, {})
-                verification = _verification_fallback(snapshot)
-                snapshot["verifiedHypotheses"] = verification.model_dump(mode="json")["verifications"]
+                verification = _verification_fallback(snapshot, _load_full_drilldown_results(db, job))
+                _apply_verification_statuses(snapshot, verification)
                 _append_helper_fallback(
                     snapshot,
                     job_id=job.id,
@@ -2355,7 +4176,7 @@ async def advance_audit_job(
                 )
                 job.context_snapshot_json = _json_dump(snapshot)
                 job.status = "context_ready"
-                job.current_stage = "generate_answer"
+                job.current_stage = "plan_next_investigation_round"
                 job.stage_attempt = 0
                 job.progress_percent = 78
                 _complete_provider_stage(job, stage)
@@ -2376,10 +4197,26 @@ async def advance_audit_job(
                 returned_model = str(response.get("model") or AI_AUDIT_HELPER_MODEL)
                 _audit_models(snapshot, job.model)["verification_returned_model"] = returned_model
                 verification, valid_verification, parsing = _parse_verifications(
-                    str(response.get("content") or ""), snapshot,
+                    str(response.get("content") or ""), snapshot, _load_full_drilldown_results(db, job),
                 )
-                snapshot["verifiedHypotheses"] = verification.model_dump(mode="json")["verifications"]
-                second_round: list[AuditDataRequest] = []
+                _apply_verification_statuses(snapshot, verification)
+                if snapshot.get("investigationRounds"):
+                    snapshot["investigationRounds"][-1]["verification_results"] = _active_verifications(snapshot)
+                for item in verification.verifications:
+                    _log_audit_event(
+                        "AUDIT_HYPOTHESIS_VERIFIED", job,
+                        round=_audit_runtime(snapshot).get("investigationRound") or 1,
+                        hypothesis_id=item.hypothesis_id,
+                        status=item.status,
+                    )
+                    logger.info(
+                        "CASCADE_AUDIT_HYPOTHESIS_VERIFIED audit_job_id=%s round=%s hypothesis_id=%s status=%s evidence_count=%s",
+                        job.id,
+                        _audit_runtime(snapshot).get("investigationRound") or 1,
+                        item.hypothesis_id,
+                        item.status,
+                        len(item.supporting_evidence),
+                    )
                 if valid_verification:
                     _set_helper_stage(
                         snapshot,
@@ -2388,7 +4225,6 @@ async def advance_audit_job(
                         returned_model=returned_model,
                         parsing=parsing,
                     )
-                    second_round = _second_round_requests(snapshot)
                     usage = response.get("usage") if isinstance(response.get("usage"), dict) else {}
                     logger.info(
                         "AI_AUDIT_HELPER_STAGE_COMPLETED job_id=%s stage=%s helper_model=%s elapsed_ms=%s "
@@ -2413,17 +4249,170 @@ async def advance_audit_job(
                         prompt_tokens=int((_audit_runtime(snapshot).get("verificationPromptTokensEstimated") or 0)),
                         parsing=parsing,
                     )
-                if second_round:
-                    runtime = _audit_runtime(snapshot)
-                    runtime["investigationRound"] = 2
-                    runtime["requestsCount"] = int(runtime.get("requestsCount") or 0) + len(second_round)
-                    snapshot["validatedDataRequests"] = [item.model_dump(mode="json") for item in second_round]
                 job.context_snapshot_json = _json_dump(snapshot)
                 job.status = "context_ready"
-                job.current_stage = "collect_live_data" if second_round else "generate_answer"
+                job.current_stage = "plan_next_investigation_round"
                 job.stage_attempt = 0
-                job.progress_percent = 68 if second_round else 78
+                job.progress_percent = 72
                 _complete_provider_stage(job, stage)
+        elif stage == "plan_next_investigation_round":
+            runtime_snapshot = _json_load(job.context_snapshot_json, {})
+            runtime = _audit_runtime(runtime_snapshot)
+            stop_reason = round_stop_reason(
+                round_number=int(runtime.get("investigationRound") or 1),
+                pending=len(runtime_snapshot.get("pendingDataRequests") or []),
+                processing=len(runtime_snapshot.get("processingDataRequests") or []),
+                verifications=_active_verifications(runtime_snapshot),
+                request_count=int(runtime.get("requestsCount") or 0),
+            )
+            if stop_reason:
+                runtime["stopReason"] = stop_reason
+                job.context_snapshot_json = _json_dump(runtime_snapshot)
+                job.status = "context_ready"
+                job.current_stage = "generate_answer"
+                job.progress_percent = 78
+            else:
+                execution_token = _claim_provider_stage(db, job, stage, progress_percent=74)
+                snapshot = _json_load(job.context_snapshot_json, {})
+                prompt = build_next_round_prompt(snapshot)
+                prompt_metadata = _save_stage_prompt_metadata(
+                    job,
+                    stage,
+                    prompt,
+                    model=AI_AUDIT_HELPER_MODEL,
+                    max_tokens=AI_AUDIT_PLANNER_MAX_TOKENS,
+                    max_tokens_cap=AI_AUDIT_PLANNER_MAX_TOKENS,
+                )
+                runtime = _audit_runtime(snapshot)
+                runtime["nextRoundPromptTokensEstimated"] = int(prompt_metadata["estimatedInputTokens"] or 0)
+                _record_provider_attempt(snapshot, "helper")
+                job.context_snapshot_json = _json_dump(snapshot)
+                db.commit()
+                openrouter_started_at = perf_counter()
+                try:
+                    response = await _call_audit_provider(
+                        stage,
+                        AI_AUDIT_HELPER_MODEL,
+                        prompt,
+                        max_tokens=AI_AUDIT_PLANNER_MAX_TOKENS,
+                        max_tokens_cap=AI_AUDIT_PLANNER_MAX_TOKENS,
+                        timeout=AUDIT_STAGE_PROVIDER_TIMEOUTS[stage],
+                    )
+                except Exception as helper_exc:
+                    job, owns_result = _reload_stage_owner(
+                        db, job_id, organization_id, stage=stage, execution_token=execution_token,
+                    )
+                    if not owns_result:
+                        return job
+                    snapshot = _json_load(job.context_snapshot_json, {})
+                    next_requests = _second_round_requests(snapshot)
+                    _append_helper_fallback(
+                        snapshot,
+                        job_id=job.id,
+                        stage=stage,
+                        stage_name="next_round_planner",
+                        code="next_round_planner_fallback_used",
+                        message="AI-планировщик следующего раунда недоступен; используется backend fallback.",
+                        reason=_helper_fallback_reason(helper_exc),
+                        elapsed_ms=_elapsed_ms(openrouter_started_at),
+                        prompt_tokens=int((_audit_runtime(snapshot).get("nextRoundPromptTokensEstimated") or 0)),
+                    )
+                    valid_plan = False
+                    plan = None
+                else:
+                    job, owns_result = _reload_stage_owner(
+                        db, job_id, organization_id, stage=stage, execution_token=execution_token,
+                    )
+                    if not owns_result:
+                        return job
+                    snapshot = _json_load(job.context_snapshot_json, {})
+                    _record_provider_response(snapshot, response)
+                    returned_model = str(response.get("model") or AI_AUDIT_HELPER_MODEL)
+                    _audit_models(snapshot, job.model)["next_round_planner_returned_model"] = returned_model
+                    plan, valid_plan, parsing = _parse_next_round_plan(str(response.get("content") or ""))
+                    next_requests: list[AuditDataRequest] = []
+                    rejected_requests: list[AuditDataRequestResult] = []
+                    if valid_plan and plan is not None:
+                        next_requests, rejected_requests = _next_round_requests_from_plan(snapshot, plan)
+                        if plan.continue_investigation and not next_requests:
+                            valid_plan = False
+                    if not valid_plan:
+                        next_requests = _second_round_requests(snapshot)
+                        _append_helper_fallback(
+                            snapshot,
+                            job_id=job.id,
+                            stage=stage,
+                            stage_name="next_round_planner",
+                            code="next_round_planner_fallback_used",
+                            message="AI-планировщик вернул невалидный следующий раунд; используется backend fallback.",
+                            reason="invalid_json_or_semantics",
+                            elapsed_ms=_elapsed_ms(openrouter_started_at),
+                            prompt_tokens=int((_audit_runtime(snapshot).get("nextRoundPromptTokensEstimated") or 0)),
+                            parsing=parsing,
+                        )
+                    else:
+                        _set_helper_stage(
+                            snapshot,
+                            "next_round_planner",
+                            status_value="success",
+                            returned_model=returned_model,
+                            parsing=parsing,
+                        )
+                        snapshot["nextRoundPlan"] = plan.model_dump(mode="json")
+                        if rejected_requests:
+                            rejected_payloads = [item.model_dump(mode="json") for item in rejected_requests]
+                            full_results = _merge_full_drilldown_results(
+                                _load_full_drilldown_results(db, job), rejected_payloads,
+                            )
+                            _save_full_drilldown_results(db, job, full_results)
+                            _refresh_drilldown_projections(snapshot, full_results)
+                if next_requests:
+                    _apply_next_round_requests(snapshot, next_requests)
+                    _log_audit_event(
+                        "AUDIT_NEXT_ROUND_PLANNED", job,
+                        round=int((_audit_runtime(snapshot).get("investigationRound") or 1)) + 1,
+                        request_count=len(next_requests), status="pending",
+                    )
+                    next_stage = "collect_live_data"
+                    progress = 68
+                else:
+                    runtime = _audit_runtime(snapshot)
+                    stop_reason = (
+                        plan.stop_reason if valid_plan and plan is not None and not plan.continue_investigation
+                        else "low_expected_information_gain"
+                    )
+                    runtime["stopReason"] = stop_reason
+                    _log_audit_event(
+                        "AUDIT_INVESTIGATION_STOPPED", job,
+                        round=runtime.get("investigationRound") or 1,
+                        stop_reason=stop_reason,
+                    )
+                    if snapshot.get("investigationRounds"):
+                        snapshot["investigationRounds"][-1]["stop_reason"] = stop_reason
+                        snapshot["investigationRounds"][-1]["completed_at"] = _now().isoformat()
+                    next_stage = "generate_answer"
+                    progress = 78
+                job.context_snapshot_json = _json_dump(snapshot)
+                job.status = "context_ready"
+                job.current_stage = next_stage
+                job.stage_attempt = 0
+                job.progress_percent = progress
+                _complete_provider_stage(job, stage)
+        elif stage == "apply_next_investigation_round":
+            snapshot = _json_load(job.context_snapshot_json, {})
+            next_requests = [
+                AuditDataRequest.model_validate(item)
+                for item in snapshot.pop("fallbackNextRoundRequests", [])
+            ]
+            if next_requests:
+                _apply_next_round_requests(snapshot, next_requests)
+            else:
+                _audit_runtime(snapshot)["stopReason"] = "low_expected_information_gain"
+            job.context_snapshot_json = _json_dump(snapshot)
+            job.status = "context_ready"
+            job.current_stage = "collect_live_data" if next_requests else "generate_answer"
+            job.stage_attempt = 0
+            job.progress_percent = 68 if next_requests else 78
         elif stage == "generate_answer":
             execution_token = _claim_provider_stage(db, job, stage, progress_percent=82)
             snapshot = _json_load(job.context_snapshot_json, {})
@@ -2498,6 +4487,8 @@ async def advance_audit_job(
                 "truncated": truncated,
                 "completeness": "truncated" if truncated else ("structured" if structured else "fallback"),
                 "analysisPeriod": snapshot.get("analysisPeriod") or {},
+                "cachePolicy": (snapshot.get("metadata") or {}).get("cachePolicy") or "fresh",
+                "directApiKnowledgeVersion": (snapshot.get("metadata") or {}).get("directApiKnowledgeVersion"),
                 "dataCoverage": snapshot.get("dataCoverage") or {},
                 "usage": response.get("usage"),
                 "responseId": response.get("id"),

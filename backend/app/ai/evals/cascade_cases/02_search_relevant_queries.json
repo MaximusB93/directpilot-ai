@@ -1,0 +1,9 @@
+{
+  "id": "cascade-search-relevant-queries",
+  "title": "Search: запросы релевантны",
+  "description": "Нерелевантность должна быть отклонена, если trusted query data ей противоречит.",
+  "task": "Проверь гипотезу о нерелевантных запросах.",
+  "input_data": {"campaign_family": "search", "campaign_subtype": "search", "metric": "cpa_above_target", "queries_relevant": true},
+  "expected": {"should_find": ["высокий CPA"], "should_not_do": ["объявить запросы нерелевантными", "добавить минус-слова"], "observed_facts": ["cpa_above_target"], "expected_first_capabilities": ["ad_groups"], "expected_followup_capabilities": ["search_queries", "devices"], "rejection_rules": ["запросы релевантны"], "expected_verification_status": "rejected", "requires_human_approval": true},
+  "tags": ["cascade", "search", "rejection"]
+}

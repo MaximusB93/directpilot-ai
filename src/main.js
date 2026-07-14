@@ -1136,6 +1136,7 @@ async function startAiAudit(scope = 'full_account', requestedMessage = '') {
       selected_campaign_name: aiFeatureState.chat.selectedCampaignName || null,
       model: activeAiModel(),
       ai_preset: aiFeatureState.model.selectedPreset,
+      cache_policy: app.querySelector('[data-ai-audit-cache-policy]')?.value || 'fresh',
       options: {
         include_search_queries: true,
         include_dynamics: true,
@@ -2515,6 +2516,18 @@ app.addEventListener('input', (event) => {
 });
 
 app.addEventListener('change', (event) => {
+  if (event.target.matches('[data-audit-trace-filter]')) {
+    const container = event.target.closest('[data-audit-trace]');
+    if (!container) return;
+    const filters = Object.fromEntries(
+      [...container.querySelectorAll('[data-audit-trace-filter]')]
+        .map((input) => [input.dataset.auditTraceFilter, input.value]),
+    );
+    container.querySelectorAll('[data-audit-trace-row]').forEach((row) => {
+      row.hidden = Object.entries(filters).some(([key, value]) => value && row.dataset[key] !== value);
+    });
+    return;
+  }
   if (event.target.closest('[data-journal-filters]')) {
     journalEventHandlers.handleJournalChangeEvent(event);
     return;
