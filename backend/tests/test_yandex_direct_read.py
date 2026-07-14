@@ -8,10 +8,12 @@ from sqlalchemy.orm import Session
 
 from app.connectors.yandex_direct import YandexDirectConnector, YandexDirectReadError
 from app.db import Base
-from app.models import ClientAccount, ConnectedAccount, DirectCampaignPeriodStat, DirectReadCache, DirectReportJob, Organization
+from app.models import AiAuditJob, ClientAccount, ConnectedAccount, DirectCampaignPeriodStat, DirectReadCache, DirectReportJob, Organization
 from app.schemas import AuditDataRequest
 from app.services.audit_data_tools import collect_audit_data_requests, validate_audit_data_requests
 from app.services import yandex_direct_read as direct_read
+from app.services import ai_audit_jobs as audit_jobs
+from app.services.audit_evidence import evaluate_capability_evidence
 from app.services.yandex_direct_read_capabilities import (
     YANDEX_DIRECT_READ_CAPABILITIES,
     validate_capability_definition,
@@ -352,6 +354,135 @@ def test_goal_ids_are_split_into_valid_report_batches():
 
     assert [len(batch) for batch in batches] == [10, 10, 3]
     assert all(len(batch) <= direct_read.MAX_REPORT_GOALS for batch in batches)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(None, 0), ("", 0), ("--", 0), ("\u2014", 0), ("0", 0), ("0,5", 0.5), ("1 250,75", 1250.75)],
+)
+def test_direct_numeric_parsing_is_resilient(value, expected):
+    assert direct_read._number_or_zero(value) == expected
+
+
+def test_fresh_live_campaign_mapping_resolves_unsynced_campaign_without_public_id(monkeypatch):
+    db = _db()
+    job = AiAuditJob(
+        id="audit-live-map",
+        organization_id="org-a",
+        client_id="client-a",
+        status="context_ready",
+        current_stage="collect_fresh_baseline",
+        model="qwen/qwen3-14b",
+        system_prompt_version="test",
+        system_prompt_hash="hash",
+        prompt_snapshot_json="{}",
+    )
+    db.add(job)
+    db.commit()
+    monkeypatch.setattr(direct_read, "get_yandex_access_token_for_account", lambda *args: "secret")
+
+    def fake_get(self, service, params, *, maximum_rows, page_size):
+        assert service == "campaigns"
+        return [{"Id": 987654321, "Name": "Fresh Campaign", "Status": "ACCEPTED", "Type": "TEXT_CAMPAIGN"}]
+
+    specs = []
+
+    def fake_report(self, spec, *, processing_mode="auto"):
+        specs.append(spec)
+        return {
+            "status": "completed",
+            "rows": [{
+                "CampaignId": "987654321",
+                "CampaignName": "Fresh Campaign",
+                "Device": "MOBILE",
+                "Clicks": "40",
+                "Cost": "1000",
+                "Conversions_123_AUTO": "2",
+            }],
+            "limited_by": None,
+        }
+
+    monkeypatch.setattr(YandexDirectConnector, "paginate_service_get", fake_get)
+    monkeypatch.setattr(YandexDirectConnector, "request_report", fake_report)
+    campaign_request = _request("campaigns", family="unknown", subtype="unknown").model_copy(update={
+        "campaign_name": direct_read.ALL_CAMPAIGNS_SENTINEL,
+        "filters": {"campaign_name": direct_read.ALL_CAMPAIGNS_SENTINEL},
+    })
+    baseline = direct_read.execute_direct_read(
+        db, "client-a", campaign_request, audit_job_id=job.id, cache_policy="fresh",
+    )
+    drilldown_request = _request("devices", family="search", subtype="search").model_copy(update={
+        "campaign_name": "Fresh Campaign",
+        "filters": {"campaign_name": "Fresh Campaign"},
+    })
+    drilldown = direct_read.execute_direct_read(
+        db, "client-a", drilldown_request, audit_job_id=job.id, cache_policy="fresh",
+    )
+
+    assert baseline.result.data[0]["name"] == "Fresh Campaign"
+    assert specs[0]["SelectionCriteria"]["Filter"][0]["Values"] == ["987654321"]
+    assert drilldown.result.status == "collected"
+    assert all("campaign_id" not in row and "id" not in row for row in drilldown.result.data)
+    db.refresh(job)
+    private = direct_read._json_load(job.prompt_snapshot_json, {})["privateExecution"]
+    assert private["liveCampaignMap"][0]["campaignId"] == "987654321"
+    public_snapshot = {
+        "investigationPlan": {"hypotheses": [{
+            "hypothesis_id": "hyp-live", "campaign_name": "Fresh Campaign",
+            "campaign_family": "search", "campaign_subtype": "search",
+        }]},
+        "activeHypothesisIds": ["hyp-live"],
+        "drilldownResults": [drilldown.result.model_dump(mode="json")],
+    }
+    prompt = audit_jobs.build_verification_prompt(public_snapshot)
+    assert "987654321" not in prompt
+    assert "secret" not in prompt
+
+
+def test_goal_report_batches_preserve_all_23_goals_without_cross_goal_sum(monkeypatch):
+    db = _db()
+    client = db.get(ClientAccount, "client-a")
+    client.conversion_goal_ids = ",".join(str(index) for index in range(1, 24))
+    db.commit()
+    monkeypatch.setattr(direct_read, "get_yandex_access_token_for_account", lambda *args: "secret")
+    seen_batches = []
+
+    def fake_report(self, spec, *, processing_mode="auto"):
+        goals = [str(item) for item in spec.get("Goals") or []]
+        seen_batches.append(goals)
+        row = {
+            "CampaignId": "101",
+            "CampaignName": "Поиск Бренд",
+            "Clicks": "40",
+            "Cost": "1000",
+        }
+        row.update({f"Conversions_{goal_id}_AUTO": "1" for goal_id in goals})
+        return {"status": "completed", "rows": [row], "limited_by": None}
+
+    monkeypatch.setattr(YandexDirectConnector, "request_report", fake_report)
+    request = _request("goals", family="search", subtype="search")
+    outcome = None
+    for _ in range(3):
+        outcome = direct_read.execute_direct_read(
+            db, "client-a", request, audit_job_id="audit-goals", cache_policy="fresh",
+        )
+    assert outcome is not None and outcome.result.status == "collected"
+    assert [len(batch) for batch in seen_batches] == [10, 10, 3]
+    assert len(outcome.result.per_goal_metrics) == 23
+    assert outcome.result.selected_goal_ids == [str(index) for index in range(1, 24)]
+    assert outcome.result.aggregation_policy == "per_goal_only_no_cross_goal_sum"
+    row = outcome.result.data[0]
+    assert all(f"conversions_{goal_id}_auto" in row for goal_id in range(1, 24))
+    summary, rules = evaluate_capability_evidence(outcome.result.model_dump(mode="json"))
+    prerequisite = next(item for item in rules if item["rule_code"] == "selected_goal_data_available")
+    assert prerequisite["passed"] is True
+    conversions, available, per_goal, policy = audit_jobs._row_goal_conversion_details(
+        row, outcome.result.selected_goal_ids,
+    )
+    assert available is True
+    assert conversions == 0
+    assert len(per_goal) == 23
+    assert policy == "per_goal_only_no_cross_goal_sum"
 
 
 def test_report_pagination_persists_500_500_200_rows(monkeypatch):

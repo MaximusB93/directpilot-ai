@@ -15,6 +15,15 @@ CONFIRMATION_RULE_BY_CAPABILITY = {
     "geo": "geo_cpa_segment_gap",
     "retargeting_lists": "retargeting_list_unavailable",
 }
+REJECTION_RULE_BY_CAPABILITY = {
+    "search_queries": "search_queries_no_material_waste",
+    "ad_group_performance": "ad_group_performance_no_material_waste",
+    "keyword_performance": "keyword_performance_no_material_waste",
+    "placements": "placements_no_material_waste",
+    "devices": "devices_cpa_segments_comparable",
+    "geo": "geo_cpa_segments_comparable",
+    "retargeting_lists": "retargeting_lists_available",
+}
 
 
 @dataclass(frozen=True)
@@ -36,6 +45,29 @@ def _row_number(row: dict[str, Any], *keys: str) -> float:
         if key in row and row[key] not in (None, ""):
             return _number(row[key])
     return 0.0
+
+
+def _has_goal_metric(row: dict[str, Any]) -> bool:
+    return any(
+        str(key).lower() in {"conversions", "goal_conversions"}
+        or str(key).lower().startswith((
+            "conversions_", "cost_per_conversion_", "conversion_rate_",
+            "revenue_", "goals_roi_",
+        ))
+        for key in row
+    )
+
+
+def _row_conversion_value(row: dict[str, Any]) -> float | None:
+    for key in ("goal_conversions", "conversions"):
+        if key in row and row[key] not in (None, "", "--", "—"):
+            return _number(row[key])
+    dynamic = [
+        _number(value)
+        for key, value in row.items()
+        if str(key).lower().startswith("conversions_") and value not in (None, "", "--", "—")
+    ]
+    return dynamic[0] if len(dynamic) == 1 else None
 
 
 def evaluate_metric_sufficiency(
@@ -84,12 +116,13 @@ def evaluate_metric_sufficiency(
 
 
 def _aggregate_rows(rows: list[dict[str, Any]]) -> dict[str, float | int]:
+    conversion_values = [value for row in rows if (value := _row_conversion_value(row)) is not None]
     return {
         "rows": len(rows),
         "impressions": int(sum(_row_number(row, "impressions") for row in rows)),
         "clicks": int(sum(_row_number(row, "clicks") for row in rows)),
         "cost": round(sum(_row_number(row, "cost") for row in rows), 2),
-        "conversions": round(sum(_row_number(row, "conversions", "goal_conversions") for row in rows), 4),
+        "conversions": round(sum(conversion_values), 4),
     }
 
 
@@ -155,7 +188,7 @@ def evaluate_capability_evidence(
     if capability_id in {"search_queries", "ad_group_performance", "keyword_performance", "placements"}:
         waste_rows = [
             row for row in rows
-            if _row_number(row, "conversions", "goal_conversions") == 0
+            if _row_conversion_value(row) == 0
             and _row_number(row, "clicks") >= 20
             and _row_number(row, "cost") >= (target_cpa if target_cpa > 0 else 500)
         ]
@@ -168,11 +201,19 @@ def evaluate_capability_evidence(
             "passed": passed,
             "evidence": [f"rows={len(waste_rows)}", f"waste_cost={waste_cost:.2f}"],
         })
+        no_material_waste = bool(available and sufficiency.sufficient and rows and not waste_rows)
+        rules.append({
+            "rule_code": f"{capability_id}_no_material_waste",
+            "parameters": {**sufficiency.parameters, "minimum_clicks": 20},
+            "result": {"matching_rows": 0, "rows_checked": len(rows)},
+            "passed": no_material_waste,
+            "evidence": [f"rows_checked={len(rows)}", "material_waste_rows=0"],
+        })
     elif capability_id in {"devices", "geo"}:
         comparable = [row for row in rows if _row_number(row, "clicks") >= 15]
         cpas = [
-            _row_number(row, "cost") / _row_number(row, "conversions", "goal_conversions")
-            for row in comparable if _row_number(row, "conversions", "goal_conversions") > 0
+            _row_number(row, "cost") / float(_row_conversion_value(row) or 0)
+            for row in comparable if float(_row_conversion_value(row) or 0) > 0
         ]
         ratio = max(cpas) / min(cpas) if len(cpas) >= 2 and min(cpas) > 0 else 0
         passed = bool(available and sufficiency.sufficient and ratio >= 1.5)
@@ -181,6 +222,16 @@ def evaluate_capability_evidence(
             "parameters": {**sufficiency.parameters, "minimum_ratio": 1.5},
             "result": {"comparable_segments": len(comparable), "cpa_ratio": round(ratio, 3)},
             "passed": passed,
+            "evidence": [f"comparable_segments={len(comparable)}", f"cpa_ratio={ratio:.3f}"],
+        })
+        comparable_cpas = bool(
+            available and sufficiency.sufficient and len(cpas) >= 2 and 0 < ratio <= 1.2
+        )
+        rules.append({
+            "rule_code": f"{capability_id}_cpa_segments_comparable",
+            "parameters": {**sufficiency.parameters, "maximum_ratio": 1.2},
+            "result": {"comparable_segments": len(comparable), "cpa_ratio": round(ratio, 3)},
+            "passed": comparable_cpas,
             "evidence": [f"comparable_segments={len(comparable)}", f"cpa_ratio={ratio:.3f}"],
         })
     elif capability_id == "retargeting_lists":
@@ -193,15 +244,22 @@ def evaluate_capability_evidence(
             "passed": passed,
             "evidence": [f"unavailable_lists={len(unavailable)}"],
         })
+        all_available = bool(available and rows and not unavailable)
+        rules.append({
+            "rule_code": "retargeting_lists_available",
+            "parameters": {"requires_explicit_api_flag": True},
+            "result": {"unavailable_lists": 0, "lists": len(rows)},
+            "passed": all_available,
+            "evidence": [f"available_lists={len(rows)}"],
+        })
     elif capability_id == "goals":
-        has_goal_values = any(
-            "conversions" in row or "goal_conversions" in row for row in rows
-        )
+        has_goal_values = any(_has_goal_metric(row) for row in rows)
+        rows_with_goal_metric = sum(1 for row in rows if _has_goal_metric(row))
         passed = bool(available and rows and has_goal_values)
         rules.append({
             "rule_code": "selected_goal_data_available",
             "parameters": {"requires_goal_metric": True},
-            "result": {"rows_with_goal_metric": sum(1 for row in rows if "conversions" in row or "goal_conversions" in row)},
+            "result": {"rows_with_goal_metric": rows_with_goal_metric},
             "passed": passed,
             "evidence": [f"goal_metric_available={str(has_goal_values).lower()}"],
         })
@@ -244,6 +302,12 @@ def evaluate_hypothesis_evidence(
         confirmation_codes.update(
             rule_code
             for capability, rule_code in CONFIRMATION_RULE_BY_CAPABILITY.items()
+            if capability in requested_capabilities
+        )
+    if not rejection_codes:
+        rejection_codes.update(
+            rule_code
+            for capability, rule_code in REJECTION_RULE_BY_CAPABILITY.items()
             if capability in requested_capabilities
         )
     rules_by_code = {str(item.get("rule_code") or ""): item for item in rules}

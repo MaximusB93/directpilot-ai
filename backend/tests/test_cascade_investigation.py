@@ -351,6 +351,92 @@ def test_rejected_hypothesis_is_immutable():
     assert enforced.status == "rejected"
 
 
+def test_model_rejection_without_backend_rule_stays_unverified():
+    proposed = AuditHypothesisVerification(
+        hypothesis_id="hyp-1",
+        status="rejected",
+        verification_summary="Model claimed contradiction.",
+        contradicting_evidence=["Invented contradiction."],
+    )
+    enforced = enforce_hypothesis_verification(
+        proposed,
+        hypothesis={
+            "fact_sufficient_data": True,
+            "rejection_rule_codes": ["devices_cpa_segments_comparable"],
+        },
+        requests=[_request(1).model_dump(mode="json")],
+        results=[],
+    )
+
+    assert enforced.status == "unverified"
+    assert enforced.contradicting_evidence == []
+
+
+def test_matching_backend_rejection_rule_authorizes_rejection():
+    proposed = AuditHypothesisVerification(
+        hypothesis_id="hyp-1",
+        status="rejected",
+        verification_summary="Segments are comparable.",
+        contradicting_evidence=["Untrusted model text."],
+    )
+    request = _request(1).model_dump(mode="json")
+    result = {
+        "request_id": "request-1",
+        "hypothesis_id": "hyp-1",
+        "capability_id": "devices",
+        "dimension": "devices",
+        "status": "collected",
+        "data": [
+            {"device": "MOBILE", "clicks": 40, "cost": 2000, "conversions": 2},
+            {"device": "DESKTOP", "clicks": 40, "cost": 2100, "conversions": 2},
+        ],
+    }
+    enforced = enforce_hypothesis_verification(
+        proposed,
+        hypothesis={
+            "fact_sufficient_data": True,
+            "confirmation_rule_codes": ["devices_cpa_segment_gap"],
+            "rejection_rule_codes": ["devices_cpa_segments_comparable"],
+        },
+        requests=[request],
+        results=[result],
+    )
+
+    assert enforced.status == "rejected"
+    assert enforced.rejection_rules[0]["rule_code"] == "devices_cpa_segments_comparable"
+    assert enforced.contradicting_evidence != ["Untrusted model text."]
+
+
+def test_failed_confirmation_without_rejection_rule_is_not_rejected():
+    proposed = AuditHypothesisVerification(
+        hypothesis_id="hyp-1", status="rejected", verification_summary="No gap found."
+    )
+    request = _request(1).model_dump(mode="json")
+    result = {
+        "request_id": "request-1",
+        "hypothesis_id": "hyp-1",
+        "capability_id": "devices",
+        "dimension": "devices",
+        "status": "collected",
+        "data": [
+            {"device": "MOBILE", "clicks": 40, "cost": 2000, "conversions": 2},
+            {"device": "DESKTOP", "clicks": 40, "cost": 2100, "conversions": 2},
+        ],
+    }
+    enforced = enforce_hypothesis_verification(
+        proposed,
+        hypothesis={
+            "fact_sufficient_data": True,
+            "confirmation_rule_codes": ["devices_cpa_segment_gap"],
+            "rejection_rule_codes": ["unmatched_backend_rule"],
+        },
+        requests=[request],
+        results=[result],
+    )
+
+    assert enforced.status == "unverified"
+
+
 def test_ten_clicks_are_not_a_universal_sufficient_sample():
     decision = evaluate_metric_sufficiency(
         "high_cpa",

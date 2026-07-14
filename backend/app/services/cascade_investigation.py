@@ -49,6 +49,10 @@ def _period(snapshot: dict[str, Any]) -> AiAuditPeriod:
 def build_observed_facts(snapshot: dict[str, Any]) -> list[AuditObservedFact]:
     """Create deterministic observations. Causes remain hypotheses, never facts."""
 
+    evidence_source = str(
+        (snapshot.get("metadata") or {}).get("campaignEvidenceSource")
+        or "directpilot_campaign_stats"
+    )
     classifications = {
         item.get("campaign_name"): item for item in snapshot.get("campaignClassifications") or []
     }
@@ -123,7 +127,7 @@ def build_observed_facts(snapshot: dict[str, Any]) -> list[AuditObservedFact]:
             sample_size=clicks or impressions,
             sufficient_data=sufficient,
             evidence=evidence,
-            source="directpilot_campaign_stats",
+            source=evidence_source,
             period=period,
         ))
         dynamics = dynamics_by_campaign.get(name) or {}
@@ -294,6 +298,11 @@ def enforce_hypothesis_verification(
         for rule in backend_evaluation["matched_confirmation_rules"]
         for evidence in rule.get("evidence") or []
     ][:8]
+    trusted_contradictions = [
+        evidence
+        for rule in backend_evaluation["matched_rejection_rules"]
+        for evidence in rule.get("evidence") or []
+    ][:8]
     statuses = {item.get("status") for item in related}
     fact_sufficient = bool(hypothesis.get("fact_sufficient_data", True))
     status = proposed.status
@@ -303,8 +312,11 @@ def enforce_hypothesis_verification(
         limitations.append("Отклонённая гипотеза неизменяема; новые причины проверяются отдельной дочерней гипотезой.")
     elif related and statuses == {"not_applicable"}:
         status = "not_applicable"
-    elif proposed.contradicting_evidence and proposed.status == "rejected":
+    elif proposed.status == "rejected" and backend_evaluation["matched_rejection_rules"]:
         status = "rejected"
+    elif proposed.status == "rejected":
+        status = "unverified"
+        limitations.append("Backend не нашёл доверенного правила, подтверждающего противоречие.")
     elif (
         not backend_evaluation["has_passed_confirmation_rule"]
         or not backend_evaluation["required_prerequisites_passed"]
@@ -324,12 +336,14 @@ def enforce_hypothesis_verification(
     return proposed.model_copy(update={
         "status": status,
         "supporting_evidence": trusted if status in {"confirmed", "partially_confirmed"} else [],
+        "contradicting_evidence": trusted_contradictions if status == "rejected" else [],
         "limitations": list(dict.fromkeys(limitations))[:8],
         "remaining_data_needed": [
             str(item.get("capability_id") or item.get("dimension")) for item in missing_required
         ][:8],
         "evidence_summaries": backend_evaluation["evidence_summaries"],
         "confirmation_rules": backend_evaluation["confirmation_rules"],
+        "rejection_rules": backend_evaluation["matched_rejection_rules"],
     })
 
 

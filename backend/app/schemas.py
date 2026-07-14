@@ -680,6 +680,7 @@ class AuditDataRequest(BaseModel):
     ]
     capability_id: str | None = None
     reason: str
+    expected_information_gain: str | None = None
     period: AiAuditPeriod = Field(default_factory=AiAuditPeriod)
     filters: dict = Field(default_factory=dict)
     metrics: list[str] = Field(default_factory=list)
@@ -732,6 +733,9 @@ class AuditDataRequestResult(BaseModel):
     error_code: str | None = None
     retryable: bool = False
     next_retry_at: str | None = None
+    selected_goal_ids: list[str] = Field(default_factory=list)
+    per_goal_metrics: dict = Field(default_factory=dict)
+    aggregation_policy: str | None = None
 
 
 class AuditInvestigationHypothesis(BaseModel):
@@ -760,7 +764,7 @@ class AuditInvestigationHypothesis(BaseModel):
     confirmation_rule_codes: list[str] = Field(default_factory=list, max_length=8)
     rejection_rule_codes: list[str] = Field(default_factory=list, max_length=8)
     stop_conditions: list[str] = Field(default_factory=list, max_length=5)
-    data_requests: list[AuditDataRequest] = Field(default_factory=list, max_length=4)
+    data_requests: list[AuditDataRequest] = Field(default_factory=list, max_length=12)
 
 
 class AuditInvestigationPlan(BaseModel):
@@ -848,6 +852,7 @@ class AuditHypothesisVerification(BaseModel):
     remaining_data_needed: list[str] = Field(default_factory=list)
     evidence_summaries: list[dict] = Field(default_factory=list)
     confirmation_rules: list[dict] = Field(default_factory=list)
+    rejection_rules: list[dict] = Field(default_factory=list)
 
 
 class AuditHypothesisVerificationSet(BaseModel):
