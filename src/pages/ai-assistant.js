@@ -267,8 +267,11 @@ function renderAuditTechnicalDiagnostics(metadata, runtime, escapeHtml) {
     compact_retry_prepared: 'компактная проекция подготовлена',
     calling_provider: 'формируется финальный AI-отчёт',
     calling_provider_compact: 'формируется компактный AI-отчёт',
+    provider_context_limit_rejected: 'провайдер отклонил размер контекста',
+    retrying_after_provider_context_rejection: 'повторяем с более компактным контекстом',
     provider_completed: 'AI-отчёт сформирован',
     backend_fallback: 'сохранён безопасный backend-результат',
+    backend_fallback_after_provider_context_rejection: 'сохранён backend-результат после отказа провайдера',
   }[runtime.finalGenerationStatus] || 'финальная генерация ещё не началась';
   return `
     <details class="quietDetails">
@@ -298,7 +301,8 @@ function renderAuditTechnicalDiagnostics(metadata, runtime, escapeHtml) {
       ${baseline.length ? `<p><b>Fresh baseline:</b> получено ${escapeHtml(String(baselineRows))}, проанализировано backend ${escapeHtml(String(baselineAnalyzed))}, передано AI ${escapeHtml(String(baselineSent))}.</p>` : ''}
       <p>Источники: ${Object.entries(metadata?.dataSourceSummary || {}).map(([source, count]) => `${escapeHtml(auditSourceLabel(source))}: ${escapeHtml(String(count))}`).join(' · ') || 'ожидаются'}.</p>
       <p>Финальная проекция: ${escapeHtml(String(runtime.finalProjectionEstimatedTokens || 0))} токенов. Финальный prompt: ${escapeHtml(String(runtime.finalPromptEstimatedTokens || 0))}. Лимит модели: ${escapeHtml(String(runtime.modelContextLimit || 0))}. Резерв ответа: ${escapeHtml(String(runtime.reservedOutputTokens || 0))}. Запас безопасности: ${escapeHtml(String(runtime.safetyMarginTokens || 0))}.</p>
-      <p>Уровень сжатия: L${escapeHtml(String(runtime.finalCompactionLevel ?? '—'))}. Статус: ${escapeHtml(finalStatusLabel)}. Backend fallback: ${runtime.backendFallbackUsed ? 'да' : 'нет'}. Фактическое использование: ${escapeHtml(String(runtime.tokenUsage?.total || 0))}. Время этапов: ${escapeHtml(String(Object.values(runtime.timings || {}).reduce((sum, value) => sum + Number(value || 0), 0)))} мс.</p>
+      <p>Уровень сжатия: L${escapeHtml(String(runtime.finalCompactionLevel ?? '—'))}. Preflight помещается: ${runtime.preflightFitsModelContext === true ? 'да' : runtime.preflightFitsModelContext === false ? 'нет' : 'ещё не проверено'}. Провайдер отклонил контекст: ${runtime.providerContextRejected ? 'да' : 'нет'}. Backend fallback: ${runtime.backendFallbackUsed ? 'да' : 'нет'}.</p>
+      <p>Статус финальной генерации: ${escapeHtml(finalStatusLabel)}${runtime.providerContextErrorCode ? ` · код: ${escapeHtml(String(runtime.providerContextErrorCode))}` : ''}. Фактическое использование: ${escapeHtml(String(runtime.tokenUsage?.total || 0))}. Время этапов: ${escapeHtml(String(Object.values(runtime.timings || {}).reduce((sum, value) => sum + Number(value || 0), 0)))} мс.</p>
       <p>Качество числовых данных: известно ${escapeHtml(String(quality.known || 0))}, отсутствует ${escapeHtml(String(quality.missing || 0))}, некорректно ${escapeHtml(String(quality.invalid || 0))}. Причина остановки: ${escapeHtml(metadata?.auditStopReason || 'аудит продолжается')}.</p>
     </details>
   `;
@@ -399,7 +403,10 @@ export function renderAiAuditJob({
   const publicRounds = aiAuditJob?.context_metadata?.investigationTree || rounds;
   const cachePolicy = aiAuditJob?.context_metadata?.cachePolicy || 'fresh';
   const tokenUsage = runtime.tokenUsage || {};
-  const compactGenerationActive = ['compact_retry_pending', 'compact_retry_prepared', 'calling_provider_compact']
+  const compactGenerationActive = [
+    'compact_retry_pending', 'compact_retry_prepared', 'calling_provider_compact',
+    'retrying_after_provider_context_rejection',
+  ]
     .includes(runtime.finalGenerationStatus);
   const helperWarnings = (aiAuditJob?.context_metadata?.warnings || [])
     .filter((item) => item?.code === 'planner_fallback_used' || item?.code === 'verification_fallback_used');

@@ -2105,12 +2105,94 @@ def test_final_projection_l3_uses_backend_fallback_instead_of_failed_job(monkeyp
 
     assert completed.status == "completed"
     assert result["backendFallbackUsed"] is True
-    assert result["compactRetryAvailable"] is True
+    assert result["compactRetryAvailable"] is False
     assert result["structured"]["conclusion"]
+    assert "повторить компактную генерацию" not in result["structured"]["conclusion"].lower()
     assert result["safety"]["appliedToYandexDirect"] is False
     runtime = audit_jobs._json_load(completed.context_snapshot_json, {})["auditRuntime"]
     assert runtime["finalCompactionLevel"] == 3
     assert runtime["finalGenerationStatus"] == "backend_fallback"
+
+
+def test_provider_context_rejection_retries_once_then_completes_with_safe_fallback(monkeypatch):
+    db = _db()
+    job = _create(db)
+    job.status = "context_ready"
+    job.current_stage = "generate_answer"
+    snapshot = _realistic_oversized_final_snapshot()
+    initial_direct_api_calls = snapshot["auditRuntime"]["directApiCallsCount"]
+    initial_compaction_level = audit_jobs.build_final_audit_prompt_bundle(snapshot, job)["diagnostics"][
+        "finalCompactionLevel"
+    ]
+    job.context_snapshot_json = audit_jobs._json_dump(snapshot)
+    db.commit()
+    calls = {"provider": 0, "direct": 0}
+    raw_provider_error = "Maximum context length exceeded: raw-provider-payload-must-not-leak"
+
+    def forbidden_direct(*args, **kwargs):
+        calls["direct"] += 1
+        raise AssertionError("Context recovery must not recollect Direct evidence")
+
+    async def context_rejected(*args, **kwargs):
+        calls["provider"] += 1
+        raise HTTPException(
+            status_code=502,
+            detail={"error": {"code": "context_length_exceeded", "message": raw_provider_error}},
+        )
+
+    monkeypatch.setattr(audit_jobs, "collect_audit_data_requests", forbidden_direct)
+    monkeypatch.setattr(audit_jobs, "generate_openrouter_response", context_rejected)
+    generated = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
+    completed = asyncio.run(audit_jobs.advance_audit_job(db, generated.id, organization_id="org-a"))
+    result = audit_jobs._json_load(completed.result_json, {})
+    public = audit_jobs.audit_job_response(completed, db).model_dump(mode="json")
+    runtime = audit_jobs._json_load(completed.context_snapshot_json, {})["auditRuntime"]
+
+    assert completed.status == "completed"
+    assert completed.error_code == audit_jobs.PROVIDER_CONTEXT_OVERFLOW_CODE
+    assert calls == {"provider": 2, "direct": 0}
+    assert result["backendFallbackUsed"] is True
+    assert result["compactRetryAvailable"] is False
+    assert result["structuredParsing"]["errorCode"] == audit_jobs.PROVIDER_CONTEXT_OVERFLOW_CODE
+    assert runtime["preflightFitsModelContext"] is True
+    assert runtime["providerContextRejected"] is True
+    assert runtime["providerContextErrorCode"] == audit_jobs.PROVIDER_CONTEXT_OVERFLOW_CODE
+    assert runtime["backendFallbackUsed"] is True
+    assert runtime["finalGenerationStatus"] == "backend_fallback_after_provider_context_rejection"
+    assert runtime["finalCompactionLevel"] > initial_compaction_level
+    assert runtime["finalProviderCallsCount"] == 2
+    assert runtime["directApiCallsCount"] == initial_direct_api_calls
+    assert raw_provider_error not in audit_jobs._json_dump(public)
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        HTTPException(status_code=504, detail={"error_code": "openrouter_timeout", "message": "context window timed out"}),
+        HTTPException(status_code=429, detail={"error_code": "openrouter_rate_limited", "message": "token limit exceeded"}),
+        HTTPException(status_code=401, detail={"message": "maximum context auth error"}),
+        RuntimeError("provider unavailable"),
+    ],
+)
+def test_context_overflow_recovery_does_not_capture_unrelated_provider_errors(exc):
+    assert audit_jobs.is_provider_context_overflow(exc) is False
+
+
+def test_backend_fallback_preserves_unknown_goal_conversions():
+    db = _db()
+    job = _create(db)
+    snapshot = _realistic_oversized_final_snapshot()
+    snapshot.setdefault("accountTotals", {})["goalConversions"] = None
+
+    result = audit_jobs.build_backend_fallback_audit_result(snapshot, job)
+    data_facts = " ".join(result["data_quality"]["facts"])
+
+    assert "Конверсии по выбранным целям: недоступны." in data_facts
+    assert "Конверсии по выбранным целям: 0." not in data_facts
+
+    snapshot["accountTotals"]["goalConversions"] = 0
+    zero_result = audit_jobs.build_backend_fallback_audit_result(snapshot, job)
+    assert "Конверсии по выбранным целям: 0." in " ".join(zero_result["data_quality"]["facts"])
 
 
 def test_compact_retry_reuses_existing_evidence_and_starts_from_l2(monkeypatch):

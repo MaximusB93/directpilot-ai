@@ -102,6 +102,32 @@ CONTEXT_TOKEN_TARGET = 12000
 DRILLDOWN_TOKEN_TARGET = 18000
 FINAL_PROMPT_SAFETY_MARGIN_TOKENS = 2048
 FINAL_COMPACTION_LEVELS = (0, 1, 2, 3)
+PROVIDER_CONTEXT_OVERFLOW_CODE = "provider_context_limit_rejected"
+_PROVIDER_CONTEXT_OVERFLOW_CODES = frozenset({
+    "context_length_exceeded",
+    "context_window_exceeded",
+    "context_limit_exceeded",
+    "maximum_context_length_exceeded",
+    "prompt_too_large",
+    "prompt_too_long",
+    "input_too_long",
+    "input_tokens_exceeded",
+    "token_limit_exceeded",
+})
+_PROVIDER_CONTEXT_OVERFLOW_MARKERS = (
+    "context length",
+    "maximum context",
+    "max context",
+    "context window",
+    "prompt too large",
+    "prompt is too large",
+    "prompt too long",
+    "input too long",
+    "input tokens exceed",
+    "input token count exceeds",
+    "token limit exceeded",
+    "tokens exceed the context",
+)
 AUDIT_STAGE_LEASE_SECONDS = {
     "create_investigation_plan": 75,
     "verify_hypotheses": 85,
@@ -2540,13 +2566,56 @@ def build_final_audit_projection(
     }
 
 
+def _provider_error_fragments(value: Any, *, depth: int = 0) -> list[str]:
+    if depth > 4 or value is None:
+        return []
+    if isinstance(value, dict):
+        fragments: list[str] = []
+        for key, item in value.items():
+            if str(key).lower() in {"code", "type", "error_code", "message", "detail", "error"}:
+                fragments.extend(_provider_error_fragments(item, depth=depth + 1))
+        return fragments
+    if isinstance(value, (list, tuple)):
+        fragments = []
+        for item in value[:20]:
+            fragments.extend(_provider_error_fragments(item, depth=depth + 1))
+        return fragments
+    return [str(value)[:2000]]
+
+
+def is_provider_context_overflow(exc: Exception) -> bool:
+    """Recognize provider-confirmed context overflow without exposing provider text."""
+
+    if isinstance(exc, HTTPException) and exc.status_code in {
+        status.HTTP_401_UNAUTHORIZED,
+        status.HTTP_403_FORBIDDEN,
+        status.HTTP_408_REQUEST_TIMEOUT,
+        status.HTTP_429_TOO_MANY_REQUESTS,
+        status.HTTP_504_GATEWAY_TIMEOUT,
+    }:
+        return False
+    detail = getattr(exc, "detail", None)
+    fragments = _provider_error_fragments(detail)
+    fragments.extend(_provider_error_fragments(str(exc)))
+    normalized = " ".join(fragments).lower()
+    normalized_code = re.sub(r"[^a-z0-9]+", "_", normalized).strip("_")
+    if any(code in normalized_code for code in _PROVIDER_CONTEXT_OVERFLOW_CODES):
+        return True
+    return any(marker in normalized for marker in _PROVIDER_CONTEXT_OVERFLOW_MARKERS)
+
+
 def build_final_audit_prompt_bundle(
     snapshot: dict[str, Any],
     job: AiAuditJob,
     *,
     compact_retry: bool = False,
+    minimum_compaction_level: int | None = None,
 ) -> dict[str, Any]:
-    start_level = 2 if compact_retry else 0
+    start_level = (
+        max(0, min(int(minimum_compaction_level), 3))
+        if minimum_compaction_level is not None
+        else (2 if compact_retry else 0)
+    )
     context_limit = context_limit_for_model(job.model)
     reserved_output = max(1, min(int(job.max_tokens or 0), AI_AUDIT_FINAL_MAX_TOKENS))
     safety_margin = min(FINAL_PROMPT_SAFETY_MARGIN_TOKENS, max(512, context_limit // 50))
@@ -2567,6 +2636,9 @@ def build_final_audit_prompt_bundle(
             "safetyMarginTokens": safety_margin,
             "finalCompactionLevel": level,
             "fitsModelContext": prompt_tokens + reserved_output + safety_margin <= context_limit,
+            "preflightFitsModelContext": prompt_tokens + reserved_output + safety_margin <= context_limit,
+            "providerContextRejected": False,
+            "providerContextErrorCode": None,
         }
         candidate = {"projection": projection, "prompt": prompt, "diagnostics": diagnostics}
         if diagnostics["fitsModelContext"]:
@@ -2655,6 +2727,7 @@ def _record_final_generation_diagnostics(
         for key in (
             "finalProjectionEstimatedTokens", "finalPromptEstimatedTokens", "modelContextLimit",
             "reservedOutputTokens", "safetyMarginTokens", "finalCompactionLevel", "fitsModelContext",
+            "preflightFitsModelContext", "providerContextRejected", "providerContextErrorCode",
         )
     }
     runtime = _audit_runtime(snapshot)
@@ -3002,7 +3075,12 @@ def _enforce_verified_result(result: dict[str, Any], snapshot: dict[str, Any]) -
     return result
 
 
-def build_backend_fallback_audit_result(snapshot: dict[str, Any], job: AiAuditJob) -> dict[str, Any]:
+def build_backend_fallback_audit_result(
+    snapshot: dict[str, Any],
+    job: AiAuditJob,
+    *,
+    reason_code: str = "final_prompt_too_large",
+) -> dict[str, Any]:
     """Build a safe result from already verified backend evidence without an LLM call."""
 
     projection = build_final_audit_projection(snapshot, compaction_level=3)
@@ -3051,19 +3129,41 @@ def build_backend_fallback_audit_result(snapshot: dict[str, Any], job: AiAuditJo
             })
 
     totals = projection.get("accountTotals") or {}
+    raw_goal_conversions = (
+        totals.get("goalConversions")
+        if "goalConversions" in totals
+        else totals.get("goal_conversions")
+    )
+    goal_metric = parse_numeric_metric(raw_goal_conversions)
+    goal_conversions_label = (
+        f"{goal_metric.value:g}" if goal_metric.state == "known" and goal_metric.value is not None
+        else "недоступны"
+    )
+    cost_metric = parse_numeric_metric(totals.get("cost"))
+    cost_label = (
+        f"{cost_metric.value:g}" if cost_metric.state == "known" and cost_metric.value is not None
+        else "недоступен"
+    )
     data_facts = [
         f"Проанализировано кампаний: {(projection.get('campaignClassificationSummary') or {}).get('total') or 0}.",
-        f"Расход в доступном периоде: {totals.get('cost') or 0}.",
-        f"Конверсии по выбранным целям: {totals.get('goalConversions') or totals.get('goal_conversions') or 0}.",
+        f"Расход в доступном периоде: {cost_label}.",
+        f"Конверсии по выбранным целям: {goal_conversions_label}.",
     ]
     limitations = list(projection.get("limitations") or [])
-    fallback_limitation = "Расширенный AI-отчёт не сформирован из-за размера финального контекста."
+    fallback_limitation = (
+        "Провайдер отклонил фактический размер контекста; расширенный AI-отчёт заменён безопасным backend-результатом."
+        if reason_code == PROVIDER_CONTEXT_OVERFLOW_CODE
+        else "Расширенный AI-отчёт не сформирован из-за размера финального контекста."
+    )
     if fallback_limitation not in limitations:
         limitations.append(fallback_limitation)
     candidate = {
         "meta": _trusted_result_meta(snapshot, job, {"model": job.model}),
         "executive_summary": (
-            "Аудит завершён по собранным read-only данным. Финальный AI-запрос не отправлялся: "
+            "Аудит завершён по собранным read-only данным. Провайдер отклонил финальный контекст, "
+            "поэтому расширенный AI-текст заменён безопасным backend-результатом."
+            if reason_code == PROVIDER_CONTEXT_OVERFLOW_CODE
+            else "Аудит завершён по собранным read-only данным. Финальный AI-запрос не отправлялся: "
             "контекст не поместился в безопасный бюджет выбранной модели."
         ),
         "data_quality": {
@@ -3095,13 +3195,94 @@ def build_backend_fallback_audit_result(snapshot: dict[str, Any], job: AiAuditJo
             "Не изменять бюджеты, ставки и статусы кампаний без явного подтверждения пользователя.",
         ],
         "limitations": limitations,
-        "conclusion": (
-            "Доступен безопасный backend-результат по проверенным данным. "
-            "Для расширенного текста можно повторить компактную генерацию без повторных запросов к Директу."
-        ),
+        "conclusion": "Доступен безопасный backend-результат по уже собранным и проверенным данным.",
     }
     validated = AiAuditResult.model_validate(candidate).model_dump(mode="json")
     return _enforce_verified_result(validated, snapshot)
+
+
+def _complete_backend_fallback_stage(
+    db: Session,
+    job: AiAuditJob,
+    snapshot: dict[str, Any],
+    diagnostics: dict[str, Any],
+    timings: dict[str, Any],
+    *,
+    reason_code: str,
+    final_status: str,
+    warning: str,
+) -> AiAuditJob:
+    structured = build_backend_fallback_audit_result(snapshot, job, reason_code=reason_code)
+    warnings = _helper_warning_messages(snapshot)
+    warnings.append(warning)
+    _record_final_generation_diagnostics(
+        snapshot,
+        job,
+        diagnostics,
+        status_value=final_status,
+        backend_fallback_used=True,
+    )
+    job.context_snapshot_json = _json_dump(snapshot)
+    job.answer_text = build_audit_answer_markdown(structured, snapshot)
+    job.result_json = _json_dump({
+        "structured": structured,
+        "fallbackMarkdown": None,
+        "technicalResponse": None,
+        "structuredParsing": {
+            "status": "success",
+            "requestedResponseMode": "backend_generated",
+            "actualResponseMode": "backend_generated",
+            "parsingSource": "backend_generated",
+            "fallbackReason": reason_code,
+            "sourceFormat": "backend_generated",
+            "parseOutcome": "backend_generated",
+            "errorCode": reason_code,
+            "validationErrorsCount": 0,
+            "validationErrorPaths": [],
+            "validationErrorTypes": [],
+        },
+        "providerResponseMetadata": None,
+        "warnings": warnings,
+        "finishReason": None,
+        "truncated": False,
+        "compactRetryAvailable": False,
+        "backendFallbackUsed": True,
+        "completeness": "backend_fallback",
+        "analysisPeriod": snapshot.get("analysisPeriod") or {},
+        "cachePolicy": (snapshot.get("metadata") or {}).get("cachePolicy") or "fresh",
+        "directApiKnowledgeVersion": (snapshot.get("metadata") or {}).get("directApiKnowledgeVersion"),
+        "dataCoverage": snapshot.get("dataCoverage") or {},
+        "usage": None,
+        "responseId": None,
+        "requestTrace": {
+            "jobId": job.id,
+            "model": job.model,
+            "systemPromptVersion": job.system_prompt_version,
+            "systemPromptHash": job.system_prompt_hash[:12],
+            "context": _context_metadata(job),
+            "runtime": snapshot.get("auditRuntime") or {},
+            "models": snapshot.get("auditModels") or {},
+            "helperStages": snapshot.get("helperStages") or {},
+        },
+        "safety": {"readOnly": True, "appliedToYandexDirect": False, "requiresHumanApproval": True},
+    })
+    job.error_code = reason_code
+    job.error_message = warning
+    job.retryable = False
+    job.status = "context_ready"
+    job.current_stage = "finalize"
+    job.stage_attempt = 0
+    job.progress_percent = 95
+    _complete_provider_stage(job, "generate_answer")
+    timings["totalElapsedMs"] = max(
+        0, round((_now() - _as_aware(job.created_at or _now())).total_seconds() * 1000),
+    )
+    job.timings_json = _json_dump(timings)
+    job.stage_version += 1
+    db.commit()
+    db.refresh(job)
+    _log_timing(job, "generate_answer")
+    return job
 
 
 def _format_period_line(period: dict[str, Any]) -> str:
@@ -4105,7 +4286,6 @@ async def advance_audit_job(
         current_result = _json_load(job.result_json, {}) or {}
         if (
             current_result.get("truncated")
-            or current_result.get("backendFallbackUsed")
             or current_result.get("compactRetryAvailable")
         ):
             options = _json_load(job.input_options_json, {}) or {}
@@ -4929,77 +5109,19 @@ async def advance_audit_job(
                 status_value="compact_retry_prepared" if is_compact_retry else "prepared",
             )
             if not final_diagnostics.get("fitsModelContext"):
-                structured = build_backend_fallback_audit_result(snapshot, job)
-                warnings = _helper_warning_messages(snapshot)
-                warnings.append(
-                    "Финальная проекция не поместилась в контекст выбранной модели; "
-                    "сохранён безопасный backend-результат без вызова OpenRouter."
-                )
-                _record_final_generation_diagnostics(
-                    snapshot,
+                return _complete_backend_fallback_stage(
+                    db,
                     job,
+                    snapshot,
                     final_diagnostics,
-                    status_value="backend_fallback",
-                    backend_fallback_used=True,
+                    timings,
+                    reason_code="final_prompt_too_large",
+                    final_status="backend_fallback",
+                    warning=(
+                        "Финальная проекция не поместилась в контекст выбранной модели; "
+                        "сохранён безопасный backend-результат без вызова OpenRouter."
+                    ),
                 )
-                job.answer_text = build_audit_answer_markdown(structured, snapshot)
-                job.result_json = _json_dump({
-                    "structured": structured,
-                    "fallbackMarkdown": None,
-                    "technicalResponse": None,
-                    "structuredParsing": {
-                        "status": "success",
-                        "requestedResponseMode": "backend_generated",
-                        "actualResponseMode": "backend_generated",
-                        "parsingSource": "backend_generated",
-                        "fallbackReason": "final_prompt_too_large",
-                        "sourceFormat": "backend_generated",
-                        "parseOutcome": "backend_generated",
-                        "errorCode": "final_prompt_too_large",
-                        "validationErrorsCount": 0,
-                        "validationErrorPaths": [],
-                        "validationErrorTypes": [],
-                    },
-                    "providerResponseMetadata": None,
-                    "warnings": warnings,
-                    "finishReason": None,
-                    "truncated": False,
-                    "compactRetryAvailable": True,
-                    "backendFallbackUsed": True,
-                    "completeness": "backend_fallback",
-                    "analysisPeriod": snapshot.get("analysisPeriod") or {},
-                    "cachePolicy": (snapshot.get("metadata") or {}).get("cachePolicy") or "fresh",
-                    "directApiKnowledgeVersion": (snapshot.get("metadata") or {}).get("directApiKnowledgeVersion"),
-                    "dataCoverage": snapshot.get("dataCoverage") or {},
-                    "usage": None,
-                    "responseId": None,
-                    "requestTrace": {
-                        "jobId": job.id,
-                        "model": job.model,
-                        "systemPromptVersion": job.system_prompt_version,
-                        "systemPromptHash": job.system_prompt_hash[:12],
-                        "context": _context_metadata(job),
-                        "runtime": snapshot.get("auditRuntime") or {},
-                        "models": snapshot.get("auditModels") or {},
-                        "helperStages": snapshot.get("helperStages") or {},
-                    },
-                    "safety": {"readOnly": True, "appliedToYandexDirect": False, "requiresHumanApproval": True},
-                })
-                job.context_snapshot_json = _json_dump(snapshot)
-                job.status = "context_ready"
-                job.current_stage = "finalize"
-                job.stage_attempt = 0
-                job.progress_percent = 95
-                _complete_provider_stage(job, stage)
-                timings["totalElapsedMs"] = max(
-                    0, round((_now() - _as_aware(job.created_at or _now())).total_seconds() * 1000),
-                )
-                job.timings_json = _json_dump(timings)
-                job.stage_version += 1
-                db.commit()
-                db.refresh(job)
-                _log_timing(job, stage)
-                return job
             _record_final_generation_diagnostics(
                 snapshot,
                 job,
@@ -5010,10 +5132,107 @@ async def advance_audit_job(
             job.context_snapshot_json = _json_dump(snapshot)
             db.commit()
             openrouter_started_at = perf_counter()
-            response = await _call_audit_provider(
-                stage, job.model, prompt, max_tokens=job.max_tokens,
-                max_tokens_cap=AI_AUDIT_FINAL_MAX_TOKENS, timeout=AUDIT_STAGE_PROVIDER_TIMEOUTS[stage],
-            )
+            try:
+                response = await _call_audit_provider(
+                    stage, job.model, prompt, max_tokens=job.max_tokens,
+                    max_tokens_cap=AI_AUDIT_FINAL_MAX_TOKENS, timeout=AUDIT_STAGE_PROVIDER_TIMEOUTS[stage],
+                )
+            except Exception as provider_exc:
+                if not is_provider_context_overflow(provider_exc):
+                    raise
+                final_diagnostics["providerContextRejected"] = True
+                final_diagnostics["providerContextErrorCode"] = PROVIDER_CONTEXT_OVERFLOW_CODE
+                _record_final_generation_diagnostics(
+                    snapshot,
+                    job,
+                    final_diagnostics,
+                    status_value=PROVIDER_CONTEXT_OVERFLOW_CODE,
+                )
+                current_level = int(final_diagnostics.get("finalCompactionLevel") or 0)
+                if current_level >= 3:
+                    timings["finalAnswerOpenrouterMs"] = _elapsed_ms(openrouter_started_at)
+                    return _complete_backend_fallback_stage(
+                        db,
+                        job,
+                        snapshot,
+                        final_diagnostics,
+                        timings,
+                        reason_code=PROVIDER_CONTEXT_OVERFLOW_CODE,
+                        final_status="backend_fallback_after_provider_context_rejection",
+                        warning=(
+                            "Данные аудита собраны, но провайдер отклонил фактический размер L3-контекста; "
+                            "расширенный AI-текст заменён безопасным backend-результатом."
+                        ),
+                    )
+
+                retry_bundle = build_final_audit_prompt_bundle(
+                    snapshot,
+                    job,
+                    compact_retry=True,
+                    minimum_compaction_level=current_level + 1,
+                )
+                prompt = str(retry_bundle.get("prompt") or "")
+                retry_diagnostics = dict(retry_bundle.get("diagnostics") or {})
+                retry_diagnostics["providerContextRejected"] = True
+                retry_diagnostics["providerContextErrorCode"] = PROVIDER_CONTEXT_OVERFLOW_CODE
+                final_diagnostics = retry_diagnostics
+                _save_stage_prompt_metadata(
+                    job,
+                    stage,
+                    prompt,
+                    model=job.model,
+                    max_tokens=job.max_tokens,
+                    max_tokens_cap=AI_AUDIT_FINAL_MAX_TOKENS,
+                )
+                _record_final_generation_diagnostics(
+                    snapshot,
+                    job,
+                    final_diagnostics,
+                    status_value="retrying_after_provider_context_rejection",
+                )
+                if not final_diagnostics.get("fitsModelContext"):
+                    timings["finalAnswerOpenrouterMs"] = _elapsed_ms(openrouter_started_at)
+                    return _complete_backend_fallback_stage(
+                        db,
+                        job,
+                        snapshot,
+                        final_diagnostics,
+                        timings,
+                        reason_code=PROVIDER_CONTEXT_OVERFLOW_CODE,
+                        final_status="backend_fallback_after_provider_context_rejection",
+                        warning=(
+                            "Данные аудита собраны, но более компактная финальная проекция не поместилась "
+                            "в безопасный бюджет; сохранён backend-результат."
+                        ),
+                    )
+                _record_provider_attempt(snapshot, "final")
+                job.context_snapshot_json = _json_dump(snapshot)
+                db.commit()
+                try:
+                    response = await _call_audit_provider(
+                        stage, job.model, prompt, max_tokens=job.max_tokens,
+                        max_tokens_cap=AI_AUDIT_FINAL_MAX_TOKENS,
+                        timeout=AUDIT_STAGE_PROVIDER_TIMEOUTS[stage],
+                    )
+                except Exception as retry_exc:
+                    if not is_provider_context_overflow(retry_exc):
+                        raise
+                    final_diagnostics["providerContextRejected"] = True
+                    final_diagnostics["providerContextErrorCode"] = PROVIDER_CONTEXT_OVERFLOW_CODE
+                    timings["finalAnswerOpenrouterMs"] = _elapsed_ms(openrouter_started_at)
+                    return _complete_backend_fallback_stage(
+                        db,
+                        job,
+                        snapshot,
+                        final_diagnostics,
+                        timings,
+                        reason_code=PROVIDER_CONTEXT_OVERFLOW_CODE,
+                        final_status="backend_fallback_after_provider_context_rejection",
+                        warning=(
+                            "Данные аудита собраны, но провайдер повторно отклонил компактный контекст; "
+                            "расширенный AI-текст заменён безопасным backend-результатом."
+                        ),
+                    )
             job, owns_result = _reload_stage_owner(
                 db,
                 job_id,

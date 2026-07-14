@@ -1,6 +1,6 @@
 import { access, readFile } from 'node:fs/promises';
 import { renderSafeMarkdown } from '../src/core/markdown.js';
-import { renderAiAuditResult } from '../src/pages/ai-assistant.js';
+import { renderAiAuditJob, renderAiAuditResult } from '../src/pages/ai-assistant.js';
 import { escapeHtml } from '../src/core/html.js';
 
 const requiredFiles = [
@@ -216,6 +216,36 @@ if (technicalAuditSmoke.includes('must-not-run')
   || technicalAuditSmoke.includes('<pre>')
   || technicalAuditSmoke.includes('Технический ответ модели')) {
   failed.push(['audit technical response runtime smoke', false]);
+}
+const providerContextFallbackSmoke = renderAiAuditJob({
+  selectedClientId: 'client-1',
+  aiAuditJob: {
+    job_id: 'audit-1',
+    status: 'completed',
+    current_stage: 'finalize',
+    progress_percent: 100,
+    result: {
+      backendFallbackUsed: true,
+      compactRetryAvailable: false,
+      truncated: false,
+    },
+    context_metadata: {
+      runtime: {
+        finalCompactionLevel: 3,
+        preflightFitsModelContext: true,
+        providerContextRejected: true,
+        providerContextErrorCode: 'provider_context_limit_rejected',
+        backendFallbackUsed: true,
+        finalGenerationStatus: 'backend_fallback_after_provider_context_rejection',
+      },
+    },
+  },
+  escapeHtml,
+});
+if (providerContextFallbackSmoke.includes('data-ai-audit-compact-retry')
+  || !providerContextFallbackSmoke.includes('provider_context_limit_rejected')
+  || !providerContextFallbackSmoke.includes('L3')) {
+  failed.push(['provider context fallback UI smoke', false]);
 }
 if (failed.length > 0) {
   console.error(`Static validation failed: ${failed.map(([name]) => name).join(', ')}`);
