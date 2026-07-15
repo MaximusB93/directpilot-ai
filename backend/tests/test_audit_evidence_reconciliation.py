@@ -492,3 +492,203 @@ def test_reconciliation_is_pure_and_never_calls_direct(monkeypatch):
     audit_jobs.reconcile_collected_audit_evidence(snapshot, [_search_result()])
 
     assert snapshot["canonicalEvidenceCoverage"]["campaignScoped"]
+
+
+def _coverage_entry(
+    campaign_name: str, capability: str, *, quality: str = "sufficient",
+    quality_reason: str | None = None,
+) -> dict:
+    return {
+        "campaignName": campaign_name,
+        "capabilityId": capability,
+        "status": "collected",
+        "rowsReceived": 7,
+        "rowsAnalyzedByBackend": 7,
+        "rowsSentToAi": 7,
+        "dataQuality": quality,
+        "qualityReason": quality_reason,
+        "source": "yandex_direct_live_report",
+        "period": {"date_from": "2026-06-01", "date_to": "2026-06-30"},
+    }
+
+
+def _insufficient_result(
+    campaign_name: str, needed: list[str], *, reason: str, recommendation: str,
+) -> dict:
+    return {
+        "executive_summary": "summary",
+        "conclusion": "conclusion",
+        "critical_findings": [],
+        "opportunities": [],
+        "insufficient_data_campaigns": [{
+            "campaign_name": campaign_name,
+            "reason": reason,
+            "recommendation": recommendation,
+            "next_data_needed": needed,
+        }],
+        "drilldown_summary": {
+            "analyzed_levels": [], "not_analyzed_levels": [], "next_data_needed": [],
+        },
+        "action_plan": [],
+        "limitations": [],
+    }
+
+
+def test_partial_insufficient_data_rewrite_separates_missing_from_low_quality():
+    snapshot = _snapshot()
+    snapshot["canonicalEvidenceCoverage"] = {
+        "accountWide": [],
+        "campaignScoped": [_coverage_entry(
+            "Campaign A", "retargeting_segments",
+            quality="insufficient", quality_reason="low_data",
+        )],
+    }
+    result = _insufficient_result(
+        "Campaign A", ["retargeting_segments", "conversion_data"],
+        reason="Отсутствуют данные по сегментам ретаргетинга и конверсиям.",
+        recommendation="Повторно собрать сегменты ретаргетинга и конверсии.",
+    )
+
+    reconciled, diagnostics = audit_jobs._reconcile_structured_evidence_claims(result, snapshot)
+    item = reconciled["insufficient_data_campaigns"][0]
+
+    assert item["next_data_needed"] == ["conversion_data"]
+    assert "сегментам ретаргетинга собраны" in item["reason"]
+    assert "выборка ограничена" in item["reason"]
+    assert "конверсиям недоступны или недостаточны" in item["reason"]
+    assert "Повторно запрашивать уже собранные данные" in item["recommendation"]
+    assert diagnostics["removedFalseMissingClaims"] == 1
+    assert diagnostics["removedFreeTextConflicts"] == 2
+    assert diagnostics["requiresBackendFallback"] is False
+
+
+def test_all_collected_insufficient_data_rewrite_does_not_request_same_slice():
+    snapshot = _snapshot()
+    snapshot["canonicalEvidenceCoverage"] = {
+        "accountWide": [],
+        "campaignScoped": [_coverage_entry(
+            "Campaign A", "retargeting_segments",
+            quality="insufficient", quality_reason="low_data",
+        )],
+    }
+    result = _insufficient_result(
+        "Campaign A", ["retargeting_segments"],
+        reason="Нет данных по сегментам ретаргетинга.",
+        recommendation="Собрать сегменты ретаргетинга повторно.",
+    )
+
+    reconciled, _ = audit_jobs._reconcile_structured_evidence_claims(result, snapshot)
+    item = reconciled["insufficient_data_campaigns"][0]
+
+    assert item["next_data_needed"] == []
+    assert "выборка ограничена" in item["reason"]
+    assert "не требуется" in item["recommendation"]
+    assert "отсутств" not in item["reason"].casefold()
+
+
+def test_none_collected_preserves_insufficient_data_meaning():
+    snapshot = _snapshot()
+    snapshot["canonicalEvidenceCoverage"] = {"accountWide": [], "campaignScoped": []}
+    original_reason = "Отсутствуют данные по сегментам ретаргетинга и конверсиям."
+    original_recommendation = "Собрать сегменты ретаргетинга и конверсии."
+    result = _insufficient_result(
+        "Campaign A", ["retargeting_segments", "conversion_data"],
+        reason=original_reason, recommendation=original_recommendation,
+    )
+
+    reconciled, diagnostics = audit_jobs._reconcile_structured_evidence_claims(result, snapshot)
+    item = reconciled["insufficient_data_campaigns"][0]
+
+    assert item["next_data_needed"] == ["retargeting_segments", "conversion_data"]
+    assert item["reason"] == original_reason
+    assert item["recommendation"] == original_recommendation
+    assert diagnostics["removedFalseMissingClaims"] == 0
+    assert diagnostics["removedFreeTextConflicts"] == 0
+
+
+def test_insufficient_data_rewrite_never_uses_other_campaign_evidence():
+    snapshot = _snapshot()
+    snapshot["canonicalEvidenceCoverage"] = {
+        "accountWide": [],
+        "campaignScoped": [_coverage_entry("Campaign A", "retargeting_segments")],
+    }
+    result = _insufficient_result(
+        "Campaign B", ["retargeting_segments"],
+        reason="Нет данных по сегментам ретаргетинга.",
+        recommendation="Собрать сегменты ретаргетинга.",
+    )
+
+    reconciled, _ = audit_jobs._reconcile_structured_evidence_claims(result, snapshot)
+    item = reconciled["insufficient_data_campaigns"][0]
+
+    assert item["next_data_needed"] == ["retargeting_segments"]
+    assert item["reason"] == "Нет данных по сегментам ретаргетинга."
+
+
+def test_ambiguous_insufficient_data_scope_requires_safe_fallback():
+    snapshot = _snapshot()
+    snapshot["_trustedCampaignScopes"] = {}
+    snapshot["_ambiguousCampaignNames"] = ["Duplicate"]
+    snapshot["canonicalEvidenceCoverage"] = {
+        "accountWide": [],
+        "campaignScoped": [_coverage_entry("Duplicate", "retargeting_segments")],
+    }
+    result = _insufficient_result(
+        "Duplicate", ["retargeting_segments"],
+        reason="Сегменты ретаргетинга отсутствуют.",
+        recommendation="Собрать отсутствующие сегменты ретаргетинга.",
+    )
+
+    reconciled, diagnostics = audit_jobs._reconcile_structured_evidence_claims(result, snapshot)
+
+    assert reconciled["insufficient_data_campaigns"][0]["next_data_needed"] == ["retargeting_segments"]
+    assert diagnostics["requiresBackendFallback"] is True
+    assert diagnostics["ambiguousFreeTextConflicts"] == 2
+
+
+def test_unknown_conversion_quality_is_never_rewritten_as_zero():
+    snapshot = _snapshot()
+    snapshot["canonicalEvidenceCoverage"] = {
+        "accountWide": [],
+        "campaignScoped": [_coverage_entry(
+            "Campaign A", "conversions_by_goal",
+            quality="insufficient", quality_reason="unknown_conversion_metric",
+        )],
+    }
+    result = _insufficient_result(
+        "Campaign A", ["conversions_by_goal"],
+        reason="Нет данных по конверсиям.", recommendation="Проверить конверсии.",
+    )
+
+    reconciled, _ = audit_jobs._reconcile_structured_evidence_claims(result, snapshot)
+    item = reconciled["insufficient_data_campaigns"][0]
+
+    assert "метрика конверсий недоступна или некорректна" in item["reason"]
+    assert "конверсии: 0" not in str(reconciled).casefold()
+    assert "zero conversions" not in str(reconciled).casefold()
+
+
+def test_production_dimensions_are_removed_without_false_missing_text_or_opaque_ids():
+    snapshot = _snapshot()
+    snapshot["canonicalEvidenceCoverage"] = {
+        "accountWide": [],
+        "campaignScoped": [
+            _coverage_entry("Campaign A", "search_queries"),
+            _coverage_entry("Campaign A", "placements"),
+            _coverage_entry("Campaign A", "devices"),
+        ],
+    }
+    result = _insufficient_result(
+        "Campaign A", ["search_queries", "placement", "device"],
+        reason="Отсутствуют поисковые запросы, площадки и устройства.",
+        recommendation="Повторно запросить поисковые запросы, площадки и устройства.",
+    )
+
+    reconciled, diagnostics = audit_jobs._reconcile_structured_evidence_claims(result, snapshot)
+    public_text = str({"result": reconciled, "diagnostics": diagnostics})
+
+    assert reconciled["insufficient_data_campaigns"][0]["next_data_needed"] == []
+    assert "отсутств" not in reconciled["insufficient_data_campaigns"][0]["reason"].casefold()
+    assert "scopeKey" not in public_text
+    assert "request_id" not in public_text
+    assert "direct-id-a" not in public_text

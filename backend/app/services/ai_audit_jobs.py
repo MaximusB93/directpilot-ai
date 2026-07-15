@@ -3287,6 +3287,9 @@ def _reconcile_structured_evidence_claims(
         "devices": ("devices", "device", "устройств"),
         "geo": ("geo", "географ", "регион"),
         "goals": ("goals", "целям", "цели"),
+        "conversions_by_goal": ("conversions_by_goal", "conversion_data", "конверси"),
+        "retargeting_segments": ("retargeting_segments", "retargeting", "ретаргет"),
+        "campaign_daily_dynamics": ("campaign_daily_dynamics", "динамик"),
         "ad_group_performance": ("ad_group_performance", "ad_group", "групп объяв"),
         "keyword_performance": ("keyword_performance", "keyword", "ключев"),
         "campaign_settings": ("campaign_settings", "настройк камп"),
@@ -3297,6 +3300,26 @@ def _reconcile_structured_evidence_claims(
         "не собран", "не получен", "нет данных", "данные отсутств", "отсутств", "недоступны данные",
         "missing", "not collected", "no data", "data unavailable",
     )
+    public_capability_labels = {
+        "campaigns": "кампаниям",
+        "campaign_performance": "эффективности кампаний",
+        "campaign_daily_dynamics": "динамике кампаний",
+        "campaign_settings": "настройкам кампаний",
+        "campaign_strategy": "стратегиям кампаний",
+        "campaign_status": "статусам кампаний",
+        "conversions_by_goal": "конверсиям по выбранным целям",
+        "conversion_data": "конверсиям",
+        "goals": "целям",
+        "search_queries": "поисковым запросам",
+        "placements": "площадкам РСЯ",
+        "devices": "устройствам",
+        "geo": "географии",
+        "retargeting_segments": "сегментам ретаргетинга",
+        "audience_targets": "аудиторным сегментам",
+        "ad_group_performance": "эффективности групп объявлений",
+        "keyword_performance": "эффективности ключевых фраз",
+        "ads": "объявлениям и креативам",
+    }
 
     def evidence_for_scope(campaign_name: Any, *, account: bool = False) -> dict[str, dict[str, Any]]:
         if account:
@@ -3320,9 +3343,26 @@ def _reconcile_structured_evidence_claims(
         )
         return conflict, ambiguous
 
-    def normalize(values: Any, campaign_name: Any, *, account: bool = False) -> list[str]:
+    def public_capability_label(value: Any) -> str:
+        for candidate in capability_candidates(value):
+            if candidate in public_capability_labels:
+                return public_capability_labels[candidate]
+        return "дополнительному срезу данных"
+
+    def quality_description(evidence: dict[str, Any]) -> str:
+        reason = str(evidence.get("qualityReason") or "low_data")
+        if reason == "unknown_conversion_metric":
+            return "метрика конверсий недоступна или некорректна"
+        if reason in {"low_data", "insufficient_data", "no_rows"}:
+            return "выборка ограничена"
+        return "качество выборки ограничивает вывод"
+
+    def normalize_with_evidence(
+        values: Any, campaign_name: Any, *, account: bool = False,
+    ) -> tuple[list[str], list[dict[str, Any]]]:
         scoped = evidence_for_scope(campaign_name, account=account)
         kept: list[str] = []
+        collected: list[dict[str, Any]] = []
         for raw in values or []:
             capability = str(raw)
             evidence = next((scoped.get(candidate) for candidate in capability_candidates(capability) if scoped.get(candidate)), None)
@@ -3331,12 +3371,54 @@ def _reconcile_structured_evidence_claims(
                 continue
             canonical = str(evidence.get("capabilityId") or capability)
             removed.append({"campaignName": str(campaign_name or "account"), "capabilityId": canonical})
+            collected.append(evidence)
             if evidence.get("dataQuality") != "sufficient":
                 quality_limitations.append(
-                    f"{campaign_name or 'Аккаунт'} / {canonical}: данные собраны, "
-                    f"но вывод ограничен ({evidence.get('qualityReason') or 'low_data'})."
+                    f"{campaign_name or 'Аккаунт'}: данные по {public_capability_label(canonical)} собраны, "
+                    f"но {quality_description(evidence)}."
                 )
-        return list(dict.fromkeys(kept))[:5]
+        unique_collected = {
+            str(item.get("capabilityId") or ""): item for item in collected
+        }
+        return list(dict.fromkeys(kept))[:5], list(unique_collected.values())
+
+    def normalize(values: Any, campaign_name: Any, *, account: bool = False) -> list[str]:
+        kept, _ = normalize_with_evidence(values, campaign_name, account=account)
+        return kept
+
+    def rebuild_insufficient_data_text(
+        remaining: list[str], collected: list[dict[str, Any]],
+    ) -> tuple[str, str]:
+        sufficient = [
+            public_capability_label(item.get("capabilityId"))
+            for item in collected if item.get("dataQuality") == "sufficient"
+        ]
+        limited = [
+            (public_capability_label(item.get("capabilityId")), quality_description(item))
+            for item in collected if item.get("dataQuality") != "sufficient"
+        ]
+        missing = list(dict.fromkeys(public_capability_label(item) for item in remaining))
+        reason_parts = [f"Данные по {label} собраны." for label in dict.fromkeys(sufficient)]
+        reason_parts.extend(
+            f"Данные по {label} собраны, но {description}."
+            for label, description in dict.fromkeys(limited)
+        )
+        reason_parts.extend(f"Данные по {label} недоступны или недостаточны." for label in missing)
+
+        recommendation_parts = [
+            f"Проверить доступность и синхронизацию данных по {label}." for label in missing
+        ]
+        collected_labels = list(dict.fromkeys([*sufficient, *(label for label, _ in limited)]))
+        if collected_labels:
+            recommendation_parts.append(
+                "Повторно запрашивать уже собранные данные по "
+                f"{', '.join(collected_labels)} не требуется."
+            )
+        if not recommendation_parts:
+            recommendation_parts.append(
+                "Учитывать качество и объём уже собранной выборки без повторного запроса тех же данных."
+            )
+        return " ".join(reason_parts), " ".join(recommendation_parts)
 
     for section in ("critical_findings", "opportunities"):
         for finding in result.get(section) or []:
@@ -3361,10 +3443,19 @@ def _reconcile_structured_evidence_claims(
 
     for item in result.get("insufficient_data_campaigns") or []:
         before = list(item.get("next_data_needed") or [])
-        item["next_data_needed"] = normalize(before, item.get("campaign_name"))
-        if before and not item["next_data_needed"]:
-            item["reason"] = "Данные собраны; ограничение относится к качеству или объёму выборки."
-            item["recommendation"] = "Учитывать точную причину ограничения данных без повторного сбора того же среза."
+        campaign_name = item.get("campaign_name")
+        remaining, collected = normalize_with_evidence(before, campaign_name)
+        item["next_data_needed"] = remaining
+        if collected:
+            reason, recommendation = rebuild_insufficient_data_text(remaining, collected)
+            for field, value in (("reason", reason), ("recommendation", recommendation)):
+                if str(item.get(field) or "") != value:
+                    text_conflicts += 1
+                    item[field] = value
+        else:
+            for field in ("reason", "recommendation"):
+                _, ambiguous = text_conflict(item.get(field), campaign_name)
+                ambiguous_text_conflicts += int(ambiguous)
 
     drilldown = result.get("drilldown_summary") or {}
     globally_analyzed = sorted({str(item.get("capabilityId")) for item in account_available.values() if item.get("capabilityId")})
