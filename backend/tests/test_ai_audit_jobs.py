@@ -408,7 +408,7 @@ def test_full_staged_flow_runs_planning_verification_and_final_answer(monkeypatc
                 "finish_reason": "stop",
             }
         assert model == job.model
-        assert kwargs["max_tokens_cap"] == 10000
+        assert kwargs["max_tokens_cap"] == audit_jobs.FINAL_AUDIT_PROVIDER_MAX_TOKENS
         assert kwargs["timeout"] is audit_jobs.OPENROUTER_AUDIT_TIMEOUT
         assert "10000 токенов" not in prompt  # explicit test job uses 2500
         assert "не обрывай разделы" in prompt.lower()
@@ -1532,6 +1532,36 @@ def test_expired_generating_lease_becomes_retryable_failure_on_read():
     assert response.stage_attempt == 0
 
 
+def test_expired_final_stage_with_saved_evidence_completes_backend_fallback(monkeypatch):
+    db = _db()
+    job = _create(db)
+    snapshot = _realistic_oversized_final_snapshot()
+    initial_direct_calls = snapshot["auditRuntime"]["directApiCallsCount"]
+    job.status = "generating"
+    job.current_stage = "generate_answer"
+    job.stage_execution_token = "expired-token"
+    job.stage_started_at = datetime.now(UTC) - timedelta(minutes=5)
+    job.stage_lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    job.context_snapshot_json = audit_jobs._json_dump(snapshot)
+    db.commit()
+
+    def forbidden_direct(*args, **kwargs):
+        raise AssertionError("Stale final recovery must not recollect Direct evidence")
+
+    monkeypatch.setattr(audit_jobs, "collect_audit_data_requests", forbidden_direct)
+    recovered = audit_jobs.get_audit_job(db, job.id, organization_id="org-a")
+    result = audit_jobs._json_load(recovered.result_json, {})
+    runtime = audit_jobs._json_load(recovered.context_snapshot_json, {})["auditRuntime"]
+
+    assert recovered.status == "completed"
+    assert recovered.progress_percent == 100
+    assert recovered.answer_text
+    assert result["structured"]
+    assert result["backendFallbackUsed"] is True
+    assert runtime["finalGenerationStatus"] == "backend_fallback_after_final_stage_stale"
+    assert runtime["directApiCallsCount"] == initial_direct_calls
+
+
 def test_legacy_generating_job_without_lease_is_recovered_from_updated_at():
     db = _db()
     job = _create(db)
@@ -1671,26 +1701,54 @@ def test_nested_advance_during_provider_call_does_not_call_provider_twice(monkey
     assert generated.current_stage == "finalize"
 
 
-def test_total_timeout_does_not_leave_job_generating(monkeypatch):
+def test_total_timeout_completes_with_saved_backend_fallback(monkeypatch):
     db = _db()
     job = _create(db)
     job.status = "context_ready"
     job.current_stage = "generate_answer"
-    job.context_snapshot_json = audit_jobs._json_dump(audit_jobs.build_compact_audit_context(_context()))
+    snapshot = _realistic_oversized_final_snapshot()
+    initial_direct_calls = snapshot["auditRuntime"]["directApiCallsCount"]
+    job.context_snapshot_json = audit_jobs._json_dump(snapshot)
     db.commit()
+    calls = {"provider": 0, "direct": 0}
 
     async def slow_provider(*args, **kwargs):
+        calls["provider"] += 1
         await asyncio.sleep(0.05)
         return {"model": "qwen/qwen3-14b", "content": _structured_answer()}
 
+    def forbidden_direct(*args, **kwargs):
+        calls["direct"] += 1
+        raise AssertionError("Final timeout fallback must not recollect Direct evidence")
+
     monkeypatch.setitem(audit_jobs.AUDIT_STAGE_TOTAL_TIMEOUT_SECONDS, "generate_answer", 0.001)
     monkeypatch.setattr(audit_jobs, "generate_openrouter_response", slow_provider)
-    failed = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
+    monkeypatch.setattr(audit_jobs, "collect_audit_data_requests", forbidden_direct)
+    completed = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
+    result = audit_jobs._json_load(completed.result_json, {})
+    public = audit_jobs.audit_job_response(completed, db).model_dump(mode="json")
+    runtime = audit_jobs._json_load(completed.context_snapshot_json, {})["auditRuntime"]
 
-    assert failed.status == "failed"
-    assert failed.error_code == "openrouter_total_timeout"
-    assert failed.retryable is True
-    assert failed.stage_execution_token is None
+    assert completed.status == "completed"
+    assert completed.progress_percent == 100
+    assert completed.answer_text
+    assert result["structured"]
+    assert result["backendFallbackUsed"] is True
+    assert result["finalWarning"]["code"] == "final_provider_timeout"
+    assert result["finalWarning"]["retryable"] is True
+    assert runtime["finalGenerationStatus"] == "backend_fallback_after_provider_timeout"
+    assert runtime["providerErrorCode"] == "openrouter_total_timeout"
+    assert runtime["directApiCallsCount"] == initial_direct_calls
+    assert calls == {"provider": 1, "direct": 0}
+    assert "Authorization" not in audit_jobs._json_dump(public)
+    assert completed.stage_execution_token is None
+
+    async def forbidden_provider(*args, **kwargs):
+        raise AssertionError("Completed fallback must not call the provider again")
+
+    monkeypatch.setattr(audit_jobs, "generate_openrouter_response", forbidden_provider)
+    same_job = asyncio.run(audit_jobs.advance_audit_job(db, completed.id, organization_id="org-a"))
+    assert same_job.status == "completed"
 
 
 def test_stale_or_cancelled_job_can_be_reset_without_deletion():
@@ -1735,12 +1793,13 @@ def test_final_result_does_not_turn_rejected_or_unverified_hypotheses_into_actio
     assert safe["action_plan"][0]["action"].startswith("Собрать дополнительные данные")
 
 
-def test_timeout_is_saved_as_retryable_failure(monkeypatch):
+def test_provider_timeout_uses_fallback_but_auth_error_is_not_masked(monkeypatch):
     db = _db()
     job = _create(db)
     job.status = "context_ready"
     job.current_stage = "generate_answer"
-    job.context_snapshot_json = audit_jobs._json_dump(audit_jobs.build_compact_audit_context(_context()))
+    snapshot = _realistic_oversized_final_snapshot()
+    job.context_snapshot_json = audit_jobs._json_dump(snapshot)
     prompt = audit_jobs.build_full_audit_prompt(
         audit_jobs._json_load(job.context_snapshot_json, {}),
         output_budget_tokens=job.max_tokens,
@@ -1749,13 +1808,36 @@ def test_timeout_is_saved_as_retryable_failure(monkeypatch):
     db.commit()
 
     async def timeout(*args, **kwargs):
-        raise HTTPException(status_code=504, detail={"error_code": "openrouter_timeout", "message": "timeout", "retryable": True})
+        raise HTTPException(status_code=504, detail={
+            "error_code": "openrouter_timeout",
+            "message": "timeout",
+            "retryable": True,
+            "Authorization": "Bearer must-not-leak",
+        })
 
     monkeypatch.setattr(audit_jobs, "generate_openrouter_response", timeout)
-    failed = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
+    completed = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
+    assert completed.status == "completed"
+    assert completed.error_code == "final_provider_timeout"
+    runtime = audit_jobs._json_load(completed.context_snapshot_json, {})["auditRuntime"]
+    assert runtime["providerErrorCode"] == "openrouter_timeout"
+    assert "must-not-leak" not in audit_jobs._json_dump(
+        audit_jobs.audit_job_response(completed, db).model_dump(mode="json")
+    )
+
+    auth_job = _create(db)
+    auth_job.status = "context_ready"
+    auth_job.current_stage = "generate_answer"
+    auth_job.context_snapshot_json = audit_jobs._json_dump(snapshot)
+    db.commit()
+
+    async def auth_error(*args, **kwargs):
+        raise HTTPException(status_code=401, detail={"error_code": "openrouter_auth_error", "message": "auth"})
+
+    monkeypatch.setattr(audit_jobs, "generate_openrouter_response", auth_error)
+    failed = asyncio.run(audit_jobs.advance_audit_job(db, auth_job.id, organization_id="org-a"))
     assert failed.status == "failed"
-    assert failed.error_code == "openrouter_timeout"
-    assert failed.retryable is True
+    assert failed.error_code == "openrouter_auth_error"
 
 
 def test_invalid_provider_format_is_not_exposed(monkeypatch):
@@ -2327,6 +2409,37 @@ def test_final_projection_excludes_runtime_noise_and_completes_without_direct_re
     runtime = audit_jobs._json_load(completed.context_snapshot_json, {})["auditRuntime"]
     assert runtime["finalPromptEstimatedTokens"] + runtime["reservedOutputTokens"] + runtime["safetyMarginTokens"] <= runtime["modelContextLimit"]
     assert runtime["finalGenerationStatus"] == "provider_completed"
+
+
+def test_final_provider_output_is_capped_without_changing_requested_job_setting(monkeypatch):
+    db = _db()
+    job = _create(db)
+    job.max_tokens = 10000
+    job.status = "context_ready"
+    job.current_stage = "generate_answer"
+    job.context_snapshot_json = audit_jobs._json_dump(_realistic_oversized_final_snapshot())
+    db.commit()
+    captured = {}
+
+    async def final_provider(model, prompt, max_tokens, **kwargs):
+        captured.update({"max_tokens": max_tokens, "cap": kwargs["max_tokens_cap"]})
+        return {
+            "model": model,
+            "content": _structured_answer(),
+            "usage": {"total_tokens": 500},
+            "id": "final-capped",
+            "finish_reason": "stop",
+        }
+
+    monkeypatch.setattr(audit_jobs, "generate_openrouter_response", final_provider)
+    generated = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
+    runtime = audit_jobs._json_load(generated.context_snapshot_json, {})["auditRuntime"]
+
+    assert generated.max_tokens == 10000
+    assert captured == {"max_tokens": 4000, "cap": 4000}
+    assert runtime["requestedOutputTokens"] == 10000
+    assert runtime["effectiveFinalOutputTokens"] == 4000
+    assert runtime["reservedOutputTokens"] == 4000
 
 
 def test_final_projection_l3_uses_backend_fallback_instead_of_failed_job(monkeypatch):

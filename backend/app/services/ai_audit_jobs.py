@@ -111,7 +111,10 @@ CONTEXT_TOKEN_TARGET = 12000
 DRILLDOWN_TOKEN_TARGET = 18000
 FINAL_PROMPT_SAFETY_MARGIN_TOKENS = 2048
 FINAL_COMPACTION_LEVELS = (0, 1, 2, 3)
+FINAL_AUDIT_PROVIDER_MAX_TOKENS = 4000
 PROVIDER_CONTEXT_OVERFLOW_CODE = "provider_context_limit_rejected"
+FINAL_PROVIDER_TIMEOUT_WARNING_CODE = "final_provider_timeout"
+_FINAL_PROVIDER_TIMEOUT_CODES = frozenset({"openrouter_timeout", "openrouter_total_timeout"})
 _PROVIDER_CONTEXT_OVERFLOW_CODES = frozenset({
     "context_length_exceeded",
     "context_window_exceeded",
@@ -2648,6 +2651,19 @@ def is_provider_context_overflow(exc: Exception) -> bool:
     return any(marker in normalized for marker in _PROVIDER_CONTEXT_OVERFLOW_MARKERS)
 
 
+def final_provider_timeout_code(exc: Exception) -> str | None:
+    """Return only normalized final-provider timeout codes that are safe to expose."""
+
+    if not isinstance(exc, HTTPException) or not isinstance(exc.detail, dict):
+        return None
+    error_code = str(exc.detail.get("error_code") or "")
+    return error_code if error_code in _FINAL_PROVIDER_TIMEOUT_CODES else None
+
+
+def _effective_final_output_tokens(job: AiAuditJob) -> int:
+    return max(1, min(int(job.max_tokens or 0), FINAL_AUDIT_PROVIDER_MAX_TOKENS))
+
+
 def build_final_audit_prompt_bundle(
     snapshot: dict[str, Any],
     job: AiAuditJob,
@@ -2661,7 +2677,8 @@ def build_final_audit_prompt_bundle(
         else (2 if compact_retry else 0)
     )
     context_limit = context_limit_for_model(job.model)
-    reserved_output = max(1, min(int(job.max_tokens or 0), AI_AUDIT_FINAL_MAX_TOKENS))
+    requested_output = max(1, min(int(job.max_tokens or 0), AI_AUDIT_FINAL_MAX_TOKENS))
+    reserved_output = _effective_final_output_tokens(job)
     safety_margin = min(FINAL_PROMPT_SAFETY_MARGIN_TOKENS, max(512, context_limit // 50))
     candidate: dict[str, Any] | None = None
     for level in FINAL_COMPACTION_LEVELS[start_level:]:
@@ -2677,6 +2694,8 @@ def build_final_audit_prompt_bundle(
             "finalPromptEstimatedTokens": prompt_tokens,
             "modelContextLimit": context_limit,
             "reservedOutputTokens": reserved_output,
+            "requestedOutputTokens": requested_output,
+            "effectiveFinalOutputTokens": reserved_output,
             "safetyMarginTokens": safety_margin,
             "finalCompactionLevel": level,
             "fitsModelContext": prompt_tokens + reserved_output + safety_margin <= context_limit,
@@ -2882,6 +2901,7 @@ def _record_final_generation_diagnostics(
             "finalProjectionEstimatedTokens", "finalPromptEstimatedTokens", "modelContextLimit",
             "reservedOutputTokens", "safetyMarginTokens", "finalCompactionLevel", "fitsModelContext",
             "preflightFitsModelContext", "providerContextRejected", "providerContextErrorCode",
+            "requestedOutputTokens", "effectiveFinalOutputTokens", "providerTimedOut", "providerErrorCode",
         )
     }
     runtime = _audit_runtime(snapshot)
@@ -3383,6 +3403,24 @@ def build_backend_fallback_audit_result(
             "Аудит завершён по собранным read-only данным. Финальный AI-запрос не отправлялся: "
             "контекст не поместился в безопасный бюджет выбранной модели."
         )
+    elif reason_code == FINAL_PROVIDER_TIMEOUT_WARNING_CODE:
+        fallback_limitation = (
+            "Финальная модель не завершила ответ за отведённое время; расширенный AI-текст заменён "
+            "безопасным backend-результатом по уже собранным данным."
+        )
+        executive_summary = (
+            "Аудит завершён по собранным и проверенным read-only данным. Финальная модель не успела "
+            "оформить ответ, поэтому показан безопасный backend-результат."
+        )
+    elif reason_code == "final_stage_stale":
+        fallback_limitation = (
+            "Финальный этап был прерван после сбора данных; аудит восстановлен безопасным "
+            "backend-результатом без повторных запросов к Яндекс.Директу."
+        )
+        executive_summary = (
+            "Аудит завершён по сохранённым read-only данным после восстановления прерванного "
+            "финального этапа."
+        )
     elif reason_code == "json_schema_validation_failed":
         fallback_limitation = (
             "Ответ модели не прошёл структурный контракт AiAuditResult; показан безопасный "
@@ -3464,11 +3502,26 @@ def _complete_backend_fallback_stage(
     finish_reason: str | None = None,
     final_token_usage: dict[str, int] | None = None,
     preserve_job_error: bool = True,
+    provider_error_code: str | None = None,
+    warning_code: str | None = None,
+    warning_retryable: bool = False,
+    complete_immediately: bool = False,
 ) -> AiAuditJob:
+    if warning_code:
+        _append_audit_warning(
+            snapshot,
+            stage="generate_answer",
+            code=warning_code,
+            message=warning,
+            retryable=warning_retryable,
+        )
+    if provider_error_code:
+        diagnostics["providerErrorCode"] = provider_error_code
     structured = build_backend_fallback_audit_result(snapshot, job, reason_code=reason_code)
     evidence_coverage = public_evidence_coverage(snapshot)
     warnings = _helper_warning_messages(snapshot)
-    warnings.append(warning)
+    if warning not in warnings:
+        warnings.append(warning)
     _record_final_generation_diagnostics(
         snapshot,
         job,
@@ -3502,6 +3555,17 @@ def _complete_backend_fallback_stage(
         "truncated": False,
         "compactRetryAvailable": False,
         "backendFallbackUsed": True,
+        "providerErrorCode": provider_error_code,
+        "finalWarning": (
+            {
+                "stage": "generate_answer",
+                "code": warning_code,
+                "message": warning,
+                "retryable": warning_retryable,
+            }
+            if warning_code
+            else None
+        ),
         "completeness": (
             evidence_coverage["completionState"]
             if snapshot.get("evidenceCoverageRegistry")
@@ -3530,11 +3594,14 @@ def _complete_backend_fallback_stage(
     })
     job.error_code = reason_code if preserve_job_error else None
     job.error_message = warning if preserve_job_error else None
-    job.retryable = False
-    job.status = "context_ready"
+    job.retryable = warning_retryable
+    job.status = "completed" if complete_immediately else "context_ready"
     job.current_stage = "finalize"
     job.stage_attempt = 0
-    job.progress_percent = 95
+    job.progress_percent = 100 if complete_immediately else 95
+    if complete_immediately:
+        job.completed_at = _now()
+        timings["finalizeMs"] = 0
     _complete_provider_stage(job, "generate_answer")
     timings["totalElapsedMs"] = max(
         0, round((_now() - _as_aware(job.created_at or _now())).total_seconds() * 1000),
@@ -3754,6 +3821,19 @@ def _set_helper_stage(
 
 def _helper_warning(stage: str, code: str, message: str) -> dict[str, Any]:
     return {"stage": stage, "code": code, "message": message, "retryable": False}
+
+
+def _append_audit_warning(
+    snapshot: dict[str, Any],
+    *,
+    stage: str,
+    code: str,
+    message: str,
+    retryable: bool,
+) -> None:
+    warnings = snapshot.setdefault("auditWarnings", [])
+    if not any(item.get("code") == code for item in warnings if isinstance(item, dict)):
+        warnings.append({"stage": stage, "code": code, "message": message, "retryable": retryable})
 
 
 def _append_helper_fallback(
@@ -4073,7 +4153,42 @@ def is_audit_stage_stale(job: AiAuditJob, now: datetime | None = None) -> bool:
     return _as_aware(lease_expires_at) < _as_aware(now or _now())
 
 
-def recover_stale_audit_job(job: AiAuditJob, now: datetime | None = None) -> bool:
+def _prepare_saved_evidence_for_final_fallback(
+    db: Session,
+    job: AiAuditJob,
+    snapshot: dict[str, Any],
+) -> bool:
+    """Validate persisted evidence without collecting any new Direct data."""
+
+    if not isinstance(snapshot.get("analysisPeriod"), dict) or not isinstance(snapshot.get("accountTotals"), dict):
+        return False
+    policy_active = (
+        snapshot.get("policyVersion") == AUDIT_EVIDENCE_POLICY_VERSION
+        or "evidenceCoverageRegistry" in snapshot
+    )
+    if not policy_active:
+        verification = snapshot.get("verificationRegistry") or snapshot.get("verifiedHypotheses")
+        classifications = snapshot.get("campaignClassifications")
+        return bool(verification) and isinstance(classifications, list) and bool(classifications)
+    try:
+        full_results = _load_full_drilldown_results(db, job)
+        coverage = refresh_evidence_coverage_registry(snapshot, full_results)
+    except Exception:
+        logger.exception("AI_AUDIT_SAVED_EVIDENCE_INVALID job_id=%s", job.id)
+        return False
+    completion_state = str(coverage.get("completionState") or "")
+    if completion_state not in {"complete", "partial_coverage", "blocked_missing_evidence"}:
+        return False
+    _sync_policy_runtime(snapshot, coverage)
+    return True
+
+
+def recover_stale_audit_job(
+    job: AiAuditJob,
+    now: datetime | None = None,
+    *,
+    db: Session | None = None,
+) -> bool:
     if not is_audit_stage_stale(job, now):
         return False
     logger.warning(
@@ -4082,6 +4197,35 @@ def recover_stale_audit_job(job: AiAuditJob, now: datetime | None = None) -> boo
         job.current_stage,
         job.stage_attempt,
     )
+    if job.current_stage == "generate_answer" and db is not None:
+        snapshot = _json_load(job.context_snapshot_json, {}) or {}
+        if _prepare_saved_evidence_for_final_fallback(db, job, snapshot):
+            runtime = _audit_runtime(snapshot)
+            diagnostics = {
+                key: runtime.get(key)
+                for key in (
+                    "finalProjectionEstimatedTokens", "finalPromptEstimatedTokens", "modelContextLimit",
+                    "reservedOutputTokens", "requestedOutputTokens", "effectiveFinalOutputTokens",
+                    "safetyMarginTokens", "finalCompactionLevel", "fitsModelContext",
+                    "preflightFitsModelContext", "providerContextRejected", "providerContextErrorCode",
+                )
+            }
+            _complete_backend_fallback_stage(
+                db,
+                job,
+                snapshot,
+                diagnostics,
+                _json_load(job.timings_json, {}) or {},
+                reason_code="final_stage_stale",
+                final_status="backend_fallback_after_final_stage_stale",
+                warning=(
+                    "Финальный этап аудита был прерван. Использован безопасный backend-отчёт по уже "
+                    "собранным данным без повторных запросов к Яндекс.Директу."
+                ),
+                warning_code="final_stage_stale",
+                complete_immediately=True,
+            )
+            return True
     if job.current_stage in {"create_investigation_plan", "verify_hypotheses", "plan_next_investigation_round"}:
         snapshot = _json_load(job.context_snapshot_json, {}) or {}
         runtime = _audit_runtime(snapshot)
@@ -4199,7 +4343,7 @@ def _reload_stage_owner(
 ) -> tuple[AiAuditJob, bool]:
     db.expire_all()
     current = _locked_job(db, job_id, organization_id)
-    if recover_stale_audit_job(current, _now()):
+    if recover_stale_audit_job(current, _now(), db=db):
         db.commit()
         db.refresh(current)
     owns_stage = (
@@ -4232,7 +4376,7 @@ def _complete_provider_stage(job: AiAuditJob, stage: str) -> None:
 
 def get_audit_job(db: Session, job_id: str, *, organization_id: str) -> AiAuditJob:
     job = _locked_job(db, job_id, organization_id)
-    if recover_stale_audit_job(job, _now()):
+    if recover_stale_audit_job(job, _now(), db=db):
         db.commit()
         db.refresh(job)
         return job
@@ -4625,7 +4769,7 @@ async def advance_audit_job(
     compact_retry: bool = False,
 ) -> AiAuditJob:
     job = _locked_job(db, job_id, organization_id)
-    if recover_stale_audit_job(job, _now()):
+    if recover_stale_audit_job(job, _now(), db=db):
         db.commit()
         db.refresh(job)
         return job
@@ -5540,6 +5684,7 @@ async def advance_audit_job(
                 job,
                 compact_retry=is_compact_retry,
             )
+            effective_final_max_tokens = _effective_final_output_tokens(job)
             prompt = str(final_bundle.get("prompt") or "")
             final_diagnostics = dict(final_bundle.get("diagnostics") or {})
             _save_stage_prompt_metadata(
@@ -5547,8 +5692,8 @@ async def advance_audit_job(
                 stage,
                 prompt,
                 model=job.model,
-                max_tokens=job.max_tokens,
-                max_tokens_cap=AI_AUDIT_FINAL_MAX_TOKENS,
+                max_tokens=effective_final_max_tokens,
+                max_tokens_cap=FINAL_AUDIT_PROVIDER_MAX_TOKENS,
             )
             _record_final_generation_diagnostics(
                 snapshot,
@@ -5582,10 +5727,46 @@ async def advance_audit_job(
             openrouter_started_at = perf_counter()
             try:
                 response = await _call_audit_provider(
-                    stage, job.model, prompt, max_tokens=job.max_tokens,
-                    max_tokens_cap=AI_AUDIT_FINAL_MAX_TOKENS, timeout=AUDIT_STAGE_PROVIDER_TIMEOUTS[stage],
+                    stage, job.model, prompt, max_tokens=effective_final_max_tokens,
+                    max_tokens_cap=FINAL_AUDIT_PROVIDER_MAX_TOKENS, timeout=AUDIT_STAGE_PROVIDER_TIMEOUTS[stage],
                 )
             except Exception as provider_exc:
+                timeout_code = final_provider_timeout_code(provider_exc)
+                if timeout_code:
+                    job, owns_result = _reload_stage_owner(
+                        db,
+                        job_id,
+                        organization_id,
+                        stage=stage,
+                        execution_token=execution_token,
+                    )
+                    if not owns_result:
+                        return job
+                    snapshot = _json_load(job.context_snapshot_json, {}) or {}
+                    if not _prepare_saved_evidence_for_final_fallback(db, job, snapshot):
+                        raise provider_exc
+                    final_diagnostics.update({
+                        "providerTimedOut": True,
+                        "providerErrorCode": timeout_code,
+                    })
+                    timings["finalAnswerOpenrouterMs"] = _elapsed_ms(openrouter_started_at)
+                    return _complete_backend_fallback_stage(
+                        db,
+                        job,
+                        snapshot,
+                        final_diagnostics,
+                        timings,
+                        reason_code=FINAL_PROVIDER_TIMEOUT_WARNING_CODE,
+                        final_status="backend_fallback_after_provider_timeout",
+                        warning=(
+                            "Финальная модель не завершила ответ за отведённое время. Использован "
+                            "безопасный backend-отчёт."
+                        ),
+                        provider_error_code=timeout_code,
+                        warning_code=FINAL_PROVIDER_TIMEOUT_WARNING_CODE,
+                        warning_retryable=True,
+                        complete_immediately=True,
+                    )
                 if not is_provider_context_overflow(provider_exc):
                     raise
                 final_diagnostics["providerContextRejected"] = True
@@ -5629,8 +5810,8 @@ async def advance_audit_job(
                     stage,
                     prompt,
                     model=job.model,
-                    max_tokens=job.max_tokens,
-                    max_tokens_cap=AI_AUDIT_FINAL_MAX_TOKENS,
+                    max_tokens=effective_final_max_tokens,
+                    max_tokens_cap=FINAL_AUDIT_PROVIDER_MAX_TOKENS,
                 )
                 _record_final_generation_diagnostics(
                     snapshot,
@@ -5658,11 +5839,47 @@ async def advance_audit_job(
                 db.commit()
                 try:
                     response = await _call_audit_provider(
-                        stage, job.model, prompt, max_tokens=job.max_tokens,
-                        max_tokens_cap=AI_AUDIT_FINAL_MAX_TOKENS,
+                        stage, job.model, prompt, max_tokens=effective_final_max_tokens,
+                        max_tokens_cap=FINAL_AUDIT_PROVIDER_MAX_TOKENS,
                         timeout=AUDIT_STAGE_PROVIDER_TIMEOUTS[stage],
                     )
                 except Exception as retry_exc:
+                    timeout_code = final_provider_timeout_code(retry_exc)
+                    if timeout_code:
+                        job, owns_result = _reload_stage_owner(
+                            db,
+                            job_id,
+                            organization_id,
+                            stage=stage,
+                            execution_token=execution_token,
+                        )
+                        if not owns_result:
+                            return job
+                        snapshot = _json_load(job.context_snapshot_json, {}) or {}
+                        if not _prepare_saved_evidence_for_final_fallback(db, job, snapshot):
+                            raise retry_exc
+                        final_diagnostics.update({
+                            "providerTimedOut": True,
+                            "providerErrorCode": timeout_code,
+                        })
+                        timings["finalAnswerOpenrouterMs"] = _elapsed_ms(openrouter_started_at)
+                        return _complete_backend_fallback_stage(
+                            db,
+                            job,
+                            snapshot,
+                            final_diagnostics,
+                            timings,
+                            reason_code=FINAL_PROVIDER_TIMEOUT_WARNING_CODE,
+                            final_status="backend_fallback_after_provider_timeout",
+                            warning=(
+                                "Финальная модель не завершила компактный ответ за отведённое время. "
+                                "Использован безопасный backend-отчёт."
+                            ),
+                            provider_error_code=timeout_code,
+                            warning_code=FINAL_PROVIDER_TIMEOUT_WARNING_CODE,
+                            warning_retryable=True,
+                            complete_immediately=True,
+                        )
                     if not is_provider_context_overflow(retry_exc):
                         raise
                     final_diagnostics["providerContextRejected"] = True
@@ -5852,7 +6069,7 @@ async def advance_audit_job(
 
 def cancel_audit_job(db: Session, job_id: str, *, organization_id: str) -> AiAuditJob:
     job = _locked_job(db, job_id, organization_id)
-    if recover_stale_audit_job(job, _now()):
+    if recover_stale_audit_job(job, _now(), db=db):
         db.commit()
         db.refresh(job)
     if job.status in {"completed", "cancelled"}:
@@ -5878,7 +6095,7 @@ def cancel_audit_job(db: Session, job_id: str, *, organization_id: str) -> AiAud
 
 def reset_audit_job(db: Session, job_id: str, *, organization_id: str) -> AiAuditJob:
     job = _locked_job(db, job_id, organization_id)
-    recovered = recover_stale_audit_job(job, _now())
+    recovered = recover_stale_audit_job(job, _now(), db=db)
     if recovered:
         db.commit()
         db.refresh(job)
