@@ -276,6 +276,7 @@ function renderAuditTechnicalDiagnostics(metadata, runtime, escapeHtml, result =
     provider_context_limit_rejected: 'провайдер отклонил размер контекста',
     retrying_after_provider_context_rejection: 'повторяем с более компактным контекстом',
     provider_completed: 'AI-отчёт сформирован',
+    final_output_evidence_reconciled: 'AI-отчёт согласован с фактически собранными данными',
     backend_fallback: 'сохранён безопасный backend-результат',
     backend_fallback_missing_mandatory_evidence: 'аудит завершён с неполным покрытием обязательных данных',
     backend_fallback_after_provider_context_rejection: 'сохранён backend-результат после отказа провайдера',

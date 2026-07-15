@@ -63,6 +63,12 @@ from app.services.audit_evidence_store import (
     load_audit_evidence_results,
     save_audit_evidence_results,
 )
+from app.services.audit_evidence_reconciliation import (
+    build_canonical_evidence_index,
+    campaign_scope_key,
+    canonical_coverage_projection,
+    evidence_for_hypothesis,
+)
 from app.services.audit_evidence_policy import (
     AUDIT_EVIDENCE_POLICY_VERSION,
     evidence_dimension_forbidden,
@@ -662,7 +668,14 @@ def classify_audit_campaigns(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
                 continue
             seen.add(name)
             api_metadata = (snapshot.get("campaignApiMetadata") or {}).get(name) or {}
-            result.append(_campaign_classification(name, api_metadata or {"type": item.get("type")}))
+            classification = _campaign_classification(name, api_metadata or {"type": item.get("type")})
+            scope_key = (
+                api_metadata.get("campaign_scope_key")
+                or (snapshot.get("_trustedCampaignScopes") or {}).get(name)
+            )
+            if scope_key:
+                classification["campaign_scope_key"] = scope_key
+            result.append(classification)
     return result
 
 
@@ -916,11 +929,18 @@ def _apply_live_baseline(
             "mobile_app_campaign": row.get("mobile_app_campaign"),
             "cpm_banner_campaign": row.get("cpm_banner_campaign"),
             "unified_campaign": row.get("unified_campaign"),
+            "campaign_scope_key": campaign_scope_key(
+                row.get("campaign_id") or row.get("CampaignId") or row.get("id")
+            ),
         }
         for row in (campaign_result.get("data") or [])
         if isinstance(row, dict) and row.get("name")
     }
     snapshot["campaignApiMetadata"] = metadata_by_name
+    trusted_scopes = snapshot.setdefault("_trustedCampaignScopes", {})
+    for name, metadata in metadata_by_name.items():
+        if metadata.get("campaign_scope_key"):
+            trusted_scopes[name] = metadata["campaign_scope_key"]
     baseline = {
         "policy": "fresh",
         "status": "complete" if campaign_available and performance_available else "partial",
@@ -1618,6 +1638,117 @@ def _apply_verification_statuses(snapshot: dict[str, Any], verification: AuditHy
             if hypothesis_id in statuses:
                 hypothesis["status"] = statuses[hypothesis_id]
     _sync_active_investigation_plan(snapshot)
+
+
+def reconcile_collected_audit_evidence(
+    snapshot: dict[str, Any], full_results: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Reconcile policy and AI evidence before final generation without new API calls."""
+
+    index = build_canonical_evidence_index(snapshot, full_results)
+    facts_by_id = {
+        str(item.get("fact_id")): item
+        for item in snapshot.get("observedFacts") or []
+        if isinstance(item, dict) and item.get("fact_id")
+    }
+    prior = _verification_registry(snapshot)
+    reconciled: list[AuditHypothesisVerification] = []
+    linked_summaries: list[dict[str, Any]] = []
+    for hypothesis in _active_hypotheses(snapshot):
+        hypothesis_id = str(hypothesis.get("hypothesis_id") or "")
+        requests, results = evidence_for_hypothesis(snapshot, hypothesis, index)
+        current = prior.get(hypothesis_id) or {}
+        proposed = AuditHypothesisVerification(
+            hypothesis_id=hypothesis_id,
+            status=str(current.get("status") or "unverified"),
+            verification_summary=str(
+                current.get("verification_summary")
+                or "Backend повторно сопоставил гипотезу с фактически собранными данными."
+            ),
+            supporting_evidence=list(current.get("supporting_evidence") or []),
+            contradicting_evidence=list(current.get("contradicting_evidence") or []),
+            limitations=list(current.get("limitations") or []),
+            remaining_data_needed=list(current.get("remaining_data_needed") or []),
+        )
+        fact_ids = [str(item) for item in (hypothesis.get("fact_ids") or [])]
+        trusted_hypothesis = {
+            **hypothesis,
+            "status": current.get("status") or hypothesis.get("current_status"),
+            "fact_sufficient_data": all(
+                bool((facts_by_id.get(fact_id) or {}).get("sufficient_data"))
+                for fact_id in fact_ids
+            ) if fact_ids else False,
+        }
+        enforced = enforce_hypothesis_verification(
+            proposed,
+            hypothesis=trusted_hypothesis,
+            requests=requests,
+            results=results,
+            target_cpa=float((snapshot.get("targetKpis") or {}).get("targetCpa") or 0),
+            period_days=int((snapshot.get("analysisPeriod") or {}).get("days") or 30),
+        )
+        limitations = list(enforced.limitations)
+        truly_missing: list[str] = []
+        required_capabilities = {
+            str(item.get("capability_id") or item.get("dimension") or "")
+            for item in requests if item.get("required_for_conclusion")
+        }
+        required_capabilities.update(
+            str(item) for item in (hypothesis.get("required_capabilities") or []) if str(item)
+        )
+        entries = {
+            str(item.get("capabilityId")): item
+            for item in index.get("entries") or []
+            if any(
+                str(result.get("request_id")) == str(item.get("requestId"))
+                for result in results
+            )
+        }
+        for capability in sorted(required_capabilities):
+            entry = entries.get(capability)
+            if entry and int(entry.get("rowsReceived") or 0) > 0:
+                if entry.get("dataQuality") != "sufficient":
+                    limitations.append(
+                        f"{capability}: данные собраны, но вывод ограничен ({entry.get('qualityReason') or 'low_data'})."
+                    )
+                continue
+            if entry and entry.get("status") == "not_applicable":
+                continue
+            reason = (entry or {}).get("qualityReason") or "not_collected"
+            truly_missing.append(capability)
+            limitations.append(f"{capability}: данные недоступны ({reason}).")
+        enforced = enforced.model_copy(update={
+            "remaining_data_needed": truly_missing[:8],
+            "limitations": list(dict.fromkeys(limitations))[:8],
+        })
+        reconciled.append(enforced)
+        for summary in enforced.evidence_summaries:
+            linked_summaries.append({**summary, "hypothesis_id": hypothesis_id})
+    if reconciled:
+        _apply_verification_statuses(
+            snapshot, AuditHypothesisVerificationSet(verifications=reconciled),
+        )
+    snapshot["drilldownEvidenceSummaries"] = linked_summaries
+    coverage = canonical_coverage_projection(index)
+    snapshot["canonicalEvidenceCoverage"] = coverage
+
+    requested = snapshot.get("analysisPeriod") or {}
+    requested_from = str(requested.get("dateFrom") or "")
+    requested_to = str(requested.get("dateTo") or "")
+    live_periods = [
+        item.get("period") or {}
+        for item in index.get("entries") or []
+        if item.get("status") in AVAILABLE_AUDIT_DATA_STATUSES and item.get("source") != "directpilot_saved_stats"
+    ]
+    if live_periods and requested_from and requested_to:
+        requested["requestedMatchesAvailableData"] = all(
+            str(period.get("date_from") or period.get("dateFrom") or "") == requested_from
+            and str(period.get("date_to") or period.get("dateTo") or "") == requested_to
+            for period in live_periods
+            if period.get("date_from") or period.get("dateFrom")
+        )
+        requested["evidencePeriodsChecked"] = len(live_periods)
+    return index
 
 
 def _normalized_verifications(answer: str, snapshot: dict[str, Any]) -> AuditHypothesisVerificationSet:
@@ -2561,14 +2692,11 @@ def build_final_audit_projection(
         if item.get("status") == "partial"
     ]
 
-    coverage = {}
-    for key, value in (snapshot.get("dataCoverage") or {}).items():
-        if isinstance(value, dict):
-            coverage[str(key)] = {
-                field: value.get(field)
-                for field in ("available", "total", "analyzed", "source", "status", "reason")
-                if field in value and isinstance(value.get(field), (int, float, str, bool, type(None)))
-            }
+    coverage = snapshot.get("canonicalEvidenceCoverage") or {
+        "accountWide": [],
+        "campaignScoped": [],
+        "summary": {"accountCapabilities": 0, "campaignCapabilities": 0},
+    }
     return {
         "analysisPeriod": {
             key: analysis_period.get(key)
@@ -2579,6 +2707,7 @@ def build_final_audit_projection(
             if key in analysis_period
         },
         "dataCoverage": coverage,
+        "canonicalEvidenceCoverage": coverage,
         "accountTotals": _safe_metric_values(snapshot.get("accountTotals")),
         "targetKpis": _safe_metric_values(snapshot.get("targetKpis")),
         "selectedGoals": {
@@ -3024,6 +3153,158 @@ def _parse_model_json(answer: str, model_type: Any) -> tuple[Any | None, dict[st
     return validated, metadata
 
 
+def _reconcile_structured_evidence_claims(
+    result: dict[str, Any], snapshot: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Remove structured claims that collected evidence is still missing."""
+
+    coverage = snapshot.get("canonicalEvidenceCoverage") or {}
+    campaign_entries: dict[str, dict[str, dict[str, Any]]] = {}
+    all_collected: dict[str, dict[str, Any]] = {}
+    for item in coverage.get("campaignScoped") or []:
+        if not isinstance(item, dict) or int(item.get("rowsReceived") or 0) <= 0:
+            continue
+        if item.get("status") not in AVAILABLE_AUDIT_DATA_STATUSES:
+            continue
+        campaign = str(item.get("campaignName") or "")
+        capability = str(item.get("capabilityId") or "")
+        if campaign and capability:
+            campaign_entries.setdefault(campaign, {})[capability] = item
+            all_collected[capability] = item
+    for item in coverage.get("accountWide") or []:
+        if not isinstance(item, dict) or int(item.get("rowsReceived") or 0) <= 0:
+            continue
+        if item.get("status") in AVAILABLE_AUDIT_DATA_STATUSES and item.get("capabilityId"):
+            all_collected[str(item["capabilityId"])] = item
+
+    removed: list[dict[str, str]] = []
+    quality_limitations: list[str] = []
+    text_conflicts = 0
+    capability_terms = {
+        "search_queries": ("search_queries", "search queries", "поисков", "запрос"),
+        "placements": ("placements", "площадк"),
+        "devices": ("devices", "устройств"),
+        "geo": ("geo", "географ", "регион"),
+        "goals": ("goals", "целям", "цели"),
+        "ad_group_performance": ("ad_group_performance", "групп объяв"),
+        "keyword_performance": ("keyword_performance", "ключев"),
+        "campaign_settings": ("campaign_settings", "настройк камп"),
+    }
+    missing_markers = (
+        "не собран", "не получен", "нет данных", "данные отсутств", "отсутств", "недоступны данные",
+        "missing", "not collected", "no data", "data unavailable",
+    )
+
+    def conflicts_with_collected(text: Any, campaign_name: Any = None) -> bool:
+        normalized = str(text or "").casefold()
+        if not normalized or not any(marker in normalized for marker in missing_markers):
+            return False
+        scoped = campaign_entries.get(str(campaign_name or ""), {})
+        candidates = scoped or all_collected
+        return any(
+            any(term in normalized for term in capability_terms.get(capability, (capability,)))
+            for capability in candidates
+        )
+
+    def normalize(values: Any, campaign_name: Any) -> list[str]:
+        scoped = campaign_entries.get(str(campaign_name or ""), {})
+        kept: list[str] = []
+        for raw in values or []:
+            capability = str(raw)
+            evidence = scoped.get(capability)
+            if evidence is None and not campaign_name:
+                evidence = all_collected.get(capability)
+            if evidence is None:
+                kept.append(capability)
+                continue
+            removed.append({"campaignName": str(campaign_name or "account"), "capabilityId": capability})
+            if evidence.get("dataQuality") != "sufficient":
+                quality_limitations.append(
+                    f"{campaign_name or 'Аккаунт'} / {capability}: данные собраны, "
+                    f"но вывод ограничен ({evidence.get('qualityReason') or 'low_data'})."
+                )
+        return list(dict.fromkeys(kept))[:5]
+
+    for section in ("critical_findings", "opportunities"):
+        for finding in result.get(section) or []:
+            before = list(finding.get("next_data_needed") or [])
+            finding["next_data_needed"] = normalize(before, finding.get("campaign_name"))
+            if before and not finding["next_data_needed"]:
+                finding["recommendation"] = (
+                    "Использовать уже собранные backend-данные; при недостаточной выборке "
+                    "ограничить уверенность вывода, а не запрашивать тот же срез повторно."
+                )
+            for field in ("problem", "fact", "hypothesis", "recommendation"):
+                if conflicts_with_collected(finding.get(field), finding.get("campaign_name")):
+                    text_conflicts += 1
+                    finding[field] = (
+                        "Backend подтверждает наличие этого среза данных. "
+                        "Ограничения следует описывать через качество и объём выборки."
+                    )
+    normalized_insufficient = []
+    for item in result.get("insufficient_data_campaigns") or []:
+        before = list(item.get("next_data_needed") or [])
+        item["next_data_needed"] = normalize(before, item.get("campaign_name"))
+        if before and not item["next_data_needed"]:
+            item["reason"] = "Данные собраны; ограничение относится к качеству или объёму выборки."
+            item["recommendation"] = "Учитывать точную причину ограничения данных без повторного сбора того же среза."
+        normalized_insufficient.append(item)
+    result["insufficient_data_campaigns"] = normalized_insufficient
+
+    drilldown = result.get("drilldown_summary") or {}
+    analyzed = list(dict.fromkeys([
+        *(drilldown.get("analyzed_levels") or []),
+        *sorted(all_collected),
+    ]))
+    drilldown["analyzed_levels"] = analyzed
+    drilldown["not_analyzed_levels"] = [
+        item for item in (drilldown.get("not_analyzed_levels") or [])
+        if str(item) not in all_collected
+    ]
+    drilldown["next_data_needed"] = normalize(drilldown.get("next_data_needed") or [], None)
+    result["drilldown_summary"] = drilldown
+
+    safe_actions = []
+    for action in result.get("action_plan") or []:
+        if conflicts_with_collected(
+            " ".join((str(action.get("action") or ""), str(action.get("reason") or ""))),
+            action.get("scope"),
+        ):
+            text_conflicts += 1
+            continue
+        safe_actions.append(action)
+    result["action_plan"] = safe_actions
+
+    safe_limitations = []
+    for item in result.get("limitations") or []:
+        if conflicts_with_collected(item):
+            text_conflicts += 1
+            continue
+        safe_limitations.append(item)
+    result["limitations"] = safe_limitations
+    for field in ("executive_summary", "conclusion"):
+        if conflicts_with_collected(result.get(field)):
+            text_conflicts += 1
+            result[field] = (
+                "Результат согласован с фактически собранными backend-данными; "
+                "оставшиеся ограничения относятся только к явно указанному качеству выборки."
+            )
+
+    if quality_limitations:
+        result["limitations"] = list(dict.fromkeys([
+            *(result.get("limitations") or []), *quality_limitations,
+        ]))
+    diagnostics = {
+        "status": "final_output_evidence_reconciled" if removed or text_conflicts else "consistent",
+        "removedFalseMissingClaims": len(removed),
+        "removedFreeTextConflicts": text_conflicts,
+        "qualityLimitationsAdded": len(set(quality_limitations)),
+        "capabilities": sorted({item["capabilityId"] for item in removed}),
+    }
+    snapshot["finalOutputEvidenceReconciliation"] = diagnostics
+    return result, diagnostics
+
+
 def _validate_structured_result_with_metadata(
     answer: str,
     *,
@@ -3068,10 +3349,16 @@ def _validate_structured_result_with_metadata(
         parsing["parseOutcome"] = "section_validation_recovered"
         parsing["errorCode"] = "partial_schema_validation"
         parsing["sectionWarnings"] = recovery_warnings
-        return _enforce_verified_result(validated, snapshot), parsing
+        enforced = _enforce_verified_result(validated, snapshot)
+        reconciled, diagnostics = _reconcile_structured_evidence_claims(enforced, snapshot)
+        parsing["evidenceReconciliation"] = diagnostics
+        return reconciled, parsing
     parsing["status"] = "success"
     parsing["errorCode"] = "truncated_provider_response" if finish_reason == "length" else None
-    return _enforce_verified_result(validated, snapshot), parsing
+    enforced = _enforce_verified_result(validated, snapshot)
+    reconciled, diagnostics = _reconcile_structured_evidence_claims(enforced, snapshot)
+    parsing["evidenceReconciliation"] = diagnostics
+    return reconciled, parsing
 
 
 def _recover_partial_audit_result(parsed: dict[str, Any]) -> tuple[dict[str, Any] | None, list[str]]:
@@ -4875,11 +5162,27 @@ async def advance_audit_job(
             snapshot["metadata"]["estimatedTokens"] = estimate_tokens(_json_dump(snapshot))
             timings["compactContextMs"] = _elapsed_ms(compact_started_at)
             job.context_snapshot_json = _json_dump(snapshot)
-            internal_ids = [
-                str(item.get("campaign_id") or item.get("id"))
-                for item in (full_context.get("campaigns") or [])
-                if isinstance(item, dict) and (item.get("campaign_id") or item.get("id"))
-            ]
+            internal_ids = []
+            trusted_scopes: dict[str, str] = {}
+            ambiguous_scope_names: set[str] = set()
+            for item in (full_context.get("campaigns") or []):
+                if not isinstance(item, dict):
+                    continue
+                raw_id = item.get("campaign_id") or item.get("id")
+                name = str(item.get("name") or item.get("campaign_name") or "").strip()
+                if raw_id:
+                    internal_ids.append(str(raw_id))
+                    if name:
+                        scope = campaign_scope_key(raw_id) or ""
+                        if name in trusted_scopes and trusted_scopes[name] != scope:
+                            ambiguous_scope_names.add(name)
+                            trusted_scopes.pop(name, None)
+                        elif name not in ambiguous_scope_names:
+                            trusted_scopes[name] = scope
+            snapshot["_trustedCampaignScopes"] = {
+                key: value for key, value in trusted_scopes.items() if value
+            }
+            job.context_snapshot_json = _json_dump(snapshot)
             job.prompt_snapshot_json = _json_dump({"internalCampaignIds": internal_ids[:100]})
             job.status = "context_ready"
             job.current_stage = (
@@ -5596,6 +5899,11 @@ async def advance_audit_job(
             full_results = _load_full_drilldown_results(db, job) if policy_active else []
             if policy_active:
                 coverage = refresh_evidence_coverage_registry(snapshot, full_results)
+                all_evidence_results = _merge_full_drilldown_results(
+                    _load_full_baseline_results(db, job), full_results,
+                )
+                reconcile_collected_audit_evidence(snapshot, all_evidence_results)
+                coverage = refresh_evidence_coverage_registry(snapshot, full_results)
                 runtime = _sync_policy_runtime(snapshot, coverage)
                 runtime["completionGateRuns"] = int(runtime.get("completionGateRuns") or 0) + 1
             else:
@@ -5976,7 +6284,14 @@ async def advance_audit_job(
                 snapshot,
                 job,
                 final_diagnostics,
-                status_value="provider_completed" if structured is not None else "provider_response_truncated",
+                status_value=(
+                    "final_output_evidence_reconciled"
+                    if structured is not None
+                    and (snapshot.get("finalOutputEvidenceReconciliation") or {}).get("status")
+                    == "final_output_evidence_reconciled"
+                    else "provider_completed" if structured is not None
+                    else "provider_response_truncated"
+                ),
             )
             job.context_snapshot_json = _json_dump(snapshot)
             warnings = _helper_warning_messages(snapshot)
@@ -6013,6 +6328,7 @@ async def advance_audit_job(
                 "cachePolicy": (snapshot.get("metadata") or {}).get("cachePolicy") or "fresh",
                 "directApiKnowledgeVersion": (snapshot.get("metadata") or {}).get("directApiKnowledgeVersion"),
                 "dataCoverage": snapshot.get("dataCoverage") or {},
+                "canonicalEvidenceCoverage": snapshot.get("canonicalEvidenceCoverage") or {},
                 "usage": final_token_usage,
                 "finalTokenUsage": final_token_usage,
                 "responseId": response.get("id"),
