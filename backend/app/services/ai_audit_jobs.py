@@ -64,11 +64,13 @@ from app.services.audit_evidence_store import (
     save_audit_evidence_results,
 )
 from app.services.audit_evidence_reconciliation import (
+    apply_canonical_coverage_to_registry,
     build_canonical_evidence_index,
-    campaign_scope_key,
+    capability_candidates,
     canonical_coverage_projection,
     evidence_for_hypothesis,
 )
+from app.services.audit_evidence_identity import campaign_scope_for_name, campaign_scope_key
 from app.services.audit_evidence_policy import (
     AUDIT_EVIDENCE_POLICY_VERSION,
     evidence_dimension_forbidden,
@@ -922,25 +924,54 @@ def _apply_live_baseline(
         (str(item.get("fetched_at")) for item in (campaign_result, performance_result) if item.get("fetched_at")),
         default=None,
     )
-    metadata_by_name = {
-        str(row.get("name")): {
+    metadata_by_name: dict[str, dict[str, Any]] = {}
+    trusted_scopes = snapshot.setdefault("_trustedCampaignScopes", {})
+    trusted_scope_names = snapshot.setdefault("_trustedCampaignScopeNames", {})
+    ambiguous_scope_names = {
+        str(item) for item in (snapshot.get("_ambiguousCampaignNames") or [])
+    }
+    for row in (campaign_result.get("data") or []):
+        if not isinstance(row, dict) or not row.get("name"):
+            continue
+        name = str(row.get("name"))
+        scope = campaign_scope_key(
+            row.get("campaign_id") or row.get("CampaignId") or row.get("id")
+        )
+        metadata = {
             "type": row.get("type"), "status": row.get("status"), "state": row.get("state"),
             "text_campaign": row.get("text_campaign"),
             "mobile_app_campaign": row.get("mobile_app_campaign"),
             "cpm_banner_campaign": row.get("cpm_banner_campaign"),
             "unified_campaign": row.get("unified_campaign"),
-            "campaign_scope_key": campaign_scope_key(
-                row.get("campaign_id") or row.get("CampaignId") or row.get("id")
-            ),
+            "campaign_scope_key": scope,
         }
-        for row in (campaign_result.get("data") or [])
-        if isinstance(row, dict) and row.get("name")
-    }
+        if scope:
+            trusted_scope_names[scope] = name
+        prior_scope = trusted_scopes.get(name)
+        if name in ambiguous_scope_names or (prior_scope and scope and prior_scope != scope):
+            ambiguous_scope_names.add(name)
+            trusted_scopes.pop(name, None)
+            metadata_by_name.pop(name, None)
+            continue
+        if scope:
+            trusted_scopes[name] = scope
+        metadata_by_name[name] = metadata
+    for name in ambiguous_scope_names:
+        trusted_scopes.pop(name, None)
+        metadata_by_name.pop(name, None)
+    snapshot["_ambiguousCampaignNames"] = sorted(ambiguous_scope_names)
+    snapshot["_trustedCampaignScopeNames"] = trusted_scope_names
     snapshot["campaignApiMetadata"] = metadata_by_name
-    trusted_scopes = snapshot.setdefault("_trustedCampaignScopes", {})
-    for name, metadata in metadata_by_name.items():
-        if metadata.get("campaign_scope_key"):
-            trusted_scopes[name] = metadata["campaign_scope_key"]
+    if ambiguous_scope_names:
+        limitations = snapshot.setdefault("evidenceIdentityLimitations", [])
+        for name in sorted(ambiguous_scope_names):
+            item = {
+                "code": "ambiguous_campaign_identity",
+                "campaignName": name,
+                "message": "Имя кампании неоднозначно; доказательства не объединяются между кампаниями с одинаковым названием.",
+            }
+            if item not in limitations:
+                limitations.append(item)
     baseline = {
         "policy": "fresh",
         "status": "complete" if campaign_available and performance_available else "partial",
@@ -1696,16 +1727,22 @@ def reconcile_collected_audit_evidence(
         required_capabilities.update(
             str(item) for item in (hypothesis.get("required_capabilities") or []) if str(item)
         )
+        hypothesis_scope = campaign_scope_for_name(snapshot, hypothesis.get("campaign_name"))
         entries = {
-            str(item.get("capabilityId")): item
+            candidate: item
             for item in index.get("entries") or []
+            if item.get("scopeKey") == hypothesis_scope
             if any(
                 str(result.get("request_id")) == str(item.get("requestId"))
                 for result in results
             )
+            for candidate in capability_candidates(item.get("capabilityId"))
         }
         for capability in sorted(required_capabilities):
-            entry = entries.get(capability)
+            entry = next(
+                (entries.get(candidate) for candidate in capability_candidates(capability) if entries.get(candidate)),
+                None,
+            )
             if entry and int(entry.get("rowsReceived") or 0) > 0:
                 if entry.get("dataQuality") != "sufficient":
                     limitations.append(
@@ -1731,23 +1768,56 @@ def reconcile_collected_audit_evidence(
     snapshot["drilldownEvidenceSummaries"] = linked_summaries
     coverage = canonical_coverage_projection(index)
     snapshot["canonicalEvidenceCoverage"] = coverage
+    apply_canonical_coverage_to_registry(snapshot, index)
 
     requested = snapshot.get("analysisPeriod") or {}
     requested_from = str(requested.get("dateFrom") or "")
     requested_to = str(requested.get("dateTo") or "")
-    live_periods = [
-        item.get("period") or {}
-        for item in index.get("entries") or []
-        if item.get("status") in AVAILABLE_AUDIT_DATA_STATUSES and item.get("source") != "directpilot_saved_stats"
-    ]
-    if live_periods and requested_from and requested_to:
-        requested["requestedMatchesAvailableData"] = all(
-            str(period.get("date_from") or period.get("dateFrom") or "") == requested_from
-            and str(period.get("date_to") or period.get("dateTo") or "") == requested_to
-            for period in live_periods
-            if period.get("date_from") or period.get("dateFrom")
+    checkable_periods: list[tuple[str, str, str, str]] = []
+    mismatches: list[dict[str, str]] = []
+    for item in index.get("entries") or []:
+        if (
+            item.get("status") not in AVAILABLE_AUDIT_DATA_STATUSES
+            or not item.get("live")
+            or item.get("cached")
+            or item.get("savedFallback")
+        ):
+            continue
+        period = item.get("period") or {}
+        date_from = str(period.get("date_from") or period.get("dateFrom") or "")
+        date_to = str(period.get("date_to") or period.get("dateTo") or "")
+        if not date_from or not date_to:
+            continue
+        key = (
+            str(item.get("campaignName") or "Аккаунт"),
+            str(item.get("capabilityId") or "unknown"),
+            date_from,
+            date_to,
         )
-        requested["evidencePeriodsChecked"] = len(live_periods)
+        if key not in checkable_periods:
+            checkable_periods.append(key)
+        if requested_from and requested_to and (date_from != requested_from or date_to != requested_to):
+            mismatches.append({
+                "campaignName": key[0],
+                "capabilityId": key[1],
+                "reasonCode": "evidence_period_mismatch",
+            })
+    requested["evidencePeriodsChecked"] = len(checkable_periods)
+    requested["requestedMatchesAvailableData"] = bool(
+        checkable_periods and requested_from and requested_to and not mismatches
+    )
+    snapshot["periodEvidenceLimitations"] = mismatches[:20]
+    for mismatch in mismatches:
+        for section in ("accountWide", "campaignScoped"):
+            for item in coverage.get(section) or []:
+                if (
+                    str(item.get("campaignName") or "Аккаунт") == mismatch["campaignName"]
+                    and str(item.get("capabilityId") or "unknown") == mismatch["capabilityId"]
+                ):
+                    item["limitations"] = list(dict.fromkeys([
+                        *(item.get("limitations") or []),
+                        "Фактический период evidence отличается от запрошенного периода аудита.",
+                    ]))[:5]
     return index
 
 
@@ -3156,120 +3226,172 @@ def _parse_model_json(answer: str, model_type: Any) -> tuple[Any | None, dict[st
 def _reconcile_structured_evidence_claims(
     result: dict[str, Any], snapshot: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Remove structured claims that collected evidence is still missing."""
+    """Reconcile only against evidence from the exact trusted campaign/account scope."""
 
     coverage = snapshot.get("canonicalEvidenceCoverage") or {}
+    trusted_names = set((snapshot.get("_trustedCampaignScopes") or {}).keys())
+    ambiguous_names = {str(item) for item in (snapshot.get("_ambiguousCampaignNames") or [])}
+
+    def available(item: Any) -> bool:
+        return (
+            isinstance(item, dict)
+            and int(item.get("rowsReceived") or 0) > 0
+            and item.get("status") in AVAILABLE_AUDIT_DATA_STATUSES
+        )
+
+    def add_aliases(target: dict[str, dict[str, Any]], item: dict[str, Any]) -> None:
+        for candidate in capability_candidates(item.get("capabilityId")):
+            target[candidate] = item
+
     campaign_entries: dict[str, dict[str, dict[str, Any]]] = {}
-    all_collected: dict[str, dict[str, Any]] = {}
+    ambiguous_entries: dict[str, dict[str, dict[str, Any]]] = {}
     for item in coverage.get("campaignScoped") or []:
-        if not isinstance(item, dict) or int(item.get("rowsReceived") or 0) <= 0:
-            continue
-        if item.get("status") not in AVAILABLE_AUDIT_DATA_STATUSES:
+        if not available(item):
             continue
         campaign = str(item.get("campaignName") or "")
-        capability = str(item.get("capabilityId") or "")
-        if campaign and capability:
-            campaign_entries.setdefault(campaign, {})[capability] = item
-            all_collected[capability] = item
+        target = ambiguous_entries if campaign in ambiguous_names else campaign_entries
+        if campaign in trusted_names or campaign in ambiguous_names:
+            add_aliases(target.setdefault(campaign, {}), item)
+
+    account_collected: dict[str, dict[str, Any]] = {}
     for item in coverage.get("accountWide") or []:
-        if not isinstance(item, dict) or int(item.get("rowsReceived") or 0) <= 0:
-            continue
-        if item.get("status") in AVAILABLE_AUDIT_DATA_STATUSES and item.get("capabilityId"):
-            all_collected[str(item["capabilityId"])] = item
+        if available(item):
+            add_aliases(account_collected, item)
+
+    complete_account_coverage: dict[str, dict[str, Any]] = {}
+    if trusted_names and not ambiguous_names:
+        capabilities = {
+            str(item.get("capabilityId") or "")
+            for entries in campaign_entries.values()
+            for item in entries.values()
+            if item.get("capabilityId")
+        }
+        for capability in capabilities:
+            candidates = capability_candidates(capability)
+            matched = [
+                next((campaign_entries.get(name, {}).get(value) for value in candidates if campaign_entries.get(name, {}).get(value)), None)
+                for name in trusted_names
+            ]
+            if matched and all(matched):
+                for candidate in candidates:
+                    complete_account_coverage[candidate] = matched[0]
+    account_available = {**complete_account_coverage, **account_collected}
 
     removed: list[dict[str, str]] = []
     quality_limitations: list[str] = []
     text_conflicts = 0
+    ambiguous_text_conflicts = 0
     capability_terms = {
         "search_queries": ("search_queries", "search queries", "поисков", "запрос"),
-        "placements": ("placements", "площадк"),
-        "devices": ("devices", "устройств"),
+        "placements": ("placements", "placement", "площадк"),
+        "devices": ("devices", "device", "устройств"),
         "geo": ("geo", "географ", "регион"),
         "goals": ("goals", "целям", "цели"),
-        "ad_group_performance": ("ad_group_performance", "групп объяв"),
-        "keyword_performance": ("keyword_performance", "ключев"),
+        "ad_group_performance": ("ad_group_performance", "ad_group", "групп объяв"),
+        "keyword_performance": ("keyword_performance", "keyword", "ключев"),
         "campaign_settings": ("campaign_settings", "настройк камп"),
+        "audience_targets": ("audience", "аудитор"),
+        "ads": ("ads_creatives", "объявлен", "креатив"),
     }
     missing_markers = (
         "не собран", "не получен", "нет данных", "данные отсутств", "отсутств", "недоступны данные",
         "missing", "not collected", "no data", "data unavailable",
     )
 
-    def conflicts_with_collected(text: Any, campaign_name: Any = None) -> bool:
+    def evidence_for_scope(campaign_name: Any, *, account: bool = False) -> dict[str, dict[str, Any]]:
+        if account:
+            return account_available
+        name = str(campaign_name or "").strip()
+        return campaign_entries.get(name, {}) if name in trusted_names else {}
+
+    def text_conflict(text: Any, campaign_name: Any = None, *, account: bool = False) -> tuple[bool, bool]:
         normalized = str(text or "").casefold()
         if not normalized or not any(marker in normalized for marker in missing_markers):
-            return False
-        scoped = campaign_entries.get(str(campaign_name or ""), {})
-        candidates = scoped or all_collected
-        return any(
-            any(term in normalized for term in capability_terms.get(capability, (capability,)))
-            for capability in candidates
+            return False, False
+        candidates = evidence_for_scope(campaign_name, account=account)
+        conflict = any(
+            any(term in normalized for term in capability_terms.get(str(item.get("capabilityId")), (str(item.get("capabilityId")),)))
+            for item in candidates.values()
         )
+        name = str(campaign_name or "").strip()
+        ambiguous = name in ambiguous_names and any(
+            any(term in normalized for term in capability_terms.get(str(item.get("capabilityId")), (str(item.get("capabilityId")),)))
+            for item in ambiguous_entries.get(name, {}).values()
+        )
+        return conflict, ambiguous
 
-    def normalize(values: Any, campaign_name: Any) -> list[str]:
-        scoped = campaign_entries.get(str(campaign_name or ""), {})
+    def normalize(values: Any, campaign_name: Any, *, account: bool = False) -> list[str]:
+        scoped = evidence_for_scope(campaign_name, account=account)
         kept: list[str] = []
         for raw in values or []:
             capability = str(raw)
-            evidence = scoped.get(capability)
-            if evidence is None and not campaign_name:
-                evidence = all_collected.get(capability)
+            evidence = next((scoped.get(candidate) for candidate in capability_candidates(capability) if scoped.get(candidate)), None)
             if evidence is None:
                 kept.append(capability)
                 continue
-            removed.append({"campaignName": str(campaign_name or "account"), "capabilityId": capability})
+            canonical = str(evidence.get("capabilityId") or capability)
+            removed.append({"campaignName": str(campaign_name or "account"), "capabilityId": canonical})
             if evidence.get("dataQuality") != "sufficient":
                 quality_limitations.append(
-                    f"{campaign_name or 'Аккаунт'} / {capability}: данные собраны, "
+                    f"{campaign_name or 'Аккаунт'} / {canonical}: данные собраны, "
                     f"но вывод ограничен ({evidence.get('qualityReason') or 'low_data'})."
                 )
         return list(dict.fromkeys(kept))[:5]
 
     for section in ("critical_findings", "opportunities"):
         for finding in result.get(section) or []:
+            campaign_name = finding.get("campaign_name")
+            is_account = not campaign_name and finding.get("analysis_level") == "account"
             before = list(finding.get("next_data_needed") or [])
-            finding["next_data_needed"] = normalize(before, finding.get("campaign_name"))
+            finding["next_data_needed"] = normalize(before, campaign_name, account=is_account)
             if before and not finding["next_data_needed"]:
                 finding["recommendation"] = (
                     "Использовать уже собранные backend-данные; при недостаточной выборке "
                     "ограничить уверенность вывода, а не запрашивать тот же срез повторно."
                 )
             for field in ("problem", "fact", "hypothesis", "recommendation"):
-                if conflicts_with_collected(finding.get(field), finding.get("campaign_name")):
+                conflict, ambiguous = text_conflict(finding.get(field), campaign_name, account=is_account)
+                ambiguous_text_conflicts += int(ambiguous)
+                if conflict:
                     text_conflicts += 1
                     finding[field] = (
                         "Backend подтверждает наличие этого среза данных. "
                         "Ограничения следует описывать через качество и объём выборки."
                     )
-    normalized_insufficient = []
+
     for item in result.get("insufficient_data_campaigns") or []:
         before = list(item.get("next_data_needed") or [])
         item["next_data_needed"] = normalize(before, item.get("campaign_name"))
         if before and not item["next_data_needed"]:
             item["reason"] = "Данные собраны; ограничение относится к качеству или объёму выборки."
             item["recommendation"] = "Учитывать точную причину ограничения данных без повторного сбора того же среза."
-        normalized_insufficient.append(item)
-    result["insufficient_data_campaigns"] = normalized_insufficient
 
     drilldown = result.get("drilldown_summary") or {}
-    analyzed = list(dict.fromkeys([
-        *(drilldown.get("analyzed_levels") or []),
-        *sorted(all_collected),
+    globally_analyzed = sorted({str(item.get("capabilityId")) for item in account_available.values() if item.get("capabilityId")})
+    drilldown["analyzed_levels"] = list(dict.fromkeys([
+        *(drilldown.get("analyzed_levels") or []), *globally_analyzed,
     ]))
-    drilldown["analyzed_levels"] = analyzed
     drilldown["not_analyzed_levels"] = [
         item for item in (drilldown.get("not_analyzed_levels") or [])
-        if str(item) not in all_collected
+        if not any(candidate in account_available for candidate in capability_candidates(item))
     ]
-    drilldown["next_data_needed"] = normalize(drilldown.get("next_data_needed") or [], None)
+    drilldown["next_data_needed"] = normalize(
+        drilldown.get("next_data_needed") or [], None, account=True,
+    )
     result["drilldown_summary"] = drilldown
 
     safe_actions = []
+    account_scope_labels = {"account", "аккаунт", "весь аккаунт", "all account"}
     for action in result.get("action_plan") or []:
-        if conflicts_with_collected(
+        scope = str(action.get("scope") or "").strip()
+        is_account = scope.casefold() in account_scope_labels
+        conflict, ambiguous = text_conflict(
             " ".join((str(action.get("action") or ""), str(action.get("reason") or ""))),
-            action.get("scope"),
-        ):
+            scope,
+            account=is_account,
+        )
+        ambiguous_text_conflicts += int(ambiguous)
+        if conflict:
             text_conflicts += 1
             continue
         safe_actions.append(action)
@@ -3277,17 +3399,19 @@ def _reconcile_structured_evidence_claims(
 
     safe_limitations = []
     for item in result.get("limitations") or []:
-        if conflicts_with_collected(item):
+        conflict, _ = text_conflict(item, account=True)
+        if conflict:
             text_conflicts += 1
             continue
         safe_limitations.append(item)
     result["limitations"] = safe_limitations
     for field in ("executive_summary", "conclusion"):
-        if conflicts_with_collected(result.get(field)):
+        conflict, _ = text_conflict(result.get(field), account=True)
+        if conflict:
             text_conflicts += 1
             result[field] = (
-                "Результат согласован с фактически собранными backend-данными; "
-                "оставшиеся ограничения относятся только к явно указанному качеству выборки."
+                "Результат согласован с фактически собранными account-wide данными; "
+                "оставшиеся ограничения относятся к качеству и объёму выборки."
             )
 
     if quality_limitations:
@@ -3298,8 +3422,12 @@ def _reconcile_structured_evidence_claims(
         "status": "final_output_evidence_reconciled" if removed or text_conflicts else "consistent",
         "removedFalseMissingClaims": len(removed),
         "removedFreeTextConflicts": text_conflicts,
+        "ambiguousFreeTextConflicts": ambiguous_text_conflicts,
+        "requiresBackendFallback": bool(ambiguous_text_conflicts),
         "qualityLimitationsAdded": len(set(quality_limitations)),
         "capabilities": sorted({item["capabilityId"] for item in removed}),
+        "accountCapabilities": sorted({str(item.get("capabilityId")) for item in account_collected.values()}),
+        "completeAccountCoverage": sorted({str(item.get("capabilityId")) for item in complete_account_coverage.values()}),
     }
     snapshot["finalOutputEvidenceReconciliation"] = diagnostics
     return result, diagnostics
@@ -3352,12 +3480,20 @@ def _validate_structured_result_with_metadata(
         enforced = _enforce_verified_result(validated, snapshot)
         reconciled, diagnostics = _reconcile_structured_evidence_claims(enforced, snapshot)
         parsing["evidenceReconciliation"] = diagnostics
+        if diagnostics.get("requiresBackendFallback"):
+            parsing["status"] = "fallback"
+            parsing["errorCode"] = "final_output_evidence_scope_ambiguous"
+            return None, parsing
         return reconciled, parsing
     parsing["status"] = "success"
     parsing["errorCode"] = "truncated_provider_response" if finish_reason == "length" else None
     enforced = _enforce_verified_result(validated, snapshot)
     reconciled, diagnostics = _reconcile_structured_evidence_claims(enforced, snapshot)
     parsing["evidenceReconciliation"] = diagnostics
+    if diagnostics.get("requiresBackendFallback"):
+        parsing["status"] = "fallback"
+        parsing["errorCode"] = "final_output_evidence_scope_ambiguous"
+        return None, parsing
     return reconciled, parsing
 
 
@@ -5165,6 +5301,7 @@ async def advance_audit_job(
             internal_ids = []
             trusted_scopes: dict[str, str] = {}
             ambiguous_scope_names: set[str] = set()
+            trusted_scope_names: dict[str, str] = {}
             for item in (full_context.get("campaigns") or []):
                 if not isinstance(item, dict):
                     continue
@@ -5174,6 +5311,8 @@ async def advance_audit_job(
                     internal_ids.append(str(raw_id))
                     if name:
                         scope = campaign_scope_key(raw_id) or ""
+                        if scope:
+                            trusted_scope_names[scope] = name
                         if name in trusted_scopes and trusted_scopes[name] != scope:
                             ambiguous_scope_names.add(name)
                             trusted_scopes.pop(name, None)
@@ -5182,6 +5321,14 @@ async def advance_audit_job(
             snapshot["_trustedCampaignScopes"] = {
                 key: value for key, value in trusted_scopes.items() if value
             }
+            snapshot["_trustedCampaignScopeNames"] = trusted_scope_names
+            snapshot["_ambiguousCampaignNames"] = sorted(ambiguous_scope_names)
+            if ambiguous_scope_names:
+                snapshot["evidenceIdentityLimitations"] = [{
+                    "code": "ambiguous_campaign_identity",
+                    "campaignName": name,
+                    "message": "Имя кампании неоднозначно; доказательства не объединяются между кампаниями с одинаковым названием.",
+                } for name in sorted(ambiguous_scope_names)]
             job.context_snapshot_json = _json_dump(snapshot)
             job.prompt_snapshot_json = _json_dump({"internalCampaignIds": internal_ids[:100]})
             job.status = "context_ready"
@@ -6284,14 +6431,7 @@ async def advance_audit_job(
                 snapshot,
                 job,
                 final_diagnostics,
-                status_value=(
-                    "final_output_evidence_reconciled"
-                    if structured is not None
-                    and (snapshot.get("finalOutputEvidenceReconciliation") or {}).get("status")
-                    == "final_output_evidence_reconciled"
-                    else "provider_completed" if structured is not None
-                    else "provider_response_truncated"
-                ),
+                status_value="provider_completed" if structured is not None else "provider_response_truncated",
             )
             job.context_snapshot_json = _json_dump(snapshot)
             warnings = _helper_warning_messages(snapshot)
@@ -6325,10 +6465,12 @@ async def advance_audit_job(
                 "auditCompletionState": evidence_coverage["completionState"],
                 "evidenceCoverage": evidence_coverage,
                 "analysisPeriod": snapshot.get("analysisPeriod") or {},
+                "periodEvidenceLimitations": snapshot.get("periodEvidenceLimitations") or [],
                 "cachePolicy": (snapshot.get("metadata") or {}).get("cachePolicy") or "fresh",
                 "directApiKnowledgeVersion": (snapshot.get("metadata") or {}).get("directApiKnowledgeVersion"),
                 "dataCoverage": snapshot.get("dataCoverage") or {},
                 "canonicalEvidenceCoverage": snapshot.get("canonicalEvidenceCoverage") or {},
+                "finalOutputEvidenceReconciliation": snapshot.get("finalOutputEvidenceReconciliation") or {},
                 "usage": final_token_usage,
                 "finalTokenUsage": final_token_usage,
                 "responseId": response.get("id"),

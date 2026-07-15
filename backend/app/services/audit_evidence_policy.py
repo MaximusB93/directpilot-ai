@@ -8,7 +8,7 @@ from app.services.yandex_direct_read_capabilities import (
     ALL_SUBTYPES,
     YANDEX_DIRECT_READ_CAPABILITIES,
 )
-from app.services.audit_evidence_reconciliation import ensure_trusted_campaign_scopes
+from app.services.audit_evidence_identity import ensure_trusted_campaign_scopes
 
 
 AUDIT_EVIDENCE_POLICY_VERSION = "audit-evidence-v1"

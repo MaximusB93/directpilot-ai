@@ -1,43 +1,57 @@
 from __future__ import annotations
 
-import hashlib
 from typing import Any
 
 from app.services.audit_evidence import HYPOTHESIS_EVIDENCE_POLICY, evaluate_capability_evidence
+from app.services.audit_evidence_identity import (
+    campaign_scope_for_name,
+    campaign_scope_key,
+    ensure_trusted_campaign_scopes,
+    trusted_scope_names,
+)
+from app.services.audit_evidence_policy import DIMENSION_CAPABILITY_CANDIDATES
 
 
 AVAILABLE_EVIDENCE_STATUSES = {"collected", "cached", "partial"}
+ACCOUNT_DERIVABLE_CAPABILITIES = {
+    "campaigns", "campaign_performance", "goals", "conversions_by_goal",
+}
+PRODUCTION_CAPABILITY_ALIASES: dict[str, tuple[str, ...]] = {
+    "device": ("devices",),
+    "placement": ("placements",),
+    "keyword": ("keyword_performance", "keywords"),
+    "ad_group": ("ad_group_performance", "ad_groups"),
+    "audience": ("audience_targets",),
+    "ads_creatives": ("ads",),
+}
+for _dimension, _candidates in DIMENSION_CAPABILITY_CANDIDATES.items():
+    PRODUCTION_CAPABILITY_ALIASES.setdefault(_dimension, tuple(_candidates))
 
 
-def campaign_scope_key(value: Any) -> str | None:
-    """Return an opaque backend-only campaign identity without exposing Direct IDs."""
-
-    text = str(value or "").strip()
-    if not text:
-        return None
-    return "campaign:" + hashlib.sha256(text.encode("utf-8")).hexdigest()[:24]
+def capability_candidates(value: Any) -> tuple[str, ...]:
+    normalized = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = PRODUCTION_CAPABILITY_ALIASES.get(normalized, ())
+    return tuple(dict.fromkeys((normalized, *aliases))) if normalized else ()
 
 
-def ensure_trusted_campaign_scopes(snapshot: dict[str, Any]) -> dict[str, str]:
-    scopes = snapshot.setdefault("_trustedCampaignScopes", {})
-    if not isinstance(scopes, dict):
-        scopes = {}
-        snapshot["_trustedCampaignScopes"] = scopes
-    for item in snapshot.get("campaignClassifications") or []:
-        if not isinstance(item, dict):
-            continue
-        name = str(item.get("campaign_name") or item.get("campaignName") or "").strip()
-        scope = str(item.get("campaign_scope_key") or item.get("campaignScopeKey") or "").strip()
-        if name and scope:
-            scopes[name] = scope
-    return {str(key): str(value) for key, value in scopes.items() if key and value}
+def _row_value(row: dict[str, Any], *names: str) -> Any:
+    lowered = {str(key).lower(): value for key, value in row.items()}
+    for name in names:
+        if name.lower() in lowered:
+            return lowered[name.lower()]
+    return None
 
 
-def _scope_for(snapshot: dict[str, Any], campaign_name: Any) -> str | None:
-    name = str(campaign_name or "").strip()
-    if name == "__all_campaigns__":
-        return "account"
-    return ensure_trusted_campaign_scopes(snapshot).get(name)
+def _row_campaign_scope(
+    snapshot: dict[str, Any], row: dict[str, Any], *, capability: str,
+) -> tuple[str | None, str | None]:
+    names = ("CampaignId", "campaign_id", "id") if capability == "campaigns" else ("CampaignId", "campaign_id")
+    raw_id = _row_value(row, *names)
+    scope = campaign_scope_key(raw_id)
+    trusted_names = trusted_scope_names(snapshot)
+    if scope and scope in trusted_names:
+        return scope, trusted_names[scope]
+    return None, None
 
 
 def _quality_reason(result: dict[str, Any], *, target_cpa: float, period_days: int) -> tuple[str, str | None]:
@@ -80,18 +94,13 @@ def build_canonical_evidence_index(
     target_cpa = float((snapshot.get("targetKpis") or {}).get("targetCpa") or 0)
     period_days = int((snapshot.get("analysisPeriod") or {}).get("days") or 30)
     entries: list[dict[str, Any]] = []
-    for result in results:
-        if not isinstance(result, dict):
-            continue
+
+    def append_entry(
+        result: dict[str, Any], request: dict[str, Any], *,
+        campaign_name: str, scope_key: str, derived_from_account: bool = False,
+    ) -> None:
         request_id = str(result.get("request_id") or "")
-        request = requests.get(request_id) or {}
-        campaign_name = str(result.get("campaign_name") or request.get("campaign_name") or "")
-        scope_key = _scope_for(snapshot, campaign_name)
-        if not scope_key:
-            continue
         capability = str(result.get("capability_id") or result.get("dimension") or "")
-        if not capability:
-            continue
         quality, reason = _quality_reason(
             result, target_cpa=target_cpa, period_days=period_days,
         )
@@ -108,17 +117,58 @@ def build_canonical_evidence_index(
             "status": str(result.get("status") or "unavailable"),
             "rowsReceived": rows_received,
             "rowsAnalyzedByBackend": rows_analyzed,
-            "rowsSentToAi": int(samples.get(request_id) or 0),
+            "rowsSentToAi": 0 if derived_from_account else int(samples.get(request_id) or 0),
             "dataQuality": quality,
             "qualityReason": reason,
             "source": str(result.get("source") or result.get("source_type") or "unavailable"),
             "period": dict(result.get("period") or request.get("period") or {}),
             "freshness": result.get("freshness"),
             "fetchedAt": result.get("fetched_at"),
+            "live": bool(result.get("live")) or str(result.get("source") or "").startswith("yandex_direct_live"),
+            "cached": bool(result.get("cached")) or str(result.get("status") or "") == "cached",
+            "savedFallback": bool(result.get("saved_fallback")) or str(result.get("source") or "") == "directpilot_saved_stats",
             "limitations": [str(item)[:300] for item in (result.get("limitations") or [])[:5]],
+            "derivedFromAccountWide": derived_from_account,
             "result": result,
             "request": request,
         })
+
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+        request_id = str(result.get("request_id") or "")
+        request = requests.get(request_id) or {}
+        campaign_name = str(result.get("campaign_name") or request.get("campaign_name") or "")
+        scope_key = campaign_scope_for_name(snapshot, campaign_name)
+        if not scope_key:
+            continue
+        capability = str(result.get("capability_id") or result.get("dimension") or "")
+        if not capability:
+            continue
+        append_entry(result, request, campaign_name=campaign_name, scope_key=scope_key)
+        if scope_key != "account" or capability not in ACCOUNT_DERIVABLE_CAPABILITIES:
+            continue
+        grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for row in result.get("data") or []:
+            if not isinstance(row, dict):
+                continue
+            row_scope, row_name = _row_campaign_scope(snapshot, row, capability=capability)
+            if row_scope and row_name:
+                grouped.setdefault((row_scope, row_name), []).append(row)
+        for (row_scope, row_name), rows in grouped.items():
+            scoped_result = {
+                **result,
+                "campaign_name": row_name,
+                "rows_total": len(rows),
+                "rows_analyzed": len(rows),
+                "data": rows,
+            }
+            append_entry(
+                scoped_result, request,
+                campaign_name=row_name,
+                scope_key=row_scope,
+                derived_from_account=True,
+            )
     return {
         "entries": entries,
         "byScopeCapability": {
@@ -127,12 +177,54 @@ def build_canonical_evidence_index(
     }
 
 
+def apply_canonical_coverage_to_registry(
+    snapshot: dict[str, Any], index: dict[str, Any],
+) -> None:
+    """Close policy requirements only with evidence from the exact trusted scope."""
+
+    registry = snapshot.get("evidenceCoverageRegistry") or []
+    for requirement in registry:
+        if not isinstance(requirement, dict):
+            continue
+        scope = str(requirement.get("campaignScopeKey") or "")
+        candidates = {
+            candidate
+            for value in (
+                requirement.get("dimension"),
+                requirement.get("resolvedCapability"),
+                *(requirement.get("capabilityCandidates") or []),
+            )
+            for candidate in capability_candidates(value)
+        }
+        matches = [
+            item for item in index.get("entries") or []
+            if item.get("scopeKey") == scope
+            and str(item.get("capabilityId") or "") in candidates
+        ]
+        available = [
+            item for item in matches
+            if item.get("status") in AVAILABLE_EVIDENCE_STATUSES
+            and int(item.get("rowsReceived") or 0) > 0
+        ]
+        if not available:
+            continue
+        best = max(available, key=lambda item: int(item.get("rowsReceived") or 0))
+        requirement.update({
+            "status": "satisfied",
+            "rowsReceived": int(best.get("rowsReceived") or 0),
+            "rowsAnalyzed": int(best.get("rowsAnalyzedByBackend") or 0),
+            "source": str(best.get("source") or "unavailable"),
+            "limitations": list(best.get("limitations") or [])[:5],
+        })
+    snapshot["evidenceCoverageRegistry"] = registry
+
+
 def evidence_for_hypothesis(
     snapshot: dict[str, Any], hypothesis: dict[str, Any], index: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     hypothesis_id = str(hypothesis.get("hypothesis_id") or "")
     campaign_name = str(hypothesis.get("campaign_name") or "")
-    scope_key = _scope_for(snapshot, campaign_name)
+    scope_key = campaign_scope_for_name(snapshot, campaign_name)
     subtype = str(hypothesis.get("campaign_subtype") or "unknown")
     hypothesis_type = str(hypothesis.get("hypothesis_type") or "campaign_metadata_issue")
     allowed = set(HYPOTHESIS_EVIDENCE_POLICY.get(
@@ -176,9 +268,18 @@ def canonical_coverage_projection(index: dict[str, Any]) -> dict[str, Any]:
         "summary": {
             "accountCapabilities": len(account),
             "campaignCapabilities": len(campaigns),
-            "rowsReceived": sum(int(item.get("rowsReceived") or 0) for item in account + campaigns),
-            "rowsAnalyzedByBackend": sum(int(item.get("rowsAnalyzedByBackend") or 0) for item in account + campaigns),
-            "rowsSentToAi": sum(int(item.get("rowsSentToAi") or 0) for item in account + campaigns),
+            "rowsReceived": sum(
+                int(item.get("rowsReceived") or 0)
+                for item in index.get("entries") or [] if not item.get("derivedFromAccountWide")
+            ),
+            "rowsAnalyzedByBackend": sum(
+                int(item.get("rowsAnalyzedByBackend") or 0)
+                for item in index.get("entries") or [] if not item.get("derivedFromAccountWide")
+            ),
+            "rowsSentToAi": sum(
+                int(item.get("rowsSentToAi") or 0)
+                for item in index.get("entries") or [] if not item.get("derivedFromAccountWide")
+            ),
         },
     }
 
@@ -186,7 +287,7 @@ def canonical_coverage_projection(index: dict[str, Any]) -> dict[str, Any]:
 def collected_capabilities_for_campaign(
     snapshot: dict[str, Any], index: dict[str, Any], campaign_name: str,
 ) -> dict[str, dict[str, Any]]:
-    scope = _scope_for(snapshot, campaign_name)
+    scope = campaign_scope_for_name(snapshot, campaign_name)
     return {
         str(item["capabilityId"]): item
         for item in index.get("entries") or []

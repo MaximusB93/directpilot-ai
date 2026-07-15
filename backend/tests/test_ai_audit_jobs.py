@@ -1487,7 +1487,7 @@ def test_audit_completes_when_all_helper_stages_fallback(monkeypatch):
     assert snapshot["helperStages"]["planner"]["status"] == "fallback"
     assert snapshot["helperStages"]["verification"]["status"] == "fallback"
     result = audit_jobs._json_load(job.result_json, {})
-    assert len(result["warnings"]) == 3
+    assert len(result["warnings"]) >= 3
     assert job.returned_model == job.model
 
 

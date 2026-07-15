@@ -276,7 +276,6 @@ function renderAuditTechnicalDiagnostics(metadata, runtime, escapeHtml, result =
     provider_context_limit_rejected: 'провайдер отклонил размер контекста',
     retrying_after_provider_context_rejection: 'повторяем с более компактным контекстом',
     provider_completed: 'AI-отчёт сформирован',
-    final_output_evidence_reconciled: 'AI-отчёт согласован с фактически собранными данными',
     backend_fallback: 'сохранён безопасный backend-результат',
     backend_fallback_missing_mandatory_evidence: 'аудит завершён с неполным покрытием обязательных данных',
     backend_fallback_after_provider_context_rejection: 'сохранён backend-результат после отказа провайдера',
@@ -285,6 +284,14 @@ function renderAuditTechnicalDiagnostics(metadata, runtime, escapeHtml, result =
     backend_fallback_after_json_parse: 'ответ модели не удалось разобрать; показан безопасный backend-отчёт',
     backend_fallback_after_schema_validation: 'ответ модели не прошёл структурный контракт; показан безопасный backend-отчёт',
   }[runtime.finalGenerationStatus] || 'финальная генерация ещё не началась';
+  const reconciliation = result?.finalOutputEvidenceReconciliation
+    || result?.structuredParsing?.evidenceReconciliation
+    || null;
+  const reconciliationLabel = reconciliation?.status === 'final_output_evidence_reconciled'
+    ? 'Финальный ответ согласован с фактически собранными данными'
+    : reconciliation?.status === 'consistent'
+      ? 'Противоречий с собранными данными не найдено'
+      : 'Проверка согласованности ещё не выполнена';
   return `
     <details class="quietDetails">
       <summary>Техническая диагностика аудита</summary>
@@ -315,6 +322,7 @@ function renderAuditTechnicalDiagnostics(metadata, runtime, escapeHtml, result =
       <p>Финальная проекция: ${escapeHtml(String(runtime.finalProjectionEstimatedTokens || 0))} токенов. Финальный prompt: ${escapeHtml(String(runtime.finalPromptEstimatedTokens || 0))}. Лимит модели: ${escapeHtml(String(runtime.modelContextLimit || 0))}. Запрошено для ответа: ${escapeHtml(String(runtime.requestedOutputTokens || runtime.reservedOutputTokens || 0))}. Эффективный лимит: ${escapeHtml(String(runtime.effectiveFinalOutputTokens || runtime.reservedOutputTokens || 0))}. Запас безопасности: ${escapeHtml(String(runtime.safetyMarginTokens || 0))}.</p>
       <p>Уровень сжатия: L${escapeHtml(String(runtime.finalCompactionLevel ?? '—'))}. Preflight помещается: ${runtime.preflightFitsModelContext === true ? 'да' : runtime.preflightFitsModelContext === false ? 'нет' : 'ещё не проверено'}. Провайдер отклонил контекст: ${runtime.providerContextRejected ? 'да' : 'нет'}. Backend fallback: ${runtime.backendFallbackUsed ? 'да' : 'нет'}.</p>
       <p>Статус финальной генерации: ${escapeHtml(finalStatusLabel)}${runtime.providerContextErrorCode ? ` · код контекста: ${escapeHtml(String(runtime.providerContextErrorCode))}` : ''}${runtime.providerErrorCode ? ` · код провайдера: ${escapeHtml(String(runtime.providerErrorCode))}` : ''}. Суммарное использование всех AI-вызовов: ${escapeHtml(String(runtime.tokenUsage?.total || 0))} токенов. Время этапов: ${escapeHtml(String(Object.values(runtime.timings || {}).reduce((sum, value) => sum + Number(value || 0), 0)))} мс.</p>
+      <p>Согласование evidence: ${escapeHtml(reconciliationLabel)}.</p>
       ${finalTokenUsage ? `<p>Финальный AI-вызов: prompt ${escapeHtml(String(finalTokenUsage.prompt || 0))}, completion ${escapeHtml(String(finalTokenUsage.completion || 0))}, всего ${escapeHtml(String(finalTokenUsage.total || 0))} токенов.</p>` : ''}
       ${result?.backendFallbackUsed ? `<p>Backend fallback: да. Причина: ${escapeHtml(String(result?.structuredParsing?.fallbackReason || modelParsing?.errorCode || 'не указана'))}.${modelParsing ? ` Ошибок структурной проверки: ${escapeHtml(String(modelParsing.validationErrorsCount || 0))}.` : ''}</p>` : ''}
       ${modelParsing ? `<p>Ответ модели: формат ${escapeHtml(String(modelParsing.sourceFormat || 'unknown'))}, результат проверки ${escapeHtml(String(modelParsing.parseOutcome || 'unknown'))}${validationPaths.length ? `, безопасные пути ошибок: ${validationPaths.map((value) => escapeHtml(String(value))).join(', ')}` : ''}. Finish reason: ${escapeHtml(String(result?.finishReason || 'не указан'))}.</p>` : ''}
