@@ -145,6 +145,8 @@ def _rejected_result(
 
 def validate_audit_data_requests(
     requests: list[AuditDataRequest],
+    *,
+    max_requests: int = MAX_AUDIT_DATA_REQUESTS,
 ) -> tuple[list[AuditDataRequest], list[AuditDataRequestResult]]:
     priority_rank = {"high": 0, "medium": 1, "low": 2}
     ordered = sorted(requests, key=lambda item: (priority_rank[item.priority], not item.required_for_conclusion))
@@ -170,7 +172,7 @@ def validate_audit_data_requests(
             or request.campaign_subtype not in capability.supported_subtypes
         ):
             status, code = "not_applicable", "dimension_not_applicable"
-        elif len(accepted) >= MAX_AUDIT_DATA_REQUESTS or (
+        elif len(accepted) >= max(1, int(max_requests)) or (
             hypothesis_counts[request.hypothesis_id] >= MAX_REQUESTS_PER_HYPOTHESIS
             and not request.request_id.startswith("policy_")
         ):
@@ -242,6 +244,8 @@ def collect_audit_data_requests(
     cache_policy: str = "prefer_cache",
     allow_saved_fallback: bool = True,
 ) -> tuple[list[AuditDataRequestResult], int]:
+    if cache_policy == "fresh":
+        allow_saved_fallback = False
     results: list[AuditDataRequestResult] = []
     direct_api_calls = 0
     deduplicated: dict[tuple[Any, ...], AuditDataRequestResult] = {}
@@ -306,6 +310,7 @@ def collect_audit_data_requests(
                 result.live_error_code = result.error_code if result.live_attempted else None
                 direct_api_calls += outcome.api_calls
             except YandexDirectReadError as exc:
+                direct_api_calls += int(getattr(exc, "api_calls", 0) or 0)
                 result = AuditDataRequestResult(
                     request_id=request.request_id,
                     hypothesis_id=request.hypothesis_id,

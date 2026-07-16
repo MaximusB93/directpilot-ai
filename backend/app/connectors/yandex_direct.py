@@ -26,10 +26,15 @@ YANDEX_DIRECT_GET_SERVICES: dict[str, str] = {
 
 
 class YandexDirectReadError(RuntimeError):
-    def __init__(self, code: str, message: str, *, retryable: bool = False) -> None:
+    def __init__(
+        self, code: str, message: str, *, retryable: bool = False,
+        retry_after_seconds: int | None = None, api_calls: int = 0,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.retryable = retryable
+        self.retry_after_seconds = retry_after_seconds
+        self.api_calls = max(0, int(api_calls))
 
 
 @dataclass(frozen=True)
@@ -47,6 +52,7 @@ class YandexDirectConnector:
     def __init__(self, access_token: str | None = None, client_login: str | None = None) -> None:
         self.access_token = access_token
         self.client_login = client_login
+        self.outbound_attempts = 0
 
     @property
     def is_configured(self) -> bool:
@@ -97,6 +103,7 @@ class YandexDirectConnector:
             raise YandexDirectReadError("direct_auth_error", "Yandex Direct access token is not configured.")
         try:
             api_version = "v501" if service_id == "campaigns" else "v5"
+            self.outbound_attempts += 1
             response = httpx.post(
                 f"https://api.direct.yandex.com/json/{api_version}/{service_id}",
                 json={"method": "get", "params": params},
@@ -161,6 +168,7 @@ class YandexDirectConnector:
             raise YandexDirectReadError("direct_auth_error", "Yandex Direct access token is not configured.")
         mode = processing_mode if processing_mode in {"auto", "online", "offline"} else "auto"
         try:
+            self.outbound_attempts += 1
             response = httpx.post(
                 self.reports_url,
                 json={"params": report_spec},
@@ -612,10 +620,17 @@ def _direct_read_error(response: httpx.Response) -> YandexDirectReadError:
         return YandexDirectReadError("direct_auth_error", "Yandex Direct authorization failed.")
     if status_code == 403:
         return YandexDirectReadError("direct_permission_denied", "Yandex Direct access is denied for this account.")
+    retry_after_seconds = _retry_in_seconds(response)
     if status_code == 429:
-        return YandexDirectReadError("direct_rate_limited", "Yandex Direct request limit was reached.", retryable=True)
+        return YandexDirectReadError(
+            "direct_rate_limited", "Yandex Direct request limit was reached.",
+            retryable=True, retry_after_seconds=retry_after_seconds, api_calls=1,
+        )
     if status_code == 400 and ("queue" in lowered or "очеред" in lowered):
-        return YandexDirectReadError("direct_report_queue_full", "Yandex Direct report queue is full.", retryable=True)
+        return YandexDirectReadError(
+            "direct_report_queue_full", "Yandex Direct report queue is full.",
+            retryable=True, retry_after_seconds=retry_after_seconds, api_calls=1,
+        )
     if status_code == 400:
         return YandexDirectReadError("direct_invalid_field_combination", message or "Invalid Direct report fields.")
     if status_code >= 500:

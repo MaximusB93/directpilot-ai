@@ -253,6 +253,18 @@ const evidenceCoverageSmoke = renderAiAuditJob({
     job_id: 'audit-coverage', status: 'completed', current_stage: 'finalize', progress_percent: 100,
     result: { backendFallbackUsed: true, compactRetryAvailable: false },
     context_metadata: {
+      canonicalEvidenceCoverage: {
+        summary: {
+          applicableCampaigns: 1, coveredCampaigns: 1,
+          rowsReceived: 12, rowsAnalyzedByBackend: 12, rowsSentToAi: 8,
+        },
+        capabilitySummary: [{ capabilityId: 'search_queries' }],
+        campaignMatrix: [{
+          campaignName: 'Search A', capabilityId: 'search_queries', status: 'collected',
+          rowsReceived: 12, rowsAnalyzedByBackend: 12, rowsSentToAi: 8,
+          source: 'yandex_direct_live_report', applicable: true, absenceReason: null,
+        }],
+      },
       evidenceCoverage: {
         completionState: 'blocked_missing_evidence',
         summary: {
@@ -269,7 +281,10 @@ const evidenceCoverageSmoke = renderAiAuditJob({
   },
   escapeHtml,
 });
-if (!evidenceCoverageSmoke.includes('Полнота обязательных данных')
+if (!evidenceCoverageSmoke.includes('Что реально проанализировано')
+  || !evidenceCoverageSmoke.includes('Получено / backend / AI')
+  || !evidenceCoverageSmoke.includes('12 / 12 / 8')
+  || !evidenceCoverageSmoke.includes('Полнота обязательных данных')
   || !evidenceCoverageSmoke.includes('Аудит не получил часть обязательных данных')
   || !evidenceCoverageSmoke.includes('недоступно')
   || !evidenceCoverageSmoke.includes('неприменимо')

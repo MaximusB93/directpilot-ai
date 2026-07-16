@@ -63,6 +63,14 @@ from app.services.audit_evidence_store import (
     load_audit_evidence_results,
     save_audit_evidence_results,
 )
+from app.services.audit_evidence_reconciliation import (
+    apply_canonical_coverage_to_registry,
+    build_canonical_evidence_index,
+    capability_candidates,
+    canonical_coverage_projection,
+    evidence_for_hypothesis,
+)
+from app.services.audit_evidence_identity import campaign_scope_for_name, campaign_scope_key
 from app.services.audit_evidence_policy import (
     AUDIT_EVIDENCE_POLICY_VERSION,
     evidence_dimension_forbidden,
@@ -73,6 +81,16 @@ from app.services.audit_evidence_policy import (
     refresh_evidence_coverage_registry,
 )
 from app.services.audit_public_trace import build_public_audit_trace
+from app.services.audit_scheduler import (
+    build_minimum_coverage_requests,
+    execution_profile_for_scope,
+    initialize_scheduler_state,
+    mark_scheduler_progress,
+    mark_scheduler_waiting,
+    partition_breadth_and_depth_requests,
+    scheduler_deadline_state,
+    scheduler_health,
+)
 from app.services.cascade_investigation import (
     MAX_DATA_REQUESTS_PER_AUDIT,
     MAX_INVESTIGATION_ROUNDS,
@@ -662,7 +680,14 @@ def classify_audit_campaigns(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
                 continue
             seen.add(name)
             api_metadata = (snapshot.get("campaignApiMetadata") or {}).get(name) or {}
-            result.append(_campaign_classification(name, api_metadata or {"type": item.get("type")}))
+            classification = _campaign_classification(name, api_metadata or {"type": item.get("type")})
+            scope_key = (
+                api_metadata.get("campaign_scope_key")
+                or (snapshot.get("_trustedCampaignScopes") or {}).get(name)
+            )
+            if scope_key:
+                classification["campaign_scope_key"] = scope_key
+            result.append(classification)
     return result
 
 
@@ -909,18 +934,54 @@ def _apply_live_baseline(
         (str(item.get("fetched_at")) for item in (campaign_result, performance_result) if item.get("fetched_at")),
         default=None,
     )
-    metadata_by_name = {
-        str(row.get("name")): {
+    metadata_by_name: dict[str, dict[str, Any]] = {}
+    trusted_scopes = snapshot.setdefault("_trustedCampaignScopes", {})
+    trusted_scope_names = snapshot.setdefault("_trustedCampaignScopeNames", {})
+    ambiguous_scope_names = {
+        str(item) for item in (snapshot.get("_ambiguousCampaignNames") or [])
+    }
+    for row in (campaign_result.get("data") or []):
+        if not isinstance(row, dict) or not row.get("name"):
+            continue
+        name = str(row.get("name"))
+        scope = campaign_scope_key(
+            row.get("campaign_id") or row.get("CampaignId") or row.get("id")
+        )
+        metadata = {
             "type": row.get("type"), "status": row.get("status"), "state": row.get("state"),
             "text_campaign": row.get("text_campaign"),
             "mobile_app_campaign": row.get("mobile_app_campaign"),
             "cpm_banner_campaign": row.get("cpm_banner_campaign"),
             "unified_campaign": row.get("unified_campaign"),
+            "campaign_scope_key": scope,
         }
-        for row in (campaign_result.get("data") or [])
-        if isinstance(row, dict) and row.get("name")
-    }
+        if scope:
+            trusted_scope_names[scope] = name
+        prior_scope = trusted_scopes.get(name)
+        if name in ambiguous_scope_names or (prior_scope and scope and prior_scope != scope):
+            ambiguous_scope_names.add(name)
+            trusted_scopes.pop(name, None)
+            metadata_by_name.pop(name, None)
+            continue
+        if scope:
+            trusted_scopes[name] = scope
+        metadata_by_name[name] = metadata
+    for name in ambiguous_scope_names:
+        trusted_scopes.pop(name, None)
+        metadata_by_name.pop(name, None)
+    snapshot["_ambiguousCampaignNames"] = sorted(ambiguous_scope_names)
+    snapshot["_trustedCampaignScopeNames"] = trusted_scope_names
     snapshot["campaignApiMetadata"] = metadata_by_name
+    if ambiguous_scope_names:
+        limitations = snapshot.setdefault("evidenceIdentityLimitations", [])
+        for name in sorted(ambiguous_scope_names):
+            item = {
+                "code": "ambiguous_campaign_identity",
+                "campaignName": name,
+                "message": "Имя кампании неоднозначно; доказательства не объединяются между кампаниями с одинаковым названием.",
+            }
+            if item not in limitations:
+                limitations.append(item)
     baseline = {
         "policy": "fresh",
         "status": "complete" if campaign_available and performance_available else "partial",
@@ -1620,6 +1681,156 @@ def _apply_verification_statuses(snapshot: dict[str, Any], verification: AuditHy
     _sync_active_investigation_plan(snapshot)
 
 
+def reconcile_collected_audit_evidence(
+    snapshot: dict[str, Any], full_results: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Reconcile policy and AI evidence before final generation without new API calls."""
+
+    index = build_canonical_evidence_index(snapshot, full_results)
+    facts_by_id = {
+        str(item.get("fact_id")): item
+        for item in snapshot.get("observedFacts") or []
+        if isinstance(item, dict) and item.get("fact_id")
+    }
+    prior = _verification_registry(snapshot)
+    reconciled: list[AuditHypothesisVerification] = []
+    linked_summaries: list[dict[str, Any]] = []
+    for hypothesis in _active_hypotheses(snapshot):
+        hypothesis_id = str(hypothesis.get("hypothesis_id") or "")
+        requests, results = evidence_for_hypothesis(snapshot, hypothesis, index)
+        current = prior.get(hypothesis_id) or {}
+        proposed = AuditHypothesisVerification(
+            hypothesis_id=hypothesis_id,
+            status=str(current.get("status") or "unverified"),
+            verification_summary=str(
+                current.get("verification_summary")
+                or "Backend повторно сопоставил гипотезу с фактически собранными данными."
+            ),
+            supporting_evidence=list(current.get("supporting_evidence") or []),
+            contradicting_evidence=list(current.get("contradicting_evidence") or []),
+            limitations=list(current.get("limitations") or []),
+            remaining_data_needed=list(current.get("remaining_data_needed") or []),
+        )
+        fact_ids = [str(item) for item in (hypothesis.get("fact_ids") or [])]
+        trusted_hypothesis = {
+            **hypothesis,
+            "status": current.get("status") or hypothesis.get("current_status"),
+            "fact_sufficient_data": all(
+                bool((facts_by_id.get(fact_id) or {}).get("sufficient_data"))
+                for fact_id in fact_ids
+            ) if fact_ids else False,
+        }
+        enforced = enforce_hypothesis_verification(
+            proposed,
+            hypothesis=trusted_hypothesis,
+            requests=requests,
+            results=results,
+            target_cpa=float((snapshot.get("targetKpis") or {}).get("targetCpa") or 0),
+            period_days=int((snapshot.get("analysisPeriod") or {}).get("days") or 30),
+        )
+        limitations = list(enforced.limitations)
+        truly_missing: list[str] = []
+        required_capabilities = {
+            str(item.get("capability_id") or item.get("dimension") or "")
+            for item in requests if item.get("required_for_conclusion")
+        }
+        required_capabilities.update(
+            str(item) for item in (hypothesis.get("required_capabilities") or []) if str(item)
+        )
+        hypothesis_scope = campaign_scope_for_name(snapshot, hypothesis.get("campaign_name"))
+        entries = {
+            candidate: item
+            for item in index.get("entries") or []
+            if item.get("scopeKey") == hypothesis_scope
+            if any(
+                str(result.get("request_id")) == str(item.get("requestId"))
+                for result in results
+            )
+            for candidate in capability_candidates(item.get("capabilityId"))
+        }
+        for capability in sorted(required_capabilities):
+            entry = next(
+                (entries.get(candidate) for candidate in capability_candidates(capability) if entries.get(candidate)),
+                None,
+            )
+            if entry and int(entry.get("rowsReceived") or 0) > 0:
+                if entry.get("dataQuality") != "sufficient":
+                    limitations.append(
+                        f"{capability}: данные собраны, но вывод ограничен ({entry.get('qualityReason') or 'low_data'})."
+                    )
+                continue
+            if entry and entry.get("status") == "not_applicable":
+                continue
+            reason = (entry or {}).get("qualityReason") or "not_collected"
+            truly_missing.append(capability)
+            limitations.append(f"{capability}: данные недоступны ({reason}).")
+        enforced = enforced.model_copy(update={
+            "remaining_data_needed": truly_missing[:8],
+            "limitations": list(dict.fromkeys(limitations))[:8],
+        })
+        reconciled.append(enforced)
+        for summary in enforced.evidence_summaries:
+            linked_summaries.append({**summary, "hypothesis_id": hypothesis_id})
+    if reconciled:
+        _apply_verification_statuses(
+            snapshot, AuditHypothesisVerificationSet(verifications=reconciled),
+        )
+    snapshot["drilldownEvidenceSummaries"] = linked_summaries
+    coverage = canonical_coverage_projection(index, snapshot)
+    snapshot["canonicalEvidenceCoverage"] = coverage
+    apply_canonical_coverage_to_registry(snapshot, index)
+
+    requested = snapshot.get("analysisPeriod") or {}
+    requested_from = str(requested.get("dateFrom") or "")
+    requested_to = str(requested.get("dateTo") or "")
+    checkable_periods: list[tuple[str, str, str, str]] = []
+    mismatches: list[dict[str, str]] = []
+    for item in index.get("entries") or []:
+        if (
+            item.get("status") not in AVAILABLE_AUDIT_DATA_STATUSES
+            or not item.get("live")
+            or item.get("cached")
+            or item.get("savedFallback")
+        ):
+            continue
+        period = item.get("period") or {}
+        date_from = str(period.get("date_from") or period.get("dateFrom") or "")
+        date_to = str(period.get("date_to") or period.get("dateTo") or "")
+        if not date_from or not date_to:
+            continue
+        key = (
+            str(item.get("campaignName") or "Аккаунт"),
+            str(item.get("capabilityId") or "unknown"),
+            date_from,
+            date_to,
+        )
+        if key not in checkable_periods:
+            checkable_periods.append(key)
+        if requested_from and requested_to and (date_from != requested_from or date_to != requested_to):
+            mismatches.append({
+                "campaignName": key[0],
+                "capabilityId": key[1],
+                "reasonCode": "evidence_period_mismatch",
+            })
+    requested["evidencePeriodsChecked"] = len(checkable_periods)
+    requested["requestedMatchesAvailableData"] = bool(
+        checkable_periods and requested_from and requested_to and not mismatches
+    )
+    snapshot["periodEvidenceLimitations"] = mismatches[:20]
+    for mismatch in mismatches:
+        for section in ("accountWide", "campaignScoped"):
+            for item in coverage.get(section) or []:
+                if (
+                    str(item.get("campaignName") or "Аккаунт") == mismatch["campaignName"]
+                    and str(item.get("capabilityId") or "unknown") == mismatch["capabilityId"]
+                ):
+                    item["limitations"] = list(dict.fromkeys([
+                        *(item.get("limitations") or []),
+                        "Фактический период evidence отличается от запрошенного периода аудита.",
+                    ]))[:5]
+    return index
+
+
 def _normalized_verifications(answer: str, snapshot: dict[str, Any]) -> AuditHypothesisVerificationSet:
     return _parse_verifications(answer, snapshot)[0]
 
@@ -1628,7 +1839,9 @@ def _second_round_requests(snapshot: dict[str, Any]) -> list[AuditDataRequest]:
     runtime = _audit_runtime(snapshot)
     round_number = int(runtime.get("investigationRound") or 1)
     request_count = int(runtime.get("requestsCount") or 0)
-    if round_number >= MAX_INVESTIGATION_ROUNDS or request_count >= MAX_DATA_REQUESTS_PER_AUDIT:
+    max_rounds = int(runtime.get("maxDepthRounds") or MAX_INVESTIGATION_ROUNDS)
+    max_requests = int(runtime.get("requestSafetyLimit") or MAX_DATA_REQUESTS_PER_AUDIT)
+    if round_number >= max_rounds or request_count >= max_requests:
         return []
     hypotheses = {
         item.get("hypothesis_id"): item
@@ -1656,7 +1869,7 @@ def _second_round_requests(snapshot: dict[str, Any]) -> list[AuditDataRequest]:
         next_capabilities = next_cascade_capabilities(
             subtype=str(hypothesis.get("campaign_subtype") or "unknown"),
             already_requested=already,
-            remaining_budget=MAX_DATA_REQUESTS_PER_AUDIT - request_count - len(candidates),
+            remaining_budget=max_requests - request_count - len(candidates),
         )
         next_capabilities = [
             capability for capability in next_capabilities
@@ -1677,8 +1890,11 @@ def _second_round_requests(snapshot: dict[str, Any]) -> list[AuditDataRequest]:
         )
         candidate.request_id = f"req_r{round_number + 1}_{len(candidates) + 1:03d}"
         candidates.append(candidate)
-    remaining = max(0, MAX_DATA_REQUESTS_PER_AUDIT - request_count)
-    accepted, rejected = validate_audit_data_requests(candidates[:remaining])
+    remaining = max(0, max_requests - request_count)
+    accepted, rejected = validate_audit_data_requests(
+        candidates[:remaining],
+        max_requests=max_requests,
+    )
     if rejected:
         snapshot["drilldownResults"] = (snapshot.get("drilldownResults") or []) + [item.model_dump(mode="json") for item in rejected]
     return accepted
@@ -1768,8 +1984,16 @@ def build_next_round_prompt(snapshot: dict[str, Any]) -> str:
         "completed_capabilities": completed,
         "unavailable_capabilities": unavailable,
         "public_capability_manifest": compact_manifest,
-        "remaining_request_budget": max(0, MAX_DATA_REQUESTS_PER_AUDIT - int(runtime.get("requestsCount") or 0)),
-        "remaining_rounds": max(0, MAX_INVESTIGATION_ROUNDS - int(runtime.get("investigationRound") or 1)),
+        "remaining_request_budget": max(
+            0,
+            int(runtime.get("requestSafetyLimit") or MAX_DATA_REQUESTS_PER_AUDIT)
+            - int(runtime.get("requestsCount") or 0),
+        ),
+        "remaining_rounds": max(
+            0,
+            int(runtime.get("maxDepthRounds") or MAX_INVESTIGATION_ROUNDS)
+            - int(runtime.get("investigationRound") or 1),
+        ),
         "local_documentation": _planner_docs_lookup(snapshot),
     }
     return """Plan the next read-only investigation round from verified evidence, not from a fixed sequence.
@@ -1798,7 +2022,11 @@ def _next_round_requests_from_plan(
     if not plan.continue_investigation:
         return [], []
     runtime = _audit_runtime(snapshot)
-    remaining = max(0, MAX_DATA_REQUESTS_PER_AUDIT - int(runtime.get("requestsCount") or 0))
+    remaining = max(
+        0,
+        int(runtime.get("requestSafetyLimit") or MAX_DATA_REQUESTS_PER_AUDIT)
+        - int(runtime.get("requestsCount") or 0),
+    )
     hypotheses = _hypothesis_registry(snapshot)
     verifications = _verification_registry(snapshot)
     manifest = {str(item.get("id")): item for item in public_audit_tool_manifest()}
@@ -2003,7 +2231,10 @@ def _next_round_requests_from_plan(
             continue
         append_request(item, hypothesis)
 
-    accepted, rejected = validate_audit_data_requests(candidates)
+    accepted, rejected = validate_audit_data_requests(
+        candidates,
+        max_requests=max(1, remaining),
+    )
     rejected = validation_rejections + rejected
     active_ids = list(dict.fromkeys(item.hypothesis_id for item in accepted))[:5]
     active_set = set(active_ids)
@@ -2030,6 +2261,7 @@ def _apply_next_round_requests(snapshot: dict[str, Any], requests: list[AuditDat
         previous_round["completed_at"] = _now().isoformat()
         previous_round["stop_reason"] = "next_level_requested"
     runtime.pop("stopReason", None)
+    runtime["schedulerPhase"] = "depth"
     runtime["investigationRound"] = int(runtime.get("investigationRound") or 1) + 1
     runtime["requestsCount"] = int(runtime.get("requestsCount") or 0) + len(requests)
     snapshot["validatedDataRequests"] = (snapshot.get("validatedDataRequests") or []) + [
@@ -2561,14 +2793,11 @@ def build_final_audit_projection(
         if item.get("status") == "partial"
     ]
 
-    coverage = {}
-    for key, value in (snapshot.get("dataCoverage") or {}).items():
-        if isinstance(value, dict):
-            coverage[str(key)] = {
-                field: value.get(field)
-                for field in ("available", "total", "analyzed", "source", "status", "reason")
-                if field in value and isinstance(value.get(field), (int, float, str, bool, type(None)))
-            }
+    coverage = snapshot.get("canonicalEvidenceCoverage") or {
+        "accountWide": [],
+        "campaignScoped": [],
+        "summary": {"accountCapabilities": 0, "campaignCapabilities": 0},
+    }
     return {
         "analysisPeriod": {
             key: analysis_period.get(key)
@@ -2579,6 +2808,7 @@ def build_final_audit_projection(
             if key in analysis_period
         },
         "dataCoverage": coverage,
+        "canonicalEvidenceCoverage": coverage,
         "accountTotals": _safe_metric_values(snapshot.get("accountTotals")),
         "targetKpis": _safe_metric_values(snapshot.get("targetKpis")),
         "selectedGoals": {
@@ -3024,6 +3254,311 @@ def _parse_model_json(answer: str, model_type: Any) -> tuple[Any | None, dict[st
     return validated, metadata
 
 
+def _reconcile_structured_evidence_claims(
+    result: dict[str, Any], snapshot: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Reconcile only against evidence from the exact trusted campaign/account scope."""
+
+    coverage = snapshot.get("canonicalEvidenceCoverage") or {}
+    trusted_names = set((snapshot.get("_trustedCampaignScopes") or {}).keys())
+    ambiguous_names = {str(item) for item in (snapshot.get("_ambiguousCampaignNames") or [])}
+
+    def available(item: Any) -> bool:
+        return (
+            isinstance(item, dict)
+            and int(item.get("rowsReceived") or 0) > 0
+            and item.get("status") in AVAILABLE_AUDIT_DATA_STATUSES
+        )
+
+    def add_aliases(target: dict[str, dict[str, Any]], item: dict[str, Any]) -> None:
+        for candidate in capability_candidates(item.get("capabilityId")):
+            target[candidate] = item
+
+    campaign_entries: dict[str, dict[str, dict[str, Any]]] = {}
+    ambiguous_entries: dict[str, dict[str, dict[str, Any]]] = {}
+    for item in coverage.get("campaignScoped") or []:
+        if not available(item):
+            continue
+        campaign = str(item.get("campaignName") or "")
+        target = ambiguous_entries if campaign in ambiguous_names else campaign_entries
+        if campaign in trusted_names or campaign in ambiguous_names:
+            add_aliases(target.setdefault(campaign, {}), item)
+
+    account_collected: dict[str, dict[str, Any]] = {}
+    for item in coverage.get("accountWide") or []:
+        if available(item):
+            add_aliases(account_collected, item)
+
+    complete_account_coverage: dict[str, dict[str, Any]] = {}
+    if trusted_names and not ambiguous_names:
+        capabilities = {
+            str(item.get("capabilityId") or "")
+            for entries in campaign_entries.values()
+            for item in entries.values()
+            if item.get("capabilityId")
+        }
+        for capability in capabilities:
+            candidates = capability_candidates(capability)
+            matched = [
+                next((campaign_entries.get(name, {}).get(value) for value in candidates if campaign_entries.get(name, {}).get(value)), None)
+                for name in trusted_names
+            ]
+            if matched and all(matched):
+                for candidate in candidates:
+                    complete_account_coverage[candidate] = matched[0]
+    account_available = {**complete_account_coverage, **account_collected}
+
+    removed: list[dict[str, str]] = []
+    quality_limitations: list[str] = []
+    text_conflicts = 0
+    ambiguous_text_conflicts = 0
+    capability_terms = {
+        "search_queries": ("search_queries", "search queries", "поисков", "запрос"),
+        "placements": ("placements", "placement", "площадк"),
+        "devices": ("devices", "device", "устройств"),
+        "geo": ("geo", "географ", "регион"),
+        "goals": ("goals", "целям", "цели"),
+        "conversions_by_goal": ("conversions_by_goal", "conversion_data", "конверси"),
+        "retargeting_segments": ("retargeting_segments", "retargeting", "ретаргет"),
+        "campaign_daily_dynamics": ("campaign_daily_dynamics", "динамик"),
+        "ad_group_performance": ("ad_group_performance", "ad_group", "групп объяв"),
+        "keyword_performance": ("keyword_performance", "keyword", "ключев"),
+        "campaign_settings": ("campaign_settings", "настройк камп"),
+        "audience_targets": ("audience", "аудитор"),
+        "ads": ("ads_creatives", "объявлен", "креатив"),
+    }
+    missing_markers = (
+        "не собран", "не получен", "нет данных", "данные отсутств", "отсутств", "недоступны данные",
+        "missing", "not collected", "no data", "data unavailable",
+    )
+    public_capability_labels = {
+        "campaigns": "кампаниям",
+        "campaign_performance": "эффективности кампаний",
+        "campaign_daily_dynamics": "динамике кампаний",
+        "campaign_settings": "настройкам кампаний",
+        "campaign_strategy": "стратегиям кампаний",
+        "campaign_status": "статусам кампаний",
+        "conversions_by_goal": "конверсиям по выбранным целям",
+        "conversion_data": "конверсиям",
+        "goals": "целям",
+        "search_queries": "поисковым запросам",
+        "placements": "площадкам РСЯ",
+        "devices": "устройствам",
+        "geo": "географии",
+        "retargeting_segments": "сегментам ретаргетинга",
+        "audience_targets": "аудиторным сегментам",
+        "ad_group_performance": "эффективности групп объявлений",
+        "keyword_performance": "эффективности ключевых фраз",
+        "ads": "объявлениям и креативам",
+    }
+
+    def evidence_for_scope(campaign_name: Any, *, account: bool = False) -> dict[str, dict[str, Any]]:
+        if account:
+            return account_available
+        name = str(campaign_name or "").strip()
+        return campaign_entries.get(name, {}) if name in trusted_names else {}
+
+    def text_conflict(text: Any, campaign_name: Any = None, *, account: bool = False) -> tuple[bool, bool]:
+        normalized = str(text or "").casefold()
+        if not normalized or not any(marker in normalized for marker in missing_markers):
+            return False, False
+        candidates = evidence_for_scope(campaign_name, account=account)
+        conflict = any(
+            any(term in normalized for term in capability_terms.get(str(item.get("capabilityId")), (str(item.get("capabilityId")),)))
+            for item in candidates.values()
+        )
+        name = str(campaign_name or "").strip()
+        ambiguous = name in ambiguous_names and any(
+            any(term in normalized for term in capability_terms.get(str(item.get("capabilityId")), (str(item.get("capabilityId")),)))
+            for item in ambiguous_entries.get(name, {}).values()
+        )
+        return conflict, ambiguous
+
+    def public_capability_label(value: Any) -> str:
+        for candidate in capability_candidates(value):
+            if candidate in public_capability_labels:
+                return public_capability_labels[candidate]
+        return "дополнительному срезу данных"
+
+    def quality_description(evidence: dict[str, Any]) -> str:
+        reason = str(evidence.get("qualityReason") or "low_data")
+        if reason == "unknown_conversion_metric":
+            return "метрика конверсий недоступна или некорректна"
+        if reason in {"low_data", "insufficient_data", "no_rows"}:
+            return "выборка ограничена"
+        return "качество выборки ограничивает вывод"
+
+    def normalize_with_evidence(
+        values: Any, campaign_name: Any, *, account: bool = False,
+    ) -> tuple[list[str], list[dict[str, Any]]]:
+        scoped = evidence_for_scope(campaign_name, account=account)
+        kept: list[str] = []
+        collected: list[dict[str, Any]] = []
+        for raw in values or []:
+            capability = str(raw)
+            evidence = next((scoped.get(candidate) for candidate in capability_candidates(capability) if scoped.get(candidate)), None)
+            if evidence is None:
+                kept.append(capability)
+                continue
+            canonical = str(evidence.get("capabilityId") or capability)
+            removed.append({"campaignName": str(campaign_name or "account"), "capabilityId": canonical})
+            collected.append(evidence)
+            if evidence.get("dataQuality") != "sufficient":
+                quality_limitations.append(
+                    f"{campaign_name or 'Аккаунт'}: данные по {public_capability_label(canonical)} собраны, "
+                    f"но {quality_description(evidence)}."
+                )
+        unique_collected = {
+            str(item.get("capabilityId") or ""): item for item in collected
+        }
+        return list(dict.fromkeys(kept))[:5], list(unique_collected.values())
+
+    def normalize(values: Any, campaign_name: Any, *, account: bool = False) -> list[str]:
+        kept, _ = normalize_with_evidence(values, campaign_name, account=account)
+        return kept
+
+    def rebuild_insufficient_data_text(
+        remaining: list[str], collected: list[dict[str, Any]],
+    ) -> tuple[str, str]:
+        sufficient = [
+            public_capability_label(item.get("capabilityId"))
+            for item in collected if item.get("dataQuality") == "sufficient"
+        ]
+        limited = [
+            (public_capability_label(item.get("capabilityId")), quality_description(item))
+            for item in collected if item.get("dataQuality") != "sufficient"
+        ]
+        missing = list(dict.fromkeys(public_capability_label(item) for item in remaining))
+        reason_parts = [f"Данные по {label} собраны." for label in dict.fromkeys(sufficient)]
+        reason_parts.extend(
+            f"Данные по {label} собраны, но {description}."
+            for label, description in dict.fromkeys(limited)
+        )
+        reason_parts.extend(f"Данные по {label} недоступны или недостаточны." for label in missing)
+
+        recommendation_parts = [
+            f"Проверить доступность и синхронизацию данных по {label}." for label in missing
+        ]
+        collected_labels = list(dict.fromkeys([*sufficient, *(label for label, _ in limited)]))
+        if collected_labels:
+            recommendation_parts.append(
+                "Повторно запрашивать уже собранные данные по "
+                f"{', '.join(collected_labels)} не требуется."
+            )
+        if not recommendation_parts:
+            recommendation_parts.append(
+                "Учитывать качество и объём уже собранной выборки без повторного запроса тех же данных."
+            )
+        return " ".join(reason_parts), " ".join(recommendation_parts)
+
+    for section in ("critical_findings", "opportunities"):
+        for finding in result.get(section) or []:
+            campaign_name = finding.get("campaign_name")
+            is_account = not campaign_name and finding.get("analysis_level") == "account"
+            before = list(finding.get("next_data_needed") or [])
+            finding["next_data_needed"] = normalize(before, campaign_name, account=is_account)
+            if before and not finding["next_data_needed"]:
+                finding["recommendation"] = (
+                    "Использовать уже собранные backend-данные; при недостаточной выборке "
+                    "ограничить уверенность вывода, а не запрашивать тот же срез повторно."
+                )
+            for field in ("problem", "fact", "hypothesis", "recommendation"):
+                conflict, ambiguous = text_conflict(finding.get(field), campaign_name, account=is_account)
+                ambiguous_text_conflicts += int(ambiguous)
+                if conflict:
+                    text_conflicts += 1
+                    finding[field] = (
+                        "Backend подтверждает наличие этого среза данных. "
+                        "Ограничения следует описывать через качество и объём выборки."
+                    )
+
+    for item in result.get("insufficient_data_campaigns") or []:
+        before = list(item.get("next_data_needed") or [])
+        campaign_name = item.get("campaign_name")
+        remaining, collected = normalize_with_evidence(before, campaign_name)
+        item["next_data_needed"] = remaining
+        if collected:
+            reason, recommendation = rebuild_insufficient_data_text(remaining, collected)
+            for field, value in (("reason", reason), ("recommendation", recommendation)):
+                if str(item.get(field) or "") != value:
+                    text_conflicts += 1
+                    item[field] = value
+        else:
+            for field in ("reason", "recommendation"):
+                _, ambiguous = text_conflict(item.get(field), campaign_name)
+                ambiguous_text_conflicts += int(ambiguous)
+
+    drilldown = result.get("drilldown_summary") or {}
+    globally_analyzed = sorted({
+        str(item.get("capabilityId"))
+        for item in [*(coverage.get("accountWide") or []), *(coverage.get("campaignScoped") or [])]
+        if available(item) and item.get("capabilityId")
+    })
+    drilldown["analyzed_levels"] = list(dict.fromkeys([
+        *(drilldown.get("analyzed_levels") or []), *globally_analyzed,
+    ]))
+    drilldown["not_analyzed_levels"] = [
+        item for item in (drilldown.get("not_analyzed_levels") or [])
+        if not any(candidate in account_available for candidate in capability_candidates(item))
+    ]
+    drilldown["next_data_needed"] = normalize(
+        drilldown.get("next_data_needed") or [], None, account=True,
+    )
+    result["drilldown_summary"] = drilldown
+
+    safe_actions = []
+    account_scope_labels = {"account", "аккаунт", "весь аккаунт", "all account"}
+    for action in result.get("action_plan") or []:
+        scope = str(action.get("scope") or "").strip()
+        is_account = scope.casefold() in account_scope_labels
+        conflict, ambiguous = text_conflict(
+            " ".join((str(action.get("action") or ""), str(action.get("reason") or ""))),
+            scope,
+            account=is_account,
+        )
+        ambiguous_text_conflicts += int(ambiguous)
+        if conflict:
+            text_conflicts += 1
+            continue
+        safe_actions.append(action)
+    result["action_plan"] = safe_actions
+
+    safe_limitations = []
+    for item in result.get("limitations") or []:
+        conflict, _ = text_conflict(item, account=True)
+        if conflict:
+            text_conflicts += 1
+            continue
+        safe_limitations.append(item)
+    result["limitations"] = safe_limitations
+    for field in ("executive_summary", "conclusion"):
+        conflict, _ = text_conflict(result.get(field), account=True)
+        if conflict:
+            text_conflicts += 1
+            result[field] = (
+                "Результат согласован с фактически собранными account-wide данными; "
+                "оставшиеся ограничения относятся к качеству и объёму выборки."
+            )
+
+    if quality_limitations:
+        result["limitations"] = list(dict.fromkeys([
+            *(result.get("limitations") or []), *quality_limitations,
+        ]))
+    diagnostics = {
+        "status": "final_output_evidence_reconciled" if removed or text_conflicts else "consistent",
+        "removedFalseMissingClaims": len(removed),
+        "removedFreeTextConflicts": text_conflicts,
+        "ambiguousFreeTextConflicts": ambiguous_text_conflicts,
+        "requiresBackendFallback": bool(ambiguous_text_conflicts),
+        "qualityLimitationsAdded": len(set(quality_limitations)),
+        "capabilities": sorted({item["capabilityId"] for item in removed}),
+        "accountCapabilities": sorted({str(item.get("capabilityId")) for item in account_collected.values()}),
+        "completeAccountCoverage": sorted({str(item.get("capabilityId")) for item in complete_account_coverage.values()}),
+    }
+    snapshot["finalOutputEvidenceReconciliation"] = diagnostics
+    return result, diagnostics
+
+
 def _validate_structured_result_with_metadata(
     answer: str,
     *,
@@ -3068,10 +3603,24 @@ def _validate_structured_result_with_metadata(
         parsing["parseOutcome"] = "section_validation_recovered"
         parsing["errorCode"] = "partial_schema_validation"
         parsing["sectionWarnings"] = recovery_warnings
-        return _enforce_verified_result(validated, snapshot), parsing
+        enforced = _enforce_verified_result(validated, snapshot)
+        reconciled, diagnostics = _reconcile_structured_evidence_claims(enforced, snapshot)
+        parsing["evidenceReconciliation"] = diagnostics
+        if diagnostics.get("requiresBackendFallback"):
+            parsing["status"] = "fallback"
+            parsing["errorCode"] = "final_output_evidence_scope_ambiguous"
+            return None, parsing
+        return reconciled, parsing
     parsing["status"] = "success"
     parsing["errorCode"] = "truncated_provider_response" if finish_reason == "length" else None
-    return _enforce_verified_result(validated, snapshot), parsing
+    enforced = _enforce_verified_result(validated, snapshot)
+    reconciled, diagnostics = _reconcile_structured_evidence_claims(enforced, snapshot)
+    parsing["evidenceReconciliation"] = diagnostics
+    if diagnostics.get("requiresBackendFallback"):
+        parsing["status"] = "fallback"
+        parsing["errorCode"] = "final_output_evidence_scope_ambiguous"
+        return None, parsing
+    return reconciled, parsing
 
 
 def _recover_partial_audit_result(parsed: dict[str, Any]) -> tuple[dict[str, Any] | None, list[str]]:
@@ -3529,6 +4078,7 @@ def _complete_backend_fallback_stage(
         status_value=final_status,
         backend_fallback_used=True,
     )
+    mark_scheduler_progress(snapshot, action=final_status, successful=True)
     job.context_snapshot_json = _json_dump(snapshot)
     job.answer_text = build_audit_answer_markdown(structured, snapshot)
     job.result_json = _json_dump({
@@ -3710,6 +4260,25 @@ def _audit_runtime(snapshot: dict[str, Any]) -> dict[str, Any]:
         "requirementsBlocked": 0,
         "completionState": "complete",
         "completionGateRuns": 0,
+        "executionProfile": "full_account",
+        "softTargetAt": None,
+        "hardDeadlineAt": None,
+        "collectionDeadlineAt": None,
+        "finalizationReserveSeconds": 120,
+        "requestSafetyLimit": 96,
+        "maxDepthRounds": MAX_INVESTIGATION_ROUNDS,
+        "schedulerPhase": "breadth",
+        "lastProgressAt": None,
+        "lastSuccessfulActionAt": None,
+        "lastAction": None,
+        "nextRetryAt": None,
+        "waitingReason": None,
+        "recoveryStatus": "idle",
+        "campaignsTotal": 0,
+        "campaignsCovered": 0,
+        "breadthRequestsTotal": 0,
+        "breadthRequestsCompleted": 0,
+        "depthRequestsTotal": 0,
         "tokenUsage": {"prompt": 0, "completion": 0, "total": 0},
     }
     runtime = snapshot.setdefault("auditRuntime", {})
@@ -3736,6 +4305,152 @@ def _sync_policy_runtime(snapshot: dict[str, Any], coverage: dict[str, Any] | No
         "completionState": str(coverage.get("completionState") or "complete"),
     })
     return runtime
+
+
+def _audit_execution_profile(job: AiAuditJob, snapshot: dict[str, Any]):
+    runtime = _audit_runtime(snapshot)
+    profile_id = str(runtime.get("executionProfile") or "")
+    return execution_profile_for_scope(profile_id or job.requested_scope)
+
+
+def _minimum_coverage_plan(
+    requests: list[AuditDataRequest], snapshot: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    plan = [
+        {
+            "campaignName": item.campaign_name,
+            "capabilityId": item.capability_id or item.dimension,
+            "applicable": True,
+        }
+        for item in requests
+    ]
+    for classification in (snapshot or {}).get("campaignClassifications") or []:
+        campaign_name = str(classification.get("campaign_name") or "")
+        if not campaign_name:
+            continue
+        plan.extend([
+            {"campaignName": campaign_name, "capabilityId": "campaign_settings", "applicable": True},
+            {"campaignName": campaign_name, "capabilityId": "campaign_performance", "applicable": True},
+        ])
+    unique: dict[tuple[str, str], dict[str, Any]] = {}
+    for item in plan:
+        unique[(str(item["campaignName"]), str(item["capabilityId"]))] = item
+    return list(unique.values())
+
+
+def _request_key(item: AuditDataRequest) -> tuple[str, str]:
+    return item.campaign_name, str(item.capability_id or item.dimension)
+
+
+def _deduplicate_requests(requests: list[AuditDataRequest]) -> list[AuditDataRequest]:
+    result: list[AuditDataRequest] = []
+    seen: set[tuple[str, str]] = set()
+    for item in requests:
+        key = _request_key(item)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(item)
+    return result
+
+
+def _pending_report_wait(db: Session, job: AiAuditJob) -> tuple[str | None, datetime | None]:
+    report_jobs = list(db.scalars(select(DirectReportJob).where(
+        DirectReportJob.audit_job_id == job.id,
+        DirectReportJob.client_id == job.client_id,
+        DirectReportJob.status.in_(("queued", "requested", "processing", "waiting_for_report_queue")),
+    )))
+    retry_values = [_as_aware(item.next_retry_at) for item in report_jobs if item.next_retry_at]
+    next_retry = min(retry_values) if retry_values else None
+    if any(item.status == "waiting_for_report_queue" for item in report_jobs):
+        return "direct_report_queue", next_retry
+    if any(item.status in {"queued", "requested", "processing"} for item in report_jobs):
+        return "offline_report_processing", next_retry
+    return None, next_retry
+
+
+def _refresh_scheduler_coverage(snapshot: dict[str, Any], full_results: list[dict[str, Any]]) -> None:
+    index = build_canonical_evidence_index(snapshot, full_results)
+    projection = canonical_coverage_projection(index, snapshot)
+    snapshot["canonicalEvidenceCoverage"] = projection
+    runtime = _audit_runtime(snapshot)
+    summary = projection.get("summary") or {}
+    runtime["campaignsTotal"] = int(summary.get("applicableCampaigns") or 0)
+    runtime["campaignsCovered"] = int(summary.get("coveredCampaigns") or 0)
+    breadth_keys = {
+        (str(item.get("campaignName") or ""), str(item.get("capabilityId") or ""))
+        for item in snapshot.get("minimumCoveragePlan") or []
+        if isinstance(item, dict)
+    }
+    completed = {
+        (str(item.get("campaignName") or ""), str(item.get("capabilityId") or ""))
+        for item in projection.get("campaignMatrix") or []
+        if item.get("status") in {
+            "collected", "partial", "insufficient_data", "not_applicable", "unavailable", "failed",
+        }
+    }
+    runtime["breadthRequestsTotal"] = len(breadth_keys)
+    runtime["breadthRequestsCompleted"] = len(breadth_keys & completed)
+
+
+def _deadline_skip_results(requests: list[AuditDataRequest]) -> list[dict[str, Any]]:
+    return [AuditDataRequestResult(
+        request_id=item.request_id,
+        hypothesis_id=item.hypothesis_id,
+        capability_id=item.capability_id or item.dimension,
+        dimension=item.dimension,
+        campaign_name=item.campaign_name,
+        status="skipped_budget_limit",
+        source="backend_scheduler",
+        summary="Временной бюджет сбора данных завершён; аудит продолжен с частичным покрытием.",
+        error_code="audit_collection_deadline_reached",
+    ).model_dump(mode="json") for item in requests]
+
+
+def _finish_collection_for_deadline(
+    db: Session,
+    job: AiAuditJob,
+    snapshot: dict[str, Any],
+    requests: list[AuditDataRequest],
+    *,
+    reason: str,
+) -> None:
+    skipped = _deadline_skip_results(_deduplicate_requests(requests))
+    full_results = _merge_full_drilldown_results(
+        _load_full_drilldown_results(db, job), skipped,
+    )
+    _save_full_drilldown_results(db, job, full_results)
+    _refresh_drilldown_projections(snapshot, full_results)
+    refresh_evidence_coverage_registry(snapshot, full_results)
+    _refresh_scheduler_coverage(snapshot, full_results)
+    snapshot["pendingDataRequests"] = []
+    snapshot["processingDataRequests"] = []
+    snapshot["deferredDepthDataRequests"] = []
+    runtime = _audit_runtime(snapshot)
+    runtime["schedulerPhase"] = "finalization"
+    runtime["stopReason"] = reason
+    runtime["deadlineReached"] = True
+    mark_scheduler_progress(snapshot, action=reason)
+    job.context_snapshot_json = _json_dump(snapshot)
+    job.status = "context_ready"
+    job.current_stage = "generate_answer"
+    job.stage_attempt = 0
+    job.progress_percent = 78
+
+
+def _activate_deferred_depth(snapshot: dict[str, Any]) -> bool:
+    deferred = [
+        AuditDataRequest.model_validate(item)
+        for item in snapshot.pop("deferredDepthDataRequests", [])
+    ]
+    if not deferred:
+        return False
+    snapshot["pendingDataRequests"] = [item.model_dump(mode="json") for item in deferred]
+    snapshot["processingDataRequests"] = []
+    runtime = _audit_runtime(snapshot)
+    runtime["schedulerPhase"] = "depth"
+    mark_scheduler_progress(snapshot, action="breadth_coverage_completed", successful=True)
+    return True
 
 
 def _policy_rejection_result(item: dict[str, Any]) -> dict[str, Any]:
@@ -4083,6 +4798,8 @@ def _refresh_direct_read_runtime(snapshot: dict[str, Any], direct_api_calls: int
         "direct_permission_denied",
         "direct_invalid_field_combination",
         "direct_report_processing",
+        "direct_report_queue_full",
+        "direct_report_queue_full_timeout",
         "direct_rate_limited",
         "direct_no_data",
         "adapter_failed",
@@ -4441,6 +5158,13 @@ def _context_metadata(job: AiAuditJob, db: Session | None = None) -> dict[str, A
         "publicRequestTrace": [], "requestDiagnostics": {},
         "dataSourceSummary": {}, "dataQualitySummary": {},
     }
+    canonical_coverage = snapshot.get("canonicalEvidenceCoverage") or {
+        "accountWide": [],
+        "campaignScoped": [],
+        "campaignMatrix": [],
+        "capabilitySummary": [],
+        "summary": {},
+    }
     if db is not None:
         evidence_results = _merge_full_drilldown_results(
             _load_full_baseline_results(db, job),
@@ -4451,6 +5175,23 @@ def _context_metadata(job: AiAuditJob, db: Session | None = None) -> dict[str, A
             DirectReportJob.client_id == job.client_id,
         )))
         public_trace = build_public_audit_trace(snapshot, evidence_results, report_jobs)
+        canonical_coverage = canonical_coverage_projection(
+            build_canonical_evidence_index(snapshot, evidence_results), snapshot,
+        )
+    runtime_public = dict(runtime)
+    if db is not None:
+        waiting_reason, next_retry_at = _pending_report_wait(db, job)
+        if waiting_reason:
+            runtime_public["waitingReason"] = waiting_reason
+        if next_retry_at:
+            runtime_public["nextRetryAt"] = _as_aware(next_retry_at).isoformat()
+    runtime_snapshot = {**snapshot, "auditRuntime": runtime_public}
+    runtime_public["schedulerHealth"] = scheduler_health(runtime_snapshot)
+    runtime_public["deadline"] = scheduler_deadline_state(runtime_snapshot)
+    runtime_public["elapsedSeconds"] = max(
+        0,
+        int((_now() - _as_aware(job.started_at or job.created_at or _now())).total_seconds()),
+    )
     verification_public = [
         {
             "hypothesisId": hypothesis_id,
@@ -4536,9 +5277,10 @@ def _context_metadata(job: AiAuditJob, db: Session | None = None) -> dict[str, A
         "dataQualitySummary": public_trace["dataQualitySummary"],
         "auditCompletionState": evidence_coverage["completionState"],
         "evidenceCoverage": evidence_coverage,
+        "canonicalEvidenceCoverage": canonical_coverage,
         "auditStopReason": runtime.get("stopReason"),
         "baselineEvidenceSummary": snapshot.get("baselineEvidenceSummary") or [],
-        "runtime": runtime,
+        "runtime": runtime_public,
         "helperStages": snapshot.get("helperStages") or {},
         "models": snapshot.get("auditModels") or {},
         "warnings": snapshot.get("auditWarnings") or [],
@@ -4629,6 +5371,29 @@ def _public_audit_error_message(job: AiAuditJob) -> str | None:
     return message[:1000]
 
 
+def _audit_poll_after_ms(job: AiAuditJob, db: Session | None) -> int:
+    if db is None or job.status in TERMINAL_AUDIT_STATUSES:
+        return POLL_AFTER_MS
+    now = _now()
+    retry_times = [
+        value
+        for value in db.scalars(select(DirectReportJob.next_retry_at).where(
+            DirectReportJob.audit_job_id == job.id,
+            DirectReportJob.client_id == job.client_id,
+            DirectReportJob.status.in_(("queued", "requested", "processing", "waiting_for_report_queue")),
+            DirectReportJob.next_retry_at.is_not(None),
+        ))
+        if value is not None
+    ]
+    if not retry_times:
+        return POLL_AFTER_MS
+    retry_at = min(
+        value.replace(tzinfo=UTC) if value.tzinfo is None else value
+        for value in retry_times
+    )
+    return max(POLL_AFTER_MS, min(300_000, int(max(0, (retry_at - now).total_seconds()) * 1000)))
+
+
 def audit_job_response(job: AiAuditJob, db: Session | None = None) -> AiAuditJobResponse:
     result, answer = _public_audit_result(job)
     return AiAuditJobResponse(
@@ -4637,7 +5402,7 @@ def audit_job_response(job: AiAuditJob, db: Session | None = None) -> AiAuditJob
         status=job.status,
         current_stage=job.current_stage,
         progress_percent=job.progress_percent,
-        poll_after_ms=POLL_AFTER_MS,
+        poll_after_ms=_audit_poll_after_ms(job, db),
         requested_scope=job.requested_scope,
         requested_period=job.requested_period,
         selected_campaign_name=job.selected_campaign_name,
@@ -4786,7 +5551,6 @@ async def advance_audit_job(
             runtime = _audit_runtime(snapshot)
             runtime["finalGenerationStatus"] = "compact_retry_pending"
             runtime["backendFallbackUsed"] = False
-            job.context_snapshot_json = _json_dump(snapshot)
             job.status = "context_ready"
             job.current_stage = "generate_answer"
             job.stage_attempt = 0
@@ -4870,16 +5634,48 @@ async def advance_audit_job(
                 "unavailableCapabilities": [],
                 "tokenUsage": {"prompt": 0, "completion": 0, "total": 0},
             }
+            initialize_scheduler_state(
+                snapshot,
+                scope=job.requested_scope,
+                started_at=_as_aware(job.started_at or _now()),
+            )
             _helper_stages(snapshot)
             _audit_models(snapshot, job.model)
             snapshot["metadata"]["estimatedTokens"] = estimate_tokens(_json_dump(snapshot))
             timings["compactContextMs"] = _elapsed_ms(compact_started_at)
             job.context_snapshot_json = _json_dump(snapshot)
-            internal_ids = [
-                str(item.get("campaign_id") or item.get("id"))
-                for item in (full_context.get("campaigns") or [])
-                if isinstance(item, dict) and (item.get("campaign_id") or item.get("id"))
-            ]
+            internal_ids = []
+            trusted_scopes: dict[str, str] = {}
+            ambiguous_scope_names: set[str] = set()
+            trusted_scope_names: dict[str, str] = {}
+            for item in (full_context.get("campaigns") or []):
+                if not isinstance(item, dict):
+                    continue
+                raw_id = item.get("campaign_id") or item.get("id")
+                name = str(item.get("name") or item.get("campaign_name") or "").strip()
+                if raw_id:
+                    internal_ids.append(str(raw_id))
+                    if name:
+                        scope = campaign_scope_key(raw_id) or ""
+                        if scope:
+                            trusted_scope_names[scope] = name
+                        if name in trusted_scopes and trusted_scopes[name] != scope:
+                            ambiguous_scope_names.add(name)
+                            trusted_scopes.pop(name, None)
+                        elif name not in ambiguous_scope_names:
+                            trusted_scopes[name] = scope
+            snapshot["_trustedCampaignScopes"] = {
+                key: value for key, value in trusted_scopes.items() if value
+            }
+            snapshot["_trustedCampaignScopeNames"] = trusted_scope_names
+            snapshot["_ambiguousCampaignNames"] = sorted(ambiguous_scope_names)
+            if ambiguous_scope_names:
+                snapshot["evidenceIdentityLimitations"] = [{
+                    "code": "ambiguous_campaign_identity",
+                    "campaignName": name,
+                    "message": "Имя кампании неоднозначно; доказательства не объединяются между кампаниями с одинаковым названием.",
+                } for name in sorted(ambiguous_scope_names)]
+            job.context_snapshot_json = _json_dump(snapshot)
             job.prompt_snapshot_json = _json_dump({"internalCampaignIds": internal_ids[:100]})
             job.status = "context_ready"
             job.current_stage = (
@@ -4898,6 +5694,60 @@ async def advance_audit_job(
             else:
                 pending = [AuditDataRequest.model_validate(item) for item in pending_source]
             processing = [AuditDataRequest.model_validate(item) for item in processing_source]
+            deadline = scheduler_deadline_state(snapshot)
+            if deadline["collectionDeadlineReached"] or deadline["hardDeadlineReached"]:
+                runtime = _audit_runtime(snapshot)
+                runtime["schedulerPhase"] = "finalization"
+                runtime["stopReason"] = (
+                    "hard_deadline_reached"
+                    if deadline["hardDeadlineReached"]
+                    else "collection_deadline_reached"
+                )
+                snapshot["pendingBaselineRequests"] = []
+                snapshot["processingBaselineRequests"] = []
+                mark_scheduler_progress(snapshot, action=runtime["stopReason"])
+                job.context_snapshot_json = _json_dump(snapshot)
+                job.status = "context_ready"
+                job.current_stage = "generate_answer"
+                job.stage_attempt = 0
+                job.progress_percent = 78
+                timings["collectFreshBaselineMs"] = int(timings.get("collectFreshBaselineMs") or 0) + _elapsed_ms(started_at)
+                timings["totalElapsedMs"] = max(
+                    0,
+                    round((_now() - _as_aware(job.created_at or _now())).total_seconds() * 1000),
+                )
+                job.timings_json = _json_dump(timings)
+                job.stage_version += 1
+                db.commit()
+                db.refresh(job)
+                return job
+            waiting_reason, next_retry_at = _pending_report_wait(db, job)
+            if (
+                processing
+                and waiting_reason
+                and next_retry_at is not None
+                and _as_aware(next_retry_at) > _now()
+            ):
+                mark_scheduler_waiting(
+                    snapshot,
+                    reason=waiting_reason,
+                    next_retry_at=_as_aware(next_retry_at),
+                )
+                job.context_snapshot_json = _json_dump(snapshot)
+                job.status = "context_ready"
+                job.current_stage = "collect_fresh_baseline"
+                job.stage_attempt = 0
+                job.progress_percent = max(job.progress_percent, 18)
+                timings["collectFreshBaselineMs"] = int(timings.get("collectFreshBaselineMs") or 0) + _elapsed_ms(started_at)
+                timings["totalElapsedMs"] = max(
+                    0,
+                    round((_now() - _as_aware(job.created_at or _now())).total_seconds() * 1000),
+                )
+                job.timings_json = _json_dump(timings)
+                job.stage_version += 1
+                db.commit()
+                db.refresh(job)
+                return job
             selected, deferred = select_live_request_batch(processing + pending)
             input_options = _json_load(job.input_options_json, {}) or {}
             collected, direct_api_calls = collect_audit_data_requests(
@@ -4906,7 +5756,7 @@ async def advance_audit_job(
                 selected,
                 audit_job_id=job.id,
                 cache_policy="fresh",
-                allow_saved_fallback=bool(input_options.get("allow_saved_fallback")),
+                allow_saved_fallback=False,
             )
             full_baseline_results = _merge_full_drilldown_results(
                 _load_full_baseline_results(db, job),
@@ -4914,6 +5764,12 @@ async def advance_audit_job(
             )
             _save_full_baseline_results(db, job, full_baseline_results)
             _refresh_baseline_projections(snapshot, full_baseline_results)
+            if collected or direct_api_calls:
+                mark_scheduler_progress(
+                    snapshot,
+                    action="fresh_baseline_collected",
+                    successful=any(item.status in AVAILABLE_AUDIT_DATA_STATUSES for item in collected),
+                )
             selected_by_id = {item.request_id: item for item in selected}
             pending_ids = {item.request_id for item in pending}
             processing_ids = {item.request_id for item in processing}
@@ -4931,7 +5787,7 @@ async def advance_audit_job(
                 _apply_live_baseline(
                     snapshot,
                     full_baseline_results,
-                    allow_saved_fallback=bool(input_options.get("allow_saved_fallback")),
+                    allow_saved_fallback=False,
                 )
             job.context_snapshot_json = _json_dump(snapshot)
             job.status = "context_ready"
@@ -4944,6 +5800,12 @@ async def advance_audit_job(
         elif stage == "classify_campaigns":
             snapshot = _json_load(job.context_snapshot_json, {})
             snapshot["campaignClassifications"] = classify_audit_campaigns(snapshot)
+            breadth_requests = build_minimum_coverage_requests(snapshot)
+            snapshot["minimumCoveragePlan"] = _minimum_coverage_plan(breadth_requests, snapshot)
+            runtime = _audit_runtime(snapshot)
+            runtime["campaignsTotal"] = len(snapshot["campaignClassifications"])
+            runtime["breadthRequestsTotal"] = len(breadth_requests)
+            runtime["schedulerPhase"] = "breadth"
             observed_facts = build_observed_facts(snapshot)
             snapshot["observedFacts"] = [item.model_dump(mode="json") for item in observed_facts]
             base_plan = build_rule_based_investigation_plan(snapshot)
@@ -4965,9 +5827,18 @@ async def advance_audit_job(
         elif stage == "create_investigation_plan":
             snapshot = _json_load(job.context_snapshot_json, {})
             base_plan = AuditInvestigationPlan.model_validate(snapshot.get("ruleBasedInvestigationPlan") or {})
-            if not should_call_ai_investigation_planner(base_plan, snapshot):
+            planner_deadline = scheduler_deadline_state(snapshot)
+            if planner_deadline["collectionDeadlineReached"] or not should_call_ai_investigation_planner(base_plan, snapshot):
                 snapshot["investigationPlan"] = base_plan.model_dump(mode="json")
-                _set_helper_stage(snapshot, "planner", status_value="skipped_not_needed")
+                _set_helper_stage(
+                    snapshot,
+                    "planner",
+                    status_value=(
+                        "skipped_deadline"
+                        if planner_deadline["collectionDeadlineReached"]
+                        else "skipped_not_needed"
+                    ),
+                )
                 job.context_snapshot_json = _json_dump(snapshot)
                 job.status = "context_ready"
                 job.current_stage = "validate_data_requests"
@@ -5103,29 +5974,44 @@ async def advance_audit_job(
             plan = AuditInvestigationPlan.model_validate(snapshot.get("investigationPlan") or {})
             _initialize_hypothesis_state(snapshot)
             ai_requests = [request for hypothesis in plan.hypotheses for request in hypothesis.data_requests]
-            requests, policy_rejections, _ = merge_mandatory_and_ai_requests(
+            profile = _audit_execution_profile(job, snapshot)
+            breadth_requests = build_minimum_coverage_requests(snapshot)
+            policy_requests, policy_rejections, _ = merge_mandatory_and_ai_requests(
                 snapshot,
                 ai_requests,
-                request_budget=MAX_AUDIT_DATA_REQUESTS,
+                request_budget=profile.max_requests,
             )
+            requests = _deduplicate_requests([*breadth_requests, *policy_requests])[:profile.max_requests]
             _log_audit_event(
                 "AUDIT_REQUEST_PLANNED", job,
                 round=1, request_count=len(requests), status="pending",
             )
-            accepted, rejected = validate_audit_data_requests(requests)
+            accepted, rejected = validate_audit_data_requests(
+                requests, max_requests=profile.max_requests,
+            )
+            breadth, depth = partition_breadth_and_depth_requests(
+                accepted, breadth_requests, profile=profile,
+            )
             _log_audit_event(
                 "AUDIT_REQUEST_VALIDATED", job,
                 round=1, request_count=len(accepted), status="validated",
             )
             runtime = _audit_runtime(snapshot)
-            runtime["requestsCount"] = len(requests)
+            runtime["requestsCount"] = len(accepted)
+            runtime["requestSafetyLimit"] = profile.max_requests
+            runtime["maxDepthRounds"] = profile.max_depth_rounds
+            runtime["schedulerPhase"] = "breadth"
+            runtime["breadthRequestsTotal"] = len(breadth)
+            runtime["depthRequestsTotal"] = len(depth)
             snapshot["validatedDataRequests"] = [item.model_dump(mode="json") for item in accepted]
+            snapshot["minimumCoveragePlan"] = _minimum_coverage_plan(breadth, snapshot)
+            snapshot["deferredDepthDataRequests"] = [item.model_dump(mode="json") for item in depth]
             policy_rejection_results = [_policy_rejection_result(item) for item in policy_rejections]
             initial_full_results = [item.model_dump(mode="json") for item in rejected]
             initial_full_results.extend(policy_rejection_results)
             _save_full_drilldown_results(db, job, initial_full_results)
             _refresh_drilldown_projections(snapshot, initial_full_results)
-            snapshot["pendingDataRequests"] = [item.model_dump(mode="json") for item in accepted]
+            snapshot["pendingDataRequests"] = [item.model_dump(mode="json") for item in breadth]
             snapshot["processingDataRequests"] = []
             snapshot["completedDataRequests"] = []
             snapshot["failedDataRequests"] = []
@@ -5149,11 +6035,25 @@ async def advance_audit_job(
                 ",".join(sorted({item.capability_id or item.dimension for item in accepted})),
                 len(accepted),
             )
-            job.context_snapshot_json = _json_dump(snapshot)
-            job.status = "context_ready"
-            job.current_stage = "collect_live_data"
-            job.stage_attempt = 0
-            job.progress_percent = 50
+            deadline = scheduler_deadline_state(snapshot)
+            if deadline["collectionDeadlineReached"] or deadline["hardDeadlineReached"]:
+                _finish_collection_for_deadline(
+                    db,
+                    job,
+                    snapshot,
+                    [*breadth, *depth],
+                    reason=(
+                        "hard_deadline_reached"
+                        if deadline["hardDeadlineReached"]
+                        else "collection_deadline_reached"
+                    ),
+                )
+            else:
+                job.context_snapshot_json = _json_dump(snapshot)
+                job.status = "context_ready"
+                job.current_stage = "collect_live_data"
+                job.stage_attempt = 0
+                job.progress_percent = 50
             timings["validateDataRequestsMs"] = _elapsed_ms(started_at)
         elif stage in {"collect_drilldowns", "collect_live_data", "wait_for_offline_reports"}:
             snapshot = _json_load(job.context_snapshot_json, {})
@@ -5164,6 +6064,67 @@ async def advance_audit_job(
             )
             pending = [AuditDataRequest.model_validate(item) for item in (pending_source or [])]
             processing = [AuditDataRequest.model_validate(item) for item in (snapshot.get("processingDataRequests") or [])]
+            deferred_depth = [
+                AuditDataRequest.model_validate(item)
+                for item in (snapshot.get("deferredDepthDataRequests") or [])
+            ]
+            deadline = scheduler_deadline_state(snapshot)
+            runtime = _audit_runtime(snapshot)
+            if (
+                runtime.get("schedulerPhase") == "finalization"
+                or deadline["collectionDeadlineReached"]
+                or deadline["hardDeadlineReached"]
+            ):
+                _finish_collection_for_deadline(
+                    db,
+                    job,
+                    snapshot,
+                    [*pending, *processing, *deferred_depth],
+                    reason=(
+                        "hard_deadline_reached"
+                        if deadline["hardDeadlineReached"]
+                        else "collection_deadline_reached"
+                    ),
+                )
+                timings["collectLiveDataMs"] = int(timings.get("collectLiveDataMs") or 0) + _elapsed_ms(started_at)
+                timings["totalElapsedMs"] = max(
+                    0,
+                    round((_now() - _as_aware(job.created_at or _now())).total_seconds() * 1000),
+                )
+                job.timings_json = _json_dump(timings)
+                job.stage_version += 1
+                db.commit()
+                db.refresh(job)
+                return job
+
+            waiting_reason, next_retry_at = _pending_report_wait(db, job)
+            if (
+                processing
+                and waiting_reason
+                and next_retry_at is not None
+                and _as_aware(next_retry_at) > _now()
+            ):
+                mark_scheduler_waiting(
+                    snapshot,
+                    reason=waiting_reason,
+                    next_retry_at=_as_aware(next_retry_at),
+                )
+                job.context_snapshot_json = _json_dump(snapshot)
+                job.status = "context_ready"
+                job.current_stage = "wait_for_offline_reports"
+                job.stage_attempt = 0
+                job.progress_percent = max(job.progress_percent, 58)
+                timings["collectLiveDataMs"] = int(timings.get("collectLiveDataMs") or 0) + _elapsed_ms(started_at)
+                timings["totalElapsedMs"] = max(
+                    0,
+                    round((_now() - _as_aware(job.created_at or _now())).total_seconds() * 1000),
+                )
+                job.timings_json = _json_dump(timings)
+                job.stage_version += 1
+                db.commit()
+                db.refresh(job)
+                return job
+
             requests, deferred = select_live_request_batch(processing + pending)
             for request in requests:
                 _log_audit_event(
@@ -5180,7 +6141,9 @@ async def advance_audit_job(
                 requests,
                 audit_job_id=job.id,
                 cache_policy=cache_policy,
-                allow_saved_fallback=bool(input_options.get("allow_saved_fallback")),
+                allow_saved_fallback=(
+                    cache_policy != "fresh" and bool(input_options.get("allow_saved_fallback"))
+                ),
             )
             full_results = _merge_full_drilldown_results(
                 _load_full_drilldown_results(db, job),
@@ -5190,6 +6153,7 @@ async def advance_audit_job(
             _refresh_drilldown_projections(snapshot, full_results)
             coverage = refresh_evidence_coverage_registry(snapshot, full_results)
             _sync_policy_runtime(snapshot, coverage)
+            _refresh_scheduler_coverage(snapshot, full_results)
             for item in collected:
                 event_name = {
                     "processing": "AUDIT_REQUEST_PROCESSING",
@@ -5265,8 +6229,19 @@ async def advance_audit_job(
                     ],
                 )
             _refresh_direct_read_runtime(snapshot, direct_api_calls)
+            terminal_results = [item for item in collected if item.status != "processing"]
+            if terminal_results or direct_api_calls:
+                mark_scheduler_progress(
+                    snapshot,
+                    action="direct_evidence_collected",
+                    successful=any(item.status in AVAILABLE_AUDIT_DATA_STATUSES for item in terminal_results),
+                )
             has_pending = bool(next_pending)
             has_processing = bool(next_processing)
+            if not has_pending and not has_processing and _audit_runtime(snapshot).get("schedulerPhase") == "breadth":
+                if _activate_deferred_depth(snapshot):
+                    next_pending = list(snapshot.get("pendingDataRequests") or [])
+                    has_pending = True
             has_hypotheses = bool(_active_hypotheses(snapshot))
             if not has_hypotheses:
                 snapshot["activeVerifications"] = []
@@ -5277,9 +6252,19 @@ async def advance_audit_job(
             if has_pending:
                 job.current_stage = "collect_live_data"
             elif has_processing:
+                waiting_reason, next_retry_at = _pending_report_wait(db, job)
+                mark_scheduler_waiting(
+                    snapshot,
+                    reason=waiting_reason or "offline_report_processing",
+                    next_retry_at=next_retry_at,
+                )
                 job.current_stage = "wait_for_offline_reports"
             else:
                 job.current_stage = "verify_hypotheses" if has_hypotheses else "generate_answer"
+                _audit_runtime(snapshot)["schedulerPhase"] = (
+                    "verification" if has_hypotheses else "finalization"
+                )
+            job.context_snapshot_json = _json_dump(snapshot)
             job.stage_attempt = 0
             job.progress_percent = 58 if (has_pending or has_processing) else (65 if has_hypotheses else 78)
             logger.info(
@@ -5289,6 +6274,35 @@ async def advance_audit_job(
             )
             timings["collectLiveDataMs"] = int(timings.get("collectLiveDataMs") or 0) + _elapsed_ms(started_at)
         elif stage == "verify_hypotheses":
+            snapshot = _json_load(job.context_snapshot_json, {})
+            verification_deadline = scheduler_deadline_state(snapshot)
+            if verification_deadline["collectionDeadlineReached"]:
+                verification = _verification_fallback(snapshot, _load_full_drilldown_results(db, job))
+                _apply_verification_statuses(snapshot, verification)
+                _set_helper_stage(snapshot, "verification", status_value="skipped_deadline")
+                runtime = _audit_runtime(snapshot)
+                runtime["schedulerPhase"] = "finalization"
+                runtime["stopReason"] = (
+                    "hard_deadline_reached"
+                    if verification_deadline["hardDeadlineReached"]
+                    else "collection_deadline_reached"
+                )
+                mark_scheduler_progress(snapshot, action=runtime["stopReason"])
+                job.context_snapshot_json = _json_dump(snapshot)
+                job.status = "context_ready"
+                job.current_stage = "generate_answer"
+                job.stage_attempt = 0
+                job.progress_percent = 78
+                timings["verificationOpenrouterMs"] = 0
+                timings["totalElapsedMs"] = max(
+                    0,
+                    round((_now() - _as_aware(job.created_at or _now())).total_seconds() * 1000),
+                )
+                job.timings_json = _json_dump(timings)
+                job.stage_version += 1
+                db.commit()
+                db.refresh(job)
+                return job
             execution_token = _claim_provider_stage(db, job, stage, progress_percent=70)
             snapshot = _json_load(job.context_snapshot_json, {})
             prompt = build_verification_prompt(snapshot)
@@ -5432,15 +6446,26 @@ async def advance_audit_job(
         elif stage == "plan_next_investigation_round":
             runtime_snapshot = _json_load(job.context_snapshot_json, {})
             runtime = _audit_runtime(runtime_snapshot)
-            stop_reason = round_stop_reason(
-                round_number=int(runtime.get("investigationRound") or 1),
-                pending=len(runtime_snapshot.get("pendingDataRequests") or []),
-                processing=len(runtime_snapshot.get("processingDataRequests") or []),
-                verifications=_active_verifications(runtime_snapshot),
-                request_count=int(runtime.get("requestsCount") or 0),
+            deadline = scheduler_deadline_state(runtime_snapshot)
+            stop_reason = (
+                "hard_deadline_reached"
+                if deadline["hardDeadlineReached"]
+                else "collection_deadline_reached"
+                if deadline["collectionDeadlineReached"]
+                else round_stop_reason(
+                    round_number=int(runtime.get("investigationRound") or 1),
+                    pending=len(runtime_snapshot.get("pendingDataRequests") or []),
+                    processing=len(runtime_snapshot.get("processingDataRequests") or []),
+                    verifications=_active_verifications(runtime_snapshot),
+                    request_count=int(runtime.get("requestsCount") or 0),
+                    max_rounds=int(runtime.get("maxDepthRounds") or MAX_INVESTIGATION_ROUNDS),
+                    max_requests=int(runtime.get("requestSafetyLimit") or MAX_DATA_REQUESTS_PER_AUDIT),
+                )
             )
             if stop_reason:
                 runtime["stopReason"] = stop_reason
+                runtime["schedulerPhase"] = "finalization"
+                mark_scheduler_progress(runtime_snapshot, action=stop_reason)
                 job.context_snapshot_json = _json_dump(runtime_snapshot)
                 job.status = "context_ready"
                 job.current_stage = "generate_answer"
@@ -5566,6 +6591,7 @@ async def advance_audit_job(
                         snapshot["investigationRounds"][-1]["completed_at"] = _now().isoformat()
                     next_stage = "generate_answer"
                     progress = 78
+                    _audit_runtime(snapshot)["schedulerPhase"] = "finalization"
                 job.context_snapshot_json = _json_dump(snapshot)
                 job.status = "context_ready"
                 job.current_stage = next_stage
@@ -5574,14 +6600,24 @@ async def advance_audit_job(
                 _complete_provider_stage(job, stage)
         elif stage == "apply_next_investigation_round":
             snapshot = _json_load(job.context_snapshot_json, {})
+            deadline = scheduler_deadline_state(snapshot)
             next_requests = [
                 AuditDataRequest.model_validate(item)
                 for item in snapshot.pop("fallbackNextRoundRequests", [])
             ]
-            if next_requests:
+            if next_requests and not deadline["collectionDeadlineReached"]:
                 _apply_next_round_requests(snapshot, next_requests)
             else:
-                _audit_runtime(snapshot)["stopReason"] = "low_expected_information_gain"
+                runtime = _audit_runtime(snapshot)
+                runtime["stopReason"] = (
+                    "hard_deadline_reached"
+                    if deadline["hardDeadlineReached"]
+                    else "collection_deadline_reached"
+                    if deadline["collectionDeadlineReached"]
+                    else "low_expected_information_gain"
+                )
+                runtime["schedulerPhase"] = "finalization"
+                next_requests = []
             job.context_snapshot_json = _json_dump(snapshot)
             job.status = "context_ready"
             job.current_stage = "collect_live_data" if next_requests else "generate_answer"
@@ -5589,6 +6625,7 @@ async def advance_audit_job(
             job.progress_percent = 68 if next_requests else 78
         elif stage == "generate_answer":
             snapshot = _json_load(job.context_snapshot_json, {})
+            _audit_runtime(snapshot)["schedulerPhase"] = "finalization"
             policy_active = (
                 snapshot.get("policyVersion") == AUDIT_EVIDENCE_POLICY_VERSION
                 or "evidenceCoverageRegistry" in snapshot
@@ -5596,17 +6633,36 @@ async def advance_audit_job(
             full_results = _load_full_drilldown_results(db, job) if policy_active else []
             if policy_active:
                 coverage = refresh_evidence_coverage_registry(snapshot, full_results)
+                all_evidence_results = _merge_full_drilldown_results(
+                    _load_full_baseline_results(db, job), full_results,
+                )
+                reconcile_collected_audit_evidence(snapshot, all_evidence_results)
+                coverage = refresh_evidence_coverage_registry(snapshot, full_results)
                 runtime = _sync_policy_runtime(snapshot, coverage)
                 runtime["completionGateRuns"] = int(runtime.get("completionGateRuns") or 0) + 1
             else:
                 coverage = {"completionState": "legacy_unknown"}
                 runtime = _audit_runtime(snapshot)
 
+            if (
+                policy_active
+                and coverage.get("completionState") == "blocked_missing_evidence"
+                and runtime.get("schedulerPhase") == "finalization"
+                and not runtime.get("completionGateRemediationAttempted")
+            ):
+                # The scheduler already stopped read collection before finalization.
+                # Keep the limitation public, but allow the final model to explain
+                # the partial evidence instead of silently replacing it with a
+                # generic backend report.
+                runtime["completionGateLimitedByScheduler"] = True
+                coverage = {**coverage, "completionState": "partial_coverage"}
+
             if policy_active and coverage.get("completionState") == "blocked_missing_evidence":
                 remediation_attempted = bool(runtime.get("completionGateRemediationAttempted"))
-                if not remediation_attempted:
+                if not remediation_attempted and runtime.get("schedulerPhase") != "finalization":
                     used_requests = int(runtime.get("requestsCount") or 0)
-                    remaining_budget = max(0, MAX_AUDIT_DATA_REQUESTS - used_requests)
+                    request_limit = int(runtime.get("requestSafetyLimit") or MAX_AUDIT_DATA_REQUESTS)
+                    remaining_budget = max(0, request_limit - used_requests)
                     remediation, policy_rejections, _ = merge_mandatory_and_ai_requests(
                         snapshot,
                         [],
@@ -5625,7 +6681,9 @@ async def advance_audit_job(
                         for item in remediation
                         if (item.campaign_name, item.capability_id or item.dimension) not in existing_keys
                     ]
-                    accepted, rejected = validate_audit_data_requests(remediation)
+                    accepted, rejected = validate_audit_data_requests(
+                        remediation, max_requests=request_limit,
+                    )
                     runtime["completionGateRemediationAttempted"] = True
                     if policy_rejections or rejected:
                         rejected_payloads = [_policy_rejection_result(item) for item in policy_rejections]
@@ -5674,6 +6732,33 @@ async def advance_audit_job(
                         "Аудит завершён с ограничениями без уверенных причинных выводов по этим сигналам."
                     ),
                     preserve_job_error=False,
+                )
+
+            final_deadline = scheduler_deadline_state(snapshot)
+            if final_deadline["hardDeadlineReached"]:
+                runtime = _audit_runtime(snapshot)
+                runtime["schedulerPhase"] = "finalization"
+                runtime["stopReason"] = "hard_deadline_reached"
+                runtime["deadlineReached"] = True
+                return _complete_backend_fallback_stage(
+                    db,
+                    job,
+                    snapshot,
+                    {
+                        "finalCompactionLevel": None,
+                        "fitsModelContext": None,
+                        "preflightFitsModelContext": None,
+                        "hardDeadlineReached": True,
+                    },
+                    timings,
+                    reason_code="audit_hard_deadline_reached",
+                    final_status="backend_fallback_after_audit_deadline",
+                    warning=(
+                        "Временной бюджет полного аудита завершён. Собранные данные сохранены, "
+                        "а результат сформирован backend без новых запросов к Яндекс.Директу."
+                    ),
+                    preserve_job_error=False,
+                    complete_immediately=True,
                 )
 
             execution_token = _claim_provider_stage(db, job, stage, progress_percent=82)
@@ -5978,6 +7063,7 @@ async def advance_audit_job(
                 final_diagnostics,
                 status_value="provider_completed" if structured is not None else "provider_response_truncated",
             )
+            mark_scheduler_progress(snapshot, action="final_provider_completed", successful=True)
             job.context_snapshot_json = _json_dump(snapshot)
             warnings = _helper_warning_messages(snapshot)
             if not (snapshot.get("analysisPeriod") or {}).get("requestedMatchesAvailableData"):
@@ -6010,9 +7096,12 @@ async def advance_audit_job(
                 "auditCompletionState": evidence_coverage["completionState"],
                 "evidenceCoverage": evidence_coverage,
                 "analysisPeriod": snapshot.get("analysisPeriod") or {},
+                "periodEvidenceLimitations": snapshot.get("periodEvidenceLimitations") or [],
                 "cachePolicy": (snapshot.get("metadata") or {}).get("cachePolicy") or "fresh",
                 "directApiKnowledgeVersion": (snapshot.get("metadata") or {}).get("directApiKnowledgeVersion"),
                 "dataCoverage": snapshot.get("dataCoverage") or {},
+                "canonicalEvidenceCoverage": snapshot.get("canonicalEvidenceCoverage") or {},
+                "finalOutputEvidenceReconciliation": snapshot.get("finalOutputEvidenceReconciliation") or {},
                 "usage": final_token_usage,
                 "finalTokenUsage": final_token_usage,
                 "responseId": response.get("id"),
@@ -6042,6 +7131,16 @@ async def advance_audit_job(
             timings["finalizeMs"] = _elapsed_ms(finalize_started_at)
         else:
             raise RuntimeError(f"Unknown AI audit stage: {stage}")
+        if job.context_snapshot_json and (
+            job.current_stage != stage or job.status in TERMINAL_AUDIT_STATUSES
+        ) and job.current_stage != "wait_for_offline_reports":
+            progress_snapshot = _json_load(job.context_snapshot_json, {}) or {}
+            mark_scheduler_progress(
+                progress_snapshot,
+                action=f"stage_completed:{stage}",
+                successful=True,
+            )
+            job.context_snapshot_json = _json_dump(progress_snapshot)
         timings["totalElapsedMs"] = max(0, round((_now() - _as_aware(job.created_at or _now())).total_seconds() * 1000))
         job.timings_json = _json_dump(timings)
         job.stage_version += 1

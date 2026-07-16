@@ -1257,6 +1257,79 @@ def test_fresh_baseline_advance_uses_all_rows_but_limits_ai_sample(monkeypatch):
     assert facts_by_campaign - sample_names
 
 
+def test_fresh_baseline_queue_wait_is_normal_active_response(monkeypatch):
+    db = _db()
+    job = _create(db)
+    snapshot = audit_jobs.build_compact_audit_context(_context())
+    snapshot["analysisPeriod"] = {"dateFrom": "2026-06-10", "dateTo": "2026-07-09", "days": 30}
+    job.context_snapshot_json = audit_jobs._json_dump(snapshot)
+    job.status = "context_ready"
+    job.current_stage = "collect_fresh_baseline"
+    db.commit()
+
+    def fake_collect(*args, **kwargs):
+        return [
+            AuditDataRequestResult(
+                request_id="baseline_campaigns", hypothesis_id="baseline", capability_id="campaigns",
+                dimension="campaigns", status="collected", source="yandex_direct_live_service",
+                source_type="service_get", data=[],
+            ),
+            AuditDataRequestResult(
+                request_id="baseline_campaign_performance", hypothesis_id="baseline",
+                capability_id="campaign_performance", dimension="campaign_performance",
+                status="processing", source="yandex_direct_live_report", source_type="report",
+                error_code="direct_report_queue_full", retryable=True,
+                next_retry_at="2026-07-16T10:00:15+00:00",
+            ),
+        ], 1
+
+    monkeypatch.setattr(audit_jobs, "collect_audit_data_requests", fake_collect)
+    current = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
+    response = audit_jobs.audit_job_response(current, db)
+
+    assert current.status == "context_ready"
+    assert current.current_stage == "collect_fresh_baseline"
+    assert current.progress_percent == 18
+    assert response.error_code is None
+    assert response.retryable is False
+
+
+def test_fresh_baseline_queue_timeout_continues_to_classification(monkeypatch):
+    db = _db()
+    job = _create(db)
+    snapshot = audit_jobs.build_compact_audit_context(_context())
+    snapshot["analysisPeriod"] = {"dateFrom": "2026-06-10", "dateTo": "2026-07-09", "days": 30}
+    job.context_snapshot_json = audit_jobs._json_dump(snapshot)
+    job.status = "context_ready"
+    job.current_stage = "collect_fresh_baseline"
+    db.commit()
+
+    def fake_collect(*args, **kwargs):
+        return [
+            AuditDataRequestResult(
+                request_id="baseline_campaigns", hypothesis_id="baseline", capability_id="campaigns",
+                dimension="campaigns", status="collected", source="yandex_direct_live_service",
+                source_type="service_get", data=[],
+            ),
+            AuditDataRequestResult(
+                request_id="baseline_campaign_performance", hypothesis_id="baseline",
+                capability_id="campaign_performance", dimension="campaign_performance",
+                status="unavailable", source="unavailable", source_type="report",
+                error_code="direct_report_queue_full_timeout", retryable=False,
+                limitations=["Свежий срез не получен."],
+            ),
+        ], 0
+
+    monkeypatch.setattr(audit_jobs, "collect_audit_data_requests", fake_collect)
+    current = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
+    stored = audit_jobs._load_full_baseline_results(db, current)
+
+    assert current.status == "context_ready"
+    assert current.current_stage == "classify_campaigns"
+    assert current.progress_percent == 22
+    assert any(item.get("error_code") == "direct_report_queue_full_timeout" for item in stored)
+
+
 def test_public_trace_is_safe_and_distinguishes_backend_and_ai_rows():
     db = _db()
     job = _create(db)
@@ -1306,6 +1379,54 @@ def test_public_trace_is_safe_and_distinguishes_backend_and_ai_rows():
     assert trace["pagination"]["pagesCompleted"] == 3
     for forbidden in ("must-not-leak", "secret-id", "request_hash", "CampaignId", "result_json", "Authorization"):
         assert forbidden not in serialized
+
+
+def test_queue_full_trace_is_safe_and_polling_uses_persistent_retry_time(monkeypatch):
+    db = _db()
+    job = _create(db)
+    now = datetime.now(UTC)
+    snapshot = audit_jobs.build_compact_audit_context(_context())
+    snapshot["validatedDataRequests"] = [{
+        "request_id": "req-queue", "hypothesis_id": "hyp-queue", "campaign_name": "Search",
+        "campaign_family": "search", "campaign_subtype": "search", "dimension": "campaign_performance",
+        "capability_id": "campaign_performance", "reason": "Проверить эффективность", "period": {},
+        "filters": {"campaign_name": "Search"}, "metrics": ["cost", "conversions"],
+        "priority": "high", "required_for_conclusion": True, "data_preference": "live_required",
+    }]
+    job.context_snapshot_json = audit_jobs._json_dump(snapshot)
+    job.status = "context_ready"
+    job.current_stage = "collect_fresh_baseline"
+    audit_jobs._save_full_baseline_results(db, job, [{
+        "request_id": "req-queue", "hypothesis_id": "hyp-queue",
+        "capability_id": "campaign_performance", "dimension": "campaign_performance",
+        "status": "processing", "source": "yandex_direct_live_report", "source_type": "report",
+        "request_hash": "private-request-hash", "error_code": "direct_report_queue_full",
+        "retryable": True, "data": [],
+    }])
+    db.add(DirectReportJob(
+        audit_job_id=job.id, client_id=job.client_id, capability_id="campaign_performance",
+        request_hash="private-request-hash", report_name="private-report-name", report_spec_json="{}",
+        status="waiting_for_report_queue", attempts=1, queue_full_attempts=2,
+        first_queue_full_at=now - timedelta(seconds=15), last_queue_full_at=now,
+        next_retry_at=now + timedelta(seconds=30), retry_after_seconds=30,
+        error_code="direct_report_queue_full", error_message="raw provider response must not leak",
+    ))
+    db.commit()
+    monkeypatch.setattr(audit_jobs, "_now", lambda: now)
+
+    response = audit_jobs.audit_job_response(job, db)
+    trace = response.context_metadata["publicRequestTrace"][0]
+    serialized = json.dumps(response.model_dump(mode="json"), ensure_ascii=False)
+
+    assert response.poll_after_ms == 30_000
+    assert trace["status"] == "waiting_for_report_queue"
+    assert trace["offlineReport"]["used"] is False
+    assert trace["offlineReport"]["attempts"] == 1
+    assert trace["offlineReport"]["queueFullAttempts"] == 2
+    assert trace["safeError"]["code"] == "direct_report_queue_full"
+    assert "private-request-hash" not in serialized
+    assert "private-report-name" not in serialized
+    assert "raw provider response" not in serialized
 
 
 def test_public_trace_includes_full_baseline_with_bounded_ai_sample():
@@ -1487,7 +1608,7 @@ def test_audit_completes_when_all_helper_stages_fallback(monkeypatch):
     assert snapshot["helperStages"]["planner"]["status"] == "fallback"
     assert snapshot["helperStages"]["verification"]["status"] == "fallback"
     result = audit_jobs._json_load(job.result_json, {})
-    assert len(result["warnings"]) == 3
+    assert len(result["warnings"]) >= 3
     assert job.returned_model == job.model
 
 

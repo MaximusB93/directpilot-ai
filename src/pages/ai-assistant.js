@@ -170,7 +170,10 @@ export function renderAiChat({
 
 function auditRequestStatusLabel(status) {
   return ({
-    pending: 'Ожидает выполнения', queued: 'Ожидает выполнения', processing: 'Формируется отчёт',
+    pending: 'Ожидает выполнения', queued: 'Ожидает выполнения', processing: 'В обработке',
+    waiting_for_report_queue: 'Ожидает свободное место в очереди',
+    offline_report_processing: 'Формируется отчёт',
+    unavailable_after_retry_limit: 'Недоступно после повторных попыток',
     ready: 'Данные получены', completed: 'Данные получены',
     collected: 'Данные получены', cached: 'Получено из кеша', partial: 'Получены частично',
     insufficient_data: 'Недостаточно данных', unavailable: 'Источник недоступен',
@@ -225,7 +228,8 @@ function renderAuditRequestTrace(metadata, escapeHtml) {
       <p><b>Метрики:</b> ${(item.semanticMetrics || []).map((value) => escapeHtml(value)).join(', ') || '—'}</p>
       <p><b>Объём:</b> получено ${escapeHtml(String(item.rowsReceived || 0))}, нормализовано ${escapeHtml(String(item.rowsNormalized || 0))}, проверено backend ${escapeHtml(String(item.rowsAnalyzedByBackend || 0))}, передано AI ${escapeHtml(String(item.rowsSentToAi || 0))}.</p>
       <p><b>Lifecycle:</b> ${(item.statusHistory || []).map((event) => escapeHtml(auditRequestStatusLabel(event.status))).join(' → ') || '—'}</p>
-      <p><b>Отчёт:</b> страниц ${escapeHtml(String(item.pagination?.pagesCompleted || 0))}; offline ${item.offlineReport?.used ? escapeHtml(auditRequestStatusLabel(item.offlineReport.status)) : 'не использовался'}; кеш ${item.cache?.hit ? 'да' : 'нет'}; fallback ${item.fallback?.used ? 'да' : 'нет'}.</p>
+      <p><b>Отчёт:</b> страниц ${escapeHtml(String(item.pagination?.pagesCompleted || 0))}; offline ${item.offlineReport?.used ? escapeHtml(auditRequestStatusLabel(item.offlineReport.status)) : 'ещё не принят Яндексом'}; кеш ${item.cache?.hit ? 'да' : 'нет'}; fallback ${item.fallback?.used ? 'да' : 'нет'}.</p>
+      ${item.status === 'waiting_for_report_queue' ? `<p><b>Очередь:</b> попыток ${escapeHtml(String(item.offlineReport?.queueFullAttempts || 0))}; следующая попытка примерно через ${escapeHtml(String(item.offlineReport?.retryAfterSeconds || 0))} сек.</p>` : ''}
       <p><b>Качество чисел:</b> известно ${escapeHtml(String(item.dataQuality?.numericStateCounts?.known || 0))}, нет данных ${escapeHtml(String(item.dataQuality?.numericStateCounts?.missing || 0))}, некорректно ${escapeHtml(String(item.dataQuality?.numericStateCounts?.invalid || 0))}.</p>
       ${(item.evidence?.confirmationRules || []).length ? `<p><b>Подтверждающие правила:</b> ${(item.evidence.confirmationRules || []).map((rule) => escapeHtml(rule.summary || rule.rule_code || rule.ruleCode || '')).join('; ')}</p>` : ''}
       ${(item.evidence?.rejectionRules || []).length ? `<p><b>Опровергающие правила:</b> ${(item.evidence.rejectionRules || []).map((rule) => escapeHtml(rule.summary || rule.rule_code || rule.ruleCode || '')).join('; ')}</p>` : ''}
@@ -280,10 +284,19 @@ function renderAuditTechnicalDiagnostics(metadata, runtime, escapeHtml, result =
     backend_fallback_missing_mandatory_evidence: 'аудит завершён с неполным покрытием обязательных данных',
     backend_fallback_after_provider_context_rejection: 'сохранён backend-результат после отказа провайдера',
     backend_fallback_after_provider_timeout: 'сохранён backend-результат после таймаута финальной модели',
+    backend_fallback_after_audit_deadline: 'временной бюджет завершён; сохранён безопасный backend-результат',
     backend_fallback_after_final_stage_stale: 'сохранён backend-результат после восстановления финального этапа',
     backend_fallback_after_json_parse: 'ответ модели не удалось разобрать; показан безопасный backend-отчёт',
     backend_fallback_after_schema_validation: 'ответ модели не прошёл структурный контракт; показан безопасный backend-отчёт',
   }[runtime.finalGenerationStatus] || 'финальная генерация ещё не началась';
+  const reconciliation = result?.finalOutputEvidenceReconciliation
+    || result?.structuredParsing?.evidenceReconciliation
+    || null;
+  const reconciliationLabel = reconciliation?.status === 'final_output_evidence_reconciled'
+    ? 'Финальный ответ согласован с фактически собранными данными'
+    : reconciliation?.status === 'consistent'
+      ? 'Противоречий с собранными данными не найдено'
+      : 'Проверка согласованности ещё не выполнена';
   return `
     <details class="quietDetails">
       <summary>Техническая диагностика аудита</summary>
@@ -314,6 +327,7 @@ function renderAuditTechnicalDiagnostics(metadata, runtime, escapeHtml, result =
       <p>Финальная проекция: ${escapeHtml(String(runtime.finalProjectionEstimatedTokens || 0))} токенов. Финальный prompt: ${escapeHtml(String(runtime.finalPromptEstimatedTokens || 0))}. Лимит модели: ${escapeHtml(String(runtime.modelContextLimit || 0))}. Запрошено для ответа: ${escapeHtml(String(runtime.requestedOutputTokens || runtime.reservedOutputTokens || 0))}. Эффективный лимит: ${escapeHtml(String(runtime.effectiveFinalOutputTokens || runtime.reservedOutputTokens || 0))}. Запас безопасности: ${escapeHtml(String(runtime.safetyMarginTokens || 0))}.</p>
       <p>Уровень сжатия: L${escapeHtml(String(runtime.finalCompactionLevel ?? '—'))}. Preflight помещается: ${runtime.preflightFitsModelContext === true ? 'да' : runtime.preflightFitsModelContext === false ? 'нет' : 'ещё не проверено'}. Провайдер отклонил контекст: ${runtime.providerContextRejected ? 'да' : 'нет'}. Backend fallback: ${runtime.backendFallbackUsed ? 'да' : 'нет'}.</p>
       <p>Статус финальной генерации: ${escapeHtml(finalStatusLabel)}${runtime.providerContextErrorCode ? ` · код контекста: ${escapeHtml(String(runtime.providerContextErrorCode))}` : ''}${runtime.providerErrorCode ? ` · код провайдера: ${escapeHtml(String(runtime.providerErrorCode))}` : ''}. Суммарное использование всех AI-вызовов: ${escapeHtml(String(runtime.tokenUsage?.total || 0))} токенов. Время этапов: ${escapeHtml(String(Object.values(runtime.timings || {}).reduce((sum, value) => sum + Number(value || 0), 0)))} мс.</p>
+      <p>Согласование evidence: ${escapeHtml(reconciliationLabel)}.</p>
       ${finalTokenUsage ? `<p>Финальный AI-вызов: prompt ${escapeHtml(String(finalTokenUsage.prompt || 0))}, completion ${escapeHtml(String(finalTokenUsage.completion || 0))}, всего ${escapeHtml(String(finalTokenUsage.total || 0))} токенов.</p>` : ''}
       ${result?.backendFallbackUsed ? `<p>Backend fallback: да. Причина: ${escapeHtml(String(result?.structuredParsing?.fallbackReason || modelParsing?.errorCode || 'не указана'))}.${modelParsing ? ` Ошибок структурной проверки: ${escapeHtml(String(modelParsing.validationErrorsCount || 0))}.` : ''}</p>` : ''}
       ${modelParsing ? `<p>Ответ модели: формат ${escapeHtml(String(modelParsing.sourceFormat || 'unknown'))}, результат проверки ${escapeHtml(String(modelParsing.parseOutcome || 'unknown'))}${validationPaths.length ? `, безопасные пути ошибок: ${validationPaths.map((value) => escapeHtml(String(value))).join(', ')}` : ''}. Finish reason: ${escapeHtml(String(result?.finishReason || 'не указан'))}.</p>` : ''}
@@ -365,17 +379,25 @@ function renderAuditInvestigationTree(rounds, escapeHtml) {
 }
 
 function renderAuditEvidenceCoverage(job, escapeHtml) {
-  const coverage = job?.context_metadata?.evidenceCoverage || job?.result?.evidenceCoverage;
-  if (!coverage) return '';
-  const summary = coverage.summary || {};
-  const state = coverage.completionState || 'legacy_unknown';
+  const canonical = job?.context_metadata?.canonicalEvidenceCoverage
+    || job?.result?.canonicalEvidenceCoverage;
+  const policyCoverage = job?.context_metadata?.evidenceCoverage || job?.result?.evidenceCoverage;
+  if (!canonical && !policyCoverage) return '';
+  const summary = canonical?.summary || {};
+  const matrix = canonical?.campaignMatrix || [];
+  const state = policyCoverage?.completionState || 'legacy_unknown';
   const stateLabels = {
     complete: 'Обязательные данные собраны',
     partial_coverage: 'Аудит завершён с частичным покрытием',
     blocked_missing_evidence: 'Аудит не получил часть обязательных данных',
     legacy_unknown: 'Полнота старого аудита не определена',
   };
-  const statusLabels = {
+  const canonicalStatusLabels = {
+    collected: 'Собрано', partial: 'Частично', insufficient_data: 'Мало данных',
+    not_requested: 'Не запрашивалось', not_applicable: 'Неприменимо',
+    unavailable: 'Недоступно', failed: 'Ошибка',
+  };
+  const policyStatusLabels = {
     satisfied: 'Собрано', partial: 'Частично', blocked: 'Заблокировано',
     missing: 'Не собрано', processing: 'Загружается', not_applicable: 'Неприменимо',
   };
@@ -386,31 +408,75 @@ function renderAuditEvidenceCoverage(job, escapeHtml) {
     yan_low_quality_placements: 'Некачественные площадки РСЯ', search_query_waste: 'Нерелевантные запросы',
     budget_spike: 'Скачок расхода', learning_strategy_do_not_touch: 'Обучение стратегии',
   };
-  const rows = (coverage.requirements || []).map((item) => `<tr>
+  const absenceLabels = {
+    not_requested: 'Срез не запрашивался', insufficient_data: 'Direct вернул недостаточно строк',
+    unavailable: 'Срез недоступен', unsupported: 'Срез не поддерживается',
+    skipped_budget_limit: 'Не выполнено в доступное время',
+    audit_collection_deadline_reached: 'Не выполнено до дедлайна сбора',
+    failed: 'Не удалось получить срез',
+  };
+  const matrixRows = matrix.map((item) => `<tr>
+    <td>${escapeHtml(item.campaignName || 'Кампания')}</td>
+    <td>${escapeHtml(auditCapabilityLabel(item.capabilityId))}</td>
+    <td>${escapeHtml(canonicalStatusLabels[item.status] || item.status || 'Неизвестно')}</td>
+    <td>${escapeHtml(String(item.rowsReceived || 0))} / ${escapeHtml(String(item.rowsAnalyzedByBackend || 0))} / ${escapeHtml(String(item.rowsSentToAi || 0))}</td>
+    <td>${escapeHtml(auditSourceLabel(item.source))}</td>
+    <td>${escapeHtml(item.limitations?.[0] || absenceLabels[item.absenceReason] || item.absenceReason || '—')}</td>
+  </tr>`).join('');
+  const isOpen = ['partial_coverage', 'blocked_missing_evidence'].includes(state);
+  const policySummary = policyCoverage?.summary || {};
+  const policyRows = (policyCoverage?.requirements || []).map((item) => `<tr>
     <td>${escapeHtml(item.campaignName || 'Кампания')}</td>
     <td>${escapeHtml(signalLabels[item.signal] || item.signal || 'Сигнал')}</td>
     <td>${escapeHtml(auditDimensionLabel(item.dimension))}</td>
-    <td>${escapeHtml(statusLabels[item.status] || item.status || 'Не собрано')}</td>
-    <td>${escapeHtml(auditSourceLabel(item.source))}</td>
+    <td>${escapeHtml(policyStatusLabels[item.status] || item.status || 'Не собрано')}</td>
     <td>${escapeHtml(item.limitations?.[0] || item.reasonCode || '—')}</td>
   </tr>`).join('');
-  const isOpen = ['partial_coverage', 'blocked_missing_evidence'].includes(state);
   return `<details class="quietDetails" ${isOpen ? 'open' : ''} data-audit-evidence-coverage>
-    <summary>Полнота обязательных данных · ${escapeHtml(stateLabels[state] || state)}</summary>
+    <summary>Что реально проанализировано · ${escapeHtml(String(summary.coveredCampaigns || 0))}/${escapeHtml(String(summary.applicableCampaigns || 0))} кампаний</summary>
     <div class="aiAuditRequestCounters">
-      <span><strong>${escapeHtml(String(summary.requiredTotal || 0))}</strong> обязательно</span>
-      <span><strong>${escapeHtml(String(summary.satisfied || 0))}</strong> собрано</span>
-      <span><strong>${escapeHtml(String(summary.partial || 0))}</strong> частично</span>
-      <span><strong>${escapeHtml(String(summary.unavailable || 0))}</strong> недоступно</span>
-      <span><strong>${escapeHtml(String(summary.notApplicable || 0))}</strong> неприменимо</span>
-      <span><strong>${escapeHtml(String(summary.blocked || 0))}</strong> заблокировано</span>
-      <span><strong>${escapeHtml(String(summary.missing || 0))}</strong> не собрано</span>
-      <span><strong>${escapeHtml(String(summary.processing || 0))}</strong> в обработке</span>
+      <span><strong>${escapeHtml(String(summary.rowsReceived || 0))}</strong> строк получено</span>
+      <span><strong>${escapeHtml(String(summary.rowsAnalyzedByBackend || 0))}</strong> проверено backend</span>
+      <span><strong>${escapeHtml(String(summary.rowsSentToAi || 0))}</strong> передано AI</span>
+      <span><strong>${escapeHtml(String((canonical?.capabilitySummary || []).length))}</strong> срезов</span>
     </div>
     ${state === 'blocked_missing_evidence' ? '<aside class="aiAuditNotice">Полный причинный аудит ограничен: недостающие обязательные данные не заменяются предположениями.</aside>' : ''}
     ${state === 'partial_coverage' ? '<aside class="aiAuditNotice">Часть срезов доступна не полностью. Выводы по ним помечены как ограниченные.</aside>' : ''}
-    ${rows ? `<div class="markdownTableWrap"><table><thead><tr><th>Кампания</th><th>Сигнал</th><th>Обязательные данные</th><th>Статус</th><th>Источник</th><th>Причина / ограничение</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<p>Для старого аудита детальный реестр не сохранён.</p>'}
+    ${matrixRows ? `<div class="markdownTableWrap"><table><thead><tr><th>Кампания</th><th>Срез</th><th>Статус</th><th>Получено / backend / AI</th><th>Источник</th><th>Причина</th></tr></thead><tbody>${matrixRows}</tbody></table></div>` : '<p>Для старого аудита детальная матрица покрытия не сохранена.</p>'}
+    ${policyCoverage ? `<details class="quietDetails"><summary>Полнота обязательных данных · ${escapeHtml(stateLabels[state] || state)}</summary><p>Собрано ${escapeHtml(String(policySummary.satisfied || 0))} из ${escapeHtml(String(policySummary.requiredTotal || 0))}; частично ${escapeHtml(String(policySummary.partial || 0))}; недоступно ${escapeHtml(String(policySummary.unavailable || 0))}; неприменимо ${escapeHtml(String(policySummary.notApplicable || 0))}.</p>${policyRows ? `<div class="markdownTableWrap"><table><thead><tr><th>Кампания</th><th>Сигнал</th><th>Обязательные данные</th><th>Статус</th><th>Причина</th></tr></thead><tbody>${policyRows}</tbody></table></div>` : ''}</details>` : ''}
   </details>`;
+}
+
+function renderAuditSchedulerStatus(runtime, escapeHtml) {
+  const health = runtime?.schedulerHealth || {};
+  const deadline = runtime?.deadline || {};
+  const phaseLabels = {
+    breadth: 'базовое покрытие всех кампаний', depth: 'углублённая диагностика',
+    verification: 'проверка гипотез', finalization: 'согласование и финальный отчёт',
+  };
+  const healthLabels = {
+    working: 'Аудит работает', waiting: 'Ожидание Яндекс.Директа',
+    delayed: 'Нет прогресса дольше обычного', recovering: 'Восстановление этапа',
+  };
+  const waitLabels = {
+    direct_report_queue: 'Ожидаем место в очереди отчётов Direct',
+    offline_report_processing: 'Offline-отчёт формируется в Яндекс.Директе',
+  };
+  const retryAt = Date.parse(runtime?.nextRetryAt || health?.nextRetryAt || '');
+  const retrySeconds = Number.isFinite(retryAt) ? Math.max(0, Math.ceil((retryAt - Date.now()) / 1000)) : null;
+  const deadlineAt = deadline?.hardDeadlineAt || runtime?.hardDeadlineAt;
+  const deadlineLabel = deadlineAt && Number.isFinite(Date.parse(deadlineAt))
+    ? new Date(deadlineAt).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
+    : 'не задан';
+  const lastSuccess = runtime?.lastSuccessfulActionAt && Number.isFinite(Date.parse(runtime.lastSuccessfulActionAt))
+    ? new Date(runtime.lastSuccessfulActionAt).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    : 'ещё нет';
+  return `<div class="aiAuditInvestigation">
+    <strong>${escapeHtml(healthLabels[health.status] || 'Аудит работает')}</strong>
+    <small>Фаза: ${escapeHtml(phaseLabels[runtime?.schedulerPhase] || runtime?.schedulerPhase || 'подготовка')} · кампаний ${escapeHtml(String(runtime?.campaignsCovered || 0))}/${escapeHtml(String(runtime?.campaignsTotal || 0))} · требований ${escapeHtml(String(runtime?.requirementsSatisfied || 0))}/${escapeHtml(String(runtime?.mandatoryRequirementsCount || 0))}</small>
+    <small>Прошло ${escapeHtml(String(runtime?.elapsedSeconds || 0))} сек. · hard deadline ${escapeHtml(deadlineLabel)} · Direct API-вызовов ${escapeHtml(String(runtime?.directApiCallsCount || 0))} · последнее успешное действие ${escapeHtml(lastSuccess)}</small>
+    ${runtime?.waitingReason ? `<small>${escapeHtml(waitLabels[runtime.waitingReason] || 'Ожидаем следующий разрешённый опрос')}${retrySeconds !== null ? ` · повтор через ${escapeHtml(String(retrySeconds))} сек.` : ''}</small>` : ''}
+  </div>`;
 }
 
 function safeAuditJobErrorMessage(job) {
@@ -453,7 +519,6 @@ export function renderAiAuditJob({
   const stageElapsedSeconds = Number.isFinite(stageStartedMs)
     ? Math.max(0, Math.floor((Date.now() - stageStartedMs) / 1000))
     : 0;
-  const stageRunsLong = aiAuditJob?.status === 'generating' && stageElapsedSeconds > 90;
   const statusLabel = {
     queued: 'В очереди',
     collecting_context: 'Собираем данные',
@@ -474,6 +539,9 @@ export function renderAiAuditJob({
   const investigation = aiAuditJob?.context_metadata?.investigation || {};
   const requestedDimensions = investigation.requestedDimensions || [];
   const runtime = aiAuditJob?.context_metadata?.runtime || {};
+  const schedulerHealth = runtime.schedulerHealth?.status || 'working';
+  const stageRunsLong = aiAuditJob?.status === 'generating'
+    && ['delayed', 'recovering'].includes(schedulerHealth);
   const dataRequests = investigation.dataRequests || {};
   const rounds = investigation.rounds || [];
   const publicRounds = aiAuditJob?.context_metadata?.investigationTree || rounds;
@@ -496,10 +564,11 @@ export function renderAiAuditJob({
       ${aiAuditJob ? `
         <div class="aiAuditProgress"><span style="width:${Math.max(0, Math.min(100, Number(aiAuditJob.progress_percent) || 0))}%"></span></div>
         <strong>Прогресс: ${escapeHtml(String(aiAuditJob.progress_percent || 0))}%</strong>
-        ${aiAuditJob.status === 'generating' ? `<p class="aiAuditStageRuntime">Этап выполняется ${escapeHtml(String(stageElapsedSeconds))} сек. · попытка ${escapeHtml(String(aiAuditJob.stage_attempt || 1))}${stageRunsLong ? ' · <strong>Этап выполняется дольше обычного</strong>' : ''}</p>` : ''}
+        ${aiAuditJob.status === 'generating' ? `<p class="aiAuditStageRuntime">Этап выполняется ${escapeHtml(String(stageElapsedSeconds))} сек. · попытка ${escapeHtml(String(aiAuditJob.stage_attempt || 1))}${stageRunsLong ? ' · <strong>Нет ожидаемого ответа, проверяем восстановление</strong>' : ''}</p>` : ''}
         <ol class="aiAuditStages">
           ${stages.map(([, label], index) => `<li class="${index < stageIndex || aiAuditJob.status === 'completed' ? 'done' : index === stageIndex && !terminal ? 'active' : ''}">${index < stageIndex || aiAuditJob.status === 'completed' ? '✓' : index === stageIndex && !terminal ? '•' : '○'} ${escapeHtml(label)}</li>`).join('')}
         </ol>
+        ${renderAuditSchedulerStatus(runtime, escapeHtml)}
         <div class="aiAuditInvestigation"><strong>Данные аудита: ${escapeHtml({ fresh: 'свежие live-данные', prefer_cache: 'кеш с обновлением при необходимости', cache_only: 'только кеш' }[cachePolicy] || cachePolicy)}</strong><small>Раунд ${escapeHtml(String(runtime.investigationRound || 1))} из ${escapeHtml(String(runtime.maxInvestigationRounds || 3))} · запросов ${escapeHtml(String(runtime.requestsCount || 0))} · live-попыток ${escapeHtml(String(dataRequests.liveAttempts || 0))} · успешно ${escapeHtml(String(dataRequests.liveSucceeded || 0))} · кеш ${escapeHtml(String(dataRequests.cacheHits || 0))} · сохранённые данные ${escapeHtml(String(dataRequests.savedFallbacks || 0))} · служебных AI-вызовов ${escapeHtml(String(runtime.helperProviderCallsCount || 0))} · финальных ${escapeHtml(String(runtime.finalProviderCallsCount || 0))}</small></div>
         ${requestedDimensions.length ? `<div class="aiAuditInvestigation"><strong>Запрошены данные:</strong> ${requestedDimensions.map((value) => escapeHtml({ ad_groups: 'группы', search_queries: 'поисковые запросы', goals: 'цели', placements: 'площадки', audiences: 'аудитории', retargeting_segments: 'сегменты ретаргетинга', devices: 'устройства', geo: 'география', demographics: 'демография', frequency: 'частота', lead_quality: 'качество лидов' }[value] || value)).join(', ')}.</div>` : ''}
         ${(dataRequests.live || dataRequests.processing || dataRequests.cacheHits || dataRequests.saved) ? `

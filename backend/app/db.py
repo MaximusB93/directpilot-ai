@@ -170,6 +170,9 @@ DIRECT_READ_SCHEMA_STATEMENTS = (
         status VARCHAR(32) NOT NULL DEFAULT 'queued',
         retry_after_seconds INTEGER NOT NULL DEFAULT 1,
         attempts INTEGER NOT NULL DEFAULT 0,
+        queue_full_attempts INTEGER NOT NULL DEFAULT 0,
+        first_queue_full_at TIMESTAMPTZ,
+        last_queue_full_at TIMESTAMPTZ,
         rows_count INTEGER NOT NULL DEFAULT 0,
         next_offset INTEGER NOT NULL DEFAULT 0,
         rows_collected INTEGER NOT NULL DEFAULT 0,
@@ -201,6 +204,9 @@ DIRECT_READ_SCHEMA_STATEMENTS = (
     "ALTER TABLE direct_report_jobs ADD COLUMN IF NOT EXISTS pages_completed INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE direct_report_jobs ADD COLUMN IF NOT EXISTS partial BOOLEAN NOT NULL DEFAULT FALSE",
     "ALTER TABLE direct_report_jobs ADD COLUMN IF NOT EXISTS row_limit_reached BOOLEAN NOT NULL DEFAULT FALSE",
+    "ALTER TABLE direct_report_jobs ADD COLUMN IF NOT EXISTS queue_full_attempts INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE direct_report_jobs ADD COLUMN IF NOT EXISTS first_queue_full_at TIMESTAMPTZ",
+    "ALTER TABLE direct_report_jobs ADD COLUMN IF NOT EXISTS last_queue_full_at TIMESTAMPTZ",
 )
 
 
