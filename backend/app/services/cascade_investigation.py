@@ -388,15 +388,16 @@ def next_cascade_capabilities(
 
 def round_stop_reason(
     *, round_number: int, pending: int, processing: int, verifications: list[dict[str, Any]],
-    request_count: int,
+    request_count: int, max_rounds: int = MAX_INVESTIGATION_ROUNDS,
+    max_requests: int = MAX_DATA_REQUESTS_PER_AUDIT,
 ) -> str | None:
     if pending or processing:
         return None
     statuses = {item.get("status") for item in verifications}
     if statuses and statuses <= {"confirmed", "not_applicable"}:
         return "sufficient_evidence_or_rejected"
-    if round_number >= MAX_INVESTIGATION_ROUNDS:
+    if round_number >= max_rounds:
         return "max_rounds_reached"
-    if request_count >= MAX_DATA_REQUESTS_PER_AUDIT:
+    if request_count >= max_requests:
         return "request_budget_reached"
     return None

@@ -17,12 +17,20 @@ ACCOUNT_DERIVABLE_CAPABILITIES = {
     "campaigns", "campaign_performance", "goals", "conversions_by_goal",
 }
 PRODUCTION_CAPABILITY_ALIASES: dict[str, tuple[str, ...]] = {
+    "campaign_settings": ("campaigns",),
     "device": ("devices",),
     "placement": ("placements",),
     "keyword": ("keyword_performance", "keywords"),
     "ad_group": ("ad_group_performance", "ad_groups"),
     "audience": ("audience_targets",),
     "ads_creatives": ("ads",),
+    "retargeting_segments_data": ("retargeting_segments", "retargeting_lists"),
+    "audience_targets_data": ("audience_targets",),
+    "search_queries_data": ("search_queries",),
+    "campaign_settings_data": ("campaign_settings", "campaigns"),
+    "campaign_performance_data": ("campaign_performance",),
+    "ad_group_performance_data": ("ad_group_performance", "ad_groups"),
+    "keyword_performance_data": ("keyword_performance", "keywords"),
 }
 for _dimension, _candidates in DIMENSION_CAPABILITY_CANDIDATES.items():
     PRODUCTION_CAPABILITY_ALIASES.setdefault(_dimension, tuple(_candidates))
@@ -249,7 +257,9 @@ def evidence_for_hypothesis(
     return linked_requests, linked_results
 
 
-def canonical_coverage_projection(index: dict[str, Any]) -> dict[str, Any]:
+def canonical_coverage_projection(
+    index: dict[str, Any], snapshot: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     def public(item: dict[str, Any]) -> dict[str, Any]:
         return {
             key: item.get(key)
@@ -262,9 +272,119 @@ def canonical_coverage_projection(index: dict[str, Any]) -> dict[str, Any]:
 
     account = [public(item) for item in index.get("entries") or [] if item.get("scope") == "account"]
     campaigns = [public(item) for item in index.get("entries") or [] if item.get("scope") == "campaign"]
+    matrix: list[dict[str, Any]] = []
+    if snapshot is not None:
+        expected: dict[tuple[str, str], dict[str, Any]] = {}
+        for item in snapshot.get("minimumCoveragePlan") or []:
+            if not isinstance(item, dict):
+                continue
+            key = (str(item.get("campaignName") or ""), str(item.get("capabilityId") or ""))
+            if all(key):
+                expected[key] = dict(item)
+        for request in snapshot.get("validatedDataRequests") or []:
+            if not isinstance(request, dict):
+                continue
+            key = (
+                str(request.get("campaign_name") or ""),
+                str(request.get("capability_id") or request.get("dimension") or ""),
+            )
+            if all(key):
+                expected.setdefault(key, {
+                    "campaignName": key[0], "capabilityId": key[1], "applicable": True,
+                })
+
+        entries = [item for item in index.get("entries") or [] if item.get("scope") == "campaign"]
+        for (campaign_name, capability_id), planned in expected.items():
+            candidates = set(capability_candidates(capability_id))
+            matched = next((
+                item for item in entries
+                if item.get("campaignName") == campaign_name
+                and str(item.get("capabilityId") or "") in candidates
+            ), None)
+            if matched is None:
+                matrix.append({
+                    "campaignName": campaign_name,
+                    "capabilityId": capability_id,
+                    "status": "not_requested",
+                    "rowsReceived": 0,
+                    "rowsAnalyzedByBackend": 0,
+                    "rowsSentToAi": 0,
+                    "source": None,
+                    "applicable": bool(planned.get("applicable", True)),
+                    "absenceReason": "not_requested",
+                    "limitations": [],
+                })
+                continue
+            raw_status = str(matched.get("status") or "unavailable")
+            rows = int(matched.get("rowsReceived") or 0)
+            if raw_status == "not_applicable":
+                public_status = "not_applicable"
+            elif raw_status in {"collected", "cached"} and rows > 0:
+                public_status = "collected"
+            elif raw_status == "partial":
+                public_status = "partial"
+            elif raw_status in {"collected", "cached", "insufficient_data"} and rows <= 0:
+                public_status = "insufficient_data"
+            elif (
+                raw_status == "skipped_budget_limit"
+                and str((matched.get("result") or {}).get("error_code") or "")
+                == "audit_collection_deadline_reached"
+            ):
+                public_status = "not_requested"
+            elif raw_status in {"unavailable", "unsupported", "skipped_budget_limit"}:
+                public_status = "unavailable"
+            elif raw_status == "failed":
+                public_status = "failed"
+            else:
+                public_status = "partial"
+            matrix.append({
+                **public(matched),
+                "campaignName": campaign_name,
+                "capabilityId": capability_id,
+                "status": public_status,
+                "applicable": public_status != "not_applicable",
+                "absenceReason": None if public_status == "collected" else (
+                    matched.get("qualityReason") or raw_status
+                ),
+            })
+
+    applicable = [item for item in matrix if item.get("applicable")]
+    campaign_names = sorted({str(item.get("campaignName")) for item in applicable})
+    terminal_statuses = {"collected", "partial", "insufficient_data", "unavailable", "failed"}
+    by_campaign: dict[str, list[dict[str, Any]]] = {}
+    for item in applicable:
+        by_campaign.setdefault(str(item.get("campaignName")), []).append(item)
+    covered_campaigns = sorted(
+        campaign_name
+        for campaign_name, items in by_campaign.items()
+        if items and all(item.get("status") in terminal_statuses for item in items)
+    )
+    campaigns_with_data = sorted({
+        str(item.get("campaignName"))
+        for item in applicable
+        if item.get("status") in {"collected", "partial"}
+    })
+    capability_summary: list[dict[str, Any]] = []
+    for capability_id in sorted({str(item.get("capabilityId")) for item in matrix}):
+        items = [item for item in matrix if str(item.get("capabilityId")) == capability_id]
+        applicable_items = [item for item in items if item.get("applicable")]
+        collected_items = [
+            item for item in applicable_items if item.get("status") in {"collected", "partial"}
+        ]
+        capability_summary.append({
+            "capabilityId": capability_id,
+            "applicableCampaigns": len({item.get("campaignName") for item in applicable_items}),
+            "coveredCampaigns": len({item.get("campaignName") for item in collected_items}),
+            "rowsReceived": sum(int(item.get("rowsReceived") or 0) for item in items),
+            "rowsAnalyzedByBackend": sum(int(item.get("rowsAnalyzedByBackend") or 0) for item in items),
+            "rowsSentToAi": sum(int(item.get("rowsSentToAi") or 0) for item in items),
+            "sources": sorted({str(item.get("source")) for item in items if item.get("source")}),
+        })
     return {
         "accountWide": account,
         "campaignScoped": campaigns,
+        "campaignMatrix": matrix,
+        "capabilitySummary": capability_summary,
         "summary": {
             "accountCapabilities": len(account),
             "campaignCapabilities": len(campaigns),
@@ -280,6 +400,9 @@ def canonical_coverage_projection(index: dict[str, Any]) -> dict[str, Any]:
                 int(item.get("rowsSentToAi") or 0)
                 for item in index.get("entries") or [] if not item.get("derivedFromAccountWide")
             ),
+            "applicableCampaigns": len(campaign_names),
+            "coveredCampaigns": len(covered_campaigns),
+            "campaignsWithCollectedData": campaigns_with_data,
         },
     }
 

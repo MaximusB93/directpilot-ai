@@ -174,7 +174,7 @@ def test_structured_result_removes_collected_capability_from_missing_claims():
 
     assert reconciled["critical_findings"][0]["next_data_needed"] == ["devices"]
     assert reconciled["insufficient_data_campaigns"][0]["next_data_needed"] == []
-    assert "search_queries" not in reconciled["drilldown_summary"]["analyzed_levels"]
+    assert "search_queries" in reconciled["drilldown_summary"]["analyzed_levels"]
     assert "search_queries" in reconciled["drilldown_summary"]["not_analyzed_levels"]
     assert diagnostics["status"] == "final_output_evidence_reconciled"
 
@@ -414,7 +414,7 @@ def test_partial_campaign_coverage_never_becomes_account_wide():
     reconciled, diagnostics = audit_jobs._reconcile_structured_evidence_claims(result, snapshot)
 
     assert reconciled["critical_findings"][0]["next_data_needed"] == ["search_queries"]
-    assert "search_queries" not in reconciled["drilldown_summary"]["analyzed_levels"]
+    assert "search_queries" in reconciled["drilldown_summary"]["analyzed_levels"]
     assert diagnostics["completeAccountCoverage"] == []
 
 

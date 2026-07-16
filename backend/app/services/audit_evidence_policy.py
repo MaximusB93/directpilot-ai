@@ -607,6 +607,11 @@ def refresh_evidence_coverage_registry(snapshot: dict[str, Any], results: list[d
                 coverage_status = "partial"
             elif result_status == "processing":
                 coverage_status = "processing"
+            elif (
+                result_status == "skipped_budget_limit"
+                and str(item.get("error_code") or "") == "audit_collection_deadline_reached"
+            ):
+                coverage_status = "partial"
             elif result_status in {"failed", "skipped_budget_limit"}:
                 coverage_status = "blocked"
             else:
@@ -818,6 +823,9 @@ def public_evidence_coverage(snapshot: dict[str, Any], *, legacy_completed: bool
             "requirements": [],
         }
     coverage = evaluate_audit_evidence_coverage(snapshot)
+    stop_reason = str((snapshot.get("auditRuntime") or {}).get("stopReason") or "")
+    if stop_reason in {"collection_deadline_reached", "hard_deadline_reached"}:
+        coverage = {**coverage, "completionState": "partial_coverage"}
     sensitive_markers = (
         "authorization", "oauth", "access_token", "refresh_token", "client-login",
         "campaignid", "adgroupid", "request_hash", "raw provider", "raw request",
