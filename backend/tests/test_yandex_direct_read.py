@@ -146,6 +146,11 @@ def test_report_handles_processing_success_and_rate_limit(monkeypatch):
         _response(202, headers={"retryIn": "7", "reportsInQueue": "1"}),
         _response(200, text="CampaignId\tClicks\n101\t4\n"),
         _response(429, json_body={"error": {"error_string": "rate limit"}}),
+        _response(
+            400,
+            headers={"Retry-After": "999"},
+            json_body={"error": {"error_string": "report queue is full"}},
+        ),
     ])
     monkeypatch.setattr("app.connectors.yandex_direct.httpx.post", lambda *args, **kwargs: next(responses))
     connector = YandexDirectConnector(access_token="secret")
@@ -160,6 +165,51 @@ def test_report_handles_processing_success_and_rate_limit(monkeypatch):
         connector.request_report({"ReportName": "stable"})
     assert exc.value.code == "direct_rate_limited"
     assert exc.value.retryable is True
+    with pytest.raises(YandexDirectReadError) as queue_exc:
+        connector.request_report({"ReportName": "stable"})
+    assert queue_exc.value.code == "direct_report_queue_full"
+    assert queue_exc.value.retry_after_seconds == 999
+    assert queue_exc.value.api_calls == 1
+
+
+@pytest.mark.parametrize("status_code", [201, 202])
+def test_report_accepted_statuses_enter_processing(status_code, monkeypatch):
+    monkeypatch.setattr(
+        "app.connectors.yandex_direct.httpx.post",
+        lambda *args, **kwargs: _response(status_code, headers={"retryIn": "9", "reportsInQueue": "2"}),
+    )
+
+    response = YandexDirectConnector(access_token="secret").request_report({"ReportName": "stable"})
+
+    assert response["status"] == "processing"
+    assert response["retry_after_seconds"] == 9
+    assert response["reports_in_queue"] == 2
+
+
+def test_report_timeout_after_outbound_is_counted(monkeypatch):
+    db = _db()
+    monkeypatch.setattr(direct_read, "get_yandex_access_token_for_account", lambda *args: "secret")
+
+    def timeout(*args, **kwargs):
+        raise httpx.TimeoutException(
+            "provider timed out",
+            request=httpx.Request("POST", "https://api.direct.yandex.com/json/v5/reports"),
+        )
+
+    monkeypatch.setattr("app.connectors.yandex_direct.httpx.post", timeout)
+    outcome = direct_read.execute_direct_read(
+        db,
+        "client-a",
+        _request("campaign_performance", family="search", subtype="search"),
+        audit_job_id="audit-a",
+        cache_policy="fresh",
+    )
+    report_job = db.scalar(select(DirectReportJob))
+
+    assert outcome.result.status == "failed"
+    assert outcome.result.error_code == "direct_timeout"
+    assert outcome.api_calls == 1
+    assert report_job.attempts == 1
 
 
 def test_offline_report_persists_and_reuses_exact_spec_then_caches(monkeypatch):
@@ -308,7 +358,7 @@ def test_fresh_drilldown_does_not_use_saved_fallback_without_explicit_permission
     assert results[0].saved_fallback is False
 
 
-def test_fresh_drilldown_uses_saved_fallback_only_when_explicitly_allowed(monkeypatch):
+def test_fresh_drilldown_never_uses_saved_fallback_even_when_requested(monkeypatch):
     db = _db()
     request = _request("goals", preference="live_preferred")
     accepted, _ = validate_audit_data_requests([request])
@@ -321,9 +371,9 @@ def test_fresh_drilldown_uses_saved_fallback_only_when_explicitly_allowed(monkey
         db, "client-a", accepted, cache_policy="fresh", allow_saved_fallback=True,
     )
 
-    assert results[0].status == "collected"
-    assert results[0].source == "directpilot_saved_stats"
-    assert results[0].saved_fallback is True
+    assert results[0].status == "failed"
+    assert results[0].source == "unavailable"
+    assert results[0].saved_fallback is False
     assert results[0].live_error_code == "direct_rate_limited"
 
 
@@ -648,6 +698,200 @@ def test_report_queue_limit_is_shared_by_clients_of_connected_account(monkeypatc
 
     assert outcome.result.status == "processing"
     assert outcome.result.error_code == "direct_report_queue_full"
+    waiting = db.scalar(select(DirectReportJob).where(DirectReportJob.client_id == "client-b"))
+    assert waiting.status == "waiting_for_report_queue"
+    assert waiting.queue_full_attempts == 1
+    assert waiting.next_retry_at is not None
+
+
+def test_report_queue_full_persists_backoff_and_skips_early_poll(monkeypatch):
+    db = _db()
+    now = datetime(2026, 7, 16, 10, 0, tzinfo=UTC)
+    clock = {"now": now}
+    calls = {"count": 0}
+    monkeypatch.setattr(direct_read, "_now", lambda: clock["now"])
+    monkeypatch.setattr(direct_read, "get_yandex_access_token_for_account", lambda *args: "secret")
+
+    def queue_full(self, spec, *, processing_mode="auto"):
+        calls["count"] += 1
+        raise YandexDirectReadError(
+            "direct_report_queue_full",
+            "raw provider queue payload",
+            retryable=True,
+            api_calls=1,
+        )
+
+    monkeypatch.setattr(YandexDirectConnector, "request_report", queue_full)
+    request = _request("campaign_performance", family="search", subtype="search")
+
+    first = direct_read.execute_direct_read(db, "client-a", request, audit_job_id="audit-a", cache_policy="fresh")
+    job = db.scalar(select(DirectReportJob))
+    assert first.result.status == "processing"
+    assert first.result.error_code == "direct_report_queue_full"
+    assert first.api_calls == 1
+    assert calls["count"] == 1
+    assert job.queue_full_attempts == 1
+    assert job.attempts == 1
+    assert direct_read._aware(job.next_retry_at) == now + timedelta(seconds=15)
+
+    clock["now"] = now + timedelta(seconds=8)
+    early = direct_read.execute_direct_read(db, "client-a", request, audit_job_id="audit-a", cache_policy="fresh")
+    assert early.result.status == "processing"
+    assert early.api_calls == 0
+    assert calls["count"] == 1
+    assert job.queue_full_attempts == 1
+    assert job.attempts == 1
+
+    clock["now"] = now + timedelta(seconds=15)
+    retry = direct_read.execute_direct_read(db, "client-a", request, audit_job_id="audit-a", cache_policy="fresh")
+    db.flush()
+    db.refresh(job)
+    assert retry.result.status == "processing"
+    assert retry.api_calls == 1
+    assert calls["count"] == 2
+    assert job.queue_full_attempts == 2
+    assert job.attempts == 2
+    assert direct_read._aware(job.next_retry_at) == clock["now"] + timedelta(seconds=30)
+
+
+def test_report_queue_full_honors_clamped_retry_after_then_completes(monkeypatch):
+    db = _db()
+    now = datetime(2026, 7, 16, 11, 0, tzinfo=UTC)
+    clock = {"now": now}
+    responses = iter(["queue", "complete"])
+    calls = {"count": 0}
+    monkeypatch.setattr(direct_read, "_now", lambda: clock["now"])
+    monkeypatch.setattr(direct_read, "get_yandex_access_token_for_account", lambda *args: "secret")
+
+    def fake_report(self, spec, *, processing_mode="auto"):
+        calls["count"] += 1
+        if next(responses) == "queue":
+            raise YandexDirectReadError(
+                "direct_report_queue_full",
+                "provider queue full",
+                retryable=True,
+                retry_after_seconds=999,
+                api_calls=1,
+            )
+        return {
+            "status": "completed",
+            "rows": [{"CampaignId": "101", "CampaignName": "Поиск Бренд", "Clicks": "4"}],
+            "limited_by": None,
+        }
+
+    monkeypatch.setattr(YandexDirectConnector, "request_report", fake_report)
+    request = _request("campaign_performance", family="search", subtype="search")
+    first = direct_read.execute_direct_read(db, "client-a", request, audit_job_id="audit-a", cache_policy="fresh")
+    job = db.scalar(select(DirectReportJob))
+    assert first.result.next_retry_at == (now + timedelta(seconds=120)).isoformat()
+    assert job.retry_after_seconds == 120
+
+    clock["now"] = now + timedelta(seconds=120)
+    completed = direct_read.execute_direct_read(db, "client-a", request, audit_job_id="audit-a", cache_policy="fresh")
+    db.flush()
+    db.refresh(job)
+    assert completed.result.status == "collected"
+    assert completed.api_calls == 1
+    assert calls["count"] == 2
+    assert job.status == "completed"
+    assert job.attempts == 2
+
+
+def test_report_queue_full_retry_limit_becomes_safe_unavailable(monkeypatch):
+    db = _db()
+    now = datetime(2026, 7, 16, 12, 0, tzinfo=UTC)
+    clock = {"now": now}
+    calls = {"count": 0}
+    monkeypatch.setattr(direct_read, "_now", lambda: clock["now"])
+    monkeypatch.setattr(direct_read, "REPORT_QUEUE_MAX_ATTEMPTS", 2)
+    monkeypatch.setattr(direct_read, "get_yandex_access_token_for_account", lambda *args: "secret")
+
+    def queue_full(self, spec, *, processing_mode="auto"):
+        calls["count"] += 1
+        raise YandexDirectReadError(
+            "direct_report_queue_full", "sensitive raw body", retryable=True, api_calls=1,
+        )
+
+    monkeypatch.setattr(YandexDirectConnector, "request_report", queue_full)
+    request = _request("campaign_performance", family="search", subtype="search")
+    first = direct_read.execute_direct_read(db, "client-a", request, audit_job_id="audit-a", cache_policy="fresh")
+    clock["now"] = now + timedelta(seconds=15)
+    terminal = direct_read.execute_direct_read(db, "client-a", request, audit_job_id="audit-a", cache_policy="fresh")
+    job = db.scalar(select(DirectReportJob))
+
+    assert first.result.status == "processing"
+    assert terminal.result.status == "unavailable"
+    assert terminal.result.error_code == "direct_report_queue_full_timeout"
+    assert terminal.result.retryable is False
+    assert "sensitive raw body" not in terminal.result.summary
+    assert calls["count"] == 2
+    assert job.status == "unavailable"
+    assert job.next_retry_at is None
+
+    again = direct_read.execute_direct_read(db, "client-a", request, audit_job_id="audit-a", cache_policy="fresh")
+    assert again.result.status == "unavailable"
+    assert again.api_calls == 0
+    assert calls["count"] == 2
+
+
+def test_report_queue_full_max_wait_expires_without_new_outbound(monkeypatch):
+    db = _db()
+    now = datetime(2026, 7, 16, 12, 30, tzinfo=UTC)
+    clock = {"now": now}
+    calls = {"count": 0}
+    monkeypatch.setattr(direct_read, "_now", lambda: clock["now"])
+    monkeypatch.setattr(direct_read, "REPORT_QUEUE_MAX_ATTEMPTS", 100)
+    monkeypatch.setattr(direct_read, "REPORT_QUEUE_MAX_WAIT_SECONDS", 600)
+    monkeypatch.setattr(direct_read, "get_yandex_access_token_for_account", lambda *args: "secret")
+
+    def queue_full(self, spec, *, processing_mode="auto"):
+        calls["count"] += 1
+        raise YandexDirectReadError(
+            "direct_report_queue_full", "queue full", retryable=True, api_calls=1,
+        )
+
+    monkeypatch.setattr(YandexDirectConnector, "request_report", queue_full)
+    request = _request("campaign_performance", family="search", subtype="search")
+    direct_read.execute_direct_read(db, "client-a", request, audit_job_id="audit-a", cache_policy="fresh")
+    clock["now"] = now + timedelta(seconds=601)
+    terminal = direct_read.execute_direct_read(db, "client-a", request, audit_job_id="audit-a", cache_policy="fresh")
+
+    assert terminal.result.status == "unavailable"
+    assert terminal.result.error_code == "direct_report_queue_full_timeout"
+    assert terminal.api_calls == 0
+    assert calls["count"] == 1
+
+
+def test_cancelled_audit_does_not_start_scheduled_report_retry(monkeypatch):
+    db = _db()
+    job = AiAuditJob(
+        id="audit-cancelled",
+        organization_id="org-a",
+        client_id="client-a",
+        status="cancelled",
+        current_stage="collect_fresh_baseline",
+        model="test/model",
+        system_prompt_version="test",
+        system_prompt_hash="hash",
+        prompt_snapshot_json="{}",
+        cancel_requested=True,
+    )
+    db.add(job)
+    db.commit()
+    monkeypatch.setattr(direct_read, "get_yandex_access_token_for_account", lambda *args: "secret")
+
+    def forbidden_report(*args, **kwargs):
+        raise AssertionError("Cancelled audit must not call Yandex Direct")
+
+    monkeypatch.setattr(YandexDirectConnector, "request_report", forbidden_report)
+    request = _request("campaign_performance", family="search", subtype="search")
+    outcome = direct_read.execute_direct_read(
+        db, "client-a", request, audit_job_id=job.id, cache_policy="fresh",
+    )
+
+    assert outcome.result.status == "unavailable"
+    assert outcome.result.error_code == "audit_cancelled"
+    assert outcome.api_calls == 0
 
 
 def test_prefer_cache_reuses_valid_cache_and_fresh_bypasses_it(monkeypatch):

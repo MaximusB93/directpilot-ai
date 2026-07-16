@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -26,6 +27,14 @@ from app.services.yandex_metrika import parse_goal_ids
 
 logger = logging.getLogger(__name__)
 
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
 MAX_LIVE_REQUESTS_PER_ADVANCE = 5
 MAX_PROCESSING_REPORTS_PER_ACCOUNT = 2
 MAX_REPORT_REQUESTS_PER_ACCOUNT_WINDOW = 20
@@ -36,6 +45,11 @@ MAX_REPORT_GOALS = 10
 REPORT_PAGE_SIZE = 500
 ALL_CAMPAIGNS_SENTINEL = "__all_campaigns__"
 REPORT_JOB_TTL = timedelta(hours=2)
+REPORT_QUEUE_BACKOFF_SECONDS = (15, 30, 60, 120)
+REPORT_QUEUE_MAX_WAIT_SECONDS = max(60, _env_int("DIRECT_REPORT_QUEUE_MAX_WAIT_SECONDS", 600))
+REPORT_QUEUE_MAX_ATTEMPTS = max(1, _env_int("DIRECT_REPORT_QUEUE_MAX_ATTEMPTS", 8))
+REPORT_QUEUE_MIN_RETRY_SECONDS = 15
+REPORT_QUEUE_MAX_RETRY_SECONDS = 120
 
 
 @dataclass(frozen=True)
@@ -46,6 +60,12 @@ class DirectReadOutcome:
 
 def _now() -> datetime:
     return datetime.now(UTC)
+
+
+def _aware(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value
 
 
 def _json_dump(value: Any) -> str:
@@ -643,6 +663,93 @@ def _completed_outcome(
     ), api_calls=api_calls)
 
 
+def _queue_retry_seconds(queue_full_attempts: int, retry_after_seconds: int | None = None) -> int:
+    if retry_after_seconds is not None:
+        return max(REPORT_QUEUE_MIN_RETRY_SECONDS, min(int(retry_after_seconds), REPORT_QUEUE_MAX_RETRY_SECONDS))
+    index = min(max(0, queue_full_attempts - 1), len(REPORT_QUEUE_BACKOFF_SECONDS) - 1)
+    return REPORT_QUEUE_BACKOFF_SECONDS[index]
+
+
+def _queue_wait_expired(report_job: DirectReportJob, now: datetime) -> bool:
+    first_queue_full_at = _aware(report_job.first_queue_full_at)
+    waited_too_long = bool(
+        first_queue_full_at
+        and (now - first_queue_full_at).total_seconds() >= REPORT_QUEUE_MAX_WAIT_SECONDS
+    )
+    return waited_too_long or int(report_job.queue_full_attempts or 0) >= REPORT_QUEUE_MAX_ATTEMPTS
+
+
+def _queue_wait_outcome(
+    request: AuditDataRequest,
+    capability: DirectReadCapability,
+    request_hash: str,
+    report_job: DirectReportJob,
+    *,
+    now: datetime,
+    api_calls: int = 0,
+) -> DirectReadOutcome:
+    if _queue_wait_expired(report_job, now):
+        report_job.status = "unavailable"
+        report_job.error_code = "direct_report_queue_full_timeout"
+        report_job.error_message = "Очередь отчётов Яндекса не освободилась за безопасное время ожидания."
+        report_job.next_retry_at = None
+        return DirectReadOutcome(_base_result(
+            request,
+            capability,
+            status="unavailable",
+            source="unavailable",
+            live=True,
+            request_hash=request_hash,
+            retryable=False,
+            summary=report_job.error_message,
+            limitations=["Свежий срез не получен; вывод по этому измерению ограничен."],
+            error_code=report_job.error_code,
+        ), api_calls=api_calls)
+    retry_at = _aware(report_job.next_retry_at) or now
+    return DirectReadOutcome(_base_result(
+        request,
+        capability,
+        status="processing",
+        source="yandex_direct_live_report",
+        live=True,
+        request_hash=request_hash,
+        retryable=True,
+        next_retry_at=retry_at.isoformat(),
+        summary="Очередь отчётов Яндекса заполнена. Следующая попытка будет выполнена автоматически.",
+        error_code="direct_report_queue_full",
+    ), api_calls=api_calls)
+
+
+def _record_queue_full(
+    report_job: DirectReportJob,
+    *,
+    now: datetime,
+    retry_after_seconds: int | None = None,
+) -> None:
+    report_job.queue_full_attempts = int(report_job.queue_full_attempts or 0) + 1
+    report_job.first_queue_full_at = report_job.first_queue_full_at or now
+    report_job.last_queue_full_at = now
+    report_job.error_code = "direct_report_queue_full"
+    report_job.error_message = "Очередь отчётов Яндекса заполнена."
+    if _queue_wait_expired(report_job, now):
+        report_job.status = "unavailable"
+        report_job.error_code = "direct_report_queue_full_timeout"
+        report_job.error_message = "Очередь отчётов Яндекса не освободилась за безопасное время ожидания."
+        report_job.next_retry_at = None
+        return
+    retry_seconds = _queue_retry_seconds(report_job.queue_full_attempts, retry_after_seconds)
+    report_job.status = "waiting_for_report_queue"
+    report_job.retry_after_seconds = retry_seconds
+    report_job.next_retry_at = now + timedelta(seconds=retry_seconds)
+
+
+def _audit_cancelled(db: Session, audit_job_id: str | None) -> bool:
+    if not audit_job_id:
+        return False
+    audit_job = db.get(AiAuditJob, audit_job_id)
+    return bool(audit_job and (audit_job.cancel_requested or audit_job.status == "cancelled"))
+
+
 def _report_outcome(
     db: Session,
     client_id: str,
@@ -660,9 +767,22 @@ def _report_outcome(
     report_job = db.scalar(select(DirectReportJob).where(
         DirectReportJob.client_id == client_id,
         DirectReportJob.request_hash == request_hash,
-    ))
+    ).with_for_update())
+    if _audit_cancelled(db, audit_job_id):
+        if report_job is not None:
+            report_job.status = "cancelled"
+            report_job.error_code = "audit_cancelled"
+            report_job.error_message = "Аудит отменён; новые запросы к Яндекс.Директу не выполняются."
+            report_job.next_retry_at = None
+        return DirectReadOutcome(_base_result(
+            request, capability, status="unavailable", source="unavailable", live=True,
+            request_hash=request_hash, retryable=False,
+            summary="Аудит отменён; новые запросы к Яндекс.Директу не выполняются.",
+            error_code="audit_cancelled",
+        ))
     if cache_policy == "fresh" and report_job and report_job.audit_job_id != audit_job_id:
-        if report_job.status in {"queued", "requested", "processing"}:
+        if report_job.status in {"queued", "requested", "processing", "waiting_for_report_queue"}:
+            retry_at = _aware(report_job.next_retry_at) or (now + timedelta(seconds=15))
             return DirectReadOutcome(_base_result(
                 request,
                 capability,
@@ -671,7 +791,7 @@ def _report_outcome(
                 live=True,
                 request_hash=request_hash,
                 retryable=True,
-                next_retry_at=(now + timedelta(seconds=5)).isoformat(),
+                next_retry_at=retry_at.isoformat(),
                 summary="Другой fresh-аудит формирует такой же отчёт; текущий аудит дождётся своей live-попытки.",
                 error_code="fresh_report_busy",
             ))
@@ -679,8 +799,7 @@ def _report_outcome(
         db.flush()
         report_job = None
     if report_job and report_job.expires_at:
-        expires_at = report_job.expires_at
-        expires_at = expires_at.replace(tzinfo=UTC) if expires_at.tzinfo is None else expires_at
+        expires_at = _aware(report_job.expires_at)
         if expires_at <= now:
             db.delete(report_job)
             db.flush()
@@ -691,9 +810,22 @@ def _report_outcome(
             db, client_id, request, capability, trusted, request_hash, rows, "yandex_direct_cached_live",
             api_calls=0, forced_partial=bool(report_job.partial),
         )
+    if report_job and report_job.status == "unavailable":
+        return _queue_wait_outcome(
+            request, capability, request_hash, report_job, now=now,
+        )
+    if report_job and report_job.status == "waiting_for_report_queue":
+        if _queue_wait_expired(report_job, now):
+            return _queue_wait_outcome(
+                request, capability, request_hash, report_job, now=now,
+            )
+        retry_at = _aware(report_job.next_retry_at)
+        if retry_at and retry_at > now:
+            return _queue_wait_outcome(
+                request, capability, request_hash, report_job, now=now,
+            )
     if report_job and report_job.status in {"queued", "requested", "processing"} and report_job.next_retry_at:
-        retry_at = report_job.next_retry_at
-        retry_at = retry_at.replace(tzinfo=UTC) if retry_at.tzinfo is None else retry_at
+        retry_at = _aware(report_job.next_retry_at)
         if retry_at > now:
             return DirectReadOutcome(_base_result(
                 request,
@@ -708,8 +840,7 @@ def _report_outcome(
                 error_code="direct_report_processing",
             ))
     if report_job and report_job.status == "failed" and report_job.next_retry_at:
-        retry_at = report_job.next_retry_at
-        retry_at = retry_at.replace(tzinfo=UTC) if retry_at.tzinfo is None else retry_at
+        retry_at = _aware(report_job.next_retry_at)
         if retry_at > now:
             return DirectReadOutcome(_base_result(
                 request,
@@ -723,20 +854,6 @@ def _report_outcome(
                 error_code=report_job.error_code or "direct_temporary_error",
             ))
     if report_job is None:
-        account_client_ids = _account_client_ids(db, account_id)
-        active_count = len(list(db.scalars(select(DirectReportJob.id).where(
-            DirectReportJob.client_id.in_(account_client_ids),
-            DirectReportJob.status.in_(("queued", "requested", "processing")),
-            or_(DirectReportJob.expires_at.is_(None), DirectReportJob.expires_at > now),
-        ))))
-        if active_count >= MAX_PROCESSING_REPORTS_PER_ACCOUNT:
-            return DirectReadOutcome(_base_result(
-                request, capability, status="processing", source="yandex_direct_live_report", live=True,
-                request_hash=request_hash, retryable=True,
-                next_retry_at=(now + timedelta(seconds=5)).isoformat(),
-                summary="Достигнут безопасный лимит параллельных отчётов.",
-                error_code="direct_report_queue_full",
-            ))
         report_spec = _report_spec(capability, trusted, request_hash)
         report_job = DirectReportJob(
             audit_job_id=audit_job_id,
@@ -751,7 +868,22 @@ def _report_outcome(
         db.add(report_job)
         db.flush()
     account_client_ids = _account_client_ids(db, account_id)
+    active_count = len(list(db.scalars(select(DirectReportJob.id).where(
+        DirectReportJob.client_id.in_(account_client_ids),
+        DirectReportJob.id != report_job.id,
+        DirectReportJob.status.in_(("requested", "processing")),
+        or_(DirectReportJob.expires_at.is_(None), DirectReportJob.expires_at > now),
+    ))))
+    if active_count >= MAX_PROCESSING_REPORTS_PER_ACCOUNT:
+        _record_queue_full(report_job, now=now)
+        return _queue_wait_outcome(
+            request, capability, request_hash, report_job, now=now,
+        )
     if _account_recent_report_attempts(db, account_client_ids, now) >= MAX_REPORT_REQUESTS_PER_ACCOUNT_WINDOW:
+        report_job.status = "queued"
+        report_job.error_code = "direct_report_account_rate_budget"
+        report_job.error_message = "Безопасный лимит запросов к отчётам временно исчерпан."
+        report_job.next_retry_at = now + REPORT_RATE_WINDOW
         return DirectReadOutcome(_base_result(
             request,
             capability,
@@ -760,14 +892,19 @@ def _report_outcome(
             live=True,
             request_hash=request_hash,
             retryable=True,
-            next_retry_at=(now + REPORT_RATE_WINDOW).isoformat(),
-            summary="Shared Reports API request budget for this Yandex account is temporarily exhausted.",
+            next_retry_at=report_job.next_retry_at.isoformat(),
+            summary=report_job.error_message,
             error_code="direct_report_account_rate_budget",
         ))
     stored_report_spec = _json_load(report_job.report_spec_json, {})
     report_spec = _report_page_spec(stored_report_spec, report_job, int(trusted["limit"]))
     report_job.status = "requested"
     report_job.attempts += 1
+    logger.info(
+        "DIRECT_READ_REQUEST_STARTED audit_job_id=%s capability_id=%s client_login_hash=%s "
+        "request_hash=%s source_type=report attempt=%s",
+        audit_job_id, capability.id, _login_hash(connector.client_login), request_hash, report_job.attempts,
+    )
     started_at = perf_counter()
     try:
         response = connector.request_report(
@@ -775,15 +912,31 @@ def _report_outcome(
             processing_mode="offline" if capability.report_type == "SEARCH_QUERY_PERFORMANCE_REPORT" else "auto",
         )
     except YandexDirectReadError as exc:
+        if exc.code == "direct_report_queue_full":
+            _record_queue_full(
+                report_job,
+                now=now,
+                retry_after_seconds=exc.retry_after_seconds,
+            )
+            return _queue_wait_outcome(
+                request,
+                capability,
+                request_hash,
+                report_job,
+                now=now,
+                api_calls=max(1, exc.api_calls, connector.outbound_attempts),
+            )
         report_job.status = "failed"
         report_job.error_code = exc.code
-        report_job.error_message = str(exc)[:500]
+        report_job.error_message = "Яндекс.Директ временно не вернул read-only отчёт."
         report_job.next_retry_at = now + timedelta(seconds=min(300, 2 ** min(report_job.attempts, 8))) if exc.retryable else None
         raise
     elapsed_ms = round((perf_counter() - started_at) * 1000)
     if response["status"] == "processing":
         retry_after = max(1, min(int(response.get("retry_after_seconds") or 1), 300))
         report_job.status = "processing"
+        report_job.error_code = None
+        report_job.error_message = None
         report_job.retry_after_seconds = retry_after
         report_job.next_retry_at = now + timedelta(seconds=retry_after)
         logger.info(
@@ -862,6 +1015,8 @@ def _report_outcome(
             error_code="direct_report_goal_batch_pending",
         ), api_calls=1)
     report_job.status = "completed"
+    report_job.error_code = None
+    report_job.error_message = None
     report_job.row_limit_reached = row_limit_reached
     report_job.partial = row_limit_reached
     report_job.next_offset = 0
@@ -941,11 +1096,6 @@ def execute_direct_read(
     if not token:
         raise YandexDirectReadError("direct_auth_error", "Yandex OAuth token is unavailable.")
     connector = YandexDirectConnector(access_token=token, client_login=client.direct_login)
-    logger.info(
-        "DIRECT_READ_REQUEST_STARTED audit_job_id=%s capability_id=%s client_login_hash=%s "
-        "request_hash=%s source_type=%s",
-        audit_job_id, capability.id, _login_hash(client.direct_login), request_hash, capability.source_type,
-    )
     try:
         if capability.source_type == "report":
             return _report_outcome(
@@ -955,6 +1105,11 @@ def execute_direct_read(
             )
         started_at = perf_counter()
         api_calls = 1
+        logger.info(
+            "DIRECT_READ_REQUEST_STARTED audit_job_id=%s capability_id=%s client_login_hash=%s "
+            "request_hash=%s source_type=service_get",
+            audit_job_id, capability.id, _login_hash(client.direct_login), request_hash,
+        )
         if capability.service in {"audiencetargets", "retargetinglists"}:
             group_rows = connector.paginate_service_get(
                 "adgroups",
@@ -1013,7 +1168,8 @@ def execute_direct_read(
             audit_job_id, capability.id, request_hash, round((perf_counter() - started_at) * 1000), len(rows),
         )
         return _completed_outcome(
-            db, client_id, request, capability, trusted, request_hash, rows, "yandex_direct_live_service", api_calls=api_calls,
+            db, client_id, request, capability, trusted, request_hash, rows, "yandex_direct_live_service",
+            api_calls=max(api_calls, connector.outbound_attempts),
         )
     except YandexDirectReadError as exc:
         logger.warning(
@@ -1028,7 +1184,7 @@ def execute_direct_read(
             status="unavailable" if not exc.retryable else "failed",
             source="unavailable",
             request_hash=request_hash,
-            summary=str(exc),
+            summary="Яндекс.Директ временно не вернул запрошенные read-only данные.",
             error_code=exc.code,
             retryable=exc.retryable,
-        ))
+        ), api_calls=max(connector.outbound_attempts, exc.api_calls))

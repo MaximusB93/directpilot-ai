@@ -242,6 +242,8 @@ def collect_audit_data_requests(
     cache_policy: str = "prefer_cache",
     allow_saved_fallback: bool = True,
 ) -> tuple[list[AuditDataRequestResult], int]:
+    if cache_policy == "fresh":
+        allow_saved_fallback = False
     results: list[AuditDataRequestResult] = []
     direct_api_calls = 0
     deduplicated: dict[tuple[Any, ...], AuditDataRequestResult] = {}
@@ -306,6 +308,7 @@ def collect_audit_data_requests(
                 result.live_error_code = result.error_code if result.live_attempted else None
                 direct_api_calls += outcome.api_calls
             except YandexDirectReadError as exc:
+                direct_api_calls += int(getattr(exc, "api_calls", 0) or 0)
                 result = AuditDataRequestResult(
                     request_id=request.request_id,
                     hypothesis_id=request.hypothesis_id,

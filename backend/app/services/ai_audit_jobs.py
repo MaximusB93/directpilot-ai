@@ -4597,6 +4597,8 @@ def _refresh_direct_read_runtime(snapshot: dict[str, Any], direct_api_calls: int
         "direct_permission_denied",
         "direct_invalid_field_combination",
         "direct_report_processing",
+        "direct_report_queue_full",
+        "direct_report_queue_full_timeout",
         "direct_rate_limited",
         "direct_no_data",
         "adapter_failed",
@@ -5143,6 +5145,29 @@ def _public_audit_error_message(job: AiAuditJob) -> str | None:
     return message[:1000]
 
 
+def _audit_poll_after_ms(job: AiAuditJob, db: Session | None) -> int:
+    if db is None or job.status in TERMINAL_AUDIT_STATUSES:
+        return POLL_AFTER_MS
+    now = _now()
+    retry_times = [
+        value
+        for value in db.scalars(select(DirectReportJob.next_retry_at).where(
+            DirectReportJob.audit_job_id == job.id,
+            DirectReportJob.client_id == job.client_id,
+            DirectReportJob.status.in_(("queued", "requested", "processing", "waiting_for_report_queue")),
+            DirectReportJob.next_retry_at.is_not(None),
+        ))
+        if value is not None
+    ]
+    if not retry_times:
+        return POLL_AFTER_MS
+    retry_at = min(
+        value.replace(tzinfo=UTC) if value.tzinfo is None else value
+        for value in retry_times
+    )
+    return max(POLL_AFTER_MS, min(300_000, int(max(0, (retry_at - now).total_seconds()) * 1000)))
+
+
 def audit_job_response(job: AiAuditJob, db: Session | None = None) -> AiAuditJobResponse:
     result, answer = _public_audit_result(job)
     return AiAuditJobResponse(
@@ -5151,7 +5176,7 @@ def audit_job_response(job: AiAuditJob, db: Session | None = None) -> AiAuditJob
         status=job.status,
         current_stage=job.current_stage,
         progress_percent=job.progress_percent,
-        poll_after_ms=POLL_AFTER_MS,
+        poll_after_ms=_audit_poll_after_ms(job, db),
         requested_scope=job.requested_scope,
         requested_period=job.requested_period,
         selected_campaign_name=job.selected_campaign_name,

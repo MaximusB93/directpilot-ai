@@ -170,7 +170,10 @@ export function renderAiChat({
 
 function auditRequestStatusLabel(status) {
   return ({
-    pending: 'Ожидает выполнения', queued: 'Ожидает выполнения', processing: 'Формируется отчёт',
+    pending: 'Ожидает выполнения', queued: 'Ожидает выполнения', processing: 'В обработке',
+    waiting_for_report_queue: 'Ожидает свободное место в очереди',
+    offline_report_processing: 'Формируется отчёт',
+    unavailable_after_retry_limit: 'Недоступно после повторных попыток',
     ready: 'Данные получены', completed: 'Данные получены',
     collected: 'Данные получены', cached: 'Получено из кеша', partial: 'Получены частично',
     insufficient_data: 'Недостаточно данных', unavailable: 'Источник недоступен',
@@ -225,7 +228,8 @@ function renderAuditRequestTrace(metadata, escapeHtml) {
       <p><b>Метрики:</b> ${(item.semanticMetrics || []).map((value) => escapeHtml(value)).join(', ') || '—'}</p>
       <p><b>Объём:</b> получено ${escapeHtml(String(item.rowsReceived || 0))}, нормализовано ${escapeHtml(String(item.rowsNormalized || 0))}, проверено backend ${escapeHtml(String(item.rowsAnalyzedByBackend || 0))}, передано AI ${escapeHtml(String(item.rowsSentToAi || 0))}.</p>
       <p><b>Lifecycle:</b> ${(item.statusHistory || []).map((event) => escapeHtml(auditRequestStatusLabel(event.status))).join(' → ') || '—'}</p>
-      <p><b>Отчёт:</b> страниц ${escapeHtml(String(item.pagination?.pagesCompleted || 0))}; offline ${item.offlineReport?.used ? escapeHtml(auditRequestStatusLabel(item.offlineReport.status)) : 'не использовался'}; кеш ${item.cache?.hit ? 'да' : 'нет'}; fallback ${item.fallback?.used ? 'да' : 'нет'}.</p>
+      <p><b>Отчёт:</b> страниц ${escapeHtml(String(item.pagination?.pagesCompleted || 0))}; offline ${item.offlineReport?.used ? escapeHtml(auditRequestStatusLabel(item.offlineReport.status)) : 'ещё не принят Яндексом'}; кеш ${item.cache?.hit ? 'да' : 'нет'}; fallback ${item.fallback?.used ? 'да' : 'нет'}.</p>
+      ${item.status === 'waiting_for_report_queue' ? `<p><b>Очередь:</b> попыток ${escapeHtml(String(item.offlineReport?.queueFullAttempts || 0))}; следующая попытка примерно через ${escapeHtml(String(item.offlineReport?.retryAfterSeconds || 0))} сек.</p>` : ''}
       <p><b>Качество чисел:</b> известно ${escapeHtml(String(item.dataQuality?.numericStateCounts?.known || 0))}, нет данных ${escapeHtml(String(item.dataQuality?.numericStateCounts?.missing || 0))}, некорректно ${escapeHtml(String(item.dataQuality?.numericStateCounts?.invalid || 0))}.</p>
       ${(item.evidence?.confirmationRules || []).length ? `<p><b>Подтверждающие правила:</b> ${(item.evidence.confirmationRules || []).map((rule) => escapeHtml(rule.summary || rule.rule_code || rule.ruleCode || '')).join('; ')}</p>` : ''}
       ${(item.evidence?.rejectionRules || []).length ? `<p><b>Опровергающие правила:</b> ${(item.evidence.rejectionRules || []).map((rule) => escapeHtml(rule.summary || rule.rule_code || rule.ruleCode || '')).join('; ')}</p>` : ''}

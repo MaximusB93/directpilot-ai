@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import UTC, datetime
 from typing import Any
 
 from app.models import DirectReportJob
@@ -12,6 +13,8 @@ SAFE_ERROR_MESSAGES = {
     "direct_permission_denied": "У аккаунта недостаточно прав для чтения этих данных.",
     "direct_rate_limited": "Яндекс временно ограничил частоту запросов.",
     "direct_report_processing": "Отчёт Яндекс.Директа ещё формируется.",
+    "direct_report_queue_full": "Очередь отчётов Яндекса заполнена. Следующая попытка будет выполнена автоматически.",
+    "direct_report_queue_full_timeout": "Очередь отчётов Яндекса не освободилась за безопасное время ожидания.",
     "direct_report_failed": "Яндекс.Директ не сформировал отчёт.",
     "direct_invalid_field_combination": "Набор показателей не поддерживается для этого отчёта.",
     "direct_no_data": "За выбранный период данных нет.",
@@ -70,8 +73,17 @@ def _status_history(
     created_at = report_job.created_at.isoformat() if report_job and report_job.created_at else None
     updated_at = report_job.updated_at.isoformat() if report_job and report_job.updated_at else fetched_at
     history = [{"status": "pending", "at": created_at}]
-    if status == "processing" or (report_job and int(report_job.attempts or 0) > 0):
-        history.append({"status": "processing", "at": updated_at})
+    if report_job and int(report_job.queue_full_attempts or 0) > 0:
+        history.append({
+            "status": "waiting_for_report_queue",
+            "at": report_job.last_queue_full_at.isoformat() if report_job.last_queue_full_at else updated_at,
+        })
+    if (
+        status not in {"waiting_for_report_queue", "unavailable_after_retry_limit"}
+        and (status in {"processing", "offline_report_processing"} or (report_job and int(report_job.attempts or 0) > 0))
+    ):
+        processing_status = "offline_report_processing" if report_job and report_job.status == "processing" else "processing"
+        history.append({"status": processing_status, "at": updated_at})
     public_status = {
         "collected": "completed", "cached": "completed", "insufficient_data": "partial",
         "unsupported": "unavailable", "skipped_budget_limit": "unavailable",
@@ -153,6 +165,14 @@ def build_public_audit_trace(
             "unsupported": "unavailable", "skipped_budget_limit": "unavailable",
         }.get(status, status)
         error_code = str(result.get("error_code") or result.get("live_error_code") or "") or None
+        if report_job and report_job.error_code:
+            error_code = str(report_job.error_code)
+        if error_code == "direct_report_queue_full":
+            public_status = "waiting_for_report_queue"
+        elif error_code == "direct_report_queue_full_timeout":
+            public_status = "unavailable_after_retry_limit"
+        elif report_job and report_job.status == "processing":
+            public_status = "offline_report_processing"
         numeric_counts = _numeric_state_counts(rows)
         source = _source(result)
         fetched_at = str(result.get("fetched_at") or "") or None
@@ -162,6 +182,12 @@ def build_public_audit_trace(
         elapsed_ms = None
         if report_job and report_job.created_at and report_job.updated_at:
             elapsed_ms = max(0, int((report_job.updated_at - report_job.created_at).total_seconds() * 1000))
+        retry_after_seconds = 0
+        if report_job and report_job.next_retry_at:
+            retry_at = report_job.next_retry_at
+            retry_at = retry_at.replace(tzinfo=UTC) if retry_at.tzinfo is None else retry_at
+            retry_after_seconds = max(0, int((retry_at - datetime.now(UTC)).total_seconds()))
+        report_accepted = bool(report_job and report_job.status in {"requested", "processing", "completed"})
         trace.append({
             "publicTraceId": _trace_id(request_id),
             "roundNumber": round_by_hypothesis.get(hypothesis_id, 1),
@@ -184,7 +210,7 @@ def build_public_audit_trace(
             "source": source,
             "sourceType": result.get("source_type") or ("saved_stats" if source == "saved" else "report"),
             "status": public_status,
-            "statusHistory": _status_history(status, report_job=report_job, fetched_at=fetched_at),
+            "statusHistory": _status_history(public_status, report_job=report_job, fetched_at=fetched_at),
             "rowsReceived": int(result.get("rows_total") or len(rows)),
             "rowsNormalized": len(rows),
             "rowsAnalyzedByBackend": len(rows),
@@ -194,13 +220,14 @@ def build_public_audit_trace(
                 "pagesCompleted": int(report_job.pages_completed or 0) if report_job else 0,
                 "rowsPerPage": int(report_job.limited_by or 0) if report_job else 0,
                 "limitedBy": int(report_job.limited_by or 0) if report_job and report_job.limited_by else None,
-                "hasMore": bool(report_job and report_job.status in {"queued", "processing"}),
+                "hasMore": bool(report_job and report_job.status in {"queued", "requested", "processing", "waiting_for_report_queue"}),
             },
             "offlineReport": {
-                "used": bool(report_job),
-                "status": str(report_job.status) if report_job else None,
+                "used": report_accepted,
+                "status": public_status if report_job else None,
                 "attempts": int(report_job.attempts or 0) if report_job else 0,
-                "retryAfterSeconds": int(report_job.retry_after_seconds or 0) if report_job else 0,
+                "queueFullAttempts": int(report_job.queue_full_attempts or 0) if report_job else 0,
+                "retryAfterSeconds": retry_after_seconds,
             },
             "cache": {"hit": bool(result.get("cached")), "ageSeconds": None, "originalStatus": None},
             "fallback": {
@@ -286,6 +313,7 @@ def build_public_audit_trace(
         "rowsSentToAi": sum(item["rowsSentToAi"] for item in trace),
         "pagesLoaded": sum(item["pagination"]["pagesCompleted"] for item in trace),
         "offlineReports": sum(1 for item in trace if item["offlineReport"]["used"]),
+        "queueFullRejections": sum(item["offlineReport"].get("queueFullAttempts", 0) for item in trace),
         "cacheHits": sum(1 for item in trace if item["cache"]["hit"]),
         "savedFallbacks": sum(1 for item in trace if item["fallback"]["used"]),
     }
