@@ -334,6 +334,34 @@ def test_job_creation_and_organization_isolation():
         raise AssertionError("Cross-organization client was accepted")
 
 
+def test_latest_active_audit_job_recovers_by_client_and_organization():
+    db = _db()
+    completed = _create(db)
+    completed.status = "completed"
+    db.commit()
+
+    active = _create(db)
+    active.updated_at = datetime.now(UTC) + timedelta(seconds=1)
+    db.commit()
+
+    recovered = audit_jobs.get_latest_active_audit_job(
+        db,
+        client_id="client-a",
+        organization_id="org-a",
+    )
+
+    assert recovered is not None
+    assert recovered.id == active.id
+    assert recovered.status == "queued"
+
+    with pytest.raises(HTTPException, match="Client not found"):
+        audit_jobs.get_latest_active_audit_job(
+            db,
+            client_id="client-b",
+            organization_id="org-a",
+        )
+
+
 def test_compact_snapshot_has_expected_fields_and_no_secrets():
     snapshot = audit_jobs.build_compact_audit_context(_context())
 

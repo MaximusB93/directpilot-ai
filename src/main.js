@@ -1216,15 +1216,27 @@ async function advanceActiveAiAudit(retry = false, compactRetry = false) {
 async function restoreAiAuditJob() {
   if (!selectedClientId || aiFeatureState.audit.loadedFor === selectedClientId) return;
   aiFeatureState.audit.loadedFor = selectedClientId;
-  const jobId = window.localStorage.getItem(aiAuditStorageKey());
-  if (!jobId) return;
+  const storageKey = aiAuditStorageKey();
+  const jobId = window.localStorage.getItem(storageKey);
+  let storedJob = null;
+  if (jobId) {
+    try {
+      storedJob = await aiService.fetchAiAuditJob(jobId);
+    } catch {
+      window.localStorage.removeItem(storageKey);
+    }
+  }
   try {
-    const job = await aiService.fetchAiAuditJob(jobId);
+    const activeJob = await aiService.fetchActiveAiAuditJob(selectedClientId);
+    const job = activeJob || storedJob;
+    if (!job) {
+      window.localStorage.removeItem(storageKey);
+      return;
+    }
     applyAiAuditJob(job);
     render();
     if (!aiStore.isTerminalAiAuditStatus(job.status)) scheduleAiAuditProgress(job.poll_after_ms);
   } catch (error) {
-    window.localStorage.removeItem(aiAuditStorageKey());
     aiFeatureState.audit.error = error.message || 'Не удалось восстановить AI-аудит.';
     render();
   }

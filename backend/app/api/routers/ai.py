@@ -39,6 +39,7 @@ from app.services.ai_audit_jobs import (
     cancel_audit_job,
     create_audit_job,
     get_audit_job,
+    get_latest_active_audit_job,
     reset_audit_job,
     requires_staged_audit,
 )
@@ -633,6 +634,20 @@ def create_staged_audit(
         user_email=current.email,
     )
     return audit_job_response(job, db)
+
+
+@router.get("/audits/active", response_model=AiAuditJobResponse | None)
+def read_latest_active_staged_audit(
+    client_id: str,
+    db: Session = Depends(get_db),
+    current: CurrentUser = Depends(get_current_session_user),
+) -> AiAuditJobResponse | None:
+    job = get_latest_active_audit_job(
+        db,
+        client_id=client_id,
+        organization_id=current.organization.id,
+    )
+    return audit_job_response(job, db) if job else None
 
 
 @router.get("/audits/{job_id}", response_model=AiAuditJobResponse)

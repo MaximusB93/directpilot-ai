@@ -102,6 +102,10 @@ export function fetchAiAuditJob(jobId) {
   return auditJobRequest(`/ai/audits/${jobId}`);
 }
 
+export function fetchActiveAiAuditJob(clientId) {
+  return auditJobRequest(`/ai/audits/active?client_id=${encodeURIComponent(clientId)}`);
+}
+
 export function advanceAiAuditJob(jobId, retry = false, compactRetry = false) {
   return auditJobRequest(`/ai/audits/${jobId}/advance`, {
     method: 'POST',

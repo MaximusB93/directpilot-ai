@@ -5100,6 +5100,40 @@ def get_audit_job(db: Session, job_id: str, *, organization_id: str) -> AiAuditJ
     return job
 
 
+def get_latest_active_audit_job(
+    db: Session,
+    *,
+    client_id: str,
+    organization_id: str,
+) -> AiAuditJob | None:
+    """Return the most recently updated non-terminal audit for an owned client.
+
+    The browser keeps a job id as a convenience only. This lookup is the
+    server-side recovery path after a reload or local storage loss, and is
+    deliberately scoped to both the current organization and selected client.
+    """
+    client = db.get(ClientAccount, client_id)
+    if not client or client.organization_id != organization_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Client not found")
+
+    jobs = db.scalars(
+        select(AiAuditJob)
+        .where(
+            AiAuditJob.organization_id == organization_id,
+            AiAuditJob.client_id == client_id,
+            AiAuditJob.status.notin_(TERMINAL_AUDIT_STATUSES),
+        )
+        .order_by(AiAuditJob.updated_at.desc(), AiAuditJob.created_at.desc())
+    ).all()
+    for job in jobs:
+        if recover_stale_audit_job(job, _now(), db=db):
+            db.commit()
+            db.refresh(job)
+        if job.status not in TERMINAL_AUDIT_STATUSES:
+            return job
+    return None
+
+
 def _context_metadata(job: AiAuditJob, db: Session | None = None) -> dict[str, Any]:
     snapshot = _json_load(job.context_snapshot_json, {}) or {}
     drilldowns = snapshot.get("drilldownResults") or []
