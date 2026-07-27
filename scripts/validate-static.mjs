@@ -77,6 +77,10 @@ const requiredFiles = [
   'docs/journal-domain-model.md',
 ];
 
+const vercelConfig = JSON.parse(await readFile('vercel.json', 'utf8'));
+const vercelBuildSources = new Set((vercelConfig.builds || []).map((item) => item.src));
+const vercelRouteSources = new Set((vercelConfig.routes || []).map((item) => item.src));
+
 await Promise.all(requiredFiles.map((file) => access(file)));
 const files = Object.fromEntries(await Promise.all(requiredFiles.map(async (file) => [file, await readFile(file, 'utf8')])));
 
@@ -105,6 +109,7 @@ function functionBody(file, functionName) {
 }
 
 const checks = [
+  ['Vercel Preview serves the frontend and backend', vercelBuildSources.has('*.html') && vercelBuildSources.has('src/**/*') && vercelBuildSources.has('api/index.py') && vercelRouteSources.has('/api/(.*)')],
   ['app shells', has('index.html', 'id="app"') && has('login.html', 'data-page="login"') && has('app.html', 'data-page="app"')],
   ['routes module modes', has('src/app/routes.js', 'wordstat') && has('src/app/routes.js', 'journal') && has('src/app/routes.js', "mode: 'module'") && !has('src/app/routes.js', "mode: 'reserved'")],
   ['wordstat runtime via main', has('src/main.js', "import './wordstat.js';") && lacks('app.html', ['src/wordstat.js', 'src/wordstat_date_fix.js', 'src/wordstat_regions_patch.js', 'src/wordstat_ai_chat.js', 'src/wordstat_chart_hover.js'])],
