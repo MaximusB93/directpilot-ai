@@ -31,6 +31,22 @@
     {
       "src": "/(health|docs(?:/.*)?|openapi\\.json|redoc(?:/.*)?)",
       "dest": "/api/index.py"
+    },
+    {
+      "src": "/",
+      "dest": "/index.html"
+    },
+    {
+      "src": "/(index|login|app)\\.html",
+      "dest": "/$1.html"
+    },
+    {
+      "src": "/favicon\\.svg",
+      "dest": "/favicon.svg"
+    },
+    {
+      "src": "/src/(.*)",
+      "dest": "/src/$1"
     }
   ]
 }
