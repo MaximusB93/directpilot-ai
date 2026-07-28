@@ -25,9 +25,6 @@
   ],
   "routes": [
     {
-      "handle": "filesystem"
-    },
-    {
       "src": "/api/(.*)",
       "dest": "/api/index.py"
     },
@@ -45,10 +42,6 @@
     },
     {
       "src": "/favicon\\.svg",
-      "dest": "/favicon.svg"
-    },
-    {
-      "src": "/favicon\\.ico",
       "dest": "/favicon.svg"
     },
     {
