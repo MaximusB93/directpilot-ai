@@ -1,37 +1,15 @@
 {
-  "$schema": "https://openapi.vercel.sh/vercel.json",
   "version": 2,
-  "buildCommand": "node scripts/build-static-frontend.mjs",
-  "outputDirectory": "public",
-  "functions": {
-    "api/index.py": {
-      "maxDuration": 300
+  "builds": [
+    {
+      "src": "api/index.py",
+      "use": "@vercel/python"
     }
-  },
-  "rewrites": [
+  ],
+  "routes": [
     {
-      "source": "/api/:path*",
-      "destination": "/api/index.py"
-    },
-    {
-      "source": "/health",
-      "destination": "/api/index.py"
-    },
-    {
-      "source": "/docs/:path*",
-      "destination": "/api/index.py"
-    },
-    {
-      "source": "/openapi.json",
-      "destination": "/api/index.py"
-    },
-    {
-      "source": "/redoc/:path*",
-      "destination": "/api/index.py"
-    },
-    {
-      "source": "/favicon.ico",
-      "destination": "/favicon.svg"
+      "src": "/(.*)",
+      "dest": "/api/index.py"
     }
   ]
 }
