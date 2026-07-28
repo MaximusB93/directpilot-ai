@@ -78,6 +78,7 @@ const requiredFiles = [
 ];
 
 const vercelConfig = JSON.parse(await readFile('vercel.json', 'utf8'));
+const frontendVercelConfig = JSON.parse(await readFile('frontend/vercel.json', 'utf8'));
 const vercelBuildSources = new Set((vercelConfig.builds || []).map((item) => item.src));
 const vercelRouteSources = new Set((vercelConfig.routes || []).map((item) => item.src));
 
@@ -110,6 +111,7 @@ function functionBody(file, functionName) {
 
 const checks = [
   ['Vercel Preview serves the frontend and backend', vercelBuildSources.has('*.html') && vercelBuildSources.has('src/**/*') && vercelBuildSources.has('api/index.py') && ['/api/(.*)', '/', '/(index|login|app)\\.html', '/src/(.*)'].every((source) => vercelRouteSources.has(source))],
+  ['frontend Vercel project is static-only', frontendVercelConfig.buildCommand === 'npm run build' && frontendVercelConfig.outputDirectory === 'public'],
   ['app shells', has('index.html', 'id="app"') && has('login.html', 'data-page="login"') && has('app.html', 'data-page="app"')],
   ['routes module modes', has('src/app/routes.js', 'wordstat') && has('src/app/routes.js', 'journal') && has('src/app/routes.js', "mode: 'module'") && !has('src/app/routes.js', "mode: 'reserved'")],
   ['wordstat runtime via main', has('src/main.js', "import './wordstat.js';") && lacks('app.html', ['src/wordstat.js', 'src/wordstat_date_fix.js', 'src/wordstat_regions_patch.js', 'src/wordstat_ai_chat.js', 'src/wordstat_chart_hover.js'])],
