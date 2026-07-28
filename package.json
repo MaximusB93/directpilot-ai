@@ -5,7 +5,6 @@
   "type": "module",
   "scripts": {
     "dev": "python3 -m http.server 5173",
-    "build": "node scripts/validate-static.mjs",
-    "vercel-build": "node scripts/build-vercel-static.mjs && node scripts/validate-static.mjs"
+    "build": "node scripts/validate-static.mjs"
   }
 }
