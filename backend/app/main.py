@@ -1,11 +1,10 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 import logging
-from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse
 
 from app.api.routers import ai, approvals, audit, auth, business_context, clients, debug, health, integrations, performance_range, recommendations, wordstat, yandex_direct
 from app.core.config import settings
@@ -13,17 +12,6 @@ from app.db import init_db
 from app.services.token_crypto import OAuthTokenDecryptionError
 
 logger = logging.getLogger(__name__)
-FRONTEND_DIRECTORY = Path(__file__).resolve().parents[1] / "public"
-
-
-def _frontend_file(path: str) -> FileResponse | None:
-    """Return a bundled static MVP asset without allowing path traversal."""
-    try:
-        candidate = (FRONTEND_DIRECTORY / path).resolve()
-        candidate.relative_to(FRONTEND_DIRECTORY.resolve())
-    except (OSError, ValueError):
-        return None
-    return FileResponse(candidate) if candidate.is_file() else None
 
 
 def _safe_startup_error(exc: Exception) -> str:
@@ -98,9 +86,6 @@ async def oauth_token_decryption_exception_handler(
 
 @app.get("/", tags=["health"])
 def read_root(request: Request) -> dict[str, object]:
-    frontend = _frontend_file("index.html")
-    if frontend:
-        return frontend
     database_error = getattr(request.app.state, "database_initialization_error", None)
     return {
         "status": "degraded" if database_error else "ok",
@@ -133,40 +118,3 @@ def read_root(request: Request) -> dict[str, object]:
             f"{settings.api_prefix}/debug/routes",
         ],
     }
-
-
-@app.get("/app.html", include_in_schema=False)
-def frontend_app() -> FileResponse:
-    frontend = _frontend_file("app.html")
-    if not frontend:
-        raise HTTPException(status_code=404, detail="Frontend asset not found")
-    return frontend
-
-
-@app.get("/login.html", include_in_schema=False)
-def frontend_login() -> FileResponse:
-    frontend = _frontend_file("login.html")
-    if not frontend:
-        raise HTTPException(status_code=404, detail="Frontend asset not found")
-    return frontend
-
-
-@app.get("/favicon.svg", include_in_schema=False)
-def frontend_favicon() -> FileResponse:
-    frontend = _frontend_file("favicon.svg")
-    if not frontend:
-        raise HTTPException(status_code=404, detail="Frontend asset not found")
-    return frontend
-
-
-@app.get("/favicon.ico", include_in_schema=False)
-def frontend_legacy_favicon() -> RedirectResponse:
-    return RedirectResponse("/favicon.svg", status_code=307)
-
-
-@app.get("/src/{asset_path:path}", include_in_schema=False)
-def frontend_asset(asset_path: str) -> FileResponse:
-    frontend = _frontend_file(f"src/{asset_path}")
-    if not frontend:
-        raise HTTPException(status_code=404, detail="Frontend asset not found")
-    return frontend

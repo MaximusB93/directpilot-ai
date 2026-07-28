@@ -80,6 +80,7 @@ const requiredFiles = [
 const vercelConfig = JSON.parse(await readFile('vercel.json', 'utf8'));
 const backendVercelConfig = JSON.parse(await readFile('backend/vercel.json', 'utf8'));
 const vercelRewrites = vercelConfig.rewrites || [];
+const backendVercelRouteSources = new Set((backendVercelConfig.routes || []).map((item) => item.src));
 
 await Promise.all(requiredFiles.map((file) => access(file)));
 const files = Object.fromEntries(await Promise.all(requiredFiles.map(async (file) => [file, await readFile(file, 'utf8')])));
@@ -109,7 +110,7 @@ function functionBody(file, functionName) {
 }
 
 const checks = [
-  ['Vercel Preview serves the frontend and backend', vercelConfig.buildCommand === 'npm run vercel-build' && vercelConfig.outputDirectory === 'public' && Boolean(vercelConfig.functions?.['api/index.py']) && ['/api/:path*', '/health', '/docs/:path*', '/openapi.json'].every((source) => vercelRewrites.some((item) => item.source === source)) && backendVercelConfig.buildCommand === 'node scripts/build-static-frontend.mjs' && backendVercelConfig.outputDirectory === 'public' && Boolean(backendVercelConfig.functions?.['api/index.py']) && backendVercelConfig.functions?.['api/index.py']?.includeFiles === 'public/**'],
+  ['Vercel Preview serves the frontend and backend', vercelConfig.buildCommand === 'npm run vercel-build' && vercelConfig.outputDirectory === 'public' && Boolean(vercelConfig.functions?.['api/index.py']) && ['/api/:path*', '/health', '/docs/:path*', '/openapi.json'].every((source) => vercelRewrites.some((item) => item.source === source)) && backendVercelConfig.buildCommand === 'node scripts/build-static-frontend.mjs' && backendVercelConfig.outputDirectory === 'public' && Boolean(backendVercelConfig.functions?.['api/index.py']) && ['/api/(.*)', '/(health|docs(?:/.*)?|openapi\\.json|redoc(?:/.*)?)'].every((source) => backendVercelRouteSources.has(source)) && (backendVercelConfig.routes || []).some((item) => item.handle === 'filesystem')],
   ['app shells', has('index.html', 'id="app"') && has('login.html', 'data-page="login"') && has('app.html', 'data-page="app"')],
   ['routes module modes', has('src/app/routes.js', 'wordstat') && has('src/app/routes.js', 'journal') && has('src/app/routes.js', "mode: 'module'") && !has('src/app/routes.js', "mode: 'reserved'")],
   ['wordstat runtime via main', has('src/main.js', "import './wordstat.js';") && lacks('app.html', ['src/wordstat.js', 'src/wordstat_date_fix.js', 'src/wordstat_regions_patch.js', 'src/wordstat_ai_chat.js', 'src/wordstat_chart_hover.js'])],

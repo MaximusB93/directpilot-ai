@@ -5,8 +5,24 @@
   "outputDirectory": "public",
   "functions": {
     "api/index.py": {
-      "maxDuration": 300,
-      "includeFiles": "public/**"
+      "maxDuration": 300
     }
-  }
+  },
+  "routes": [
+    {
+      "handle": "filesystem"
+    },
+    {
+      "src": "/api/(.*)",
+      "dest": "/api/index.py"
+    },
+    {
+      "src": "/(health|docs(?:/.*)?|openapi\\.json|redoc(?:/.*)?)",
+      "dest": "/api/index.py"
+    },
+    {
+      "src": "/favicon\\.ico",
+      "dest": "/favicon.svg"
+    }
+  ]
 }
