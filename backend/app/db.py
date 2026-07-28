@@ -226,8 +226,6 @@ def init_db(*, run_schema_patch: bool = True) -> None:
         return
     if not run_schema_patch:
         check_db_connection()
-        ensure_ai_audit_job_schema()
-        ensure_direct_read_schema()
         return
     import app.models  # noqa: F401
     import app.models_wordstat  # noqa: F401

@@ -17,6 +17,12 @@ def _looks_redacted(value: str | None) -> bool:
     return "•" in stripped or stripped in {"********", "****"} or stripped.startswith("<")
 
 
+def _database_schema_patch_default() -> str:
+    """Keep schema DDL out of serverless request startup by default."""
+    environment = os.getenv("ENVIRONMENT", "development").lower()
+    return "false" if environment == "production" or os.getenv("VERCEL") else "true"
+
+
 AI_MODEL_PRESETS: dict[str, dict[str, object]] = {
     "economy": {
         "id": "economy",
@@ -216,7 +222,7 @@ class Settings:
     database_url: str | None = os.getenv("DATABASE_URL")
     database_schema_patch_on_startup: bool = os.getenv(
         "DATABASE_SCHEMA_PATCH_ON_STARTUP",
-        "false" if os.getenv("ENVIRONMENT", "development").lower() == "production" else "true",
+        _database_schema_patch_default(),
     ).lower() == "true"
     token_encryption_key: str | None = os.getenv("TOKEN_ENCRYPTION_KEY")
     email_auth_dev_mode: bool = os.getenv("EMAIL_AUTH_DEV_MODE", "false").lower() == "true"
