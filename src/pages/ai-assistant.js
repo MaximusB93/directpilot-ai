@@ -589,6 +589,7 @@ export function renderAiAuditJob({
         ${publicErrorMessage ? `<div class="authStatus integrationStatus">${escapeHtml(publicErrorMessage)}</div>` : ''}
         ${aiAuditJob.answer || aiAuditJob.result ? `<div><h4>Результат аудита</h4>${renderAiAuditResult(aiAuditJob.result, aiAuditJob.answer, escapeHtml, aiAuditJob)}</div>` : ''}
         <div class="heroActions">
+          ${['queued', 'context_ready'].includes(aiAuditJob.status) ? '<button class="approveButton" data-ai-audit-advance>Продолжить аудит</button>' : ''}
           ${!terminal ? '<button class="secondaryButton" data-ai-audit-cancel>Отменить</button>' : ''}
           ${aiAuditJob.status === 'failed' && aiAuditJob.retryable ? '<button class="approveButton" data-ai-audit-retry>Повторить этап</button>' : ''}
           ${aiAuditJob.status === 'failed' ? '<button class="secondaryButton" data-ai-audit-reset>Завершить и начать новый аудит</button>' : ''}

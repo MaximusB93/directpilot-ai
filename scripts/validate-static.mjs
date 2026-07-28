@@ -224,6 +224,19 @@ if (technicalAuditSmoke.includes('must-not-run')
   || technicalAuditSmoke.includes('Технический ответ модели')) {
   failed.push(['audit technical response runtime smoke', false]);
 }
+const resumableAuditSmoke = renderAiAuditJob({
+  selectedClientId: 'client-1',
+  aiAuditJob: {
+    job_id: 'audit-resume', status: 'context_ready', current_stage: 'collect_fresh_baseline', progress_percent: 15,
+    context_metadata: { runtime: {} },
+  },
+  escapeHtml,
+});
+if (!resumableAuditSmoke.includes('data-ai-audit-advance')
+  || !resumableAuditSmoke.includes('Продолжить аудит')) {
+  failed.push(['resumable staged audit UI smoke', false]);
+}
+
 const providerContextFallbackSmoke = renderAiAuditJob({
   selectedClientId: 'client-1',
   aiAuditJob: {

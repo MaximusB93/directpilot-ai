@@ -2622,6 +2622,7 @@ const CABINET_ACTION_CLICK_SELECTOR = [
   '[data-ai-chat-sample]',
   '[data-ai-prompt]',
   '[data-ai-audit-start]',
+  '[data-ai-audit-advance]',
   '[data-ai-audit-cancel]',
   '[data-ai-audit-retry]',
   '[data-ai-audit-compact-retry]',
@@ -2772,6 +2773,10 @@ async function handleCabinetActionClick(event) {
   const auditStartButton = event.target.closest('[data-ai-audit-start]');
   if (auditStartButton) {
     await startAiAudit(auditStartButton.dataset.aiAuditStart || 'full_account');
+    return true;
+  }
+  if (event.target.closest('[data-ai-audit-advance]')) {
+    await advanceActiveAiAudit();
     return true;
   }
   if (event.target.closest('[data-ai-audit-cancel]')) {
