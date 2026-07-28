@@ -5585,7 +5585,9 @@ async def advance_audit_job(
     retry: bool = False,
     compact_retry: bool = False,
 ) -> AiAuditJob:
+    logger.info("AI_AUDIT_ADVANCE_LOCKING job_id=%s", job_id)
     job = _locked_job(db, job_id, organization_id)
+    logger.info("AI_AUDIT_ADVANCE_LOCKED job_id=%s status=%s stage=%s", job.id, job.status, job.current_stage)
     if recover_stale_audit_job(job, _now(), db=db):
         db.commit()
         db.refresh(job)
@@ -5641,14 +5643,18 @@ async def advance_audit_job(
     execution_token: str | None = None
     try:
         if stage == "collect_context":
+            logger.info("AI_AUDIT_CONTEXT_STATUS_COMMIT_START job_id=%s", job.id)
             job.status = "collecting_context"
             job.progress_percent = 10
             job.started_at = job.started_at or _now()
             job.stage_version += 1
             db.commit()
+            logger.info("AI_AUDIT_CONTEXT_STATUS_COMMIT_DONE job_id=%s", job.id)
             context_started_at = perf_counter()
+            logger.info("AI_AUDIT_CONTEXT_BUILD_START job_id=%s", job.id)
             full_context = build_client_ai_context_from_db(db, job.client_id, selected_campaign_name=job.selected_campaign_name)
             timings["collectContextMs"] = _elapsed_ms(context_started_at)
+            logger.info("AI_AUDIT_CONTEXT_BUILD_DONE job_id=%s elapsed_ms=%s", job.id, timings["collectContextMs"])
             compact_started_at = perf_counter()
             snapshot = build_compact_audit_context(
                 full_context,
@@ -7196,8 +7202,10 @@ async def advance_audit_job(
         timings["totalElapsedMs"] = max(0, round((_now() - _as_aware(job.created_at or _now())).total_seconds() * 1000))
         job.timings_json = _json_dump(timings)
         job.stage_version += 1
+        logger.info("AI_AUDIT_ADVANCE_COMMIT_START job_id=%s stage=%s next_stage=%s", job.id, stage, job.current_stage)
         db.commit()
         db.refresh(job)
+        logger.info("AI_AUDIT_ADVANCE_COMMIT_DONE job_id=%s stage=%s next_stage=%s", job.id, stage, job.current_stage)
         _log_timing(job, stage)
         return job
     except Exception as exc:
