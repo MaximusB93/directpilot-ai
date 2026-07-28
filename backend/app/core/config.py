@@ -277,7 +277,11 @@ class Settings:
             "http://127.0.0.1:5173",
             "https://maximusb93.github.io",
             "https://directpilot-ai-backend-mvp.vercel.app",
+            "https://directpilot-ai-frontend-preview-directpilot-ai1.vercel.app",
         ]
+    )
+    allowed_origin_regex: str = (
+        r"https://directpilot-ai-frontend-preview(?:-[a-z0-9]+)*-directpilot-ai1\.vercel\.app"
     )
 
     @property
