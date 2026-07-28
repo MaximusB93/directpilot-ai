@@ -8,21 +8,30 @@
       "maxDuration": 300
     }
   },
-  "routes": [
+  "rewrites": [
     {
-      "handle": "filesystem"
+      "source": "/api/:path*",
+      "destination": "/api/index.py"
     },
     {
-      "src": "/api/(.*)",
-      "dest": "/api/index.py"
+      "source": "/health",
+      "destination": "/api/index.py"
     },
     {
-      "src": "/(health|docs(?:/.*)?|openapi\\.json|redoc(?:/.*)?)",
-      "dest": "/api/index.py"
+      "source": "/docs/:path*",
+      "destination": "/api/index.py"
     },
     {
-      "src": "/favicon\\.ico",
-      "dest": "/favicon.svg"
+      "source": "/openapi.json",
+      "destination": "/api/index.py"
+    },
+    {
+      "source": "/redoc/:path*",
+      "destination": "/api/index.py"
+    },
+    {
+      "source": "/favicon.ico",
+      "destination": "/favicon.svg"
     }
   ]
 }
