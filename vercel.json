@@ -1,59 +1,37 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "version": 2,
-  "builds": [
-    {
-      "src": "api/index.py",
-      "use": "@vercel/python"
-    },
-    {
-      "src": "*.html",
-      "use": "@vercel/static"
-    },
-    {
-      "src": "favicon.svg",
-      "use": "@vercel/static"
-    },
-    {
-      "src": ".nojekyll",
-      "use": "@vercel/static"
-    },
-    {
-      "src": "src/**/*",
-      "use": "@vercel/static"
+  "buildCommand": "npm run vercel-build",
+  "outputDirectory": "public",
+  "functions": {
+    "api/index.py": {
+      "maxDuration": 300
     }
-  ],
-  "routes": [
+  },
+  "rewrites": [
     {
-      "handle": "filesystem"
+      "source": "/api/:path*",
+      "destination": "/api/index.py"
     },
     {
-      "src": "/api/(.*)",
-      "dest": "/api/index.py"
+      "source": "/health",
+      "destination": "/api/index.py"
     },
     {
-      "src": "/(health|docs(?:/.*)?|openapi\\.json|redoc(?:/.*)?)",
-      "dest": "/api/index.py"
+      "source": "/docs/:path*",
+      "destination": "/api/index.py"
     },
     {
-      "src": "/",
-      "dest": "/index.html"
+      "source": "/openapi.json",
+      "destination": "/api/index.py"
     },
     {
-      "src": "/(index|login|app)\\.html",
-      "dest": "/$1.html"
+      "source": "/redoc/:path*",
+      "destination": "/api/index.py"
     },
     {
-      "src": "/favicon\\.svg",
-      "dest": "/favicon.svg"
-    },
-    {
-      "src": "/favicon\\.ico",
-      "dest": "/favicon.svg"
-    },
-    {
-      "src": "/src/(.*)",
-      "dest": "/src/$1"
+      "source": "/favicon.ico",
+      "destination": "/favicon.svg"
     }
   ]
 }
