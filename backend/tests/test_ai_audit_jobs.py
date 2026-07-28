@@ -334,6 +334,18 @@ def test_job_creation_and_organization_isolation():
         raise AssertionError("Cross-organization client was accepted")
 
 
+def test_job_status_read_does_not_take_scheduler_lock(monkeypatch):
+    db = _db()
+    job = _create(db)
+
+    def lock_must_not_be_used(*args, **kwargs):
+        raise AssertionError("status read must not lock")
+
+    monkeypatch.setattr(audit_jobs, "_locked_job", lock_must_not_be_used)
+
+    assert audit_jobs.get_audit_job(db, job.id, organization_id="org-a").id == job.id
+
+
 def test_latest_active_audit_job_recovers_by_client_and_organization():
     db = _db()
     completed = _create(db)

@@ -4857,6 +4857,19 @@ def _locked_job(db: Session, job_id: str, organization_id: str) -> AiAuditJob:
     return job
 
 
+def _read_job(db: Session, job_id: str, organization_id: str) -> AiAuditJob:
+    """Read a job without taking the row lock used by state-changing stages."""
+    job = db.scalar(
+        select(AiAuditJob).where(
+            AiAuditJob.id == job_id,
+            AiAuditJob.organization_id == organization_id,
+        )
+    )
+    if not job:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="AI audit job not found")
+    return job
+
+
 def is_audit_stage_stale(job: AiAuditJob, now: datetime | None = None) -> bool:
     if job.status != "generating":
         return False
@@ -5092,11 +5105,16 @@ def _complete_provider_stage(job: AiAuditJob, stage: str) -> None:
 
 
 def get_audit_job(db: Session, job_id: str, *, organization_id: str) -> AiAuditJob:
+    job = _read_job(db, job_id, organization_id)
+    if not is_audit_stage_stale(job):
+        return job
+
+    # Status polling is lock-free. Only a stale-recovery write needs to claim
+    # the row, otherwise a frequent browser poll can block an active scheduler.
     job = _locked_job(db, job_id, organization_id)
     if recover_stale_audit_job(job, _now(), db=db):
         db.commit()
         db.refresh(job)
-        return job
     return job
 
 
