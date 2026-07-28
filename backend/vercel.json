@@ -4,6 +4,10 @@
   "buildCommand": "node scripts/build-static-frontend.mjs",
   "outputDirectory": "public",
   "functions": {
+    "index.py": {
+      "maxDuration": 300,
+      "includeFiles": "public/**"
+    },
     "api/index.py": {
       "maxDuration": 300,
       "includeFiles": "public/**"
