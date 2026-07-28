@@ -2459,6 +2459,57 @@ def build_compact_audit_context(
     return snapshot
 
 
+def _fresh_initial_audit_context(
+    db: Session,
+    job: AiAuditJob,
+) -> dict[str, Any]:
+    """Build the smallest honest context required before live Direct collection.
+
+    A fresh staged audit must establish live campaign coverage before interpreting
+    historical aggregates.  The generic recommendation context deliberately
+    performs richer summary, plan, and dynamics queries, which made the first
+    audit transition depend on data that the scheduler is about to refresh.
+    """
+    client = db.get(ClientAccount, job.client_id)
+    date_to = (_now() - timedelta(days=1)).date()
+    requested_days = {
+        "last_7_days": 7,
+        "last_14_days": 14,
+        "last_30_days": 30,
+    }.get(job.requested_period, 30)
+    date_from = date_to - timedelta(days=requested_days - 1)
+    return {
+        "client": {
+            "id": job.client_id,
+            "name": client.name if client else None,
+            "target_cpa": client.target_cpa if client else None,
+            "last_synced_at": client.last_synced_at.isoformat() if client and client.last_synced_at else None,
+        },
+        "business_context": {"status": "unavailable", "fields": {}},
+        "goals": {
+            "selected_goal_ids": [],
+            "has_goal_data": False,
+            "source_message": "Goal evidence is collected during the read-only audit.",
+        },
+        "summary": {
+            "totals": {},
+            "campaigns": [],
+            "period": {"from": date_from.isoformat(), "to": date_to.isoformat()},
+        },
+        "campaigns": [],
+        "search_query_insights": {"totalQueries": 0, "insights": []},
+        "campaign_dynamics_analysis": {
+            "dataQuality": {"rows": 0},
+            "campaignDynamics": {"worstCampaigns": [], "bestCampaigns": []},
+            "missingData": ["Historical context is deferred until fresh Direct evidence is collected."],
+        },
+        "yandex_direct_audit": {},
+        "sync_diagnostics": {},
+        "optimization_plan": [],
+        "warnings": ["Fresh audit starts from live read-only Direct data; saved history is not used as evidence."],
+    }
+
+
 def _audit_result_contract(output_budget_tokens: int) -> dict[str, Any]:
     finding = {
         "hypothesis_id": "hyp_001 или null для чистого факта",
@@ -5652,7 +5703,17 @@ async def advance_audit_job(
             logger.info("AI_AUDIT_CONTEXT_STATUS_COMMIT_DONE job_id=%s", job.id)
             context_started_at = perf_counter()
             logger.info("AI_AUDIT_CONTEXT_BUILD_START job_id=%s", job.id)
-            full_context = build_client_ai_context_from_db(db, job.client_id, selected_campaign_name=job.selected_campaign_name)
+            input_options = _json_load(job.input_options_json, {}) or {}
+            cache_policy = str(input_options.get("cache_policy") or "fresh")
+            full_context = (
+                _fresh_initial_audit_context(db, job)
+                if cache_policy == "fresh"
+                else build_client_ai_context_from_db(
+                    db,
+                    job.client_id,
+                    selected_campaign_name=job.selected_campaign_name,
+                )
+            )
             timings["collectContextMs"] = _elapsed_ms(context_started_at)
             logger.info("AI_AUDIT_CONTEXT_BUILD_DONE job_id=%s elapsed_ms=%s", job.id, timings["collectContextMs"])
             compact_started_at = perf_counter()
@@ -5662,9 +5723,7 @@ async def advance_audit_job(
                 options=_json_load(job.input_options_json, {}),
             )
             snapshot["requestedScope"] = job.requested_scope
-            snapshot.setdefault("metadata", {})["cachePolicy"] = str(
-                (_json_load(job.input_options_json, {}) or {}).get("cache_policy") or "fresh"
-            )
+            snapshot.setdefault("metadata", {})["cachePolicy"] = cache_policy
             snapshot["metadata"]["directApiKnowledgeVersion"] = DIRECT_API_KNOWLEDGE_VERSION
             snapshot["auditRuntime"] = {
                 "investigationRound": 1,

@@ -507,6 +507,39 @@ def test_full_staged_flow_runs_planning_verification_and_final_answer(monkeypatc
     assert job.returned_model == job.model
 
 
+def test_fresh_staged_audit_skips_historical_context_before_live_baseline(monkeypatch):
+    db = _db()
+    job = audit_jobs.create_audit_job(
+        db,
+        AiAuditCreateRequest(
+            client_id="client-a",
+            model="qwen/qwen3-14b",
+            ai_preset="balanced",
+            cache_policy="fresh",
+        ),
+        organization_id="org-a",
+        user_id="user-a",
+        user_email="a@example.com",
+    )
+
+    def forbidden_historical_context(*args, **kwargs):
+        raise AssertionError("Fresh audit must collect live baseline before historical context")
+
+    monkeypatch.setattr(audit_jobs, "build_client_ai_context_from_db", forbidden_historical_context)
+
+    advanced = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
+
+    assert (advanced.status, advanced.current_stage, advanced.progress_percent) == (
+        "context_ready", "collect_fresh_baseline", 15,
+    )
+    snapshot = audit_jobs._json_load(advanced.context_snapshot_json, {})
+    assert snapshot["metadata"]["cachePolicy"] == "fresh"
+    assert snapshot["metadata"]["campaignsTotal"] == 0
+    assert snapshot["analysisPeriod"]["days"] == 30
+    assert snapshot["dataCoverage"]["campaigns"]["available"] is False
+    assert any(item.startswith("Historical context is deferred") for item in snapshot["missingData"])
+
+
 def test_helper_model_is_in_production_allowlist_and_planner_context_is_compact():
     snapshot = audit_jobs.build_compact_audit_context(_context())
     snapshot["publicRequestTrace"] = [{"reason": "frontend-only-trace"}]
