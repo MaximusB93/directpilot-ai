@@ -130,6 +130,8 @@ DRILLDOWN_TOKEN_TARGET = 18000
 FINAL_PROMPT_SAFETY_MARGIN_TOKENS = 2048
 FINAL_COMPACTION_LEVELS = (0, 1, 2, 3)
 FINAL_AUDIT_PROVIDER_MAX_TOKENS = 4000
+FINAL_SCHEMA_REPAIR_MAX_SECONDS = 45
+FINAL_SCHEMA_REPAIR_MIN_REMAINING_SECONDS = 20
 PROVIDER_CONTEXT_OVERFLOW_CODE = "provider_context_limit_rejected"
 FINAL_PROVIDER_TIMEOUT_WARNING_CODE = "final_provider_timeout"
 _FINAL_PROVIDER_TIMEOUT_CODES = frozenset({"openrouter_timeout", "openrouter_total_timeout"})
@@ -2974,6 +2976,43 @@ def _effective_final_output_tokens(job: AiAuditJob) -> int:
     return max(1, min(int(job.max_tokens or 0), FINAL_AUDIT_PROVIDER_MAX_TOKENS))
 
 
+def _final_schema_repair_timeout(job: AiAuditJob) -> httpx.Timeout | None:
+    """Bound a formatting-only retry so it cannot outlive the final-stage lease."""
+    expires_at = _as_aware(job.stage_lease_expires_at) if job.stage_lease_expires_at else None
+    if expires_at is None:
+        return None
+    remaining_seconds = int((expires_at - _now()).total_seconds())
+    if remaining_seconds < FINAL_SCHEMA_REPAIR_MIN_REMAINING_SECONDS:
+        return None
+    read_seconds = min(FINAL_SCHEMA_REPAIR_MAX_SECONDS, max(1, remaining_seconds - 10))
+    connect_seconds = min(10.0, float(read_seconds))
+    return httpx.Timeout(
+        connect=connect_seconds,
+        read=float(read_seconds),
+        write=connect_seconds,
+        pool=connect_seconds,
+    )
+
+
+def _build_final_schema_repair_prompt(snapshot: dict[str, Any], job: AiAuditJob) -> tuple[str, dict[str, Any]]:
+    """Re-run the final analysis from trusted evidence, never from an invalid model response."""
+    bundle = build_final_audit_prompt_bundle(
+        snapshot,
+        job,
+        compact_retry=True,
+        minimum_compaction_level=2,
+    )
+    prompt = str(bundle.get("prompt") or "")
+    return (
+        f"""{prompt}
+
+Форматное восстановление: предыдущий ответ не прошёл JSON-контракт.
+Сформируй новый результат только по trusted evidence projection выше. Не используй и не пересказывай предыдущий ответ.
+Верни ровно один валидный JSON-объект по указанному контракту: без Markdown, пояснений или текста вне JSON.""",
+        dict(bundle.get("diagnostics") or {}),
+    )
+
+
 def build_final_audit_prompt_bundle(
     snapshot: dict[str, Any],
     job: AiAuditJob,
@@ -3197,6 +3236,34 @@ def _trusted_result_meta(snapshot: dict[str, Any], job: AiAuditJob, response: di
     }
 
 
+def _safe_final_schema_repair_diagnostics(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+
+    def response_metadata(item: Any) -> dict[str, Any] | None:
+        if not isinstance(item, dict):
+            return None
+        return {
+            "sha256": str(item.get("sha256") or "")[:64] or None,
+            "length": max(0, int(item.get("length") or 0)),
+            "sourceFormat": str(item.get("sourceFormat") or "")[:100] or None,
+            "fullResponseStored": bool(item.get("fullResponseStored")),
+        }
+
+    return {
+        "attempted": bool(value.get("attempted")),
+        "status": str(value.get("status") or "unknown")[:100],
+        "errorCode": str(value.get("errorCode") or "")[:100] or None,
+        "returnedModel": str(value.get("returnedModel") or "")[:200] or None,
+        "promptEstimatedTokens": max(0, int(value.get("promptEstimatedTokens") or 0)),
+        "compactionLevel": max(0, int(value.get("compactionLevel") or 0)),
+        "initialParsing": _safe_model_response_parsing(value.get("initialParsing")),
+        "parsing": _safe_model_response_parsing(value.get("parsing")),
+        "initialResponse": response_metadata(value.get("initialResponse")),
+        "response": response_metadata(value.get("response")),
+    }
+
+
 def _record_final_generation_diagnostics(
     snapshot: dict[str, Any],
     job: AiAuditJob,
@@ -3214,6 +3281,9 @@ def _record_final_generation_diagnostics(
             "requestedOutputTokens", "effectiveFinalOutputTokens", "providerTimedOut", "providerErrorCode",
         )
     }
+    safe_diagnostics["schemaRepair"] = _safe_final_schema_repair_diagnostics(
+        diagnostics.get("schemaRepair"),
+    )
     runtime = _audit_runtime(snapshot)
     runtime.update(safe_diagnostics)
     runtime["finalGenerationStatus"] = status_value
@@ -7221,6 +7291,97 @@ async def advance_audit_job(
             }
             job.returned_model = final_returned_model
             if structured is None and not truncated:
+                initial_parsing = _safe_model_response_parsing(parsing)
+                initial_response_metadata = dict(provider_response_metadata)
+                repair_timeout = _final_schema_repair_timeout(job)
+                schema_repair = {
+                    "attempted": False,
+                    "status": "skipped_stage_time_budget" if repair_timeout is None else "pending",
+                    "initialParsing": initial_parsing,
+                    "initialResponse": initial_response_metadata,
+                }
+                if repair_timeout is not None:
+                    repair_prompt, repair_diagnostics = _build_final_schema_repair_prompt(snapshot, job)
+                    if repair_diagnostics.get("fitsModelContext"):
+                        schema_repair["attempted"] = True
+                        schema_repair["status"] = "calling_provider"
+                        final_diagnostics["schemaRepair"] = {
+                            "attempted": True,
+                            "promptEstimatedTokens": repair_diagnostics.get("finalPromptEstimatedTokens"),
+                            "compactionLevel": repair_diagnostics.get("finalCompactionLevel"),
+                        }
+                        _save_stage_prompt_metadata(
+                            job,
+                            stage,
+                            repair_prompt,
+                            model=AI_AUDIT_HELPER_MODEL,
+                            max_tokens=effective_final_max_tokens,
+                            max_tokens_cap=FINAL_AUDIT_PROVIDER_MAX_TOKENS,
+                        )
+                        _record_final_generation_diagnostics(
+                            snapshot,
+                            job,
+                            final_diagnostics,
+                            status_value="repairing_invalid_provider_response",
+                        )
+                        _record_provider_attempt(snapshot, "final")
+                        job.context_snapshot_json = _json_dump(snapshot)
+                        db.commit()
+                        try:
+                            repair_response = await _call_audit_provider(
+                                stage,
+                                AI_AUDIT_HELPER_MODEL,
+                                repair_prompt,
+                                max_tokens=effective_final_max_tokens,
+                                max_tokens_cap=FINAL_AUDIT_PROVIDER_MAX_TOKENS,
+                                timeout=repair_timeout,
+                            )
+                        except Exception as repair_exc:
+                            schema_repair["status"] = "provider_error"
+                            schema_repair["errorCode"] = final_provider_timeout_code(repair_exc) or type(repair_exc).__name__
+                            logger.warning(
+                                "AI_AUDIT_FINAL_SCHEMA_REPAIR_FAILED job_id=%s error_code=%s",
+                                job.id,
+                                schema_repair["errorCode"],
+                            )
+                        else:
+                            _record_provider_response(snapshot, repair_response)
+                            response = repair_response
+                            answer = str(response.get("content") or "")
+                            finish_reason = str(response.get("finish_reason") or "") or None
+                            final_returned_model = str(response.get("model") or AI_AUDIT_HELPER_MODEL)
+                            _audit_models(snapshot, job.model)["final_schema_repair_returned_model"] = final_returned_model
+                            job.returned_model = final_returned_model
+                            structured, parsing = _validate_structured_result_with_metadata(
+                                answer,
+                                snapshot=snapshot,
+                                job=job,
+                                response=response,
+                                finish_reason=finish_reason,
+                            )
+                            truncated = finish_reason == "length"
+                            final_token_usage = _safe_provider_token_usage(response)
+                            provider_response_metadata = {
+                                "sha256": hashlib.sha256(answer.encode("utf-8")).hexdigest() if answer else None,
+                                "length": len(answer),
+                                "sourceFormat": parsing["sourceFormat"],
+                                "fullResponseStored": False,
+                            }
+                            schema_repair.update({
+                                "status": "recovered" if structured is not None else "invalid_response",
+                                "returnedModel": final_returned_model,
+                                "response": provider_response_metadata,
+                                "parsing": _safe_model_response_parsing(parsing),
+                            })
+                    else:
+                        schema_repair["status"] = "skipped_context_budget"
+                final_diagnostics["schemaRepair"] = schema_repair
+                _record_final_generation_diagnostics(
+                    snapshot,
+                    job,
+                    final_diagnostics,
+                    status_value="schema_repair_completed" if structured is not None else "schema_repair_unavailable",
+                )
                 parsing_error_code = str(parsing.get("errorCode") or "json_parse_failed")
                 schema_failed = parsing_error_code == "json_schema_validation_failed"
                 fallback_status = (
@@ -7235,21 +7396,22 @@ async def advance_audit_job(
                     else "Ответ модели не удалось безопасно разобрать. Данные аудита сохранены, показан "
                     "backend-отчёт без повторных внешних запросов."
                 )
-                return _complete_backend_fallback_stage(
-                    db,
-                    job,
-                    snapshot,
-                    final_diagnostics,
-                    timings,
-                    reason_code=parsing_error_code,
-                    final_status=fallback_status,
-                    warning=fallback_warning,
-                    model_response_parsing=parsing,
-                    provider_response_metadata=provider_response_metadata,
-                    finish_reason=finish_reason,
-                    final_token_usage=final_token_usage,
-                    preserve_job_error=False,
-                )
+                if structured is None and not truncated:
+                    return _complete_backend_fallback_stage(
+                        db,
+                        job,
+                        snapshot,
+                        final_diagnostics,
+                        timings,
+                        reason_code=parsing_error_code,
+                        final_status=fallback_status,
+                        warning=fallback_warning,
+                        model_response_parsing=parsing,
+                        provider_response_metadata=provider_response_metadata,
+                        finish_reason=finish_reason,
+                        final_token_usage=final_token_usage,
+                        preserve_job_error=False,
+                    )
             _record_final_generation_diagnostics(
                 snapshot,
                 job,

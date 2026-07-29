@@ -2097,7 +2097,7 @@ def test_invalid_provider_format_is_not_exposed(monkeypatch):
 
     assert completed.status == "completed"
     assert completed.error_code is None
-    assert calls == {"provider": 1, "direct": 0}
+    assert calls == {"provider": 2, "direct": 0}
     assert result["structured"] is not None
     assert result["fallbackMarkdown"] is None
     assert result["technicalResponse"] is None
@@ -2114,12 +2114,14 @@ def test_invalid_provider_format_is_not_exposed(monkeypatch):
     assert result["finalTokenUsage"] == {"prompt": 111, "completion": 22, "total": 133}
     assert runtime["finalGenerationStatus"] == "backend_fallback_after_json_parse"
     assert runtime["backendFallbackUsed"] is True
+    assert runtime["schemaRepair"]["attempted"] is True
+    assert runtime["schemaRepair"]["status"] == "invalid_response"
     assert runtime["directApiCallsCount"] == initial_direct_calls
     assert "rawResponse" not in result
     assert raw_answer not in audit_jobs._json_dump(public)
 
 
-def test_schema_invalid_final_response_uses_backend_fallback_without_external_retries(monkeypatch):
+def test_schema_invalid_final_response_uses_backend_fallback_after_one_bounded_model_retry(monkeypatch):
     db = _db()
     job = _create(db)
     job.status = "context_ready"
@@ -2163,7 +2165,7 @@ def test_schema_invalid_final_response_uses_backend_fallback_without_external_re
 
     assert completed.status == "completed"
     assert completed.error_code is None
-    assert calls == {"provider": 1, "direct": 0}
+    assert calls == {"provider": 2, "direct": 0}
     assert result["structured"] is not None
     AiAuditResult.model_validate(result["structured"])
     assert result["structured"]["critical_findings"]
@@ -2187,6 +2189,8 @@ def test_schema_invalid_final_response_uses_backend_fallback_without_external_re
     assert result["finalTokenUsage"] == {"prompt": 10918, "completion": 1800, "total": 12718}
     assert runtime["finalGenerationStatus"] == "backend_fallback_after_schema_validation"
     assert runtime["backendFallbackUsed"] is True
+    assert runtime["schemaRepair"]["attempted"] is True
+    assert runtime["schemaRepair"]["status"] == "invalid_response"
     assert runtime["directApiCallsCount"] == initial_direct_calls
     assert {
         key: value["status"] for key, value in persisted_snapshot["verificationRegistry"].items()
@@ -2196,6 +2200,48 @@ def test_schema_invalid_final_response_uses_backend_fallback_without_external_re
     assert "CampaignId=123" not in public_dump
     assert "request_hash=private" not in public_dump
     assert "rawResponse" not in result
+
+
+def test_schema_invalid_final_response_is_recovered_by_one_helper_model_retry_without_direct_calls(monkeypatch):
+    db = _db()
+    job = _create(db)
+    job.status = "context_ready"
+    job.current_stage = "generate_answer"
+    snapshot = _realistic_oversized_final_snapshot()
+    initial_direct_calls = snapshot["auditRuntime"]["directApiCallsCount"]
+    job.context_snapshot_json = audit_jobs._json_dump(snapshot)
+    db.commit()
+    calls = {"provider": 0, "direct": 0}
+
+    def forbidden_direct(*args, **kwargs):
+        calls["direct"] += 1
+        raise AssertionError("Schema repair must not recollect Direct evidence")
+
+    async def invalid_then_repaired(model, prompt, **kwargs):
+        calls["provider"] += 1
+        if calls["provider"] == 1:
+            assert model == job.model
+            return {"model": model, "content": '{"executive_summary":"incomplete"}', "finish_reason": "stop"}
+        assert model == audit_jobs.AI_AUDIT_HELPER_MODEL
+        assert "Форматное восстановление" in prompt
+        return {"model": model, "content": _structured_answer(), "finish_reason": "stop"}
+
+    monkeypatch.setattr(audit_jobs, "collect_audit_data_requests", forbidden_direct)
+    monkeypatch.setattr(audit_jobs, "generate_openrouter_response", invalid_then_repaired)
+    generated = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
+    completed = asyncio.run(audit_jobs.advance_audit_job(db, generated.id, organization_id="org-a"))
+    result = audit_jobs._json_load(completed.result_json, {})
+    runtime = audit_jobs._json_load(completed.context_snapshot_json, {})["auditRuntime"]
+
+    assert completed.status == "completed"
+    assert calls == {"provider": 2, "direct": 0}
+    assert result["backendFallbackUsed"] is False
+    assert result["structured"] is not None
+    AiAuditResult.model_validate(result["structured"])
+    assert runtime["finalGenerationStatus"] == "provider_completed"
+    assert runtime["schemaRepair"]["attempted"] is True
+    assert runtime["schemaRepair"]["status"] == "recovered"
+    assert runtime["directApiCallsCount"] == initial_direct_calls
 
 
 @pytest.mark.parametrize(
