@@ -83,6 +83,22 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+function safeCoverageDiagnostics(job) {
+  const coverage = job?.context_metadata?.canonicalEvidenceCoverage || {};
+  const matrix = coverage.campaignMatrix || [];
+  const statusCounts = {};
+  const unresolvedCapabilities = {};
+  for (const item of matrix) {
+    const status = String(item?.status || 'unknown');
+    statusCounts[status] = (statusCounts[status] || 0) + 1;
+    if (status === 'not_requested') {
+      const capability = String(item?.capabilityId || 'unknown');
+      unresolvedCapabilities[capability] = (unresolvedCapabilities[capability] || 0) + 1;
+    }
+  }
+  return { campaignRequirements: matrix.length, statusCounts, unresolvedCapabilities };
+}
+
 async function waitForRetryWindow(job) {
   const retryAt = Date.parse(runtimeOf(job).nextRetryAt || '');
   if (!Number.isFinite(retryAt) || retryAt <= Date.now()) return;
@@ -104,6 +120,11 @@ function validateTerminalAudit(job, scope) {
   const coverage = job.context_metadata?.canonicalEvidenceCoverage || {};
   const summary = coverage.summary || {};
   const matrix = coverage.campaignMatrix || [];
+  console.log(JSON.stringify({
+    event: 'audit_coverage_diagnostics',
+    scope,
+    ...safeCoverageDiagnostics(job),
+  }));
   assert(matrix.length > 0, `${scope} audit returned no canonical campaign × capability matrix`);
   assert(Number(summary.applicableCampaigns || 0) > 0, `${scope} audit found no applicable campaigns`);
   assert(
