@@ -401,6 +401,34 @@ def test_performance_only_campaign_scope_keeps_no_data_follow_up_terminal():
     assert coverage["campaignMatrix"][0]["status"] == "insufficient_data"
 
 
+def test_unnamed_performance_campaign_keeps_safe_scope_for_terminal_follow_up():
+    report_scope = campaign_scope_key("unnamed-rsya")
+    snapshot = {
+        "analysisPeriod": {"dateFrom": "2026-06-01", "dateTo": "2026-06-30", "days": 30},
+        "targetKpis": {"targetCpa": 500},
+        "minimumCoveragePlan": [
+            {"campaignName": "Campaign without name 1", "capabilityId": "campaign_settings", "applicable": True},
+        ],
+    }
+    audit_jobs._apply_live_baseline(snapshot, [{
+        "capability_id": "campaigns", "status": "collected", "data": [],
+    }, {
+        "capability_id": "campaign_performance", "status": "collected", "data": [{
+            "campaign_scope_key": report_scope, "campaign_name": "", "clicks": 4,
+        }],
+    }], allow_saved_fallback=False)
+
+    coverage = canonical_coverage_projection(build_canonical_evidence_index(snapshot, [{
+        "request_id": "unnamed-settings", "campaign_name": "Campaign without name 1",
+        "capability_id": "campaign_settings", "status": "insufficient_data",
+        "source": "yandex_direct_live_service", "rows_total": 0, "rows_analyzed": 0, "data": [],
+    }]), snapshot)
+
+    assert snapshot["_trustedCampaignScopes"]["Campaign without name 1"] == report_scope
+    assert coverage["summary"]["coveredCampaigns"] == 1
+    assert coverage["campaignMatrix"][0]["status"] == "insufficient_data"
+
+
 def test_old_snapshot_without_scheduler_fields_remains_readable():
     snapshot = {"auditRuntime": {"requestsCount": 3}}
     runtime = audit_jobs._audit_runtime(snapshot)

@@ -971,15 +971,22 @@ def _apply_live_baseline(
     # an archived campaign). The report already carries a one-way scope key;
     # register it so no-data follow-up reads stay terminal rather than becoming
     # indistinguishable from an unrequested campaign.
-    for row in (performance_result.get("data") or []):
+    for row_index, row in enumerate(performance_result.get("data") or [], start=1):
         if not isinstance(row, dict):
             continue
         name = str(row.get("campaign_name") or row.get("CampaignName") or "").strip()
         scope = str(row.get("campaign_scope_key") or row.get("campaignScopeKey") or "").strip() or campaign_scope_key(
             row.get("campaign_id") or row.get("CampaignId")
         )
-        if not name or not scope:
+        if not scope:
             continue
+        if not name:
+            # Direct performance rows occasionally omit CampaignName. Keep the
+            # campaign in breadth coverage under a deterministic safe alias so
+            # zero-row follow-ups resolve to an explicit terminal status rather
+            # than silently dropping the campaign from evidence reconciliation.
+            name = f"Campaign without name {row_index}"
+            row["campaign_name"] = name
         trusted_scope_names[scope] = name
         prior_scope = trusted_scopes.get(name)
         if name in ambiguous_scope_names or (prior_scope and prior_scope != scope):
