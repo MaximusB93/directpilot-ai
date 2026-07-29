@@ -1945,13 +1945,14 @@ def test_total_timeout_completes_with_saved_backend_fallback(monkeypatch):
     assert same_job.status == "completed"
 
 
-def test_final_model_bad_request_retries_with_helper_model(monkeypatch):
+@pytest.mark.parametrize("status_code", [400, 502])
+def test_final_model_provider_error_retries_with_helper_model(monkeypatch, status_code):
     calls = []
 
     async def provider(model, *args, **kwargs):
         calls.append(model)
         if model == "qwen/qwen3-14b":
-            raise HTTPException(status_code=400, detail="unsupported request")
+            raise HTTPException(status_code=status_code, detail="provider request failed")
         return {"model": model, "content": _structured_answer()}
 
     monkeypatch.setattr(audit_jobs, "generate_openrouter_response", provider)

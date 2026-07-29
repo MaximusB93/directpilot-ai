@@ -5150,15 +5150,20 @@ async def _call_audit_provider(stage: str, *args: Any, **kwargs: Any) -> dict[st
                 model = str(args[0]) if args else ""
                 if (
                     stage == "generate_answer"
-                    and exc.status_code == status.HTTP_400_BAD_REQUEST
+                    and exc.status_code in {
+                        status.HTTP_400_BAD_REQUEST,
+                        status.HTTP_502_BAD_GATEWAY,
+                    }
+                    and not is_provider_context_overflow(exc)
                     and model
                     and model != AI_AUDIT_HELPER_MODEL
                 ):
                     logger.warning(
-                        "AI_AUDIT_FINAL_MODEL_FALLBACK stage=%s requested_model=%s fallback_model=%s reason=http_400",
+                        "AI_AUDIT_FINAL_MODEL_FALLBACK stage=%s requested_model=%s fallback_model=%s reason=http_%s",
                         stage,
                         model,
                         AI_AUDIT_HELPER_MODEL,
+                        exc.status_code,
                     )
                     return await generate_openrouter_response(
                         AI_AUDIT_HELPER_MODEL, *args[1:], **kwargs,
