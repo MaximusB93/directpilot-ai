@@ -1,0 +1,45 @@
+name: Preview staged-audit smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      preview_url:
+        description: Vercel Preview root URL (without /api/v1)
+        required: true
+        type: string
+      scopes:
+        description: Audits to run; full_account,short_summary is the release smoke
+        required: true
+        default: full_account,short_summary
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  staged-audit-smoke:
+    name: Green Flow read-only staged audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: preview-audit-smoke
+    env:
+      E2E_AUDIT_BASE_URL: ${{ inputs.preview_url }}
+      E2E_AUDIT_SCOPES: ${{ inputs.scopes }}
+      E2E_AUDIT_SESSION_TOKEN: ${{ secrets.E2E_AUDIT_SESSION_TOKEN }}
+      E2E_AUDIT_CLIENT_ID: ${{ secrets.E2E_AUDIT_CLIENT_ID }}
+      VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+      # Green Flow has Search and YAN campaigns. These are family-specific
+      # baseline capabilities and are checked by the script as well.
+      E2E_AUDIT_REQUIRED_CAPABILITIES: search_queries,placements
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run read-only Preview smoke
+        run: node scripts/preview-audit-smoke.mjs
