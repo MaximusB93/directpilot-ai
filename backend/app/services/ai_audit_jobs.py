@@ -966,6 +966,28 @@ def _apply_live_baseline(
         if scope:
             trusted_scopes[name] = scope
         metadata_by_name[name] = metadata
+    # A campaign can be present in a fresh performance report while absent from
+    # the current Campaigns service response (for example, historical data for
+    # an archived campaign). The report already carries a one-way scope key;
+    # register it so no-data follow-up reads stay terminal rather than becoming
+    # indistinguishable from an unrequested campaign.
+    for row in (performance_result.get("data") or []):
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("campaign_name") or row.get("CampaignName") or "").strip()
+        scope = str(row.get("campaign_scope_key") or row.get("campaignScopeKey") or "").strip() or campaign_scope_key(
+            row.get("campaign_id") or row.get("CampaignId")
+        )
+        if not name or not scope:
+            continue
+        trusted_scope_names[scope] = name
+        prior_scope = trusted_scopes.get(name)
+        if name in ambiguous_scope_names or (prior_scope and prior_scope != scope):
+            ambiguous_scope_names.add(name)
+            trusted_scopes.pop(name, None)
+            metadata_by_name.pop(name, None)
+            continue
+        trusted_scopes[name] = scope
     for name in ambiguous_scope_names:
         trusted_scopes.pop(name, None)
         metadata_by_name.pop(name, None)

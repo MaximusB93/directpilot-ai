@@ -10,6 +10,7 @@ from app.db import Base
 from app.models import ClientAccount, DirectReportJob, Organization, User
 from app.schemas import AiAuditCreateRequest, AuditDataRequest
 from app.services.audit_evidence_reconciliation import (
+    build_canonical_evidence_index,
     campaign_scope_key,
     canonical_coverage_projection,
     capability_candidates,
@@ -371,6 +372,33 @@ def test_fresh_baseline_evidence_counts_toward_campaign_coverage():
         ("campaign_settings", "collected"),
         ("campaign_performance", "collected"),
     }
+
+
+def test_performance_only_campaign_scope_keeps_no_data_follow_up_terminal():
+    report_scope = campaign_scope_key("archived-rsy")
+    snapshot = {
+        "analysisPeriod": {"dateFrom": "2026-06-01", "dateTo": "2026-06-30", "days": 30},
+        "targetKpis": {"targetCpa": 500},
+        "minimumCoveragePlan": [
+            {"campaignName": "Archived RSYA", "capabilityId": "campaign_settings", "applicable": True},
+        ],
+    }
+    audit_jobs._apply_live_baseline(snapshot, [{
+        "capability_id": "campaigns", "status": "collected", "data": [],
+    }, {
+        "capability_id": "campaign_performance", "status": "collected", "data": [{
+            "campaign_scope_key": report_scope, "campaign_name": "Archived RSYA", "clicks": 4,
+        }],
+    }], allow_saved_fallback=False)
+
+    coverage = canonical_coverage_projection(build_canonical_evidence_index(snapshot, [{
+        "request_id": "archived-settings", "campaign_name": "Archived RSYA",
+        "capability_id": "campaign_settings", "status": "insufficient_data",
+        "source": "yandex_direct_live_service", "rows_total": 0, "rows_analyzed": 0, "data": [],
+    }]), snapshot)
+
+    assert snapshot["_trustedCampaignScopes"]["Archived RSYA"] == report_scope
+    assert coverage["campaignMatrix"][0]["status"] == "insufficient_data"
 
 
 def test_old_snapshot_without_scheduler_fields_remains_readable():
