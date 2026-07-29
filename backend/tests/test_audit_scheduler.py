@@ -88,6 +88,7 @@ def test_breadth_requests_cover_each_applicable_campaign_before_depth():
         "campaignClassifications": [
             {"campaign_name": "Search A", "campaign_family": "search", "campaign_subtype": "search"},
             {"campaign_name": "YAN A", "campaign_family": "yan", "campaign_subtype": "yan_retargeting"},
+            {"campaign_name": "Mixed A", "campaign_family": "mixed", "campaign_subtype": "mixed"},
         ],
     }
     breadth = build_minimum_coverage_requests(snapshot)
@@ -95,10 +96,11 @@ def test_breadth_requests_cover_each_applicable_campaign_before_depth():
     for request in breadth:
         by_campaign.setdefault(request.campaign_name, set()).add(request.capability_id)
 
-    assert {"Search A", "YAN A"} == set(by_campaign)
+    assert {"Search A", "YAN A", "Mixed A"} == set(by_campaign)
     assert {"ad_groups", "ads", "keywords", "search_queries", "goals"} <= by_campaign["Search A"]
     assert "search_queries" not in by_campaign["YAN A"]
     assert {"placements", "audience_targets", "retargeting_segments", "frequency"} <= by_campaign["YAN A"]
+    assert by_campaign["Mixed A"] == {"campaign_settings", "search_queries", "placements"}
 
     depth = AuditDataRequest(
         request_id="depth_001", hypothesis_id="hyp_001", campaign_name="Search A",
@@ -109,7 +111,7 @@ def test_breadth_requests_cover_each_applicable_campaign_before_depth():
     breadth_partition, depth_partition = partition_breadth_and_depth_requests(
         [depth, *breadth], breadth, profile=execution_profile_for_scope("full_account"),
     )
-    assert {_request.campaign_name for _request in breadth_partition} == {"Search A", "YAN A"}
+    assert {_request.campaign_name for _request in breadth_partition} == {"Search A", "YAN A", "Mixed A"}
     assert [item.capability_id for item in depth_partition] == ["demographics"]
 
 

@@ -1196,7 +1196,8 @@ def test_text_and_unified_mixed_campaigns_use_current_strategy_metadata():
 
     assert text_search["campaign_family"] == "search"
     assert text_search["classification_source"] == "direct_api_strategy"
-    assert unified_mixed["campaign_family"] == "unknown"
+    assert unified_mixed["campaign_family"] == "mixed"
+    assert unified_mixed["campaign_subtype"] == "mixed"
     assert unified_mixed["classification_source"] == "direct_api_mixed"
     assert unified_mixed["warnings"]
 

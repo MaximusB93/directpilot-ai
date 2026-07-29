@@ -629,11 +629,14 @@ def _campaign_classification(name: str, explicit_type: str | dict[str, Any] | No
     if api_family == "mixed":
         return {
             "campaign_name": name,
-            "campaign_family": "unknown",
-            "campaign_subtype": "unknown",
+            "campaign_family": "mixed",
+            "campaign_subtype": "mixed",
             "classification_source": "direct_api_mixed",
             "api_type": api_type or None,
-            "warnings": ["Direct API reports both search and network placements; subtype cascade is disabled."],
+            "warnings": [
+                "Direct API reports both search and network placements; "
+                "the breadth plan requests explicit Search and Network evidence."
+            ],
         }
     if api_family is None:
         return {

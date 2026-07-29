@@ -59,6 +59,15 @@ MINIMUM_CAPABILITIES_BY_SUBTYPE: dict[str, tuple[str, ...]] = {
     "unknown": ("campaign_settings",),
 }
 
+# Direct text and unified campaigns can serve both Search and Network traffic.
+# They need two family-specific evidence slices, but keeping this small preserves
+# breadth-first coverage within the fixed request budget.
+MIXED_MINIMUM_CAPABILITY_VARIANTS: tuple[tuple[str, str, str], ...] = (
+    ("campaign_settings", "search", "search"),
+    ("search_queries", "search", "search"),
+    ("placements", "yan", "yan_prospecting"),
+)
+
 
 def execution_profile_for_scope(scope: str | None) -> AuditExecutionProfile:
     normalized = str(scope or "full_account").strip().lower()
@@ -209,21 +218,29 @@ def build_minimum_coverage_requests(snapshot: dict[str, Any]) -> list[AuditDataR
         subtype = str(classification.get("campaign_subtype") or "unknown")
         if not campaign_name:
             continue
-        for capability_index, capability_id in enumerate(MINIMUM_CAPABILITIES_BY_SUBTYPE.get(subtype, ("campaign_settings",))):
+        variants = (
+            MIXED_MINIMUM_CAPABILITY_VARIANTS
+            if subtype == "mixed"
+            else tuple(
+                (capability_id, family, subtype)
+                for capability_id in MINIMUM_CAPABILITIES_BY_SUBTYPE.get(subtype, ("campaign_settings",))
+            )
+        )
+        for capability_index, (capability_id, request_family, request_subtype) in enumerate(variants):
             capability = YANDEX_DIRECT_READ_CAPABILITIES.get(capability_id)
             if (
                 capability is None
                 or not capability.read_only
-                or family not in capability.supported_families
-                or subtype not in capability.supported_subtypes
+                or request_family not in capability.supported_families
+                or request_subtype not in capability.supported_subtypes
             ):
                 continue
             result.append(AuditDataRequest(
                 request_id=f"breadth_{campaign_index:03d}_{capability_index:02d}_{capability_id}",
                 hypothesis_id=f"breadth_{campaign_index:03d}",
                 campaign_name=campaign_name,
-                campaign_family=family,
-                campaign_subtype=subtype,
+                campaign_family=request_family,
+                campaign_subtype=request_subtype,
                 dimension=capability_id,
                 capability_id=capability_id,
                 reason="Минимальное применимое покрытие кампании до углубления расследования.",
