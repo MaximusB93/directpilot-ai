@@ -2,12 +2,13 @@ from datetime import UTC, datetime
 
 import pytest
 from pydantic import ValidationError
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.db import Base
-from app.models import DirectCampaignPeriodStat, DirectSearchQueryPeriodStat
+from app.models import DirectCampaignPeriodStat, DirectReadCache, DirectSearchQueryPeriodStat
 from app.schemas import AuditDataRequest
+from app.services import audit_data_tools as audit_tools
 from app.services.audit_data_tools import (
     collect_audit_data_requests,
     public_audit_tool_manifest,
@@ -98,6 +99,32 @@ def test_live_capability_without_trusted_client_returns_unavailable():
     assert rejected == []
     assert results[0].status == "unavailable"
     assert results[0].error_code == "direct_no_data"
+
+
+def test_live_adapter_failure_does_not_abort_the_outer_audit_transaction(monkeypatch):
+    db = _db()
+    now = datetime.now(UTC)
+    db.add(DirectReadCache(
+        client_id="client-a", request_hash="collision", capability_id="placements",
+        source="yandex_direct_live_report", fetched_at=now, expires_at=now,
+    ))
+    db.commit()
+
+    def conflicting_cache(*args, **kwargs):
+        db.add(DirectReadCache(
+            client_id="client-a", request_hash="collision", capability_id="placements",
+            source="yandex_direct_live_report", fetched_at=now, expires_at=now,
+        ))
+        db.flush()
+
+    monkeypatch.setattr(audit_tools, "execute_direct_read", conflicting_cache)
+    results, direct_calls = collect_audit_data_requests(
+        db, "client-a", [_request(family="yan", subtype="yan_retargeting", dimension="placements")],
+    )
+
+    assert direct_calls == 0
+    assert results[0].status == "failed"
+    assert db.scalar(select(DirectReadCache).where(DirectReadCache.request_hash == "collision")) is not None
 
 
 def test_registry_is_read_only_and_does_not_expose_endpoints_or_credentials():

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime
+import logging
 from typing import Any, Callable
 
 from sqlalchemy import select
@@ -15,6 +16,9 @@ from app.services.yandex_direct_read_capabilities import (
     YANDEX_DIRECT_READ_CAPABILITIES,
     public_direct_read_manifest,
 )
+
+
+logger = logging.getLogger(__name__)
 
 MAX_AUDIT_DATA_REQUESTS = 20
 MAX_REQUESTS_PER_HYPOTHESIS = 4
@@ -297,18 +301,21 @@ def collect_audit_data_requests(
             )
         elif capability.live_supported:
             try:
-                outcome = execute_direct_read(
-                    db,
-                    client_id,
-                    request,
-                    audit_job_id=audit_job_id,
-                    allow_cache=cache_policy != "fresh",
-                    cache_policy=cache_policy,
-                )
-                result = outcome.result
-                result.live_attempted = not result.cached
-                result.live_error_code = result.error_code if result.live_attempted else None
-                direct_api_calls += outcome.api_calls
+                # A cache or persistence collision must not leave the outer audit
+                # transaction aborted. Direct reads remain read-only either way.
+                with db.begin_nested():
+                    outcome = execute_direct_read(
+                        db,
+                        client_id,
+                        request,
+                        audit_job_id=audit_job_id,
+                        allow_cache=cache_policy != "fresh",
+                        cache_policy=cache_policy,
+                    )
+                    result = outcome.result
+                    result.live_attempted = not result.cached
+                    result.live_error_code = result.error_code if result.live_attempted else None
+                    direct_api_calls += outcome.api_calls
             except YandexDirectReadError as exc:
                 direct_api_calls += int(getattr(exc, "api_calls", 0) or 0)
                 result = AuditDataRequestResult(
@@ -327,6 +334,10 @@ def collect_audit_data_requests(
                     retryable=exc.retryable,
                 )
             except Exception:
+                logger.exception(
+                    "AUDIT_DIRECT_READ_ADAPTER_FAILED audit_job_id=%s capability_id=%s request_id=%s",
+                    audit_job_id, capability_id, request.request_id,
+                )
                 result = AuditDataRequestResult(
                     request_id=request.request_id,
                     hypothesis_id=request.hypothesis_id,
