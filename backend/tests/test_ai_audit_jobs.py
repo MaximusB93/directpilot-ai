@@ -1945,6 +1945,30 @@ def test_total_timeout_completes_with_saved_backend_fallback(monkeypatch):
     assert same_job.status == "completed"
 
 
+def test_final_model_bad_request_retries_with_helper_model(monkeypatch):
+    calls = []
+
+    async def provider(model, *args, **kwargs):
+        calls.append(model)
+        if model == "qwen/qwen3-14b":
+            raise HTTPException(status_code=400, detail="unsupported request")
+        return {"model": model, "content": _structured_answer()}
+
+    monkeypatch.setattr(audit_jobs, "generate_openrouter_response", provider)
+
+    response = asyncio.run(
+        audit_jobs._call_audit_provider(
+            "generate_answer",
+            "qwen/qwen3-14b",
+            "structured final audit prompt",
+            max_tokens=100,
+        )
+    )
+
+    assert calls == ["qwen/qwen3-14b", audit_jobs.AI_AUDIT_HELPER_MODEL]
+    assert response["model"] == audit_jobs.AI_AUDIT_HELPER_MODEL
+
+
 def test_stale_or_cancelled_job_can_be_reset_without_deletion():
     db = _db()
     job = _create(db)

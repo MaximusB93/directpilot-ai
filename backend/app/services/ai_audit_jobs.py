@@ -5140,7 +5140,30 @@ def _claim_provider_stage(db: Session, job: AiAuditJob, stage: str, *, progress_
 async def _call_audit_provider(stage: str, *args: Any, **kwargs: Any) -> dict[str, Any]:
     try:
         async with asyncio.timeout(AUDIT_STAGE_TOTAL_TIMEOUT_SECONDS[stage]):
-            return await generate_openrouter_response(*args, **kwargs)
+            try:
+                return await generate_openrouter_response(*args, **kwargs)
+            except HTTPException as exc:
+                # A permanent request incompatibility of the selected final model
+                # must not discard already collected read-only evidence. The helper
+                # model is already used for the staged audit and can return the same
+                # structured final schema without exposing credentials to the client.
+                model = str(args[0]) if args else ""
+                if (
+                    stage == "generate_answer"
+                    and exc.status_code == status.HTTP_400_BAD_REQUEST
+                    and model
+                    and model != AI_AUDIT_HELPER_MODEL
+                ):
+                    logger.warning(
+                        "AI_AUDIT_FINAL_MODEL_FALLBACK stage=%s requested_model=%s fallback_model=%s reason=http_400",
+                        stage,
+                        model,
+                        AI_AUDIT_HELPER_MODEL,
+                    )
+                    return await generate_openrouter_response(
+                        AI_AUDIT_HELPER_MODEL, *args[1:], **kwargs,
+                    )
+                raise
     except TimeoutError as exc:
         raise HTTPException(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
