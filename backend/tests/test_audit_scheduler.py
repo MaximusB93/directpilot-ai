@@ -429,6 +429,34 @@ def test_unnamed_performance_campaign_keeps_safe_scope_for_terminal_follow_up():
     assert coverage["campaignMatrix"][0]["status"] == "insufficient_data"
 
 
+def test_missing_campaign_evidence_stays_pending_during_breadth_then_becomes_unavailable():
+    snapshot = {
+        "minimumCoveragePlan": [
+            {"campaignName": "Campaign A", "capabilityId": "campaign_settings", "applicable": True},
+        ],
+        "auditRuntime": {"schedulerPhase": "breadth"},
+    }
+
+    pending = canonical_coverage_projection(build_canonical_evidence_index(snapshot, []), snapshot)
+    assert pending["campaignMatrix"][0]["status"] == "not_requested"
+
+    snapshot["auditRuntime"]["schedulerPhase"] = "finalization"
+    terminal = canonical_coverage_projection(build_canonical_evidence_index(snapshot, []), snapshot)
+
+    assert terminal["campaignMatrix"][0]["status"] == "unavailable"
+    assert terminal["campaignMatrix"][0]["absenceReason"] == "missing_reconciled_evidence"
+    assert terminal["summary"] == {
+        "accountCapabilities": 0,
+        "campaignCapabilities": 0,
+        "rowsReceived": 0,
+        "rowsAnalyzedByBackend": 0,
+        "rowsSentToAi": 0,
+        "applicableCampaigns": 1,
+        "coveredCampaigns": 1,
+        "campaignsWithCollectedData": [],
+    }
+
+
 def test_old_snapshot_without_scheduler_fields_remains_readable():
     snapshot = {"auditRuntime": {"requestsCount": 3}}
     runtime = audit_jobs._audit_runtime(snapshot)

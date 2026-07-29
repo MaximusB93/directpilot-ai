@@ -275,6 +275,10 @@ def canonical_coverage_projection(
     campaigns = [public(item) for item in index.get("entries") or [] if item.get("scope") == "campaign"]
     matrix: list[dict[str, Any]] = []
     if snapshot is not None:
+        runtime = snapshot.get("auditRuntime") or {}
+        collection_terminal = str(runtime.get("schedulerPhase") or "") in {
+            "verification", "depth", "finalization",
+        }
         expected: dict[tuple[str, str], dict[str, Any]] = {}
         for item in snapshot.get("minimumCoveragePlan") or []:
             if not isinstance(item, dict):
@@ -303,17 +307,27 @@ def canonical_coverage_projection(
                 and str(item.get("capabilityId") or "") in candidates
             ), None)
             if matched is None:
+                # During breadth, a missing entry can still be an in-flight
+                # collection. Once collection has ended, retain the matrix row
+                # as an explicit unavailable capability rather than presenting
+                # a silently dropped request as `not_requested`.
+                public_status = "unavailable" if collection_terminal else "not_requested"
+                absence_reason = (
+                    "missing_reconciled_evidence" if collection_terminal else "not_requested"
+                )
                 matrix.append({
                     "campaignName": campaign_name,
                     "capabilityId": capability_id,
-                    "status": "not_requested",
+                    "status": public_status,
                     "rowsReceived": 0,
                     "rowsAnalyzedByBackend": 0,
                     "rowsSentToAi": 0,
                     "source": None,
                     "applicable": bool(planned.get("applicable", True)),
-                    "absenceReason": "not_requested",
-                    "limitations": [],
+                    "absenceReason": absence_reason,
+                    "limitations": [
+                        "No campaign-scoped evidence could be reconciled after collection completed."
+                    ] if collection_terminal else [],
                 })
                 continue
             raw_status = str(matched.get("status") or "unavailable")
