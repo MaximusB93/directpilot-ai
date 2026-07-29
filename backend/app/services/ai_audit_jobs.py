@@ -944,7 +944,7 @@ def _apply_live_baseline(
         if not isinstance(row, dict) or not row.get("name"):
             continue
         name = str(row.get("name"))
-        scope = campaign_scope_key(
+        scope = str(row.get("campaign_scope_key") or row.get("campaignScopeKey") or "").strip() or campaign_scope_key(
             row.get("campaign_id") or row.get("CampaignId") or row.get("id")
         )
         metadata = {

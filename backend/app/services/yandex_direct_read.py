@@ -243,6 +243,12 @@ def _raw_campaign_name(row: dict[str, Any]) -> str | None:
     return str(value) if value not in (None, "") else None
 
 
+def _campaign_scope_key(campaign_id: str) -> str:
+    """Return the non-reversible campaign reference allowed into audit evidence."""
+
+    return "campaign:" + hashlib.sha256(campaign_id.encode("utf-8")).hexdigest()[:24]
+
+
 def _private_execution_snapshot(job: AiAuditJob) -> tuple[dict[str, Any], dict[str, Any]]:
     stored = _json_load(job.prompt_snapshot_json, {}) or {}
     private = stored.setdefault("privateExecution", {})
@@ -271,6 +277,7 @@ def _store_live_campaign_mapping(
         by_id[campaign_id] = {
             "stableRef": f"campaign_{hashlib.sha256(campaign_id.encode('utf-8')).hexdigest()[:12]}",
             "campaignId": campaign_id,
+            "scopeKey": _campaign_scope_key(campaign_id),
             "sourceName": campaign_name[:255],
             "displayName": campaign_name[:255],
         }
@@ -311,6 +318,9 @@ def _decorate_live_campaign_names(
                 row["Name"] = item["displayName"]
             if "CampaignName" in row or "campaign_name" in row:
                 row["CampaignName"] = item["displayName"]
+            # Keep only the one-way identity required to reconcile evidence.
+            # _safe_value removes the provider's CampaignId before persistence.
+            row["campaign_scope_key"] = item["scopeKey"]
         decorated.append(row)
     return decorated
 

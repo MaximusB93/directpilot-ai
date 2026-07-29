@@ -54,8 +54,9 @@ def _row_campaign_scope(
     snapshot: dict[str, Any], row: dict[str, Any], *, capability: str,
 ) -> tuple[str | None, str | None]:
     names = ("CampaignId", "campaign_id", "id") if capability == "campaigns" else ("CampaignId", "campaign_id")
-    raw_id = _row_value(row, *names)
-    scope = campaign_scope_key(raw_id)
+    scope = str(_row_value(row, "campaign_scope_key", "campaignScopeKey") or "").strip()
+    if not scope:
+        scope = campaign_scope_key(_row_value(row, *names)) or ""
     trusted_names = trusted_scope_names(snapshot)
     if scope and scope in trusted_names:
         return scope, trusted_names[scope]

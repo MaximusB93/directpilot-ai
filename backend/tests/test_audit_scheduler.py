@@ -10,6 +10,7 @@ from app.db import Base
 from app.models import ClientAccount, DirectReportJob, Organization, User
 from app.schemas import AiAuditCreateRequest, AuditDataRequest
 from app.services.audit_evidence_reconciliation import (
+    campaign_scope_key,
     canonical_coverage_projection,
     capability_candidates,
 )
@@ -334,14 +335,20 @@ def test_fresh_baseline_evidence_counts_toward_campaign_coverage():
             "request_id": "baseline_campaigns", "campaign_name": "__all_campaigns__",
             "capability_id": "campaigns", "dimension": "campaigns", "status": "collected",
             "source": "yandex_direct_live_report", "rows_total": 1, "rows_analyzed": 1,
-            "data": [{"CampaignId": "direct-search-a", "name": "Search A", "type": "TEXT_CAMPAIGN"}],
+            "data": [{
+                "campaign_scope_key": campaign_scope_key("direct-search-a"),
+                "name": "Search A", "type": "TEXT_CAMPAIGN",
+            }],
         },
         {
             "request_id": "baseline_campaign_performance", "campaign_name": "__all_campaigns__",
             "capability_id": "campaign_performance", "dimension": "campaign_performance",
             "status": "collected", "source": "yandex_direct_live_report", "rows_total": 1,
             "rows_analyzed": 1,
-            "data": [{"CampaignId": "direct-search-a", "campaign_name": "Search A", "impressions": 1000, "clicks": 20, "cost": 500}],
+            "data": [{
+                "campaign_scope_key": campaign_scope_key("direct-search-a"),
+                "campaign_name": "Search A", "impressions": 1000, "clicks": 20, "cost": 500,
+            }],
         },
     ]
     snapshot = {

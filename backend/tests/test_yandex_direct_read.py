@@ -470,9 +470,11 @@ def test_fresh_live_campaign_mapping_resolves_unsynced_campaign_without_public_i
     )
 
     assert baseline.result.data[0]["name"] == "Fresh Campaign"
+    assert baseline.result.data[0]["campaign_scope_key"] == direct_read._campaign_scope_key("987654321")
     assert specs[0]["SelectionCriteria"]["Filter"][0]["Values"] == ["987654321"]
     assert drilldown.result.status == "collected"
     assert all("campaign_id" not in row and "id" not in row for row in drilldown.result.data)
+    assert drilldown.result.data[0]["campaign_scope_key"] == direct_read._campaign_scope_key("987654321")
     db.refresh(job)
     private = direct_read._json_load(job.prompt_snapshot_json, {})["privateExecution"]
     assert private["liveCampaignMap"][0]["campaignId"] == "987654321"
