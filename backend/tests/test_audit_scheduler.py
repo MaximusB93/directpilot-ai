@@ -284,6 +284,88 @@ def test_processing_report_is_not_polled_before_next_retry(monkeypatch):
     assert runtime["nextRetryAt"] is not None
 
 
+def test_pending_report_blocks_direct_calls_even_without_snapshot_processing_request(monkeypatch):
+    db = _db()
+    job = _job(db)
+    request = _request()
+    now = datetime.now(UTC)
+    job.status = "context_ready"
+    job.current_stage = "collect_live_data"
+    job.started_at = now
+    job.context_snapshot_json = audit_jobs._json_dump({
+        "auditRuntime": {
+            "executionProfile": "full_account", "schedulerPhase": "breadth",
+            "collectionDeadlineAt": (now + timedelta(minutes=5)).isoformat(),
+            "hardDeadlineAt": (now + timedelta(minutes=7)).isoformat(),
+            "lastProgressAt": now.isoformat(),
+        },
+        "pendingDataRequests": [request.model_dump(mode="json")],
+        "processingDataRequests": [],
+        "deferredDepthDataRequests": [],
+    })
+    db.add(DirectReportJob(
+        audit_job_id=job.id,
+        client_id=job.client_id,
+        capability_id="search_queries",
+        request_hash="safe-pending-report-hash",
+        report_name="audit-test",
+        report_spec_json="{}",
+        status="processing",
+        next_retry_at=now + timedelta(seconds=45),
+    ))
+    db.commit()
+
+    def forbidden_direct(*args, **kwargs):
+        raise AssertionError("Direct must not be called before nextRetryAt")
+
+    monkeypatch.setattr(audit_jobs, "collect_audit_data_requests", forbidden_direct)
+    waiting = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
+
+    assert waiting.current_stage == "wait_for_offline_reports"
+    runtime = audit_jobs._json_load(waiting.context_snapshot_json, {})["auditRuntime"]
+    assert runtime["nextRetryAt"] is not None
+
+
+def test_fresh_baseline_evidence_counts_toward_campaign_coverage():
+    db = _db()
+    job = _job(db)
+    baseline = [
+        {
+            "request_id": "baseline_campaigns", "campaign_name": "__all_campaigns__",
+            "capability_id": "campaigns", "dimension": "campaigns", "status": "collected",
+            "source": "yandex_direct_live_report", "rows_total": 1, "rows_analyzed": 1,
+            "data": [{"CampaignId": "direct-search-a", "name": "Search A", "type": "TEXT_CAMPAIGN"}],
+        },
+        {
+            "request_id": "baseline_campaign_performance", "campaign_name": "__all_campaigns__",
+            "capability_id": "campaign_performance", "dimension": "campaign_performance",
+            "status": "collected", "source": "yandex_direct_live_report", "rows_total": 1,
+            "rows_analyzed": 1,
+            "data": [{"CampaignId": "direct-search-a", "campaign_name": "Search A", "impressions": 1000, "clicks": 20, "cost": 500}],
+        },
+    ]
+    snapshot = {
+        "analysisPeriod": {"dateFrom": "2026-06-01", "dateTo": "2026-06-30", "days": 30},
+        "targetKpis": {"targetCpa": 500},
+        "selectedGoals": {"ids": [], "hasGoalData": False},
+        "minimumCoveragePlan": [
+            {"campaignName": "Search A", "capabilityId": "campaign_settings", "applicable": True},
+            {"campaignName": "Search A", "capabilityId": "campaign_performance", "applicable": True},
+        ],
+    }
+    audit_jobs._apply_live_baseline(snapshot, baseline, allow_saved_fallback=False)
+    audit_jobs._save_full_baseline_results(db, job, baseline)
+
+    audit_jobs._refresh_scheduler_coverage(snapshot, audit_jobs._load_full_evidence_results(db, job))
+
+    coverage = snapshot["canonicalEvidenceCoverage"]
+    assert coverage["summary"]["coveredCampaigns"] == 1
+    assert {(item["capabilityId"], item["status"]) for item in coverage["campaignMatrix"]} == {
+        ("campaign_settings", "collected"),
+        ("campaign_performance", "collected"),
+    }
+
+
 def test_old_snapshot_without_scheduler_fields_remains_readable():
     snapshot = {"auditRuntime": {"requestsCount": 3}}
     runtime = audit_jobs._audit_runtime(snapshot)

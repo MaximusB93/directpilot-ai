@@ -4472,8 +4472,9 @@ def _finish_collection_for_deadline(
     )
     _save_full_drilldown_results(db, job, full_results)
     _refresh_drilldown_projections(snapshot, full_results)
-    refresh_evidence_coverage_registry(snapshot, full_results)
-    _refresh_scheduler_coverage(snapshot, full_results)
+    evidence_results = _load_full_evidence_results(db, job)
+    refresh_evidence_coverage_registry(snapshot, evidence_results)
+    _refresh_scheduler_coverage(snapshot, evidence_results)
     snapshot["pendingDataRequests"] = []
     snapshot["processingDataRequests"] = []
     snapshot["deferredDepthDataRequests"] = []
@@ -4739,6 +4740,20 @@ def _load_full_baseline_results(db: Session, job: AiAuditJob) -> list[dict[str, 
     return load_audit_evidence_results(db, job, evidence_kind="baseline")
 
 
+def _load_full_evidence_results(db: Session, job: AiAuditJob) -> list[dict[str, Any]]:
+    """Return all persisted read-only evidence, including the fresh baseline.
+
+    Baseline campaign and performance rows are account-wide requests, but they
+    are canonically derived into campaign-scoped evidence after campaign IDs
+    are trusted.  Dropping them when drilldown evidence is refreshed makes the
+    coverage matrix report zero covered campaigns despite collected live data.
+    """
+    return _merge_full_drilldown_results(
+        _load_full_baseline_results(db, job),
+        _load_full_drilldown_results(db, job),
+    )
+
+
 def _save_full_baseline_results(db: Session, job: AiAuditJob, results: list[dict[str, Any]]) -> None:
     save_audit_evidence_results(db, job, evidence_kind="baseline", results=results)
 
@@ -4952,8 +4967,9 @@ def _prepare_saved_evidence_for_final_fallback(
         classifications = snapshot.get("campaignClassifications")
         return bool(verification) and isinstance(classifications, list) and bool(classifications)
     try:
-        full_results = _load_full_drilldown_results(db, job)
-        coverage = refresh_evidence_coverage_registry(snapshot, full_results)
+        coverage = refresh_evidence_coverage_registry(
+            snapshot, _load_full_evidence_results(db, job),
+        )
     except Exception:
         logger.exception("AI_AUDIT_SAVED_EVIDENCE_INVALID job_id=%s", job.id)
         return False
@@ -5840,8 +5856,7 @@ async def advance_audit_job(
                 return job
             waiting_reason, next_retry_at = _pending_report_wait(db, job)
             if (
-                processing
-                and waiting_reason
+                waiting_reason
                 and next_retry_at is not None
                 and _as_aware(next_retry_at) > _now()
             ):
@@ -6134,7 +6149,9 @@ async def advance_audit_job(
             snapshot["failedDataRequests"] = []
             snapshot["unavailableDataRequests"] = [item.model_dump(mode="json") for item in rejected]
             snapshot["unavailableDataRequests"].extend(policy_rejection_results)
-            coverage = refresh_evidence_coverage_registry(snapshot, initial_full_results)
+            coverage = refresh_evidence_coverage_registry(
+                snapshot, _load_full_evidence_results(db, job),
+            )
             _sync_policy_runtime(snapshot, coverage)
             facts = build_observed_facts(snapshot)
             cascade_hypotheses = build_cascade_hypotheses(plan, facts, round_number=1)
@@ -6216,8 +6233,7 @@ async def advance_audit_job(
 
             waiting_reason, next_retry_at = _pending_report_wait(db, job)
             if (
-                processing
-                and waiting_reason
+                waiting_reason
                 and next_retry_at is not None
                 and _as_aware(next_retry_at) > _now()
             ):
@@ -6268,9 +6284,10 @@ async def advance_audit_job(
             )
             _save_full_drilldown_results(db, job, full_results)
             _refresh_drilldown_projections(snapshot, full_results)
-            coverage = refresh_evidence_coverage_registry(snapshot, full_results)
+            evidence_results = _load_full_evidence_results(db, job)
+            coverage = refresh_evidence_coverage_registry(snapshot, evidence_results)
             _sync_policy_runtime(snapshot, coverage)
-            _refresh_scheduler_coverage(snapshot, full_results)
+            _refresh_scheduler_coverage(snapshot, evidence_results)
             for item in collected:
                 event_name = {
                     "processing": "AUDIT_REQUEST_PROCESSING",
@@ -6749,12 +6766,10 @@ async def advance_audit_job(
             )
             full_results = _load_full_drilldown_results(db, job) if policy_active else []
             if policy_active:
-                coverage = refresh_evidence_coverage_registry(snapshot, full_results)
-                all_evidence_results = _merge_full_drilldown_results(
-                    _load_full_baseline_results(db, job), full_results,
-                )
+                all_evidence_results = _load_full_evidence_results(db, job)
+                coverage = refresh_evidence_coverage_registry(snapshot, all_evidence_results)
                 reconcile_collected_audit_evidence(snapshot, all_evidence_results)
-                coverage = refresh_evidence_coverage_registry(snapshot, full_results)
+                coverage = refresh_evidence_coverage_registry(snapshot, all_evidence_results)
                 runtime = _sync_policy_runtime(snapshot, coverage)
                 runtime["completionGateRuns"] = int(runtime.get("completionGateRuns") or 0) + 1
             else:
@@ -6810,7 +6825,9 @@ async def advance_audit_job(
                         _refresh_drilldown_projections(snapshot, full_results)
                     if accepted:
                         _apply_next_round_requests(snapshot, accepted)
-                        refreshed = refresh_evidence_coverage_registry(snapshot, full_results)
+                        refreshed = refresh_evidence_coverage_registry(
+                            snapshot, _load_full_evidence_results(db, job),
+                        )
                         _sync_policy_runtime(snapshot, refreshed)
                         job.context_snapshot_json = _json_dump(snapshot)
                         job.status = "context_ready"
@@ -6828,7 +6845,9 @@ async def advance_audit_job(
                         db.refresh(job)
                         return job
 
-                coverage = refresh_evidence_coverage_registry(snapshot, full_results)
+                coverage = refresh_evidence_coverage_registry(
+                    snapshot, _load_full_evidence_results(db, job),
+                )
                 _sync_policy_runtime(snapshot, coverage)
                 diagnostics = {
                     "finalCompactionLevel": None,
