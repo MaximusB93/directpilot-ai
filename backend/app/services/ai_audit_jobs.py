@@ -696,6 +696,21 @@ def classify_audit_campaigns(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     return result
 
 
+def _classification_summary(classifications: list[dict[str, Any]]) -> dict[str, int]:
+    """Expose only aggregate classification diagnostics; campaign identities stay private."""
+    summary: dict[str, int] = {}
+    for item in classifications:
+        if not isinstance(item, dict):
+            continue
+        key = ":".join((
+            str(item.get("campaign_family") or "unknown")[:40],
+            str(item.get("campaign_subtype") or "unknown")[:40],
+            str(item.get("classification_source") or "unknown")[:60],
+        ))
+        summary[key] = summary.get(key, 0) + 1
+    return dict(sorted(summary.items()))
+
+
 def _request(
     hypothesis_id: str,
     classification: dict[str, str],
@@ -6062,11 +6077,13 @@ async def advance_audit_job(
         elif stage == "classify_campaigns":
             snapshot = _json_load(job.context_snapshot_json, {})
             snapshot["campaignClassifications"] = classify_audit_campaigns(snapshot)
+            classification_summary = _classification_summary(snapshot["campaignClassifications"])
             breadth_requests = build_minimum_coverage_requests(snapshot)
             snapshot["minimumCoveragePlan"] = _minimum_coverage_plan(breadth_requests, snapshot)
             runtime = _audit_runtime(snapshot)
             runtime["campaignsTotal"] = len(snapshot["campaignClassifications"])
             runtime["breadthRequestsTotal"] = len(breadth_requests)
+            runtime["classificationSummary"] = classification_summary
             runtime["schedulerPhase"] = "breadth"
             observed_facts = build_observed_facts(snapshot)
             snapshot["observedFacts"] = [item.model_dump(mode="json") for item in observed_facts]
@@ -6079,6 +6096,12 @@ async def advance_audit_job(
                 job.id,
                 len(snapshot["campaignClassifications"]),
                 len(observed_facts),
+            )
+            logger.info(
+                "CASCADE_AUDIT_CLASSIFICATION_SUMMARY audit_job_id=%s classifications=%s breadth_requests=%s",
+                job.id,
+                classification_summary,
+                len(breadth_requests),
             )
             job.context_snapshot_json = _json_dump(snapshot)
             job.status = "context_ready"

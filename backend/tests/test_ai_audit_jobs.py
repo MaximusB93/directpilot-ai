@@ -1202,6 +1202,20 @@ def test_text_and_unified_mixed_campaigns_use_current_strategy_metadata():
     assert unified_mixed["warnings"]
 
 
+def test_classification_summary_contains_only_aggregate_categories():
+    summary = audit_jobs._classification_summary([
+        {"campaign_name": "private search", "campaign_family": "search", "campaign_subtype": "search", "classification_source": "direct_api_strategy"},
+        {"campaign_name": "private mixed", "campaign_family": "mixed", "campaign_subtype": "mixed", "classification_source": "direct_api_mixed"},
+        {"campaign_name": "private search two", "campaign_family": "search", "campaign_subtype": "search", "classification_source": "direct_api_strategy"},
+    ])
+
+    assert summary == {
+        "mixed:mixed:direct_api_mixed": 1,
+        "search:search:direct_api_strategy": 2,
+    }
+    assert "private" not in audit_jobs._json_dump(summary)
+
+
 def test_initial_planner_cannot_add_independent_hypothesis():
     snapshot = {
         "analysisPeriod": {"dateFrom": "2026-06-10", "dateTo": "2026-07-09", "days": 30},
