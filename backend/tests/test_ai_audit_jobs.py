@@ -2898,6 +2898,45 @@ def test_final_projection_is_an_allowlist_without_private_ids_or_samples():
     assert "requestIds" not in serialized
 
 
+def test_final_projection_bounds_canonical_coverage_without_changing_the_ui_matrix():
+    db = _db()
+    job = _create(db)
+    snapshot = _realistic_oversized_final_snapshot()
+    ui_only_marker = "ui-only-coverage-detail-" + ("x" * 4000)
+    snapshot["canonicalEvidenceCoverage"] = {
+        "summary": {"applicableCampaigns": 15, "coveredCampaigns": 15},
+        "accountWide": [{
+            "capabilityId": "campaign_performance", "status": "collected",
+            "rowsReceived": 15, "rowsAnalyzedByBackend": 15,
+        }],
+        "campaignMatrix": [
+            {
+                "campaignName": f"Campaign {index}",
+                "capabilityId": "search_queries",
+                "status": "unavailable" if index == 0 else "collected",
+                "rowsReceived": 0 if index == 0 else 500,
+                "rowsAnalyzedByBackend": 0 if index == 0 else 500,
+                "rowsSentToAi": 0 if index == 0 else 5,
+                "dataQuality": "insufficient" if index == 0 else "sufficient",
+                "limitations": [ui_only_marker],
+            }
+            for index in range(96)
+        ],
+    }
+
+    projection = audit_jobs.build_final_audit_projection(snapshot, compaction_level=3)
+    bundle = audit_jobs.build_final_audit_prompt_bundle(snapshot, job)
+    compact_coverage = projection["dataCoverage"]
+
+    assert "canonicalEvidenceCoverage" not in projection
+    assert compact_coverage["matrixRowsTotal"] == 96
+    assert compact_coverage["matrixStatusCounts"] == {"unavailable": 1, "collected": 95}
+    assert len(compact_coverage["campaignMatrix"]) == 10
+    assert compact_coverage["campaignMatrix"][0]["status"] == "unavailable"
+    assert ui_only_marker not in audit_jobs._json_dump(projection)
+    assert bundle["diagnostics"]["fitsModelContext"] is True
+
+
 def test_cancel_before_generation_and_preserve_completed_result():
     db = _db()
     job = _create(db)

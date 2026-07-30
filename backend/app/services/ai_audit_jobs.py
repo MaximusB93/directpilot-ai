@@ -2743,6 +2743,72 @@ def _final_classification_summary(classifications: list[dict[str, Any]]) -> dict
     return {"total": len(classifications), "byFamily": by_family, "bySubtype": by_subtype}
 
 
+def _final_canonical_coverage_projection(
+    snapshot: dict[str, Any], *, compaction_level: int,
+) -> dict[str, Any]:
+    """Keep model-facing coverage bounded without changing the UI/API matrix."""
+
+    coverage = snapshot.get("canonicalEvidenceCoverage") or {}
+    summary = coverage.get("summary") if isinstance(coverage, dict) else {}
+    safe_summary = {
+        str(key)[:80]: value
+        for key, value in (summary.items() if isinstance(summary, dict) else [])
+        if isinstance(value, (int, float, bool)) and not isinstance(value, str)
+    }
+    matrix = coverage.get("campaignMatrix") if isinstance(coverage, dict) else []
+    compact_rows: list[dict[str, Any]] = []
+    status_counts: dict[str, int] = {}
+    for raw in matrix if isinstance(matrix, list) else []:
+        if not isinstance(raw, dict):
+            continue
+        status_value = str(raw.get("status") or "unknown")[:50]
+        status_counts[status_value] = status_counts.get(status_value, 0) + 1
+        compact_rows.append({
+            "campaignName": _safe_final_text(raw.get("campaignName"), max_chars=300) or "Кампания без названия",
+            "capabilityId": str(raw.get("capabilityId") or "unknown")[:100],
+            "status": status_value,
+            "rowsReceived": _safe_coverage_count(raw.get("rowsReceived"), default=0) or 0,
+            "rowsAnalyzedByBackend": _safe_coverage_count(raw.get("rowsAnalyzedByBackend"), default=0) or 0,
+            "rowsSentToAi": _safe_coverage_count(raw.get("rowsSentToAi"), default=0) or 0,
+            "dataQuality": str(raw.get("dataQuality") or "unknown")[:50],
+            "applicable": bool(raw.get("applicable", True)),
+            "absenceReason": _safe_final_text(raw.get("absenceReason"), max_chars=120),
+        })
+
+    status_rank = {
+        "failed": 0,
+        "unavailable": 1,
+        "partial": 2,
+        "insufficient_data": 3,
+        "not_requested": 4,
+        "collected": 5,
+        "not_applicable": 6,
+    }
+    compact_rows.sort(key=lambda item: (
+        status_rank.get(item["status"], 7), item["campaignName"], item["capabilityId"],
+    ))
+    row_limit = {0: 48, 1: 30, 2: 18, 3: 10}.get(max(0, min(int(compaction_level), 3)), 10)
+    account_wide = coverage.get("accountWide") if isinstance(coverage, dict) else []
+    account_wide = account_wide if isinstance(account_wide, list) else []
+    compact_account = [
+        {
+            "capabilityId": str(item.get("capabilityId") or "unknown")[:100],
+            "status": str(item.get("status") or "unknown")[:50],
+            "rowsReceived": _safe_coverage_count(item.get("rowsReceived"), default=0) or 0,
+            "rowsAnalyzedByBackend": _safe_coverage_count(item.get("rowsAnalyzedByBackend"), default=0) or 0,
+        }
+        for item in account_wide[:20]
+        if isinstance(item, dict)
+    ]
+    return {
+        "summary": safe_summary,
+        "matrixRowsTotal": len(compact_rows),
+        "matrixStatusCounts": status_counts,
+        "accountWide": compact_account,
+        "campaignMatrix": compact_rows[:row_limit],
+    }
+
+
 def build_final_audit_projection(
     snapshot: dict[str, Any],
     *,
@@ -2893,11 +2959,7 @@ def build_final_audit_projection(
         if item.get("status") == "partial"
     ]
 
-    coverage = snapshot.get("canonicalEvidenceCoverage") or {
-        "accountWide": [],
-        "campaignScoped": [],
-        "summary": {"accountCapabilities": 0, "campaignCapabilities": 0},
-    }
+    coverage = _final_canonical_coverage_projection(snapshot, compaction_level=level)
     return {
         "analysisPeriod": {
             key: analysis_period.get(key)
@@ -2908,7 +2970,6 @@ def build_final_audit_projection(
             if key in analysis_period
         },
         "dataCoverage": coverage,
-        "canonicalEvidenceCoverage": coverage,
         "accountTotals": _safe_metric_values(snapshot.get("accountTotals")),
         "targetKpis": _safe_metric_values(snapshot.get("targetKpis")),
         "selectedGoals": {
