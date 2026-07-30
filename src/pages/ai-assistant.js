@@ -596,7 +596,7 @@ export function renderAiAuditJob({
           ${(aiAuditJob.result?.truncated || aiAuditJob.result?.compactRetryAvailable) ? '<button class="approveButton" data-ai-audit-compact-retry>Повторить компактную генерацию</button>' : ''}
           ${['completed', 'cancelled'].includes(aiAuditJob.status) ? '<button class="secondaryButton" data-ai-audit-new>Новый аудит</button>' : ''}
         </div>
-      ` : `<div class="heroActions"><label>Данные аудита <select data-ai-audit-cache-policy><option value="fresh" selected>Свежие live-данные</option><option value="prefer_cache">Кеш с обновлением</option><option value="cache_only">Только кеш</option></select></label><button class="approveButton" data-ai-audit-start="full_account" ${selectedClientId && !aiAuditLoading ? '' : 'disabled'}>${aiAuditLoading ? 'Создаём...' : 'Запустить полный аудит'}</button></div>`}
+      ` : `<div class="heroActions"><label>Данные аудита <select data-ai-audit-cache-policy><option value="fresh" selected>Свежие live-данные</option><option value="prefer_cache">Кеш с обновлением</option><option value="cache_only">Только кеш</option></select></label><button class="approveButton" data-ai-audit-start="full_account" ${selectedClientId && !aiAuditLoading ? '' : 'disabled'}>${aiAuditLoading ? 'Создаём...' : 'Запустить полный аудит'}</button><button class="secondaryButton" data-ai-audit-start="short_summary" title="Быстрая проверка базового покрытия всех кампаний" ${selectedClientId && !aiAuditLoading ? '' : 'disabled'}>${aiAuditLoading ? 'Создаём...' : 'Краткое резюме'}</button></div>`}
       ${aiAuditError ? `<div class="authStatus integrationStatus">${escapeHtml(aiAuditError)}</div>` : ''}
     </section>
   `;
