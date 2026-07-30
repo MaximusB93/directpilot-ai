@@ -178,7 +178,7 @@ def validate_audit_data_requests(
             status, code = "not_applicable", "dimension_not_applicable"
         elif len(accepted) >= max(1, int(max_requests)) or (
             hypothesis_counts[request.hypothesis_id] >= MAX_REQUESTS_PER_HYPOTHESIS
-            and not request.request_id.startswith("policy_")
+            and not request.request_id.startswith(("policy_", "breadth_"))
         ):
             status, code = "skipped_budget_limit", "audit_request_budget_exceeded"
         else:

@@ -81,6 +81,41 @@ def test_search_queries_are_not_applicable_to_yan_retargeting():
     assert rejected[0].error_code == "dimension_not_applicable"
 
 
+def test_breadth_requests_are_not_limited_by_the_per_hypothesis_depth_budget():
+    capabilities = [
+        "ad_groups", "ads", "keywords", "autotargeting", "search_queries",
+        "goals", "devices", "geo",
+    ]
+    requests = [
+        _request(
+            dimension=capability_id,
+            request_id=f"breadth_000_{index:02d}_{capability_id}",
+        )
+        for index, capability_id in enumerate(capabilities)
+    ]
+
+    accepted, rejected = validate_audit_data_requests(requests, max_requests=len(requests))
+
+    assert {item.capability_id for item in accepted} == set(capabilities)
+    assert rejected == []
+
+
+def test_ai_requests_remain_limited_by_the_per_hypothesis_depth_budget():
+    requests = [
+        _request(dimension=capability_id, request_id=f"depth_{index:02d}")
+        for index, capability_id in enumerate((
+            "ad_groups", "ads", "keywords", "autotargeting", "search_queries",
+        ))
+    ]
+
+    accepted, rejected = validate_audit_data_requests(requests, max_requests=len(requests))
+
+    assert len(accepted) == 4
+    assert len(rejected) == 1
+    assert rejected[0].status == "skipped_budget_limit"
+    assert rejected[0].error_code == "audit_request_budget_exceeded"
+
+
 def test_unknown_campaign_type_cannot_request_specialized_dimension():
     accepted, rejected = validate_audit_data_requests([
         _request(family="unknown", subtype="unknown", dimension="retargeting_segments")
