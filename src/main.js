@@ -1228,7 +1228,7 @@ async function restoreAiAuditJob() {
   }
   try {
     const activeJob = await aiService.fetchActiveAiAuditJob(selectedClientId);
-    const job = activeJob || storedJob;
+    const job = aiStore.newestAiAuditJob(activeJob, storedJob);
     if (!job) {
       window.localStorage.removeItem(storageKey);
       return;

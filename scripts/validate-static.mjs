@@ -2,6 +2,7 @@ import { access, readFile } from 'node:fs/promises';
 import { renderSafeMarkdown } from '../src/core/markdown.js';
 import { renderAiAuditJob, renderAiAuditResult } from '../src/pages/ai-assistant.js';
 import { escapeHtml } from '../src/core/html.js';
+import { newestAiAuditJob } from '../src/stores/ai-store.js';
 
 const requiredFiles = [
   'index.html',
@@ -87,6 +88,22 @@ const files = Object.fromEntries(await Promise.all(requiredFiles.map(async (file
 
 function has(file, value) {
   return files[file].includes(value);
+}
+
+const newestCompletedAudit = newestAiAuditJob(
+  {
+    job_id: 'old-active-audit',
+    status: 'collecting_context',
+    updated_at: '2026-07-28T12:00:00Z',
+  },
+  {
+    job_id: 'latest-completed-audit',
+    status: 'completed',
+    updated_at: '2026-08-03T12:00:00Z',
+  },
+);
+if (newestCompletedAudit?.job_id !== 'latest-completed-audit') {
+  throw new Error('Newest staged audit recovery did not preserve the latest completed job.');
 }
 
 function lacks(file, values) {

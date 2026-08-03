@@ -132,6 +132,8 @@ FINAL_COMPACTION_LEVELS = (0, 1, 2, 3)
 FINAL_AUDIT_PROVIDER_MAX_TOKENS = 4000
 FINAL_SCHEMA_REPAIR_MAX_SECONDS = 45
 FINAL_SCHEMA_REPAIR_MIN_REMAINING_SECONDS = 20
+FINALIZATION_COMMIT_RESERVE_SECONDS = 5
+NON_PROVIDER_STAGE_STALE_SECONDS = 15 * 60
 PROVIDER_CONTEXT_OVERFLOW_CODE = "provider_context_limit_rejected"
 FINAL_PROVIDER_TIMEOUT_WARNING_CODE = "final_provider_timeout"
 _FINAL_PROVIDER_TIMEOUT_CODES = frozenset({"openrouter_timeout", "openrouter_total_timeout"})
@@ -3055,12 +3057,30 @@ def _effective_final_output_tokens(job: AiAuditJob) -> int:
     return max(1, min(int(job.max_tokens or 0), FINAL_AUDIT_PROVIDER_MAX_TOKENS))
 
 
-def _final_schema_repair_timeout(job: AiAuditJob) -> httpx.Timeout | None:
-    """Bound a formatting-only retry so it cannot outlive the final-stage lease."""
+def _remaining_final_provider_seconds(snapshot: dict[str, Any]) -> float | None:
+    """Return the provider budget left before the audit hard deadline."""
+
+    remaining = scheduler_deadline_state(snapshot).get("remainingSeconds")
+    if remaining is None:
+        return float(AUDIT_STAGE_TOTAL_TIMEOUT_SECONDS["generate_answer"])
+    return max(
+        0.0,
+        min(
+            float(AUDIT_STAGE_TOTAL_TIMEOUT_SECONDS["generate_answer"]),
+            float(remaining) - FINALIZATION_COMMIT_RESERVE_SECONDS,
+        ),
+    )
+
+
+def _final_schema_repair_timeout(job: AiAuditJob, snapshot: dict[str, Any]) -> httpx.Timeout | None:
+    """Bound a formatting-only retry by both the stage lease and audit deadline."""
     expires_at = _as_aware(job.stage_lease_expires_at) if job.stage_lease_expires_at else None
     if expires_at is None:
         return None
+    deadline_budget = _remaining_final_provider_seconds(snapshot)
     remaining_seconds = int((expires_at - _now()).total_seconds())
+    if deadline_budget is not None:
+        remaining_seconds = min(remaining_seconds, int(deadline_budget))
     if remaining_seconds < FINAL_SCHEMA_REPAIR_MIN_REMAINING_SECONDS:
         return None
     read_seconds = min(FINAL_SCHEMA_REPAIR_MAX_SECONDS, max(1, remaining_seconds - 10))
@@ -5179,6 +5199,13 @@ def _read_job(db: Session, job_id: str, organization_id: str) -> AiAuditJob:
 
 
 def is_audit_stage_stale(job: AiAuditJob, now: datetime | None = None) -> bool:
+    current = _as_aware(now or _now())
+    if job.status == "collecting_context":
+        last_update = job.stage_started_at or job.updated_at or job.started_at or job.created_at
+        return bool(
+            last_update
+            and _as_aware(last_update) + timedelta(seconds=NON_PROVIDER_STAGE_STALE_SECONDS) < current
+        )
     if job.status != "generating":
         return False
     lease_expires_at = job.stage_lease_expires_at
@@ -5188,7 +5215,7 @@ def is_audit_stage_stale(job: AiAuditJob, now: datetime | None = None) -> bool:
             return False
         lease_seconds = AUDIT_STAGE_LEASE_SECONDS.get(job.current_stage, 180)
         lease_expires_at = _as_aware(legacy_started_at) + timedelta(seconds=lease_seconds)
-    return _as_aware(lease_expires_at) < _as_aware(now or _now())
+    return _as_aware(lease_expires_at) < current
 
 
 def _prepare_saved_evidence_for_final_fallback(
@@ -5357,9 +5384,19 @@ def _claim_provider_stage(db: Session, job: AiAuditJob, stage: str, *, progress_
     return token
 
 
-async def _call_audit_provider(stage: str, *args: Any, **kwargs: Any) -> dict[str, Any]:
+async def _call_audit_provider(
+    stage: str,
+    *args: Any,
+    total_timeout_seconds: float | None = None,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    stage_timeout = (
+        float(total_timeout_seconds)
+        if total_timeout_seconds is not None
+        else float(AUDIT_STAGE_TOTAL_TIMEOUT_SECONDS[stage])
+    )
     try:
-        async with asyncio.timeout(AUDIT_STAGE_TOTAL_TIMEOUT_SECONDS[stage]):
+        async with asyncio.timeout(stage_timeout):
             try:
                 return await generate_openrouter_response(*args, **kwargs)
             except HTTPException as exc:
@@ -7162,7 +7199,10 @@ async def advance_audit_job(
                 )
 
             final_deadline = scheduler_deadline_state(snapshot)
-            if final_deadline["hardDeadlineReached"]:
+            final_provider_budget = _remaining_final_provider_seconds(snapshot)
+            if final_deadline["hardDeadlineReached"] or (
+                final_provider_budget is not None and final_provider_budget <= 0
+            ):
                 runtime = _audit_runtime(snapshot)
                 runtime["schedulerPhase"] = "finalization"
                 runtime["stopReason"] = "hard_deadline_reached"
@@ -7240,7 +7280,9 @@ async def advance_audit_job(
             try:
                 response = await _call_audit_provider(
                     stage, job.model, prompt, max_tokens=effective_final_max_tokens,
-                    max_tokens_cap=FINAL_AUDIT_PROVIDER_MAX_TOKENS, timeout=AUDIT_STAGE_PROVIDER_TIMEOUTS[stage],
+                    max_tokens_cap=FINAL_AUDIT_PROVIDER_MAX_TOKENS,
+                    timeout=AUDIT_STAGE_PROVIDER_TIMEOUTS[stage],
+                    total_timeout_seconds=final_provider_budget,
                 )
             except Exception as provider_exc:
                 timeout_code = final_provider_timeout_code(provider_exc)
@@ -7346,6 +7388,24 @@ async def advance_audit_job(
                             "в безопасный бюджет; сохранён backend-результат."
                         ),
                     )
+                retry_provider_budget = _remaining_final_provider_seconds(snapshot)
+                if retry_provider_budget is not None and retry_provider_budget <= 0:
+                    timings["finalAnswerOpenrouterMs"] = _elapsed_ms(openrouter_started_at)
+                    return _complete_backend_fallback_stage(
+                        db,
+                        job,
+                        snapshot,
+                        final_diagnostics,
+                        timings,
+                        reason_code="audit_hard_deadline_reached",
+                        final_status="backend_fallback_after_audit_deadline",
+                        warning=(
+                            "Временной бюджет аудита завершён до повторного вызова модели. "
+                            "Использован безопасный backend-отчёт по уже собранным данным."
+                        ),
+                        preserve_job_error=False,
+                        complete_immediately=True,
+                    )
                 _record_provider_attempt(snapshot, "final")
                 job.context_snapshot_json = _json_dump(snapshot)
                 db.commit()
@@ -7354,6 +7414,7 @@ async def advance_audit_job(
                         stage, job.model, prompt, max_tokens=effective_final_max_tokens,
                         max_tokens_cap=FINAL_AUDIT_PROVIDER_MAX_TOKENS,
                         timeout=AUDIT_STAGE_PROVIDER_TIMEOUTS[stage],
+                        total_timeout_seconds=retry_provider_budget,
                     )
                 except Exception as retry_exc:
                     timeout_code = final_provider_timeout_code(retry_exc)
@@ -7457,7 +7518,7 @@ async def advance_audit_job(
             if structured is None and not truncated:
                 initial_parsing = _safe_model_response_parsing(parsing)
                 initial_response_metadata = dict(provider_response_metadata)
-                repair_timeout = _final_schema_repair_timeout(job)
+                repair_timeout = _final_schema_repair_timeout(job, snapshot)
                 schema_repair = {
                     "attempted": False,
                     "status": "skipped_stage_time_budget" if repair_timeout is None else "pending",
@@ -7499,6 +7560,7 @@ async def advance_audit_job(
                                 max_tokens=effective_final_max_tokens,
                                 max_tokens_cap=FINAL_AUDIT_PROVIDER_MAX_TOKENS,
                                 timeout=repair_timeout,
+                                total_timeout_seconds=_remaining_final_provider_seconds(snapshot),
                             )
                         except Exception as repair_exc:
                             schema_repair["status"] = "provider_error"

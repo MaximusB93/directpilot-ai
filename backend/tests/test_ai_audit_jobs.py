@@ -473,6 +473,29 @@ def test_latest_active_audit_job_recovers_by_client_and_organization():
         )
 
 
+def test_latest_active_audit_job_does_not_restore_abandoned_context_collection():
+    db = _db()
+    abandoned = _create(db)
+    abandoned.status = "collecting_context"
+    abandoned.current_stage = "collect_context"
+    abandoned.updated_at = datetime.now(UTC) - timedelta(
+        seconds=audit_jobs.NON_PROVIDER_STAGE_STALE_SECONDS + 1,
+    )
+    db.commit()
+
+    recovered = audit_jobs.get_latest_active_audit_job(
+        db,
+        client_id="client-a",
+        organization_id="org-a",
+    )
+
+    db.refresh(abandoned)
+    assert recovered is None
+    assert abandoned.status == "failed"
+    assert abandoned.error_code == "ai_audit_stage_stale"
+    assert abandoned.retryable is True
+
+
 def test_compact_snapshot_has_expected_fields_and_no_secrets():
     snapshot = audit_jobs.build_compact_audit_context(_context())
 
@@ -2057,6 +2080,34 @@ def test_total_timeout_completes_with_saved_backend_fallback(monkeypatch):
     monkeypatch.setattr(audit_jobs, "generate_openrouter_response", forbidden_provider)
     same_job = asyncio.run(audit_jobs.advance_audit_job(db, completed.id, organization_id="org-a"))
     assert same_job.status == "completed"
+
+
+def test_final_provider_call_is_bounded_by_remaining_audit_deadline(monkeypatch):
+    db = _db()
+    job = _create(db)
+    job.status = "context_ready"
+    job.current_stage = "generate_answer"
+    snapshot = _realistic_oversized_final_snapshot()
+    snapshot.setdefault("auditRuntime", {})["hardDeadlineAt"] = (
+        datetime.now(UTC) + timedelta(seconds=40)
+    ).isoformat()
+    job.context_snapshot_json = audit_jobs._json_dump(snapshot)
+    db.commit()
+    observed = {}
+
+    async def provider(*args, **kwargs):
+        observed["total_timeout_seconds"] = kwargs.get("total_timeout_seconds")
+        return {
+            "model": "qwen/qwen3-14b",
+            "content": _structured_answer(),
+            "finish_reason": "stop",
+        }
+
+    monkeypatch.setattr(audit_jobs, "_call_audit_provider", provider)
+    generated = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
+
+    assert generated.current_stage == "finalize"
+    assert 0 < observed["total_timeout_seconds"] <= 35
 
 
 @pytest.mark.parametrize("status_code", [400, 502])

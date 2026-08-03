@@ -124,6 +124,18 @@ export function isTerminalAiAuditStatus(status) {
   return TERMINAL_AI_AUDIT_STATUSES.has(String(status || ''));
 }
 
+export function newestAiAuditJob(...jobs) {
+  return jobs
+    .filter((job) => job?.job_id)
+    .sort((left, right) => {
+      const leftUpdatedAt = Date.parse(left.updated_at || left.created_at || '');
+      const rightUpdatedAt = Date.parse(right.updated_at || right.created_at || '');
+      const leftTime = Number.isFinite(leftUpdatedAt) ? leftUpdatedAt : 0;
+      const rightTime = Number.isFinite(rightUpdatedAt) ? rightUpdatedAt : 0;
+      return rightTime - leftTime;
+    })[0] || null;
+}
+
 export function requiresStagedAudit(message) {
   const normalized = String(message || '').toLowerCase().replaceAll('ё', 'е').replace(/\s+/g, ' ').trim();
   return [
