@@ -31,7 +31,18 @@ def test_frontend_preview_is_an_allowed_browser_origin():
 def test_frontend_preview_deployment_urls_match_the_cors_pattern():
     settings = config.Settings()
     assert settings.allowed_origin_regex
-    assert re.fullmatch(
-        settings.allowed_origin_regex,
+    for origin in (
         "https://directpilot-ai-frontend-preview-f1febhv14-directpilot-ai1.vercel.app",
-    )
+        "https://directpilot-ai-frontend-qiw8xfy12-directpilot-ai1.vercel.app",
+    ):
+        assert re.fullmatch(settings.allowed_origin_regex, origin)
+
+
+def test_frontend_preview_cors_pattern_rejects_other_vercel_projects_and_teams():
+    settings = config.Settings()
+
+    for origin in (
+        "https://unrelated-project-directpilot-ai1.vercel.app",
+        "https://directpilot-ai-frontend-qiw8xfy12-another-team.vercel.app",
+    ):
+        assert not re.fullmatch(settings.allowed_origin_regex, origin)

@@ -281,7 +281,7 @@ class Settings:
         ]
     )
     allowed_origin_regex: str = (
-        r"https://directpilot-ai-frontend-preview(?:-[a-z0-9]+)*-directpilot-ai1\.vercel\.app"
+        r"https://directpilot-ai-frontend(?:-preview)?(?:-[a-z0-9]+)*-directpilot-ai1\.vercel\.app"
     )
 
     @property
