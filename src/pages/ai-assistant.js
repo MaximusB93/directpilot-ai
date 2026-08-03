@@ -764,7 +764,7 @@ function renderAuditDataRequests(job, escapeHtml) {
       <span><strong>${Number(statuses.failed || 0)}</strong> ошибок</span>
     </div>
     ${saved && !liveAttempts ? `<p>Выполнено по данным последней синхронизации DirectPilot: ${saved}. Live-запросы к Яндекс.Директу в этом аудите не выполнялись.</p>` : ''}
-    ${unavailable.length ? `<aside class="aiAuditNotice"><strong>Не удалось проверить:</strong> ${unavailable.map((value) => escapeHtml(auditDimensionLabel(value))).join(', ')}. Эти данные не учитывались в выводах.</aside>` : ''}
+    ${unavailable.length ? `<aside class="aiAuditNotice"><strong>Не полностью проверено по отдельным кампаниям:</strong> ${unavailable.map((value) => escapeHtml(auditDimensionLabel(value))).join(', ')}. Ограничения явно учтены в выводах.</aside>` : ''}
   </section>`;
 }
 

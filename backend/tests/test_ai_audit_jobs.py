@@ -324,9 +324,12 @@ def test_trusted_result_data_coverage_reconciles_campaign_scoped_evidence():
 def test_completed_job_public_runtime_clears_stale_waiting_state():
     db = _db()
     job = _create(db)
+    now = datetime.now(UTC)
     job.status = "completed"
     job.current_stage = "finalize"
     job.progress_percent = 100
+    job.started_at = now - timedelta(minutes=10)
+    job.completed_at = now - timedelta(minutes=8)
     job.context_snapshot_json = audit_jobs._json_dump({
         "auditRuntime": {
             "schedulerPhase": "finalization",
@@ -343,6 +346,7 @@ def test_completed_job_public_runtime_clears_stale_waiting_state():
     assert runtime["nextRetryAt"] is None
     assert runtime["recoveryStatus"] == "idle"
     assert runtime["schedulerHealth"]["status"] == "completed"
+    assert runtime["elapsedSeconds"] == 120
 
 
 def test_valid_provider_result_accepts_normalized_trusted_coverage(monkeypatch):
@@ -2127,7 +2131,7 @@ def test_final_provider_call_is_bounded_by_remaining_audit_deadline(monkeypatch)
     generated = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
 
     assert generated.current_stage == "finalize"
-    assert 0 < observed["total_timeout_seconds"] <= 35
+    assert 0 < observed["total_timeout_seconds"] <= 30
 
 
 @pytest.mark.parametrize("status_code", [400, 502])

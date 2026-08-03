@@ -132,7 +132,7 @@ FINAL_COMPACTION_LEVELS = (0, 1, 2, 3)
 FINAL_AUDIT_PROVIDER_MAX_TOKENS = 4000
 FINAL_SCHEMA_REPAIR_MAX_SECONDS = 45
 FINAL_SCHEMA_REPAIR_MIN_REMAINING_SECONDS = 20
-FINALIZATION_COMMIT_RESERVE_SECONDS = 5
+FINALIZATION_COMMIT_RESERVE_SECONDS = 10
 NON_PROVIDER_STAGE_STALE_SECONDS = 15 * 60
 QUEUED_AUDIT_STALE_SECONDS = 24 * 60 * 60
 PROVIDER_CONTEXT_OVERFLOW_CODE = "provider_context_limit_rejected"
@@ -4468,7 +4468,11 @@ def _complete_backend_fallback_stage(
         timings["finalizeMs"] = 0
     _complete_provider_stage(job, "generate_answer")
     timings["totalElapsedMs"] = max(
-        0, round((_now() - _as_aware(job.created_at or _now())).total_seconds() * 1000),
+        0,
+        round(
+            (_now() - _as_aware(job.started_at or job.created_at or _now())).total_seconds()
+            * 1000
+        ),
     )
     job.timings_json = _json_dump(timings)
     job.stage_version += 1
@@ -5634,9 +5638,19 @@ def _context_metadata(job: AiAuditJob, db: Session | None = None) -> dict[str, A
         else scheduler_health(runtime_snapshot)
     )
     runtime_public["deadline"] = scheduler_deadline_state(runtime_snapshot)
+    elapsed_until = (
+        job.completed_at or job.updated_at or _now()
+        if job.status in TERMINAL_AUDIT_STATUSES
+        else _now()
+    )
     runtime_public["elapsedSeconds"] = max(
         0,
-        int((_now() - _as_aware(job.started_at or job.created_at or _now())).total_seconds()),
+        int(
+            (
+                _as_aware(elapsed_until)
+                - _as_aware(job.started_at or job.created_at or elapsed_until)
+            ).total_seconds()
+        ),
     )
     verification_public = [
         {
@@ -7729,7 +7743,13 @@ async def advance_audit_job(
                 successful=True,
             )
             job.context_snapshot_json = _json_dump(progress_snapshot)
-        timings["totalElapsedMs"] = max(0, round((_now() - _as_aware(job.created_at or _now())).total_seconds() * 1000))
+        timings["totalElapsedMs"] = max(
+            0,
+            round(
+                (_now() - _as_aware(job.started_at or job.created_at or _now())).total_seconds()
+                * 1000
+            ),
+        )
         job.timings_json = _json_dump(timings)
         job.stage_version += 1
         logger.info("AI_AUDIT_ADVANCE_COMMIT_START job_id=%s stage=%s next_stage=%s", job.id, stage, job.current_stage)

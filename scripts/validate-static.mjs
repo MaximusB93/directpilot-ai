@@ -154,6 +154,7 @@ const checks = [
   ['staged audit quick actions', has('src/pages/ai-assistant.js', 'data-ai-audit-start="full_account"') && has('src/pages/ai-assistant.js', 'data-ai-audit-start="critical_issues"') && has('src/pages/ai-assistant.js', 'data-ai-audit-start="short_summary"') && lacks('src/pages/ai-assistant.js', ['data-ai-prompt="audit"', 'data-ai-prompt="critical"'])],
   ['heavy audit bypasses chat request', has('src/main.js', 'aiStore.requiresStagedAudit(text)') && has('src/main.js', "await startAiAudit('full_account', text)")],
   ['staged audit persistence and polling', has('src/main.js', 'directpilot_ai_audit_job_') && has('src/main.js', 'fetchActiveAiAuditJob(selectedClientId)') && has('src/services/ai-service.js', '/ai/audits/active?client_id=') && has('src/main.js', 'Math.max(1500') && has('src/main.js', 'isTerminalAiAuditStatus') && has('src/main.js', 'restoreAiAuditJob')],
+  ['campaign-scoped audit limitations', has('src/pages/ai-assistant.js', 'Не полностью проверено по отдельным кампаниям:') && has('src/pages/ai-assistant.js', 'Ограничения явно учтены в выводах.')],
   ['staged audit result UI', has('src/pages/ai-assistant.js', 'Результат аудита') && has('src/pages/ai-assistant.js', 'data-ai-audit-retry') && has('src/pages/ai-assistant.js', 'data-ai-audit-cancel')],
   ['staged audit structured result', has('src/pages/ai-assistant.js', 'renderAiAuditResult') && has('src/pages/ai-assistant.js', 'Что проанализировано') && has('src/pages/ai-assistant.js', 'data-ai-audit-compact-retry')],
   ['adaptive audit progress', ['classify_campaigns', 'create_investigation_plan', 'collect_drilldowns', 'verify_hypotheses'].every((stage) => has('src/pages/ai-assistant.js', stage)) && has('src/pages/ai-assistant.js', 'Ход расследования: факты, гипотезы и доказательства') && has('src/pages/ai-assistant.js', 'Следующий уровень')],
@@ -212,7 +213,8 @@ if (!auditSmoke.includes('<p class="aiAuditPeriod">Период анализа: 
   || !auditSmoke.includes('Что проанализировано')
   || !auditSmoke.includes('Кампания Бренд')
   || !auditSmoke.includes('Выполнено по данным последней синхронизации DirectPilot: 1')
-  || !auditSmoke.includes('площадки. Эти данные не учитывались в выводах')
+  || !auditSmoke.includes('Не полностью проверено по отдельным кампаниям:')
+  || !auditSmoke.includes('площадки. Ограничения явно учтены в выводах.')
   || !auditSmoke.includes('Неподтверждённые гипотезы')
   || !auditSmoke.includes('<strong>Кампания РСЯ</strong>: Мало кликов')
   || auditSmoke.includes('[object Object]')
