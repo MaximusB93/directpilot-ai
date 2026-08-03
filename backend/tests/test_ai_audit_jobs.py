@@ -349,6 +349,32 @@ def test_completed_job_public_runtime_clears_stale_waiting_state():
     assert runtime["elapsedSeconds"] == 120
 
 
+def test_public_result_preserves_deadline_partial_coverage_for_structured_output():
+    db = _db()
+    job = _create(db)
+    job.status = "completed"
+    job.current_stage = "finalize"
+    job.progress_percent = 100
+    job.answer_text = _structured_answer()
+    job.context_snapshot_json = audit_jobs._json_dump({
+        "auditRuntime": {"stopReason": "collection_deadline_reached"},
+    })
+    job.result_json = audit_jobs._json_dump({
+        "structured": json.loads(_structured_answer()),
+        "truncated": False,
+        "backendFallbackUsed": False,
+        "completeness": "partial_coverage",
+        "auditCompletionState": "partial_coverage",
+    })
+    db.commit()
+
+    result = audit_jobs.audit_job_response(job, db).result
+
+    assert result["structured"]
+    assert result["auditCompletionState"] == "partial_coverage"
+    assert result["completeness"] == "partial_coverage"
+
+
 def test_valid_provider_result_accepts_normalized_trusted_coverage(monkeypatch):
     db = _db()
     job = _create(db)

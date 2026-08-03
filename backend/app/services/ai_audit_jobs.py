@@ -4432,7 +4432,10 @@ def _complete_backend_fallback_stage(
         ),
         "completeness": (
             evidence_coverage["completionState"]
-            if snapshot.get("evidenceCoverageRegistry")
+            if (
+                snapshot.get("evidenceCoverageRegistry")
+                or evidence_coverage["completionState"] == "partial_coverage"
+            )
             else "backend_fallback"
         ),
         "auditCompletionState": evidence_coverage["completionState"],
@@ -5782,7 +5785,11 @@ def _public_audit_result(job: AiAuditJob) -> tuple[dict[str, Any] | None, str | 
             result["fallbackMarkdown"] = None
             result.pop("technicalResponse", None)
             if not result.get("truncated") and not result.get("backendFallbackUsed"):
-                result["completeness"] = "structured"
+                result["completeness"] = (
+                    "partial_coverage"
+                    if result.get("auditCompletionState") == "partial_coverage"
+                    else "structured"
+                )
             result["structuredParsing"] = parsing or {
                 "status": "success", "sourceFormat": "plain_json", "errorCode": None, "validationErrorsCount": 0,
             }
@@ -7692,7 +7699,10 @@ async def advance_audit_job(
                     "truncated"
                     if truncated
                     else evidence_coverage["completionState"]
-                    if snapshot.get("evidenceCoverageRegistry")
+                    if (
+                        snapshot.get("evidenceCoverageRegistry")
+                        or evidence_coverage["completionState"] == "partial_coverage"
+                    )
                     else ("structured" if structured else "fallback")
                 ),
                 "auditCompletionState": evidence_coverage["completionState"],
