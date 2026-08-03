@@ -496,6 +496,26 @@ def test_latest_active_audit_job_does_not_restore_abandoned_context_collection()
     assert abandoned.retryable is True
 
 
+def test_latest_active_audit_job_does_not_restore_day_old_queue():
+    db = _db()
+    abandoned = _create(db)
+    abandoned.created_at = datetime.now(UTC) - timedelta(
+        seconds=audit_jobs.QUEUED_AUDIT_STALE_SECONDS + 1,
+    )
+    db.commit()
+
+    recovered = audit_jobs.get_latest_active_audit_job(
+        db,
+        client_id="client-a",
+        organization_id="org-a",
+    )
+
+    db.refresh(abandoned)
+    assert recovered is None
+    assert abandoned.status == "failed"
+    assert abandoned.error_code == "ai_audit_stage_stale"
+
+
 def test_compact_snapshot_has_expected_fields_and_no_secrets():
     snapshot = audit_jobs.build_compact_audit_context(_context())
 

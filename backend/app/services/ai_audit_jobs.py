@@ -134,6 +134,7 @@ FINAL_SCHEMA_REPAIR_MAX_SECONDS = 45
 FINAL_SCHEMA_REPAIR_MIN_REMAINING_SECONDS = 20
 FINALIZATION_COMMIT_RESERVE_SECONDS = 5
 NON_PROVIDER_STAGE_STALE_SECONDS = 15 * 60
+QUEUED_AUDIT_STALE_SECONDS = 24 * 60 * 60
 PROVIDER_CONTEXT_OVERFLOW_CODE = "provider_context_limit_rejected"
 FINAL_PROVIDER_TIMEOUT_WARNING_CODE = "final_provider_timeout"
 _FINAL_PROVIDER_TIMEOUT_CODES = frozenset({"openrouter_timeout", "openrouter_total_timeout"})
@@ -5200,6 +5201,12 @@ def _read_job(db: Session, job_id: str, organization_id: str) -> AiAuditJob:
 
 def is_audit_stage_stale(job: AiAuditJob, now: datetime | None = None) -> bool:
     current = _as_aware(now or _now())
+    if job.status == "queued":
+        created = job.created_at or job.updated_at
+        return bool(
+            created
+            and _as_aware(created) + timedelta(seconds=QUEUED_AUDIT_STALE_SECONDS) < current
+        )
     if job.status == "collecting_context":
         last_update = job.stage_started_at or job.updated_at or job.started_at or job.created_at
         return bool(
