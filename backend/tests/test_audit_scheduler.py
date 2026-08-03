@@ -80,6 +80,7 @@ def test_execution_profiles_persist_deadlines_and_finalization_reserve():
     assert short["hardDeadlineAt"] == (started + timedelta(minutes=5)).isoformat()
     assert short["collectionDeadlineAt"] == (started + timedelta(seconds=225)).isoformat()
     assert short["maxDepthRounds"] == 1
+    assert short["maxInvestigationRounds"] == 1
 
 
 def test_breadth_requests_cover_each_applicable_campaign_before_depth():

@@ -457,6 +457,7 @@ function renderAuditSchedulerStatus(runtime, escapeHtml) {
   const healthLabels = {
     working: 'Аудит работает', waiting: 'Ожидание Яндекс.Директа',
     delayed: 'Нет прогресса дольше обычного', recovering: 'Восстановление этапа',
+    completed: 'Аудит завершён', failed: 'Аудит завершён с ошибкой', cancelled: 'Аудит отменён',
   };
   const waitLabels = {
     direct_report_queue: 'Ожидаем место в очереди отчётов Direct',
@@ -675,12 +676,13 @@ function renderAiAssistantMarkdown(value) {
 }
 
 function auditCoverageLabel(key) {
-  return {
+  const label = {
     account: 'Аккаунт', campaigns: 'Кампании', adGroups: 'Группы', keywords: 'Ключи',
     searchQueries: 'Запросы', placements: 'Площадки', audiences: 'Аудитории',
     adsAndCreatives: 'Объявления и креативы', demographics: 'Демография', devices: 'Устройства',
     geo: 'География', goals: 'Цели', crmLeadQuality: 'CRM и качество лидов',
-  }[key] || key;
+  }[key];
+  return label || auditDimensionLabel(key);
 }
 
 function auditVerificationLabel(status) {

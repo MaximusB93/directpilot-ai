@@ -95,6 +95,7 @@ def initialize_scheduler_state(
     runtime.setdefault("finalizationReserveSeconds", profile.finalization_reserve_seconds)
     runtime.setdefault("requestSafetyLimit", profile.max_requests)
     runtime.setdefault("maxDepthRounds", profile.max_depth_rounds)
+    runtime["maxInvestigationRounds"] = profile.max_depth_rounds
     runtime.setdefault("schedulerPhase", "breadth")
     runtime.setdefault("lastProgressAt", started.isoformat())
     runtime.setdefault("lastSuccessfulActionAt", None)

@@ -3241,7 +3241,7 @@ def build_trusted_result_data_coverage(snapshot: dict[str, Any]) -> dict[str, di
     """Convert internal coverage diagnostics to the strict public audit-result contract."""
     raw_coverage = snapshot.get("dataCoverage") if isinstance(snapshot, dict) else None
     if not isinstance(raw_coverage, dict):
-        return {}
+        raw_coverage = {}
 
     normalized: dict[str, dict[str, Any]] = {}
     for raw_name, raw_item in raw_coverage.items():
@@ -3294,6 +3294,70 @@ def build_trusted_result_data_coverage(snapshot: dict[str, Any]) -> dict[str, di
             "source": _safe_coverage_text(raw_item.get("source"), max_chars=200),
             "period": _safe_coverage_period(raw_item.get("period")),
             "reason": _safe_coverage_text(raw_item.get("reason"), max_chars=500),
+            "limitations": limitations,
+        }
+
+    # Staged collection is campaign-scoped, while dataCoverage originates from
+    # the initial account snapshot. Reconcile the public result with the
+    # canonical evidence matrix so the final report cannot call collected
+    # Direct slices `not_collected`.
+    coverage_key_by_capability = {
+        "ad_groups": "adGroups",
+        "ad_group_performance": "adGroups",
+        "keywords": "keywords",
+        "keyword_performance": "keywords",
+        "search_queries": "searchQueries",
+        "placements": "placements",
+        "audiences": "audiences",
+        "audience_targets": "audiences",
+        "ads": "adsAndCreatives",
+        "ads_creatives": "adsAndCreatives",
+        "demographics": "demographics",
+        "devices": "devices",
+        "geo": "geo",
+        "goals": "goals",
+        "conversions_by_goal": "goals",
+        "lead_quality": "crmLeadQuality",
+    }
+    canonical = snapshot.get("canonicalEvidenceCoverage") if isinstance(snapshot, dict) else None
+    campaign_entries = (
+        canonical.get("campaignScoped")
+        if isinstance(canonical, dict) and isinstance(canonical.get("campaignScoped"), list)
+        else []
+    )
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for item in campaign_entries:
+        if not isinstance(item, dict):
+            continue
+        rows_received = _safe_coverage_count(item.get("rowsReceived"), default=0) or 0
+        if rows_received <= 0 or item.get("status") not in AVAILABLE_AUDIT_DATA_STATUSES:
+            continue
+        capability = str(item.get("capabilityId") or "").strip()
+        if not capability:
+            continue
+        grouped.setdefault(coverage_key_by_capability.get(capability, capability), []).append(item)
+
+    for name, items in grouped.items():
+        total = sum(_safe_coverage_count(item.get("rowsReceived"), default=0) or 0 for item in items)
+        analyzed = sum(_safe_coverage_count(item.get("rowsSentToAi"), default=0) or 0 for item in items)
+        sources = list(dict.fromkeys(
+            str(item.get("source")).strip()
+            for item in items
+            if str(item.get("source") or "").strip()
+        ))
+        limitations = list(dict.fromkeys(
+            str(value).strip()[:500]
+            for item in items
+            for value in (item.get("limitations") or [])
+            if isinstance(value, str) and value.strip()
+        ))[:20]
+        normalized[name] = {
+            "available": True,
+            "total": total,
+            "analyzed": analyzed,
+            "source": ", ".join(sources)[:200] or None,
+            "period": _safe_coverage_period(items[0].get("period")),
+            "reason": None,
             "limitations": limitations,
         }
     return normalized
@@ -5504,14 +5568,27 @@ def _context_metadata(job: AiAuditJob, db: Session | None = None) -> dict[str, A
             build_canonical_evidence_index(snapshot, evidence_results), snapshot,
         )
     runtime_public = dict(runtime)
-    if db is not None:
+    if db is not None and job.status not in TERMINAL_AUDIT_STATUSES and runtime_public.get("schedulerPhase") != "finalization":
         waiting_reason, next_retry_at = _pending_report_wait(db, job)
         if waiting_reason:
             runtime_public["waitingReason"] = waiting_reason
         if next_retry_at:
             runtime_public["nextRetryAt"] = _as_aware(next_retry_at).isoformat()
+    if job.status in TERMINAL_AUDIT_STATUSES:
+        runtime_public["waitingReason"] = None
+        runtime_public["nextRetryAt"] = None
+        runtime_public["recoveryStatus"] = "idle"
     runtime_snapshot = {**snapshot, "auditRuntime": runtime_public}
-    runtime_public["schedulerHealth"] = scheduler_health(runtime_snapshot)
+    runtime_public["schedulerHealth"] = (
+        {
+            "status": job.status,
+            "secondsSinceProgress": 0,
+            "waitingReason": None,
+            "nextRetryAt": None,
+        }
+        if job.status in TERMINAL_AUDIT_STATUSES
+        else scheduler_health(runtime_snapshot)
+    )
     runtime_public["deadline"] = scheduler_deadline_state(runtime_snapshot)
     runtime_public["elapsedSeconds"] = max(
         0,

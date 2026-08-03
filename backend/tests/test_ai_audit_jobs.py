@@ -246,6 +246,105 @@ def test_trusted_result_data_coverage_normalizes_production_shape():
     assert "private-request-id" not in serialized
 
 
+def test_trusted_result_data_coverage_reconciles_campaign_scoped_evidence():
+    snapshot = {
+        "dataCoverage": {
+            "adGroups": {"available": False, "analyzed": 0, "reason": "not_collected"},
+            "adsAndCreatives": {"available": False, "analyzed": 0, "reason": "not_collected"},
+            "goals": {"available": False, "analyzed": 0, "reason": "goal_data_unavailable"},
+            "placements": {"available": False, "analyzed": 0, "reason": "not_collected"},
+        },
+        "canonicalEvidenceCoverage": {
+            "campaignScoped": [
+                {
+                    "campaignName": "Search",
+                    "capabilityId": "ad_groups",
+                    "status": "collected",
+                    "rowsReceived": 2,
+                    "rowsAnalyzedByBackend": 2,
+                    "rowsSentToAi": 2,
+                    "source": "yandex_direct_live",
+                    "period": {"date_from": "2026-07-01", "date_to": "2026-07-30"},
+                },
+                {
+                    "campaignName": "Search",
+                    "capabilityId": "ads",
+                    "status": "partial",
+                    "rowsReceived": 79,
+                    "rowsAnalyzedByBackend": 79,
+                    "rowsSentToAi": 5,
+                    "source": "yandex_direct_live_report",
+                },
+                {
+                    "campaignName": "Search",
+                    "capabilityId": "autotargeting",
+                    "status": "collected",
+                    "rowsReceived": 117,
+                    "rowsAnalyzedByBackend": 117,
+                    "rowsSentToAi": 5,
+                    "source": "yandex_direct_live_report",
+                },
+                {
+                    "campaignName": "Search",
+                    "capabilityId": "goals",
+                    "status": "collected",
+                    "rowsReceived": 1,
+                    "rowsAnalyzedByBackend": 1,
+                    "rowsSentToAi": 1,
+                    "source": "yandex_direct_live",
+                },
+                {
+                    "campaignName": "YAN",
+                    "capabilityId": "placements",
+                    "status": "not_requested",
+                    "rowsReceived": 0,
+                    "rowsAnalyzedByBackend": 0,
+                    "rowsSentToAi": 0,
+                },
+            ],
+        },
+    }
+
+    coverage = audit_jobs.build_trusted_result_data_coverage(snapshot)
+
+    assert coverage["adGroups"]["available"] is True
+    assert coverage["adGroups"]["total"] == 2
+    assert coverage["adGroups"]["analyzed"] == 2
+    assert coverage["adsAndCreatives"]["available"] is True
+    assert coverage["adsAndCreatives"]["total"] == 79
+    assert coverage["adsAndCreatives"]["analyzed"] == 5
+    assert coverage["autotargeting"]["available"] is True
+    assert coverage["autotargeting"]["total"] == 117
+    assert coverage["goals"]["available"] is True
+    assert coverage["goals"]["reason"] is None
+    assert coverage["placements"]["available"] is False
+    AiAuditMeta.model_validate({"data_coverage": coverage})
+
+
+def test_completed_job_public_runtime_clears_stale_waiting_state():
+    db = _db()
+    job = _create(db)
+    job.status = "completed"
+    job.current_stage = "finalize"
+    job.progress_percent = 100
+    job.context_snapshot_json = audit_jobs._json_dump({
+        "auditRuntime": {
+            "schedulerPhase": "finalization",
+            "waitingReason": "offline_report_processing",
+            "nextRetryAt": (datetime.now(UTC) + timedelta(seconds=30)).isoformat(),
+            "recoveryStatus": "waiting",
+        },
+    })
+    db.commit()
+
+    runtime = audit_jobs.audit_job_response(job, db).context_metadata["runtime"]
+
+    assert runtime["waitingReason"] is None
+    assert runtime["nextRetryAt"] is None
+    assert runtime["recoveryStatus"] == "idle"
+    assert runtime["schedulerHealth"]["status"] == "completed"
+
+
 def test_valid_provider_result_accepts_normalized_trusted_coverage(monkeypatch):
     db = _db()
     job = _create(db)
