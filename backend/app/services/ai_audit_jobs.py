@@ -23,6 +23,7 @@ from app.core.config import (
     AI_AUDIT_PLANNER_READ_TIMEOUT_SECONDS,
     AI_AUDIT_VERIFICATION_MAX_TOKENS,
     AI_AUDIT_VERIFICATION_READ_TIMEOUT_SECONDS,
+    AI_FALLBACK_ECONOMY_MODEL,
     normalize_ai_audit_request_options,
 )
 from app.models import AiAuditJob, ClientAccount, DirectReportJob
@@ -5859,17 +5860,21 @@ async def _call_audit_provider(
                     }
                     and not is_provider_context_overflow(exc)
                     and model
-                    and model != AI_AUDIT_HELPER_MODEL
                 ):
+                    fallback_model = (
+                        AI_FALLBACK_ECONOMY_MODEL
+                        if model == AI_AUDIT_HELPER_MODEL
+                        else AI_AUDIT_HELPER_MODEL
+                    )
                     logger.warning(
                         "AI_AUDIT_FINAL_MODEL_FALLBACK stage=%s requested_model=%s fallback_model=%s reason=http_%s",
                         stage,
                         model,
-                        AI_AUDIT_HELPER_MODEL,
+                        fallback_model,
                         exc.status_code,
                     )
                     return await generate_openrouter_response(
-                        AI_AUDIT_HELPER_MODEL, *args[1:], **kwargs,
+                        fallback_model, *args[1:], **kwargs,
                     )
                 raise
     except TimeoutError as exc:

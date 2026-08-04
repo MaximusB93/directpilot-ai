@@ -629,6 +629,34 @@ def test_short_final_model_uses_json_mode_without_qwen_reasoning(monkeypatch):
     assert "reasoning" not in captured
 
 
+def test_short_final_model_falls_back_after_upstream_rate_limit(monkeypatch):
+    calls = []
+
+    async def provider(model, prompt, **kwargs):
+        calls.append(model)
+        if model == audit_jobs.AI_AUDIT_HELPER_MODEL:
+            raise HTTPException(
+                status_code=502,
+                detail='OpenRouter provider returned 429 rate limit',
+            )
+        return {"model": model, "content": _structured_answer(), "finish_reason": "stop"}
+
+    monkeypatch.setattr(audit_jobs, "generate_openrouter_response", provider)
+    response = asyncio.run(audit_jobs._call_audit_provider(
+        "generate_answer",
+        audit_jobs.AI_AUDIT_HELPER_MODEL,
+        "prompt",
+        max_tokens=2500,
+        total_timeout_seconds=5,
+    ))
+
+    assert calls == [
+        audit_jobs.AI_AUDIT_HELPER_MODEL,
+        audit_jobs.AI_FALLBACK_ECONOMY_MODEL,
+    ]
+    assert response["model"] == audit_jobs.AI_FALLBACK_ECONOMY_MODEL
+
+
 def test_verification_reserves_short_audit_finalization_time():
     db = _db()
     job = audit_jobs.create_audit_job(
