@@ -604,6 +604,29 @@ def test_short_staged_audit_uses_compact_final_output_budget():
 
     assert job.max_tokens == 2500
     assert audit_jobs._effective_final_output_tokens(job) == 2500
+    assert audit_jobs._effective_final_model(job) == audit_jobs.AI_AUDIT_HELPER_MODEL
+
+
+def test_short_final_model_uses_json_mode_without_qwen_reasoning(monkeypatch):
+    captured = {}
+
+    async def provider(model, prompt, **kwargs):
+        captured.update({"model": model, **kwargs})
+        return {"model": model, "content": _structured_answer(), "finish_reason": "stop"}
+
+    monkeypatch.setattr(audit_jobs, "generate_openrouter_response", provider)
+    response = asyncio.run(audit_jobs._call_audit_provider(
+        "generate_answer",
+        audit_jobs.AI_AUDIT_HELPER_MODEL,
+        "prompt",
+        max_tokens=2500,
+        total_timeout_seconds=5,
+    ))
+
+    assert response["finish_reason"] == "stop"
+    assert captured["model"] == audit_jobs.AI_AUDIT_HELPER_MODEL
+    assert captured["response_format"] == {"type": "json_object"}
+    assert "reasoning" not in captured
 
 
 def test_full_staged_flow_runs_planning_verification_and_final_answer(monkeypatch):

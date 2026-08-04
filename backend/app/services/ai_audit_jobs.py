@@ -3355,6 +3355,13 @@ def _effective_final_output_tokens(job: AiAuditJob) -> int:
     return max(1, min(int(job.max_tokens or 0), FINAL_AUDIT_PROVIDER_MAX_TOKENS))
 
 
+def _effective_final_model(job: AiAuditJob) -> str:
+    """Use the latency-optimized structured model for the five-minute summary."""
+
+    profile = execution_profile_for_scope(job.requested_scope)
+    return AI_AUDIT_HELPER_MODEL if profile.id == "short_summary" else job.model
+
+
 def _remaining_final_provider_seconds(snapshot: dict[str, Any]) -> float | None:
     """Return the provider budget left before the audit hard deadline."""
 
@@ -5810,7 +5817,9 @@ async def _call_audit_provider(
         # Qwen3 can spend most of max_tokens on hidden reasoning and truncate the
         # JSON report. Trusted calculations already happen on the backend, so the
         # final model only needs to synthesize a compact machine-readable result.
-        kwargs.setdefault("reasoning", {"effort": "none"})
+        model = str(args[0]) if args else ""
+        if model.startswith("qwen/"):
+            kwargs.setdefault("reasoning", {"effort": "none"})
         kwargs.setdefault("response_format", {"type": "json_object"})
     stage_timeout = (
         float(total_timeout_seconds)
@@ -7676,13 +7685,14 @@ async def advance_audit_job(
                 compact_retry=is_compact_retry,
             )
             effective_final_max_tokens = _effective_final_output_tokens(job)
+            effective_final_model = _effective_final_model(job)
             prompt = str(final_bundle.get("prompt") or "")
             final_diagnostics = dict(final_bundle.get("diagnostics") or {})
             _save_stage_prompt_metadata(
                 job,
                 stage,
                 prompt,
-                model=job.model,
+                model=effective_final_model,
                 max_tokens=effective_final_max_tokens,
                 max_tokens_cap=FINAL_AUDIT_PROVIDER_MAX_TOKENS,
             )
@@ -7718,7 +7728,7 @@ async def advance_audit_job(
             openrouter_started_at = perf_counter()
             try:
                 response = await _call_audit_provider(
-                    stage, job.model, prompt, max_tokens=effective_final_max_tokens,
+                    stage, effective_final_model, prompt, max_tokens=effective_final_max_tokens,
                     max_tokens_cap=FINAL_AUDIT_PROVIDER_MAX_TOKENS,
                     timeout=AUDIT_STAGE_PROVIDER_TIMEOUTS[stage],
                     total_timeout_seconds=final_provider_budget,
@@ -7802,7 +7812,7 @@ async def advance_audit_job(
                     job,
                     stage,
                     prompt,
-                    model=job.model,
+                    model=effective_final_model,
                     max_tokens=effective_final_max_tokens,
                     max_tokens_cap=FINAL_AUDIT_PROVIDER_MAX_TOKENS,
                 )
@@ -7850,7 +7860,7 @@ async def advance_audit_job(
                 db.commit()
                 try:
                     response = await _call_audit_provider(
-                        stage, job.model, prompt, max_tokens=effective_final_max_tokens,
+                        stage, effective_final_model, prompt, max_tokens=effective_final_max_tokens,
                         max_tokens_cap=FINAL_AUDIT_PROVIDER_MAX_TOKENS,
                         timeout=AUDIT_STAGE_PROVIDER_TIMEOUTS[stage],
                         total_timeout_seconds=retry_provider_budget,
