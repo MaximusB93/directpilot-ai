@@ -203,6 +203,7 @@ def build_public_audit_trace(
             "period": {
                 "dateFrom": (request.get("period") or {}).get("date_from"),
                 "dateTo": (request.get("period") or {}).get("date_to"),
+                "days": (request.get("period") or {}).get("days"),
             },
             "semanticMetrics": [str(item) for item in (request.get("metrics") or [])[:12]],
             "dataPreference": request.get("data_preference") or "live_preferred",
@@ -318,7 +319,7 @@ def build_public_audit_trace(
         "savedFallbacks": sum(1 for item in trace if item["fallback"]["used"]),
     }
     return {
-        "publicRequestTrace": trace[:100],
+        "publicRequestTrace": trace[:160],
         "requestDiagnostics": diagnostics,
         "dataSourceSummary": source_counts,
         "dataQualitySummary": {"numericStateCounts": numeric_totals},

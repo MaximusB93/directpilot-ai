@@ -224,7 +224,7 @@ function renderAuditRequestTrace(metadata, escapeHtml) {
     <td>${escapeHtml(String(item.pagination?.pagesCompleted || 0))}</td><td>${item.timing?.elapsedMs == null ? '—' : `${escapeHtml(String(item.timing.elapsedMs))} мс`}</td>
     <td><details><summary>Подробнее</summary>
       <p><b>Ожидаемая польза:</b> ${escapeHtml(item.expectedInformationGain || '—')}</p>
-      <p><b>Период:</b> ${escapeHtml(item.period?.dateFrom || '—')} — ${escapeHtml(item.period?.dateTo || '—')}</p>
+      <p><b>Период:</b> ${escapeHtml(item.period?.dateFrom || '—')} — ${escapeHtml(item.period?.dateTo || '—')}${item.period?.days ? ` · ${escapeHtml(String(item.period.days))} дней` : ''}</p>
       <p><b>Метрики:</b> ${(item.semanticMetrics || []).map((value) => escapeHtml(value)).join(', ') || '—'}</p>
       <p><b>Объём:</b> получено ${escapeHtml(String(item.rowsReceived || 0))}, нормализовано ${escapeHtml(String(item.rowsNormalized || 0))}, проверено backend ${escapeHtml(String(item.rowsAnalyzedByBackend || 0))}, передано AI ${escapeHtml(String(item.rowsSentToAi || 0))}.</p>
       <p><b>Lifecycle:</b> ${(item.statusHistory || []).map((event) => escapeHtml(auditRequestStatusLabel(event.status))).join(' → ') || '—'}</p>

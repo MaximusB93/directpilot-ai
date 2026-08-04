@@ -2040,6 +2040,34 @@ def _diagnostic_remediation_requests(
     return candidates
 
 
+def _validated_diagnostic_remediation_requests(
+    snapshot: dict[str, Any],
+) -> list[AuditDataRequest]:
+    """Prefer deterministic 60/90-day checks before another AI planning call."""
+
+    runtime = _audit_runtime(snapshot)
+    round_number = int(runtime.get("investigationRound") or 1)
+    request_count = int(runtime.get("requestsCount") or 0)
+    max_rounds = int(runtime.get("maxDepthRounds") or MAX_INVESTIGATION_ROUNDS)
+    max_requests = int(runtime.get("requestSafetyLimit") or MAX_DATA_REQUESTS_PER_AUDIT)
+    if round_number >= max_rounds or request_count >= max_requests:
+        return []
+    candidates = _diagnostic_remediation_requests(
+        snapshot,
+        round_number=round_number,
+        remaining_budget=max_requests - request_count,
+    )
+    accepted, rejected = validate_audit_data_requests(
+        candidates,
+        max_requests=max_requests,
+    )
+    if rejected:
+        snapshot["drilldownResults"] = (
+            snapshot.get("drilldownResults") or []
+        ) + [item.model_dump(mode="json") for item in rejected]
+    return accepted
+
+
 def _second_round_requests(snapshot: dict[str, Any]) -> list[AuditDataRequest]:
     runtime = _audit_runtime(snapshot)
     round_number = int(runtime.get("investigationRound") or 1)
@@ -3014,6 +3042,7 @@ def _campaign_primary_factor(summaries: list[dict[str, Any]]) -> dict[str, Any] 
             isinstance(rule, dict) and rule.get("passed") is True
             for rule in (summary.get("confirmation_rules") or [])
         )
+        period_days = int((summary.get("period") or {}).get("days") or 0)
         if diagnostics.get("kind") == "performance_contributors":
             waste = diagnostics.get("top_waste") or []
             high_cpa = diagnostics.get("top_high_cpa") or []
@@ -3027,6 +3056,7 @@ def _campaign_primary_factor(summaries: list[dict[str, Any]]) -> dict[str, Any] 
                     "aggregate_waste_share_pct": diagnostics.get("waste_share_pct"),
                     "material": bool(diagnostics.get("material_waste")),
                     "backend_confirmed": backend_confirmed,
+                    "period_days": period_days,
                 }
                 candidates.append((
                     0 if factor["material"] else 2,
@@ -3040,6 +3070,7 @@ def _campaign_primary_factor(summaries: list[dict[str, Any]]) -> dict[str, Any] 
                     "factor_type": "high_cpa_segment",
                     "material": True,
                     "backend_confirmed": False,
+                    "period_days": period_days,
                 }
                 candidates.append((1, -float(factor.get("cost") or 0), factor))
         elif diagnostics.get("kind") == "segment_comparison":
@@ -3055,6 +3086,7 @@ def _campaign_primary_factor(summaries: list[dict[str, Any]]) -> dict[str, Any] 
                     "best_segment": best,
                     "material": ratio >= 1.5,
                     "backend_confirmed": backend_confirmed,
+                    "period_days": period_days,
                 }
                 candidates.append((
                     0 if factor["material"] else 2,
@@ -3109,7 +3141,24 @@ def _factor_copy(
     confirmed = verification_status == "confirmed"
     status_prefix = "Подтверждённый измеримый фактор" if confirmed else "Наиболее сильный измеримый фактор"
     problem = f"{base_problem} {status_prefix}: {label} «{segment}»."
-    review_prefix = "" if confirmed else "Перед изменением подтвердить фактор на расширенном периоде; затем "
+    period_days = int(factor.get("period_days") or 0)
+    if confirmed:
+        review_prefix = ""
+    elif period_days >= 90:
+        review_prefix = (
+            "Фактор проверен за 90 дней, но строгие пороги подтверждения не пройдены; "
+            "не менять настройки автоматически и дополнительно "
+        )
+    elif period_days >= 60:
+        review_prefix = (
+            "Фактор проверен за 60 дней, но пока не подтверждён; "
+            "автоматически расширить проверку до 90 дней, затем "
+        )
+    else:
+        review_prefix = (
+            "Фактор проверен за 30 дней; автоматически повторить срез за 60 дней "
+            "и при необходимости за 90 дней, затем "
+        )
     if capability_id == "search_queries":
         recommendation = (
             f"{review_prefix}проверить релевантность запроса «{segment}» объявлению и посадочной странице; "
@@ -7822,6 +7871,45 @@ async def advance_audit_job(
                 job.current_stage = "generate_answer"
                 job.progress_percent = 78
             else:
+                deterministic_remediation = _validated_diagnostic_remediation_requests(
+                    runtime_snapshot,
+                )
+                if deterministic_remediation:
+                    _apply_next_round_requests(runtime_snapshot, deterministic_remediation)
+                    runtime = _audit_runtime(runtime_snapshot)
+                    _log_audit_event(
+                        "AUDIT_NEXT_ROUND_PLANNED",
+                        job,
+                        round=int(runtime.get("investigationRound") or 1),
+                        request_count=len(deterministic_remediation),
+                        status="deterministic_remediation",
+                    )
+                    mark_scheduler_progress(
+                        runtime_snapshot,
+                        action="deterministic_remediation_planned",
+                        successful=True,
+                    )
+                    job.context_snapshot_json = _json_dump(runtime_snapshot)
+                    job.status = "context_ready"
+                    job.current_stage = "collect_live_data"
+                    job.stage_attempt = 0
+                    job.progress_percent = 68
+                    timings["totalElapsedMs"] = max(
+                        0,
+                        round(
+                            (
+                                _now()
+                                - _as_aware(job.started_at or job.created_at or _now())
+                            ).total_seconds()
+                            * 1000
+                        ),
+                    )
+                    job.timings_json = _json_dump(timings)
+                    job.stage_version += 1
+                    db.commit()
+                    db.refresh(job)
+                    _log_timing(job, stage)
+                    return job
                 execution_token = _claim_provider_stage(db, job, stage, progress_percent=74)
                 snapshot = _json_load(job.context_snapshot_json, {})
                 prompt = build_next_round_prompt(snapshot)

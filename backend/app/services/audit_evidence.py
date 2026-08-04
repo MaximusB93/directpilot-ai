@@ -365,6 +365,16 @@ def evaluate_capability_evidence(
     period_days: int = 30,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     capability_id = str(result.get("capability_id") or result.get("dimension") or "")
+    result_period = result.get("period") if isinstance(result.get("period"), dict) else {}
+    fallback_period_days = int(period_days or 30)
+    try:
+        period_days = int(
+            result_period.get("days")
+            or result_period.get("period_days")
+            or fallback_period_days
+        )
+    except (TypeError, ValueError):
+        period_days = fallback_period_days
     rows = [row for row in (result.get("data") or []) if isinstance(row, dict)]
     aggregation_policy = str(result.get("aggregation_policy") or "") or None
     selected_goal_ids = [str(item) for item in (result.get("selected_goal_ids") or [])]
@@ -414,6 +424,11 @@ def evaluate_capability_evidence(
         "known_conversion_coverage": round(conversion_coverage, 4),
         "aggregation_policy": aggregation_policy,
         "selected_goal_ids": selected_goal_ids,
+        "period": {
+            "date_from": result_period.get("date_from") or result_period.get("dateFrom"),
+            "date_to": result_period.get("date_to") or result_period.get("dateTo"),
+            "days": period_days,
+        },
         "data_quality_warnings": list(result.get("warnings") or []) + (
             ["Conversion coverage is incomplete; causal confirmation and rejection are blocked."]
             if conversion_required and not conversion_evidence_complete else []

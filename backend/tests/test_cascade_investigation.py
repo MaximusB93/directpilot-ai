@@ -378,6 +378,11 @@ def test_device_gap_diagnostics_name_worst_and_best_segments():
         "dimension": "devices",
         "status": "collected",
         "rows_analyzed": 2,
+        "period": {
+            "date_from": "2026-05-11",
+            "date_to": "2026-07-09",
+            "days": 60,
+        },
         "data": [
             {"device": "MOBILE", "clicks": 40, "cost": 2400, "conversions": 2},
             {"device": "DESKTOP", "clicks": 40, "cost": 1200, "conversions": 3},
@@ -393,6 +398,7 @@ def test_device_gap_diagnostics_name_worst_and_best_segments():
     assert summary["diagnostics"]["worst_segment"]["cpa"] == 1200
     assert summary["diagnostics"]["best_segment"]["segment"] == "DESKTOP"
     assert summary["diagnostics"]["best_segment"]["cpa"] == 400
+    assert summary["period"]["days"] == 60
 
 
 def test_backend_rule_confirms_hypothesis_even_when_model_left_it_unverified():

@@ -1700,7 +1700,9 @@ def test_public_trace_is_safe_and_distinguishes_backend_and_ai_rows():
         "validatedDataRequests": [{
             "request_id": "req-safe", "hypothesis_id": "hyp-safe", "campaign_name": "Search",
             "campaign_family": "search", "campaign_subtype": "search", "dimension": "search_queries",
-            "capability_id": "search_queries", "reason": "Проверить запросы", "period": {}, "filters": {"campaign_name": "Search"},
+            "capability_id": "search_queries", "reason": "Проверить запросы",
+            "period": {"date_from": "2026-05-11", "date_to": "2026-07-09", "days": 60},
+            "filters": {"campaign_name": "Search"},
             "metrics": ["clicks", "cost", "conversions"], "priority": "high", "required_for_conclusion": True,
             "data_preference": "live_required",
         }],
@@ -1727,6 +1729,7 @@ def test_public_trace_is_safe_and_distinguishes_backend_and_ai_rows():
     assert trace["rowsReceived"] == 2
     assert trace["rowsAnalyzedByBackend"] == 2
     assert trace["rowsSentToAi"] == 1
+    assert trace["period"]["days"] == 60
     assert trace["dataQuality"]["numericStateCounts"] == {"known": 2, "missing": 1, "invalid": 1}
     assert [item["status"] for item in trace["statusHistory"]] == ["pending", "processing", "completed"]
     assert trace["pagination"]["pagesCompleted"] == 3
@@ -3568,6 +3571,22 @@ def test_campaign_insights_use_ranked_backend_factor_instead_of_generic_template
     assert "Определить запросы" not in insight["recommendation"]
 
 
+def test_unconfirmed_factor_recommendation_reports_checked_extended_period():
+    _, recommendation = audit_jobs._factor_copy(
+        {
+            "capability_id": "geo",
+            "segment": "Сочи",
+            "period_days": 60,
+        },
+        base_problem="CPA выше цели.",
+        base_recommendation="Проверить фактор.",
+        verification_status="unverified",
+    )
+
+    assert "проверен за 60 дней" in recommendation
+    assert "расширить проверку до 90 дней" in recommendation
+
+
 def test_second_round_extends_only_insufficient_data_period():
     snapshot = {
         "analysisPeriod": {"dateFrom": "2026-06-10", "dateTo": "2026-07-09", "days": 30},
@@ -3680,3 +3699,101 @@ def test_second_round_extends_collected_factor_with_insufficient_evidence_to_60_
     assert len(requests_90) == 1
     assert requests_90[0].period.days == 90
     assert requests_90[0].period.date_from == "2026-04-11"
+
+
+def test_next_round_stage_prioritizes_deterministic_remediation_without_ai_planner(
+    monkeypatch,
+):
+    db = _db()
+    job = _create(db)
+    now = datetime.now(UTC)
+    snapshot = {
+        "analysisPeriod": {
+            "dateFrom": "2026-06-10",
+            "dateTo": "2026-07-09",
+            "days": 30,
+        },
+        "auditRuntime": {
+            "investigationRound": 1,
+            "requestsCount": 1,
+            "maxDepthRounds": 3,
+            "requestSafetyLimit": 20,
+            "schedulerPhase": "verification",
+            "collectionDeadlineAt": (now + timedelta(minutes=10)).isoformat(),
+            "hardDeadlineAt": (now + timedelta(minutes=13)).isoformat(),
+        },
+        "campaignClassifications": [{
+            "campaign_name": "Search Brand",
+            "campaign_family": "search",
+            "campaign_subtype": "brand_search",
+        }],
+        "observedFacts": [{
+            "fact_id": "fact_001",
+            "campaign_name": "Search Brand",
+            "metric": "cpa_above_target",
+        }],
+        "activeHypothesisIds": ["hyp_001"],
+        "hypothesisRegistry": {
+            "hyp_001": {
+                "hypothesis_id": "hyp_001",
+                "hypothesis_type": "search_query_waste",
+                "campaign_name": "Search Brand",
+                "campaign_family": "search",
+                "campaign_subtype": "brand_search",
+                "fact_ids": ["fact_001"],
+            },
+        },
+        "verificationRegistry": {
+            "hyp_001": {
+                "hypothesis_id": "hyp_001",
+                "status": "unverified",
+            },
+        },
+        "validatedDataRequests": [{
+            "request_id": "breadth_geo",
+            "hypothesis_id": "hyp_001",
+            "campaign_name": "Search Brand",
+            "dimension": "geo",
+            "capability_id": "geo",
+            "period": {
+                "date_from": "2026-06-10",
+                "date_to": "2026-07-09",
+                "days": 30,
+            },
+        }],
+        "drilldownEvidenceSummaries": [{
+            "request_id": "breadth_geo",
+            "hypothesis_id": "hyp_001",
+            "campaign_name": "Search Brand",
+            "capability_id": "geo",
+            "status": "collected",
+            "sufficient_data": False,
+            "stop_reason": "unknown_conversion_metric",
+            "diagnostics": {
+                "kind": "segment_comparison",
+                "cpa_ratio": 4.92,
+                "worst_segment": {"segment": "Sochi"},
+                "best_segment": {"segment": "Krasnodar"},
+            },
+        }],
+    }
+    job.context_snapshot_json = audit_jobs._json_dump(snapshot)
+    job.status = "context_ready"
+    job.current_stage = "plan_next_investigation_round"
+    db.commit()
+
+    async def forbidden_provider(*args, **kwargs):
+        raise AssertionError("Deterministic remediation must run before the AI planner")
+
+    monkeypatch.setattr(audit_jobs, "generate_openrouter_response", forbidden_provider)
+    continued = asyncio.run(
+        audit_jobs.advance_audit_job(db, job.id, organization_id="org-a")
+    )
+
+    assert continued.current_stage == "collect_live_data"
+    updated = audit_jobs._json_load(continued.context_snapshot_json, {})
+    assert updated["auditRuntime"]["investigationRound"] == 2
+    assert updated["auditRuntime"]["schedulerPhase"] == "depth"
+    assert len(updated["pendingDataRequests"]) == 1
+    assert updated["pendingDataRequests"][0]["period"]["days"] == 60
+    assert updated["pendingDataRequests"][0]["request_id"].endswith("_geo_60d")
