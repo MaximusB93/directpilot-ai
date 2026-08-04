@@ -3619,8 +3619,29 @@ def _reconcile_structured_evidence_claims(
             add_aliases(any_campaign_coverage, item)
             campaign_coverage_by_capability.setdefault(capability, set()).add(campaign_name)
 
+    capability_coverage_counts: dict[str, tuple[int, int]] = {}
+    for item in coverage.get("capabilitySummary") or []:
+        if not isinstance(item, dict):
+            continue
+        capability = str(item.get("capabilityId") or "")
+        applicable = int(item.get("applicableCampaigns") or 0)
+        covered = int(item.get("coveredCampaigns") or 0)
+        if capability and applicable > 0:
+            capability_coverage_counts[capability] = (covered, applicable)
+
     complete_account_coverage: dict[str, dict[str, Any]] = {}
-    if trusted_names and not ambiguous_names:
+    if capability_coverage_counts:
+        for capability, (covered, applicable) in capability_coverage_counts.items():
+            if covered < applicable:
+                continue
+            evidence = next((
+                any_campaign_coverage.get(candidate)
+                for candidate in capability_candidates(capability)
+                if any_campaign_coverage.get(candidate)
+            ), None)
+            if evidence:
+                add_aliases(complete_account_coverage, evidence)
+    elif trusted_names and not ambiguous_names:
         capabilities = {
             str(item.get("capabilityId") or "")
             for entries in campaign_entries.values()
@@ -3638,12 +3659,20 @@ def _reconcile_structured_evidence_claims(
                     complete_account_coverage[candidate] = matched[0]
     account_available = {**complete_account_coverage, **account_collected}
     account_claim_available = {**any_campaign_coverage, **account_collected}
-    partial_account_capabilities = {
-        capability
-        for capability, campaign_names in campaign_coverage_by_capability.items()
-        if len(campaign_names) < len(trusted_names)
-        and not any(candidate in account_collected for candidate in capability_candidates(capability))
-    }
+    if capability_coverage_counts:
+        partial_account_capabilities = {
+            capability
+            for capability, (covered, applicable) in capability_coverage_counts.items()
+            if 0 < covered < applicable
+            and not any(candidate in account_collected for candidate in capability_candidates(capability))
+        }
+    else:
+        partial_account_capabilities = {
+            capability
+            for capability, campaign_names in campaign_coverage_by_capability.items()
+            if len(campaign_names) < len(trusted_names)
+            and not any(candidate in account_collected for candidate in capability_candidates(capability))
+        }
 
     removed: list[dict[str, str]] = []
     quality_limitations: list[str] = []
@@ -3655,7 +3684,7 @@ def _reconcile_structured_evidence_claims(
         "placements": ("placements", "placement", "площадк"),
         "devices": ("devices", "device", "устройств"),
         "geo": ("geo", "географ", "регион"),
-        "goals": ("goals", "целям", "цели"),
+        "goals": ("goals", "целям", "цели", "конверси"),
         "conversions_by_goal": ("conversions_by_goal", "conversion_data", "конверси"),
         "retargeting_segments": ("retargeting_segments", "retargeting", "ретаргет"),
         "campaign_daily_dynamics": ("campaign_daily_dynamics", "динамик"),
@@ -3909,10 +3938,16 @@ def _reconcile_structured_evidence_claims(
                     "оставшиеся ограничения относятся к качеству и объёму выборки."
                 )
 
+    def account_coverage_count(capability: str) -> tuple[int, int]:
+        return capability_coverage_counts.get(capability, (
+            len(campaign_coverage_by_capability.get(capability, set())),
+            len(trusted_names),
+        ))
+
     partial_coverage_limitations = [
         (
             f"Данные по {public_capability_label(capability)} собраны для "
-            f"{len(campaign_coverage_by_capability.get(capability, set()))} из {len(trusted_names)} кампаний; "
+            f"{account_coverage_count(capability)[0]} из {account_coverage_count(capability)[1]} кампаний; "
             "для остальных кампаний выводы по этому срезу ограничены."
         )
         for capability in sorted(partial_claim_capabilities)

@@ -216,12 +216,12 @@ def test_free_text_and_action_plan_cannot_claim_collected_evidence_is_missing():
     reconciled, diagnostics = audit_jobs._reconcile_structured_evidence_claims(result, snapshot)
 
     assert reconciled["action_plan"] == []
-    assert reconciled["limitations"] != []
+    assert reconciled["limitations"] == []
     assert "Нет данных" not in reconciled["executive_summary"]
     assert "not collected" not in reconciled["conclusion"]
-    assert any("1 из 2 кампаний" in item for item in reconciled["limitations"])
     assert diagnostics["removedFreeTextConflicts"] == 4
-    assert diagnostics["partialAccountCoverage"] == ["search_queries"]
+    assert diagnostics["completeAccountCoverage"] == ["search_queries"]
+    assert diagnostics["partialAccountCoverage"] == []
 
 
 def _structured_missing(campaign_name, capability="search_queries") -> dict:
@@ -272,7 +272,7 @@ def test_generic_action_stays_scoped_while_blanket_account_action_is_reconciled(
     assert reconciled["action_plan"] == [
         {"action": "Search queries not collected", "reason": "no data", "scope": "Кампания"},
     ]
-    assert any("1 из 2 кампаний" in item for item in reconciled["limitations"])
+    assert reconciled["limitations"] == []
 
 
 def _account_result(capability: str, rows: list[dict]) -> dict:
@@ -410,7 +410,7 @@ def test_retargeting_and_dynamics_capabilities_remain_campaign_scoped():
         assert other["critical_findings"][0]["next_data_needed"] == [capability]
 
 
-def test_partial_campaign_coverage_never_becomes_account_wide():
+def test_complete_applicable_campaign_coverage_becomes_account_wide():
     snapshot = _snapshot()
     audit_jobs.reconcile_collected_audit_evidence(snapshot, [_search_result()])
     result = _structured_missing(None)
@@ -418,11 +418,11 @@ def test_partial_campaign_coverage_never_becomes_account_wide():
 
     reconciled, diagnostics = audit_jobs._reconcile_structured_evidence_claims(result, snapshot)
 
-    assert reconciled["critical_findings"][0]["next_data_needed"] == ["search_queries"]
+    assert reconciled["critical_findings"][0]["next_data_needed"] == []
     assert "search_queries" in reconciled["drilldown_summary"]["analyzed_levels"]
     assert "search_queries" not in reconciled["drilldown_summary"]["not_analyzed_levels"]
-    assert diagnostics["completeAccountCoverage"] == []
-    assert diagnostics["partialAccountCoverage"] == ["search_queries"]
+    assert diagnostics["completeAccountCoverage"] == ["search_queries"]
+    assert diagnostics["partialAccountCoverage"] == []
 
 
 def test_partial_account_coverage_rejects_blanket_missing_claims_without_hiding_gap():
@@ -494,6 +494,53 @@ def test_partial_account_coverage_rejects_blanket_missing_claims_without_hiding_
     assert diagnostics["removedFreeTextConflicts"] == 3
     assert diagnostics["completeAccountCoverage"] == []
     assert diagnostics["partialAccountCoverage"] == ["keywords", "placements", "search_queries"]
+
+
+def test_canonical_applicability_controls_account_coverage_denominator():
+    snapshot = _snapshot()
+    snapshot["canonicalEvidenceCoverage"] = {
+        "accountWide": [],
+        "campaignScoped": [
+            _coverage_entry("Campaign A", "keywords"),
+            _coverage_entry("Campaign A", "goals"),
+            {
+                "campaignName": "Campaign B",
+                "capabilityId": "goals",
+                "status": "unavailable",
+                "rowsReceived": 0,
+                "rowsAnalyzedByBackend": 0,
+                "rowsSentToAi": 0,
+            },
+        ],
+        "capabilitySummary": [
+            {
+                "capabilityId": "keywords",
+                "applicableCampaigns": 1,
+                "coveredCampaigns": 1,
+            },
+            {
+                "capabilityId": "goals",
+                "applicableCampaigns": 2,
+                "coveredCampaigns": 1,
+            },
+        ],
+    }
+    result = _structured_missing(None, "keywords")
+    result["critical_findings"][0]["analysis_level"] = "account"
+    result["critical_findings"][0]["next_data_needed"] = ["keywords", "goals"]
+    result["executive_summary"] = "Отсутствуют данные по ключевым фразам и конверсиям."
+    result["conclusion"] = "Нет данных по конверсиям."
+    result["limitations"] = ["Данные по конверсиям отсутствуют."]
+
+    reconciled, diagnostics = audit_jobs._reconcile_structured_evidence_claims(result, snapshot)
+
+    assert reconciled["critical_findings"][0]["next_data_needed"] == ["goals"]
+    assert "Отсутствуют" not in reconciled["executive_summary"]
+    assert "Нет данных" not in reconciled["conclusion"]
+    assert any("1 из 2 кампаний" in item for item in reconciled["limitations"])
+    assert not any("1 из 32 кампаний" in item for item in reconciled["limitations"])
+    assert diagnostics["completeAccountCoverage"] == ["keywords"]
+    assert diagnostics["partialAccountCoverage"] == ["goals"]
 
 
 def test_complete_campaign_coverage_can_satisfy_account_summary():
