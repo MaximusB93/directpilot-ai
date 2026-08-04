@@ -44,9 +44,11 @@ def build_openrouter_payload(
     max_tokens: int | None = None,
     *,
     max_tokens_cap: int = 8000,
+    reasoning: dict[str, Any] | None = None,
+    response_format: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     selected_model = _validate_openrouter_model(model)
-    return {
+    payload: dict[str, Any] = {
         "model": selected_model,
         "messages": [
             {"role": "system", "content": DEFAULT_SYSTEM_PROMPT},
@@ -55,6 +57,11 @@ def build_openrouter_payload(
         "temperature": 0.2,
         "max_tokens": clamp_openrouter_max_tokens(max_tokens, cap=max_tokens_cap),
     }
+    if reasoning is not None:
+        payload["reasoning"] = reasoning
+    if response_format is not None:
+        payload["response_format"] = response_format
+    return payload
 
 
 def build_openrouter_trace_metadata(model: str, task: str | None = None) -> dict[str, str]:
@@ -134,6 +141,8 @@ async def generate_openrouter_response(
     *,
     max_tokens_cap: int = 8000,
     timeout: httpx.Timeout | None = None,
+    reasoning: dict[str, Any] | None = None,
+    response_format: dict[str, Any] | None = None,
 ) -> dict[str, object]:
     if not settings.openrouter_configured:
         raise HTTPException(
@@ -156,6 +165,8 @@ async def generate_openrouter_response(
         prompt,
         max_tokens=max_tokens,
         max_tokens_cap=max_tokens_cap,
+        reasoning=reasoning,
+        response_format=response_format,
     )
     selected_model = str(payload["model"])
     headers = {

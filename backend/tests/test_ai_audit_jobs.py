@@ -2922,7 +2922,12 @@ def test_final_provider_output_is_capped_without_changing_requested_job_setting(
     captured = {}
 
     async def final_provider(model, prompt, max_tokens, **kwargs):
-        captured.update({"max_tokens": max_tokens, "cap": kwargs["max_tokens_cap"]})
+        captured.update({
+            "max_tokens": max_tokens,
+            "cap": kwargs["max_tokens_cap"],
+            "reasoning": kwargs["reasoning"],
+            "response_format": kwargs["response_format"],
+        })
         return {
             "model": model,
             "content": _structured_answer(),
@@ -2936,7 +2941,12 @@ def test_final_provider_output_is_capped_without_changing_requested_job_setting(
     runtime = audit_jobs._json_load(generated.context_snapshot_json, {})["auditRuntime"]
 
     assert generated.max_tokens == 10000
-    assert captured == {"max_tokens": 4000, "cap": 4000}
+    assert captured == {
+        "max_tokens": 4000,
+        "cap": 4000,
+        "reasoning": {"effort": "none"},
+        "response_format": {"type": "json_object"},
+    }
     assert runtime["requestedOutputTokens"] == 10000
     assert runtime["effectiveFinalOutputTokens"] == 4000
     assert runtime["reservedOutputTokens"] == 4000

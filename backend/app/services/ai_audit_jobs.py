@@ -5806,6 +5806,12 @@ async def _call_audit_provider(
     total_timeout_seconds: float | None = None,
     **kwargs: Any,
 ) -> dict[str, Any]:
+    if stage == "generate_answer":
+        # Qwen3 can spend most of max_tokens on hidden reasoning and truncate the
+        # JSON report. Trusted calculations already happen on the backend, so the
+        # final model only needs to synthesize a compact machine-readable result.
+        kwargs.setdefault("reasoning", {"effort": "none"})
+        kwargs.setdefault("response_format", {"type": "json_object"})
     stage_timeout = (
         float(total_timeout_seconds)
         if total_timeout_seconds is not None
