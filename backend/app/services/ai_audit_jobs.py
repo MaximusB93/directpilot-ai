@@ -3699,7 +3699,7 @@ def _trusted_result_meta(snapshot: dict[str, Any], job: AiAuditJob, response: di
         },
         "data_coverage": build_trusted_result_data_coverage(snapshot),
         "model": response.get("model") or job.model,
-        "output_budget_tokens": job.max_tokens,
+        "output_budget_tokens": _effective_final_output_tokens(job),
     }
 
 

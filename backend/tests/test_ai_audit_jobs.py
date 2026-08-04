@@ -587,6 +587,25 @@ def test_staged_audit_has_separate_10000_token_budget_and_regular_cap_is_unchang
     assert regular["max_tokens"] == 5000
 
 
+def test_short_staged_audit_uses_compact_final_output_budget():
+    db = _db()
+    job = audit_jobs.create_audit_job(
+        db,
+        AiAuditCreateRequest(
+            client_id="client-a",
+            scope="short_summary",
+            model="qwen/qwen3-14b",
+            ai_preset="balanced",
+        ),
+        organization_id="org-a",
+        user_id="user-a",
+        user_email="a@example.com",
+    )
+
+    assert job.max_tokens == 2500
+    assert audit_jobs._effective_final_output_tokens(job) == 2500
+
+
 def test_full_staged_flow_runs_planning_verification_and_final_answer(monkeypatch):
     db = _db()
     job = _create(db)
@@ -2921,6 +2940,17 @@ def test_final_provider_output_is_capped_without_changing_requested_job_setting(
     assert runtime["requestedOutputTokens"] == 10000
     assert runtime["effectiveFinalOutputTokens"] == 4000
     assert runtime["reservedOutputTokens"] == 4000
+
+
+def test_trusted_result_meta_reports_effective_provider_output_budget():
+    db = _db()
+    job = _create(db)
+    job.max_tokens = 10000
+    db.commit()
+
+    meta = audit_jobs._trusted_result_meta({}, job, {"model": job.model})
+
+    assert meta["output_budget_tokens"] == 4000
 
 
 def test_final_projection_l3_uses_backend_fallback_instead_of_failed_job(monkeypatch):

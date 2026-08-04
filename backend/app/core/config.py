@@ -56,6 +56,7 @@ AI_AUDIT_PLANNER_MAX_TOKENS = 1_200
 AI_AUDIT_VERIFICATION_MAX_TOKENS = 1_600
 AI_AUDIT_FINAL_MAX_TOKENS = 10_000
 AI_AUDIT_MAX_OUTPUT_TOKENS = AI_AUDIT_FINAL_MAX_TOKENS
+AI_AUDIT_SHORT_MAX_OUTPUT_TOKENS = 2_500
 AI_AUDIT_PLANNER_READ_TIMEOUT_SECONDS = 45.0
 AI_AUDIT_VERIFICATION_READ_TIMEOUT_SECONDS = 55.0
 AI_FALLBACK_ECONOMY_MODEL = "openai/gpt-4o-mini"
@@ -202,7 +203,11 @@ def normalize_ai_audit_request_options(
 
     preset_id = ai_preset if ai_preset in AI_MODEL_PRESETS else AI_RECOMMENDED_DEFAULT_PRESET
     selected_model = normalize_production_ai_model(model)
-    default_tokens = AI_AUDIT_MAX_OUTPUT_TOKENS if scope == "full_account" else 5_000
+    default_tokens = (
+        AI_AUDIT_MAX_OUTPUT_TOKENS
+        if scope == "full_account"
+        else AI_AUDIT_SHORT_MAX_OUTPUT_TOKENS
+    )
     requested_tokens = default_tokens if max_tokens is None else int(max_tokens)
     return {
         "model": selected_model,
