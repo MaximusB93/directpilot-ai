@@ -2535,9 +2535,17 @@ app.addEventListener('change', (event) => {
       [...container.querySelectorAll('[data-audit-trace-filter]')]
         .map((input) => [input.dataset.auditTraceFilter, input.value]),
     );
-    container.querySelectorAll('[data-audit-trace-row]').forEach((row) => {
+    const rows = [...container.querySelectorAll('[data-audit-trace-row]')];
+    rows.forEach((row) => {
       row.hidden = Object.entries(filters).some(([key, value]) => value && row.dataset[key] !== value);
     });
+    const overflow = container.querySelector('[data-audit-trace-overflow]');
+    if (overflow) {
+      const hasActiveFilter = Object.values(filters).some(Boolean);
+      const hasVisibleOverflowRows = [...overflow.querySelectorAll('[data-audit-trace-row]')]
+        .some((row) => !row.hidden);
+      overflow.open = hasActiveFilter && hasVisibleOverflowRows;
+    }
     return;
   }
   if (event.target.closest('[data-journal-filters]')) {

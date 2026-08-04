@@ -1946,7 +1946,7 @@ def _diagnostic_remediation_requests(
     candidates: list[AuditDataRequest] = []
     registry = _hypothesis_registry(snapshot)
     for summary in snapshot.get("drilldownEvidenceSummaries") or []:
-        if len(candidates) >= min(4, remaining_budget):
+        if len(candidates) >= min(15, remaining_budget):
             break
         if not isinstance(summary, dict) or summary.get("sufficient_data") is True:
             continue
@@ -3200,14 +3200,24 @@ def _factor_hypothesis(factor: dict[str, Any]) -> str:
     segment = str(factor.get("segment") or "без названия")
     if factor.get("factor_type") == "segment_cpa_gap":
         best = factor.get("best_segment") or {}
+        status = (
+            "является подтверждённым измеримым фактором повышенного CPA"
+            if factor.get("backend_confirmed")
+            else "является измеримым кандидатом причины повышенного CPA"
+        )
         return (
-            f"{label.capitalize()} «{segment}» является подтверждённым измеримым фактором повышенного CPA: "
+            f"{label.capitalize()} «{segment}» {status}: "
             f"CPA в {float(factor.get('cpa_ratio') or 0):.2f} раза выше, чем у сопоставимого сегмента "
             f"«{best.get('segment') or 'без названия'}»."
         )
     if factor.get("factor_type") == "waste_without_conversions":
+        status = (
+            "входит в подтверждённый непродуктивный расход"
+            if factor.get("backend_confirmed")
+            else "является измеримым кандидатом непродуктивного расхода"
+        )
         return (
-            f"{label.capitalize()} «{segment}» входит в подтверждённый непродуктивный расход "
+            f"{label.capitalize()} «{segment}» {status} "
             f"без конверсий по выбранным целям."
         )
     return (
@@ -3352,6 +3362,11 @@ def build_campaign_insights(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
                 verification_status=effective_verification_status,
             )
             evidence = list(dict.fromkeys(evidence + _factor_evidence(factor)))[:5]
+            factor_capability = str(factor.get("capability_id") or "")
+            if factor.get("backend_confirmed") or int(factor.get("period_days") or 0) >= 90:
+                missing = []
+            elif factor_capability:
+                missing = [factor_capability]
         priority = (
             "data_needed" if data_needed
             else "opportunity" if opportunity
@@ -3380,7 +3395,7 @@ def build_campaign_insights(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             "evidence": evidence,
             "hypothesis": (
                 _factor_hypothesis(factor)
-                if factor and factor.get("backend_confirmed")
+                if factor
                 else str((linked or {}).get("hypothesis") or "") or None
             ),
             "checked_capabilities": checked,

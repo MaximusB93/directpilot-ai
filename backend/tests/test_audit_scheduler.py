@@ -74,10 +74,10 @@ def test_execution_profiles_persist_deadlines_and_finalization_reserve():
     short = initialize_scheduler_state(short_snapshot, scope="short_summary", started_at=started)
 
     assert execution_profile_for_scope(None).id == "full_account"
-    assert full["softTargetAt"] == (started + timedelta(minutes=15)).isoformat()
-    assert full["hardDeadlineAt"] == (started + timedelta(minutes=20)).isoformat()
-    assert full["collectionDeadlineAt"] == (started + timedelta(minutes=17)).isoformat()
-    assert full["requestSafetyLimit"] == 128
+    assert full["softTargetAt"] == (started + timedelta(minutes=18)).isoformat()
+    assert full["hardDeadlineAt"] == (started + timedelta(minutes=25)).isoformat()
+    assert full["collectionDeadlineAt"] == (started + timedelta(minutes=22)).isoformat()
+    assert full["requestSafetyLimit"] == 148
     assert short["softTargetAt"] == (started + timedelta(minutes=3)).isoformat()
     assert short["hardDeadlineAt"] == (started + timedelta(minutes=5)).isoformat()
     assert short["collectionDeadlineAt"] == (started + timedelta(seconds=225)).isoformat()

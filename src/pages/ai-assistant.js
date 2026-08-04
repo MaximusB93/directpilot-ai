@@ -252,7 +252,7 @@ function renderAuditRequestTrace(metadata, escapeHtml) {
         <label>Источник <select data-audit-trace-filter="source"><option value="">Все</option>${options('source').map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(auditSourceLabel(value))}</option>`).join('')}</select></label>
       </div>
       ${table(shown)}
-      ${overflow.length ? `<details class="quietDetails"><summary>Показать ещё ${overflow.length}</summary>${table(overflow)}</details>` : ''}
+      ${overflow.length ? `<details class="quietDetails" data-audit-trace-overflow><summary>Показать ещё ${overflow.length}</summary>${table(overflow)}</details>` : ''}
     </details>
   `;
 }

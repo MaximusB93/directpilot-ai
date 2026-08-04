@@ -3571,6 +3571,83 @@ def test_campaign_insights_use_ranked_backend_factor_instead_of_generic_template
     assert "Определить запросы" not in insight["recommendation"]
 
 
+def test_campaign_insights_keep_unconfirmed_factor_fields_consistent_after_90_days():
+    snapshot = {
+        "targetKpis": {"targetCpa": 8000},
+        "campaignAnalysisRows": [{
+            "name": "Search Brand",
+            "cost": 182569.92,
+            "clicks": 1005,
+            "impressions": 50000,
+            "goalConversions": 15,
+            "goalCpa": 12171.328,
+        }],
+        "campaignClassifications": [{
+            "campaign_name": "Search Brand",
+            "campaign_family": "search",
+            "campaign_subtype": "brand_search",
+        }],
+        "observedFacts": [{
+            "fact_id": "fact_001",
+            "campaign_name": "Search Brand",
+            "metric": "cpa_above_target",
+            "deviation": 52.14,
+            "sufficient_data": True,
+        }],
+        "hypothesisRegistry": {
+            "hyp_001": {
+                "hypothesis_id": "hyp_001",
+                "campaign_name": "Search Brand",
+                "campaign_family": "search",
+                "campaign_subtype": "brand_search",
+                "fact_ids": ["fact_001"],
+                "hypothesis": "Мобильные устройства повышают CPA.",
+            },
+        },
+        "verificationRegistry": {
+            "hyp_001": {
+                "hypothesis_id": "hyp_001",
+                "status": "unverified",
+                "remaining_data_needed": ["devices"],
+            },
+        },
+        "drilldownEvidenceSummaries": [{
+            "hypothesis_id": "remediation_geo",
+            "campaign_name": "Search Brand",
+            "capability_id": "geo",
+            "status": "collected",
+            "period": {"days": 90},
+            "diagnostics": {
+                "kind": "segment_comparison",
+                "cpa_ratio": 6.25,
+                "worst_segment": {
+                    "segment": "Москва",
+                    "cost": 197935.60,
+                    "cost_share_pct": 35.7,
+                    "clicks": 1590,
+                    "conversions": 39,
+                    "cpa": 5075.27,
+                },
+                "best_segment": {
+                    "segment": "Новороссийск",
+                    "cost": 12000,
+                    "clicks": 100,
+                    "conversions": 14,
+                    "cpa": 811.68,
+                },
+            },
+        }],
+    }
+
+    insight = audit_jobs.build_campaign_insights(snapshot)[0]
+
+    assert "Москва" in insight["hypothesis"]
+    assert "кандидатом причины повышенного CPA" in insight["hypothesis"]
+    assert "Мобильные устройства" not in insight["hypothesis"]
+    assert insight["missing_capabilities"] == []
+    assert "проверен за 90 дней" in insight["recommendation"]
+
+
 def test_unconfirmed_factor_recommendation_reports_checked_extended_period():
     _, recommendation = audit_jobs._factor_copy(
         {
@@ -3585,6 +3662,60 @@ def test_unconfirmed_factor_recommendation_reports_checked_extended_period():
 
     assert "проверен за 60 дней" in recommendation
     assert "расширить проверку до 90 дней" in recommendation
+
+
+def test_diagnostic_remediation_uses_available_budget_beyond_four_campaigns():
+    campaign_names = [f"Search {index}" for index in range(6)]
+    snapshot = {
+        "analysisPeriod": {"dateFrom": "2026-06-10", "dateTo": "2026-07-09", "days": 30},
+        "campaignClassifications": [
+            {
+                "campaign_name": name,
+                "campaign_family": "search",
+                "campaign_subtype": "brand_search",
+            }
+            for name in campaign_names
+        ],
+        "observedFacts": [],
+        "hypothesisRegistry": {},
+        "validatedDataRequests": [
+            {
+                "hypothesis_id": f"breadth_{index}",
+                "campaign_name": name,
+                "dimension": "geo",
+                "capability_id": "geo",
+                "period": {"date_from": "2026-06-10", "date_to": "2026-07-09", "days": 30},
+            }
+            for index, name in enumerate(campaign_names)
+        ],
+        "drilldownEvidenceSummaries": [
+            {
+                "hypothesis_id": f"breadth_{index}",
+                "campaign_name": name,
+                "capability_id": "geo",
+                "status": "collected",
+                "sufficient_data": False,
+                "stop_reason": "low_data",
+                "diagnostics": {
+                    "kind": "segment_comparison",
+                    "cpa_ratio": 2.5,
+                    "worst_segment": {"segment": "Москва"},
+                    "best_segment": {"segment": "Краснодар"},
+                },
+            }
+            for index, name in enumerate(campaign_names)
+        ],
+    }
+
+    requests = audit_jobs._diagnostic_remediation_requests(
+        snapshot,
+        round_number=1,
+        remaining_budget=6,
+    )
+
+    assert len(requests) == 6
+    assert {request.campaign_name for request in requests} == set(campaign_names)
+    assert {request.period.days for request in requests} == {60}
 
 
 def test_second_round_extends_only_insufficient_data_period():

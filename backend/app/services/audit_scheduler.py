@@ -23,10 +23,10 @@ AUDIT_EXECUTION_PROFILES: dict[str, AuditExecutionProfile] = {
         id="full_account",
         # Full audits may use two extra rounds to confirm a concrete factor on
         # 60- and 90-day windows. Short summaries keep the fast profile.
-        soft_target_seconds=15 * 60,
-        hard_deadline_seconds=20 * 60,
+        soft_target_seconds=18 * 60,
+        hard_deadline_seconds=25 * 60,
         finalization_reserve_seconds=3 * 60,
-        max_requests=128,
+        max_requests=148,
         max_depth_rounds=3,
     ),
     "short_summary": AuditExecutionProfile(
