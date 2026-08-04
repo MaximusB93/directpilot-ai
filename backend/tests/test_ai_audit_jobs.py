@@ -3493,6 +3493,81 @@ def test_campaign_insights_keep_numeric_signal_separate_from_unverified_cause():
     assert insight["requires_human_approval"] is True
 
 
+def test_campaign_insights_use_ranked_backend_factor_instead_of_generic_template():
+    snapshot = {
+        "targetKpis": {"targetCpa": 8000},
+        "campaignAnalysisRows": [{
+            "name": "Search Brand",
+            "cost": 100000,
+            "clicks": 200,
+            "impressions": 10000,
+            "goalConversions": 8,
+            "goalCpa": 12500,
+        }],
+        "campaignClassifications": [{
+            "campaign_name": "Search Brand",
+            "campaign_family": "search",
+            "campaign_subtype": "brand_search",
+        }],
+        "observedFacts": [{
+            "fact_id": "fact_001",
+            "campaign_name": "Search Brand",
+            "metric": "cpa_above_target",
+            "deviation": 56.25,
+            "sufficient_data": True,
+            "evidence": ["CPA кампании выше цели."],
+        }],
+        "hypothesisRegistry": {
+            "hyp_001": {
+                "hypothesis_id": "hyp_001",
+                "campaign_name": "Search Brand",
+                "campaign_family": "search",
+                "campaign_subtype": "brand_search",
+                "fact_ids": ["fact_001"],
+                "hypothesis": "Часть поисковых запросов создаёт непроизводительный расход.",
+            },
+        },
+        "verificationRegistry": {
+            "hyp_001": {
+                "hypothesis_id": "hyp_001",
+                "status": "confirmed",
+                "remaining_data_needed": [],
+            },
+        },
+        "drilldownEvidenceSummaries": [{
+            "hypothesis_id": "hyp_001",
+            "capability_id": "search_queries",
+            "status": "collected",
+            "diagnostics": {
+                "kind": "performance_contributors",
+                "material_waste": True,
+                "waste_cost": 16000,
+                "waste_clicks": 40,
+                "waste_share_pct": 16,
+                "top_waste": [{
+                    "segment": "купить бесплатно",
+                    "cost": 9000,
+                    "cost_share_pct": 9,
+                    "clicks": 24,
+                    "impressions": 600,
+                    "conversions": 0,
+                    "cpa": None,
+                }],
+                "top_high_cpa": [],
+            },
+        }],
+    }
+
+    insight = audit_jobs.build_campaign_insights(snapshot)[0]
+
+    assert insight["verification_status"] == "confirmed"
+    assert "купить бесплатно" in insight["problem"]
+    assert "купить бесплатно" in insight["recommendation"]
+    assert "минус-фразу" in insight["recommendation"]
+    assert any("16000.00" in item and "16.0%" in item for item in insight["evidence"])
+    assert "Определить запросы" not in insight["recommendation"]
+
+
 def test_second_round_extends_only_insufficient_data_period():
     snapshot = {
         "analysisPeriod": {"dateFrom": "2026-06-10", "dateTo": "2026-07-09", "days": 30},

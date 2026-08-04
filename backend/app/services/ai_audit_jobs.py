@@ -2831,6 +2831,158 @@ def _campaign_insight_copy(
     return problem, recommendation, effect
 
 
+_FACTOR_CAPABILITY_LABELS = {
+    "search_queries": "поисковый запрос",
+    "ad_group_performance": "группа объявлений",
+    "keyword_performance": "ключевая фраза",
+    "placements": "площадка",
+    "devices": "устройство",
+    "geo": "регион",
+}
+
+
+def _campaign_primary_factor(summaries: list[dict[str, Any]]) -> dict[str, Any] | None:
+    candidates: list[tuple[int, float, dict[str, Any]]] = []
+    for summary in summaries:
+        if not isinstance(summary, dict):
+            continue
+        capability_id = str(
+            summary.get("capability_id")
+            or summary.get("capabilityId")
+            or summary.get("dimension")
+            or ""
+        )
+        diagnostics = summary.get("diagnostics")
+        if not isinstance(diagnostics, dict):
+            continue
+        if diagnostics.get("kind") == "performance_contributors":
+            waste = diagnostics.get("top_waste") or []
+            high_cpa = diagnostics.get("top_high_cpa") or []
+            if waste and isinstance(waste[0], dict):
+                factor = {
+                    **waste[0],
+                    "capability_id": capability_id,
+                    "factor_type": "waste_without_conversions",
+                    "aggregate_waste_cost": diagnostics.get("waste_cost"),
+                    "aggregate_waste_clicks": diagnostics.get("waste_clicks"),
+                    "aggregate_waste_share_pct": diagnostics.get("waste_share_pct"),
+                    "material": bool(diagnostics.get("material_waste")),
+                }
+                candidates.append((
+                    0 if factor["material"] else 2,
+                    -float(factor.get("cost") or 0),
+                    factor,
+                ))
+            if high_cpa and isinstance(high_cpa[0], dict):
+                factor = {
+                    **high_cpa[0],
+                    "capability_id": capability_id,
+                    "factor_type": "high_cpa_segment",
+                    "material": True,
+                }
+                candidates.append((1, -float(factor.get("cost") or 0), factor))
+        elif diagnostics.get("kind") == "segment_comparison":
+            worst = diagnostics.get("worst_segment")
+            best = diagnostics.get("best_segment")
+            ratio = float(diagnostics.get("cpa_ratio") or 0)
+            if isinstance(worst, dict) and isinstance(best, dict) and ratio > 1:
+                factor = {
+                    **worst,
+                    "capability_id": capability_id,
+                    "factor_type": "segment_cpa_gap",
+                    "cpa_ratio": ratio,
+                    "best_segment": best,
+                    "material": ratio >= 1.5,
+                }
+                candidates.append((
+                    0 if factor["material"] else 2,
+                    -float(factor.get("cost") or 0),
+                    factor,
+                ))
+    return sorted(candidates, key=lambda item: (item[0], item[1]))[0][2] if candidates else None
+
+
+def _factor_evidence(factor: dict[str, Any]) -> list[str]:
+    capability_id = str(factor.get("capability_id") or "")
+    label = _FACTOR_CAPABILITY_LABELS.get(capability_id, "сегмент")
+    segment = str(factor.get("segment") or "без названия")
+    evidence = [
+        (
+            f"{label.capitalize()} «{segment}»: расход {float(factor.get('cost') or 0):.2f} ₽, "
+            f"клики {int(factor.get('clicks') or 0)}, "
+            f"конверсии {float(factor.get('conversions') or 0):.2f}"
+            + (
+                f", CPA {float(factor.get('cpa')):.2f} ₽"
+                if factor.get("cpa") is not None else ""
+            )
+            + f", доля расхода {float(factor.get('cost_share_pct') or 0):.1f}%."
+        )
+    ]
+    if factor.get("factor_type") == "waste_without_conversions":
+        evidence.append(
+            f"Совокупно сегменты без конверсий: {float(factor.get('aggregate_waste_cost') or 0):.2f} ₽, "
+            f"{int(factor.get('aggregate_waste_clicks') or 0)} кликов, "
+            f"{float(factor.get('aggregate_waste_share_pct') or 0):.1f}% расхода среза."
+        )
+    elif factor.get("factor_type") == "segment_cpa_gap":
+        best = factor.get("best_segment") or {}
+        evidence.append(
+            f"CPA хуже лучшего сопоставимого сегмента «{best.get('segment') or 'без названия'}» "
+            f"в {float(factor.get('cpa_ratio') or 0):.2f} раза "
+            f"({float(factor.get('cpa') or 0):.2f} ₽ против {float(best.get('cpa') or 0):.2f} ₽)."
+        )
+    return evidence
+
+
+def _factor_copy(
+    factor: dict[str, Any],
+    *,
+    base_problem: str,
+    base_recommendation: str,
+    verification_status: str,
+) -> tuple[str, str]:
+    capability_id = str(factor.get("capability_id") or "")
+    label = _FACTOR_CAPABILITY_LABELS.get(capability_id, "сегмент")
+    segment = str(factor.get("segment") or "без названия")
+    confirmed = verification_status == "confirmed"
+    status_prefix = "Подтверждённый измеримый фактор" if confirmed else "Наиболее сильный измеримый фактор"
+    problem = f"{base_problem} {status_prefix}: {label} «{segment}»."
+    review_prefix = "" if confirmed else "Перед изменением подтвердить фактор на расширенном периоде; затем "
+    if capability_id == "search_queries":
+        recommendation = (
+            f"{review_prefix}проверить релевантность запроса «{segment}» объявлению и посадочной странице; "
+            "при нерелевантности подготовить минус-фразу для ручного согласования."
+        )
+    elif capability_id == "ad_group_performance":
+        recommendation = (
+            f"{review_prefix}разобрать структуру группы «{segment}», запросы и объявления внутри неё; "
+            "подготовить разделение или корректировку структуры для ручного согласования."
+        )
+    elif capability_id == "keyword_performance":
+        recommendation = (
+            f"{review_prefix}проверить соответствие ключевой фразы «{segment}» фактическим запросам; "
+            "подготовить уточнение оператора или минус-фразы для ручного согласования."
+        )
+    elif capability_id == "placements":
+        recommendation = (
+            f"{review_prefix}проверить качество трафика площадки «{segment}»; "
+            "при подтверждении подготовить её исключение для ручного согласования."
+        )
+    elif capability_id == "devices":
+        recommendation = (
+            f"{review_prefix}проверить конверсионный путь и посадочную страницу для устройства «{segment}»; "
+            "корректировку по устройствам подготовить только как черновик для согласования."
+        )
+    elif capability_id == "geo":
+        recommendation = (
+            f"{review_prefix}проверить спрос, условия показа и обработку лидов в регионе «{segment}»; "
+            "геокорректировку подготовить только как черновик для согласования."
+        )
+    else:
+        recommendation = base_recommendation
+    return problem, recommendation
+
+
 def build_campaign_insights(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     """Build stable campaign-level conclusions from trusted backend facts and evidence."""
 
@@ -2939,6 +3091,15 @@ def build_campaign_insights(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             subtype=subtype,
             verification_status=verification_status,
         )
+        factor = _campaign_primary_factor(summaries)
+        if factor:
+            problem, recommendation = _factor_copy(
+                factor,
+                base_problem=problem,
+                base_recommendation=recommendation,
+                verification_status=verification_status,
+            )
+            evidence = list(dict.fromkeys(evidence + _factor_evidence(factor)))[:5]
         priority = (
             "data_needed" if data_needed
             else "opportunity" if opportunity
@@ -3009,6 +3170,44 @@ def _final_rule_summaries(values: Any, limit: int) -> list[dict[str, Any]]:
     return result
 
 
+def _final_diagnostics(value: Any, *, limit: int) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+
+    def safe_factor(raw: Any) -> dict[str, Any] | None:
+        if not isinstance(raw, dict):
+            return None
+        return {
+            "segment": _safe_final_text(raw.get("segment"), max_chars=300),
+            "cost": _number(raw.get("cost")),
+            "costSharePct": _number(raw.get("cost_share_pct") or raw.get("costSharePct")),
+            "clicks": _safe_coverage_count(raw.get("clicks"), default=0),
+            "conversions": _number(raw.get("conversions")),
+            "cpa": _number(raw.get("cpa")),
+        }
+
+    top_waste = [
+        item for item in (safe_factor(raw) for raw in (value.get("top_waste") or []))
+        if item is not None
+    ][:limit]
+    top_high_cpa = [
+        item for item in (safe_factor(raw) for raw in (value.get("top_high_cpa") or []))
+        if item is not None
+    ][:limit]
+    return {
+        "kind": str(value.get("kind") or "")[:80] or None,
+        "materialWaste": bool(value.get("material_waste")),
+        "wasteCost": _number(value.get("waste_cost")),
+        "wasteClicks": _safe_coverage_count(value.get("waste_clicks"), default=0),
+        "wasteSharePct": _number(value.get("waste_share_pct")),
+        "cpaRatio": _number(value.get("cpa_ratio")),
+        "topWaste": top_waste,
+        "topHighCpa": top_high_cpa,
+        "worstSegment": safe_factor(value.get("worst_segment")),
+        "bestSegment": safe_factor(value.get("best_segment")),
+    }
+
+
 def _final_evidence_summary(item: dict[str, Any], *, example_limit: int) -> dict[str, Any]:
     numeric = item.get("numeric_state_counts") or item.get("numericStateCounts") or {}
     return {
@@ -3027,6 +3226,7 @@ def _final_evidence_summary(item: dict[str, Any], *, example_limit: int) -> dict
         "rejectionRules": _final_rule_summaries(
             item.get("matched_rejection_rules") or item.get("rejection_rules"), example_limit,
         ),
+        "diagnostics": _final_diagnostics(item.get("diagnostics"), limit=example_limit),
         "limitations": _bounded_strings(
             item.get("limitations") or item.get("data_quality_warnings"), example_limit,
         ),
