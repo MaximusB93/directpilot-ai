@@ -97,6 +97,47 @@ def test_policy_evidence_links_to_active_hypothesis_and_clears_false_missing():
     assert snapshot["analysisPeriod"]["requestedMatchesAvailableData"] is True
 
 
+def test_reconciliation_preserves_campaign_factor_for_final_insight():
+    snapshot = _snapshot()
+    snapshot["campaignAnalysisRows"] = [{
+        "name": "Campaign A",
+        "cost": 2400,
+        "clicks": 80,
+        "impressions": 4000,
+        "goalConversions": 1,
+        "goalCpa": 2400,
+    }]
+    snapshot["campaignClassifications"] = [{
+        "campaign_name": "Campaign A",
+        "campaign_family": "search",
+        "campaign_subtype": "search",
+    }]
+    snapshot["observedFacts"] = [{
+        "fact_id": "fact-a",
+        "campaign_name": "Campaign A",
+        "metric": "cpa_above_target",
+        "sufficient_data": True,
+        "evidence": ["CPA exceeds target."],
+    }]
+
+    audit_jobs.reconcile_collected_audit_evidence(snapshot, [_search_result()])
+
+    summaries = snapshot["drilldownEvidenceSummaries"]
+    campaign_summary = next(
+        item for item in summaries
+        if item.get("campaign_name") == "Campaign A"
+        and item.get("capability_id") == "search_queries"
+    )
+    insight = audit_jobs.build_campaign_insights(snapshot)[0]
+
+    assert campaign_summary["diagnostics"]["material_waste"] is True
+    assert campaign_summary["diagnostics"]["top_waste"][0]["segment"] == "waste one"
+    assert insight["verification_status"] == "confirmed"
+    assert "waste one" in insight["problem"]
+    assert "waste one" in insight["recommendation"]
+    assert any("1200.00" in item and "100.0%" in item for item in insight["evidence"])
+
+
 def test_evidence_never_crosses_campaign_scope_or_inapplicable_subtype():
     snapshot = _snapshot()
     index = build_canonical_evidence_index(

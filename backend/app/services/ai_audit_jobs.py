@@ -1829,7 +1829,27 @@ def reconcile_collected_audit_evidence(
         _apply_verification_statuses(
             snapshot, AuditHypothesisVerificationSet(verifications=reconciled),
         )
-    snapshot["drilldownEvidenceSummaries"] = linked_summaries
+    # Keep campaign-scoped diagnostics for every collected capability, not only
+    # the at-most-five active hypotheses. The final campaign table is a backend
+    # projection over all trusted evidence, so dropping these summaries here
+    # turns already collected query/device/geo rows back into generic advice.
+    campaign_results = [
+        item.get("result")
+        for item in index.get("entries") or []
+        if item.get("scope") == "campaign"
+        and isinstance(item.get("result"), dict)
+    ]
+    campaign_summaries = _drilldown_evidence_summaries(snapshot, campaign_results)
+    merged_summaries: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    for summary in campaign_summaries + linked_summaries:
+        key = (
+            str(summary.get("campaign_name") or summary.get("campaignName") or ""),
+            str(summary.get("capability_id") or summary.get("capabilityId") or ""),
+            str(summary.get("request_id") or summary.get("requestId") or ""),
+            str(summary.get("hypothesis_id") or summary.get("hypothesisId") or ""),
+        )
+        merged_summaries[key] = summary
+    snapshot["drilldownEvidenceSummaries"] = list(merged_summaries.values())
     coverage = canonical_coverage_projection(index, snapshot)
     snapshot["canonicalEvidenceCoverage"] = coverage
     apply_canonical_coverage_to_registry(snapshot, index)
@@ -3011,12 +3031,16 @@ def build_campaign_insights(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             "_verification": verifications.get(hypothesis_id) or {},
         })
     evidence_by_hypothesis: dict[str, list[dict[str, Any]]] = {}
+    evidence_by_campaign: dict[str, list[dict[str, Any]]] = {}
     for item in snapshot.get("drilldownEvidenceSummaries") or []:
         if not isinstance(item, dict):
             continue
         hypothesis_id = str(item.get("hypothesis_id") or item.get("hypothesisId") or "")
         if hypothesis_id:
             evidence_by_hypothesis.setdefault(hypothesis_id, []).append(item)
+        campaign_name = str(item.get("campaign_name") or item.get("campaignName") or "")
+        if campaign_name:
+            evidence_by_campaign.setdefault(campaign_name, []).append(item)
 
     insights: list[dict[str, Any]] = []
     for fact in snapshot.get("observedFacts") or []:
@@ -3067,7 +3091,17 @@ def build_campaign_insights(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
         if cpa is not None and target_cpa is not None:
             evidence.append(f"CPA {float(cpa):.2f} при цели {float(target_cpa):.2f}; отклонение {float(cpa_delta or 0):+.1f}%.")
         evidence = list(dict.fromkeys(evidence))[:5]
-        summaries = evidence_by_hypothesis.get(hypothesis_id or "", [])
+        summaries = list({
+            (
+                str(item.get("campaign_name") or item.get("campaignName") or ""),
+                str(item.get("capability_id") or item.get("capabilityId") or item.get("dimension") or ""),
+                str(item.get("request_id") or item.get("requestId") or ""),
+            ): item
+            for item in (
+                evidence_by_hypothesis.get(hypothesis_id or "", [])
+                + evidence_by_campaign.get(campaign_name, [])
+            )
+        }.values())
         checked = list(dict.fromkeys(
             str(item.get("capability_id") or item.get("capabilityId") or item.get("dimension"))
             for item in summaries
@@ -5688,6 +5722,7 @@ def _drilldown_evidence_summaries(
                     numeric_counts[parse_numeric_metric(value).state] += 1
         summaries.append({
             **summary,
+            "campaign_name": item.get("campaign_name"),
             "numeric_state_counts": numeric_counts,
             "confirmation_rules": [rule for rule in rules if rule.get("rule_code") == confirmation_code],
             "rejection_rules": [rule for rule in rules if rule.get("rule_code") == rejection_code],
