@@ -3259,9 +3259,6 @@ def build_final_audit_projection(
     ]
 
     coverage = _final_canonical_coverage_projection(snapshot, compaction_level=level)
-    campaign_insights = build_campaign_insights(snapshot)
-    if level >= 2:
-        campaign_insights = campaign_insights[:15 if level == 2 else 10]
     return {
         "analysisPeriod": {
             key: analysis_period.get(key)
@@ -3284,7 +3281,6 @@ def build_final_audit_projection(
         "campaignClassificationSummary": _final_classification_summary(classifications),
         "campaignClassifications": compact_classifications,
         "observedFacts": observed_facts,
-        "campaignInsights": campaign_insights,
         "verificationRegistry": hypotheses,
         "omittedHypothesesSummary": {
             "count": len(omitted), "byStatus": omitted_by_status, "byCampaignType": omitted_by_type,

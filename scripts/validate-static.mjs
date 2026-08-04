@@ -237,6 +237,27 @@ if (!auditSmoke.includes('<p class="aiAuditPeriod">Период анализа: 
   || auditSmoke.includes('CampaignId')) {
   failed.push(['structured audit runtime smoke', false]);
 }
+const missingMetricAuditSmoke = renderAiAuditResult({
+  structured: {
+    meta: { period: {}, data_coverage: {} },
+    executive_summary: 'Итог', data_quality: { status: 'partial' },
+    critical_findings: [], opportunities: [],
+    campaign_insights: [{
+      campaign_name: 'Без конверсий', signal_type: 'conversion_data_unknown',
+      verification_status: 'unverified', conversions: null, cpa: null,
+      problem: 'Метрика недоступна.', evidence: [], checked_capabilities: [],
+      missing_capabilities: [], recommendation: 'Проверить цели.',
+      expected_effect: 'Восстановить измерение.',
+    }],
+    insufficient_data_campaigns: [], action_plan: [], prohibited_actions: [],
+    limitations: [], conclusion: 'Вывод',
+  },
+}, '', escapeHtml, {});
+if (!missingMetricAuditSmoke.includes('Конверсии: —')
+  || !missingMetricAuditSmoke.includes('CPA: —')
+  || missingMetricAuditSmoke.includes('Конверсии: 0')) {
+  failed.push(['audit missing metrics presentation', false]);
+}
 const rawAuditFallbackSmoke = renderAiAuditResult({
   structured: null,
   fallbackMarkdown: '```json\n{"executive_summary":"must stay hidden"}\n```',

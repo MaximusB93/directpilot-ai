@@ -750,6 +750,7 @@ function auditSignalLabel(value) {
 }
 
 function formatAuditMetric(value, suffix = '') {
+  if (value === null || value === undefined || value === '') return '—';
   const number = Number(value);
   if (!Number.isFinite(number)) return '—';
   return `${new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 }).format(number)}${suffix}`;
