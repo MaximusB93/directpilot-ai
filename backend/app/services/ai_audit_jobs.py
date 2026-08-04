@@ -3377,6 +3377,21 @@ def _remaining_final_provider_seconds(snapshot: dict[str, Any]) -> float | None:
     )
 
 
+def _verification_can_start(job: AiAuditJob, snapshot: dict[str, Any]) -> bool:
+    """Reserve enough wall time for the final model before helper verification."""
+
+    remaining = scheduler_deadline_state(snapshot).get("remainingSeconds")
+    if remaining is None:
+        return True
+    profile = _audit_execution_profile(job, snapshot)
+    required_seconds = (
+        profile.finalization_reserve_seconds
+        + int(AUDIT_STAGE_TOTAL_TIMEOUT_SECONDS["verify_hypotheses"])
+        + FINALIZATION_COMMIT_RESERVE_SECONDS
+    )
+    return int(remaining) > required_seconds
+
+
 def _final_schema_repair_timeout(job: AiAuditJob, snapshot: dict[str, Any]) -> httpx.Timeout | None:
     """Bound a formatting-only retry by both the stage lease and audit deadline."""
     expires_at = _as_aware(job.stage_lease_expires_at) if job.stage_lease_expires_at else None
@@ -7186,16 +7201,29 @@ async def advance_audit_job(
         elif stage == "verify_hypotheses":
             snapshot = _json_load(job.context_snapshot_json, {})
             verification_deadline = scheduler_deadline_state(snapshot)
-            if verification_deadline["collectionDeadlineReached"]:
+            protect_finalization = not _verification_can_start(job, snapshot)
+            if verification_deadline["collectionDeadlineReached"] or protect_finalization:
                 verification = _verification_fallback(snapshot, _load_full_drilldown_results(db, job))
                 _apply_verification_statuses(snapshot, verification)
-                _set_helper_stage(snapshot, "verification", status_value="skipped_deadline")
+                _set_helper_stage(
+                    snapshot,
+                    "verification",
+                    status_value=(
+                        "skipped_finalization_reserve"
+                        if protect_finalization and not verification_deadline["collectionDeadlineReached"]
+                        else "skipped_deadline"
+                    ),
+                )
                 runtime = _audit_runtime(snapshot)
                 runtime["schedulerPhase"] = "finalization"
                 runtime["stopReason"] = (
                     "hard_deadline_reached"
                     if verification_deadline["hardDeadlineReached"]
-                    else "collection_deadline_reached"
+                    else (
+                        "collection_deadline_reached"
+                        if verification_deadline["collectionDeadlineReached"]
+                        else "finalization_reserve_protected"
+                    )
                 )
                 mark_scheduler_progress(snapshot, action=runtime["stopReason"])
                 job.context_snapshot_json = _json_dump(snapshot)

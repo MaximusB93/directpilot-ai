@@ -629,6 +629,28 @@ def test_short_final_model_uses_json_mode_without_qwen_reasoning(monkeypatch):
     assert "reasoning" not in captured
 
 
+def test_verification_reserves_short_audit_finalization_time():
+    db = _db()
+    job = audit_jobs.create_audit_job(
+        db,
+        AiAuditCreateRequest(client_id="client-a", scope="short_summary"),
+        organization_id="org-a",
+        user_id="user-a",
+        user_email="a@example.com",
+    )
+    now = audit_jobs._now()
+    snapshot = {
+        "auditRuntime": {
+            "executionProfile": "short_summary",
+            "hardDeadlineAt": (now + timedelta(seconds=130)).isoformat(),
+        },
+    }
+
+    assert audit_jobs._verification_can_start(job, snapshot) is False
+    snapshot["auditRuntime"]["hardDeadlineAt"] = (now + timedelta(seconds=200)).isoformat()
+    assert audit_jobs._verification_can_start(job, snapshot) is True
+
+
 def test_full_staged_flow_runs_planning_verification_and_final_answer(monkeypatch):
     db = _db()
     job = _create(db)
