@@ -3615,3 +3615,68 @@ def test_second_round_extends_only_insufficient_data_period():
 
     snapshot["drilldownResults"][0]["status"] = "unavailable"
     assert audit_jobs._second_round_requests(snapshot) == []
+
+
+def test_second_round_extends_collected_factor_with_insufficient_evidence_to_60_days():
+    snapshot = {
+        "analysisPeriod": {"dateFrom": "2026-06-10", "dateTo": "2026-07-09", "days": 30},
+        "auditRuntime": {
+            "investigationRound": 1,
+            "requestsCount": 1,
+            "maxDepthRounds": 3,
+            "requestSafetyLimit": 20,
+        },
+        "campaignClassifications": [{
+            "campaign_name": "Search Brand",
+            "campaign_family": "search",
+            "campaign_subtype": "brand_search",
+        }],
+        "observedFacts": [{
+            "fact_id": "fact_001",
+            "campaign_name": "Search Brand",
+            "metric": "cpa_above_target",
+        }],
+        "hypothesisRegistry": {},
+        "verificationRegistry": {},
+        "validatedDataRequests": [{
+            "hypothesis_id": "breadth_001",
+            "campaign_name": "Search Brand",
+            "dimension": "geo",
+            "capability_id": "geo",
+            "period": {"date_from": "2026-06-10", "date_to": "2026-07-09", "days": 30},
+        }],
+        "drilldownEvidenceSummaries": [{
+            "hypothesis_id": "breadth_001",
+            "campaign_name": "Search Brand",
+            "capability_id": "geo",
+            "status": "collected",
+            "sufficient_data": False,
+            "stop_reason": "unknown_conversion_metric",
+            "diagnostics": {
+                "kind": "segment_comparison",
+                "cpa_ratio": 4.92,
+                "worst_segment": {"segment": "Sochi"},
+                "best_segment": {"segment": "Krasnodar"},
+            },
+        }],
+    }
+
+    requests = audit_jobs._second_round_requests(snapshot)
+
+    assert len(requests) == 1
+    assert requests[0].capability_id == "geo"
+    assert requests[0].period.days == 60
+    assert requests[0].period.date_from == "2026-05-11"
+    hypothesis = snapshot["hypothesisRegistry"][requests[0].hypothesis_id]
+    assert hypothesis["hypothesis_type"] == "geo_segment_gap"
+    assert hypothesis["confirmation_rule_codes"] == ["geo_cpa_segment_gap"]
+
+    snapshot["auditRuntime"]["investigationRound"] = 2
+    snapshot["auditRuntime"]["requestsCount"] = 2
+    snapshot["validatedDataRequests"].append(requests[0].model_dump(mode="json"))
+    snapshot["drilldownEvidenceSummaries"][0]["hypothesis_id"] = requests[0].hypothesis_id
+    requests_90 = audit_jobs._second_round_requests(snapshot)
+
+    assert len(requests_90) == 1
+    assert requests_90[0].period.days == 90
+    assert requests_90[0].period.date_from == "2026-04-11"

@@ -21,10 +21,12 @@ class AuditExecutionProfile:
 AUDIT_EXECUTION_PROFILES: dict[str, AuditExecutionProfile] = {
     "full_account": AuditExecutionProfile(
         id="full_account",
-        soft_target_seconds=7 * 60,
-        hard_deadline_seconds=10 * 60,
+        # Full audits may use two extra rounds to confirm a concrete factor on
+        # 60- and 90-day windows. Short summaries keep the fast profile.
+        soft_target_seconds=10 * 60,
+        hard_deadline_seconds=15 * 60,
         finalization_reserve_seconds=2 * 60,
-        max_requests=96,
+        max_requests=128,
         max_depth_rounds=3,
     ),
     "short_summary": AuditExecutionProfile(

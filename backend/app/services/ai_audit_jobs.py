@@ -1909,6 +1909,137 @@ def _normalized_verifications(answer: str, snapshot: dict[str, Any]) -> AuditHyp
     return _parse_verifications(answer, snapshot)[0]
 
 
+_REMEDIATION_HYPOTHESIS_TYPES = {
+    "search_queries": "search_query_waste",
+    "ad_group_performance": "ad_group_concentration",
+    "keyword_performance": "keyword_waste",
+    "placements": "placement_waste",
+    "devices": "device_segment_gap",
+    "geo": "geo_segment_gap",
+}
+
+
+def _diagnostic_remediation_requests(
+    snapshot: dict[str, Any],
+    *,
+    round_number: int,
+    remaining_budget: int,
+) -> list[AuditDataRequest]:
+    """Repeat concrete but quality-limited factors on 60/90-day windows."""
+
+    if remaining_budget <= 0:
+        return []
+    classifications = {
+        str(item.get("campaign_name") or ""): item
+        for item in (snapshot.get("campaignClassifications") or [])
+        if isinstance(item, dict) and item.get("campaign_name")
+    }
+    validated = [
+        item for item in (snapshot.get("validatedDataRequests") or [])
+        if isinstance(item, dict)
+    ]
+    date_to_raw = str((snapshot.get("analysisPeriod") or {}).get("dateTo") or "")
+    try:
+        date_to = datetime.fromisoformat(date_to_raw).date()
+    except ValueError:
+        return []
+    candidates: list[AuditDataRequest] = []
+    registry = _hypothesis_registry(snapshot)
+    for summary in snapshot.get("drilldownEvidenceSummaries") or []:
+        if len(candidates) >= min(4, remaining_budget):
+            break
+        if not isinstance(summary, dict) or summary.get("sufficient_data") is True:
+            continue
+        if str(summary.get("stop_reason") or "") not in {"low_data", "unknown_conversion_metric"}:
+            continue
+        capability = str(summary.get("capability_id") or summary.get("dimension") or "")
+        hypothesis_type = _REMEDIATION_HYPOTHESIS_TYPES.get(capability)
+        campaign_name = str(summary.get("campaign_name") or "")
+        classification = classifications.get(campaign_name)
+        diagnostics = summary.get("diagnostics")
+        if not hypothesis_type or not classification or not isinstance(diagnostics, dict):
+            continue
+        has_factor = bool(
+            diagnostics.get("top_waste")
+            or diagnostics.get("top_high_cpa")
+            or (
+                diagnostics.get("kind") == "segment_comparison"
+                and float(diagnostics.get("cpa_ratio") or 0) > 1
+            )
+        )
+        if not has_factor:
+            continue
+        prior_requests = [
+            item for item in validated
+            if str(item.get("campaign_name") or "") == campaign_name
+            and str(item.get("capability_id") or item.get("dimension") or "") == capability
+        ]
+        prior_days = max(
+            [int((item.get("period") or {}).get("days") or 0) for item in prior_requests]
+            or [int((snapshot.get("analysisPeriod") or {}).get("days") or 30)]
+        )
+        extended_days = 60 if prior_days < 60 else 90 if prior_days < 90 else None
+        if not extended_days:
+            continue
+        if any(
+            item.campaign_name == campaign_name
+            and (item.capability_id or item.dimension) == capability
+            and int(item.period.days or 0) == extended_days
+            for item in candidates
+        ):
+            continue
+        hypothesis_id = f"remediation_r{round_number + 1}_{len(candidates) + 1:03d}"
+        fact_ids = [
+            str(item.get("fact_id"))
+            for item in (snapshot.get("observedFacts") or [])
+            if item.get("campaign_name") == campaign_name and item.get("fact_id")
+        ][:5]
+        registry[hypothesis_id] = {
+            "hypothesis_id": hypothesis_id,
+            "hypothesis_type": hypothesis_type,
+            "parent_hypothesis_id": summary.get("hypothesis_id"),
+            "fact_ids": fact_ids,
+            "campaign_name": campaign_name,
+            "campaign_family": classification.get("campaign_family") or "unknown",
+            "campaign_subtype": classification.get("campaign_subtype") or "unknown",
+            "hypothesis": f"Измеримый фактор в срезе {capability} сохраняется на расширенном периоде.",
+            "rationale": (
+                f"Данные за {prior_days} дней выявили фактор, но их качество недостаточно "
+                "для детерминированного подтверждения."
+            ),
+            "current_status": "unverified",
+            "required_capabilities": [capability],
+            "optional_capabilities": [],
+            "confirmation_rule_codes": [CONFIRMATION_RULE_BY_CAPABILITY[capability]],
+            "rejection_rule_codes": [REJECTION_RULE_BY_CAPABILITY[capability]],
+            "remaining_data_needed": [capability],
+            "investigation_round": round_number + 1,
+        }
+        extended_period = {
+            "dateFrom": (date_to - timedelta(days=extended_days - 1)).isoformat(),
+            "dateTo": date_to.isoformat(),
+            "days": extended_days,
+        }
+        candidate = _request(
+            hypothesis_id,
+            classification,
+            capability,
+            (
+                f"Backend нашёл измеримый фактор, но данных за {prior_days} дней недостаточно; "
+                f"повторить тот же read-only срез за {extended_days} дней."
+            ),
+            extended_period,
+            priority="high",
+            required=True,
+        )
+        candidate.request_id = (
+            f"remediation_r{round_number + 1}_{len(candidates) + 1:03d}_{capability}_{extended_days}d"
+        )
+        candidates.append(candidate)
+    snapshot["hypothesisRegistry"] = registry
+    return candidates
+
+
 def _second_round_requests(snapshot: dict[str, Any]) -> list[AuditDataRequest]:
     runtime = _audit_runtime(snapshot)
     round_number = int(runtime.get("investigationRound") or 1)
@@ -1926,7 +2057,11 @@ def _second_round_requests(snapshot: dict[str, Any]) -> list[AuditDataRequest]:
         (item.get("hypothesis_id"), item.get("capability_id") or item.get("dimension"))
         for item in (snapshot.get("validatedDataRequests") or [])
     }
-    candidates: list[AuditDataRequest] = []
+    candidates = _diagnostic_remediation_requests(
+        snapshot,
+        round_number=round_number,
+        remaining_budget=max_requests - request_count,
+    )
     for hypothesis_id, hypothesis in hypotheses.items():
         verification = verifications.get(hypothesis_id) or {}
         if verification.get("status") not in {"unverified", "partially_confirmed"}:
@@ -5283,7 +5418,7 @@ def _audit_runtime(snapshot: dict[str, Any]) -> dict[str, Any]:
         "hardDeadlineAt": None,
         "collectionDeadlineAt": None,
         "finalizationReserveSeconds": 120,
-        "requestSafetyLimit": 96,
+        "requestSafetyLimit": 128,
         "maxDepthRounds": MAX_INVESTIGATION_ROUNDS,
         "schedulerPhase": "breadth",
         "lastProgressAt": None,
