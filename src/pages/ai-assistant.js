@@ -437,12 +437,13 @@ function renderAuditEvidenceCoverage(job, escapeHtml) {
     <div class="aiAuditRequestCounters">
       <span><strong>${escapeHtml(String(summary.rowsReceived || 0))}</strong> строк получено</span>
       <span><strong>${escapeHtml(String(summary.rowsAnalyzedByBackend || 0))}</strong> проверено backend</span>
-      <span><strong>${escapeHtml(String(summary.rowsSentToAi || 0))}</strong> передано AI</span>
+      <span><strong>${escapeHtml(String(summary.rowsSentToAi || 0))}</strong> сырых строк передано AI</span>
       <span><strong>${escapeHtml(String((canonical?.capabilitySummary || []).length))}</strong> срезов</span>
     </div>
+    <aside class="aiAuditNotice">AI получает ограниченную сырую выборку и компактные агрегаты, рассчитанные backend по всем проверенным строкам. Это ограничивает размер контекста без потери backend-анализа.</aside>
     ${state === 'blocked_missing_evidence' ? '<aside class="aiAuditNotice">Полный причинный аудит ограничен: недостающие обязательные данные не заменяются предположениями.</aside>' : ''}
     ${state === 'partial_coverage' ? '<aside class="aiAuditNotice">Часть срезов доступна не полностью. Выводы по ним помечены как ограниченные.</aside>' : ''}
-    ${matrixRows ? `<div class="markdownTableWrap"><table><thead><tr><th>Кампания</th><th>Срез</th><th>Статус</th><th>Получено / backend / AI</th><th>Источник</th><th>Причина</th></tr></thead><tbody>${matrixRows}</tbody></table></div>` : '<p>Для старого аудита детальная матрица покрытия не сохранена.</p>'}
+    ${matrixRows ? `<div class="markdownTableWrap"><table><thead><tr><th>Кампания</th><th>Срез</th><th>Статус</th><th>Получено / backend / сырые строки AI</th><th>Источник</th><th>Причина</th></tr></thead><tbody>${matrixRows}</tbody></table></div>` : '<p>Для старого аудита детальная матрица покрытия не сохранена.</p>'}
     ${policyCoverage ? `<details class="quietDetails"><summary>Полнота обязательных данных · ${escapeHtml(stateLabels[state] || state)}</summary><p>Собрано ${escapeHtml(String(policySummary.satisfied || 0))} из ${escapeHtml(String(policySummary.requiredTotal || 0))}; частично ${escapeHtml(String(policySummary.partial || 0))}; недоступно ${escapeHtml(String(policySummary.unavailable || 0))}; неприменимо ${escapeHtml(String(policySummary.notApplicable || 0))}.</p>${policyRows ? `<div class="markdownTableWrap"><table><thead><tr><th>Кампания</th><th>Сигнал</th><th>Обязательные данные</th><th>Статус</th><th>Причина</th></tr></thead><tbody>${policyRows}</tbody></table></div>` : ''}</details>` : ''}
   </details>`;
 }

@@ -3360,7 +3360,13 @@ def build_trusted_result_data_coverage(snapshot: dict[str, Any]) -> dict[str, di
 
     for name, items in grouped.items():
         total = sum(_safe_coverage_count(item.get("rowsReceived"), default=0) or 0 for item in items)
-        analyzed = sum(_safe_coverage_count(item.get("rowsSentToAi"), default=0) or 0 for item in items)
+        analyzed = sum(
+            _safe_coverage_count(
+                item.get("rowsAnalyzedByBackend"),
+                default=_safe_coverage_count(item.get("rowsReceived"), default=0),
+            ) or 0
+            for item in items
+        )
         sources = list(dict.fromkeys(
             str(item.get("source")).strip()
             for item in items
@@ -3603,6 +3609,16 @@ def _reconcile_structured_evidence_claims(
         if available(item):
             add_aliases(account_collected, item)
 
+    any_campaign_coverage: dict[str, dict[str, Any]] = {}
+    campaign_coverage_by_capability: dict[str, set[str]] = {}
+    for campaign_name, entries in campaign_entries.items():
+        for item in entries.values():
+            capability = str(item.get("capabilityId") or "")
+            if not capability:
+                continue
+            add_aliases(any_campaign_coverage, item)
+            campaign_coverage_by_capability.setdefault(capability, set()).add(campaign_name)
+
     complete_account_coverage: dict[str, dict[str, Any]] = {}
     if trusted_names and not ambiguous_names:
         capabilities = {
@@ -3621,9 +3637,17 @@ def _reconcile_structured_evidence_claims(
                 for candidate in candidates:
                     complete_account_coverage[candidate] = matched[0]
     account_available = {**complete_account_coverage, **account_collected}
+    account_claim_available = {**any_campaign_coverage, **account_collected}
+    partial_account_capabilities = {
+        capability
+        for capability, campaign_names in campaign_coverage_by_capability.items()
+        if len(campaign_names) < len(trusted_names)
+        and not any(candidate in account_collected for candidate in capability_candidates(capability))
+    }
 
     removed: list[dict[str, str]] = []
     quality_limitations: list[str] = []
+    partial_claim_capabilities: set[str] = set()
     text_conflicts = 0
     ambiguous_text_conflicts = 0
     capability_terms = {
@@ -3636,10 +3660,15 @@ def _reconcile_structured_evidence_claims(
         "retargeting_segments": ("retargeting_segments", "retargeting", "ретаргет"),
         "campaign_daily_dynamics": ("campaign_daily_dynamics", "динамик"),
         "ad_group_performance": ("ad_group_performance", "ad_group", "групп объяв"),
+        "ad_groups": ("ad_groups", "ad groups", "групп объяв"),
         "keyword_performance": ("keyword_performance", "keyword", "ключев"),
+        "keywords": ("keywords", "keyword", "ключев"),
         "campaign_settings": ("campaign_settings", "настройк камп"),
         "audience_targets": ("audience", "аудитор"),
+        "audiences": ("audiences", "audience", "аудитор"),
         "ads": ("ads_creatives", "объявлен", "креатив"),
+        "demographics": ("demographics", "демограф"),
+        "autotargeting": ("autotargeting", "автотаргет"),
     }
     missing_markers = (
         "не собран", "не получен", "нет данных", "данные отсутств", "отсутств", "недоступны данные",
@@ -3662,8 +3691,13 @@ def _reconcile_structured_evidence_claims(
         "retargeting_segments": "сегментам ретаргетинга",
         "audience_targets": "аудиторным сегментам",
         "ad_group_performance": "эффективности групп объявлений",
+        "ad_groups": "группам объявлений",
         "keyword_performance": "эффективности ключевых фраз",
+        "keywords": "ключевым фразам",
         "ads": "объявлениям и креативам",
+        "audiences": "аудиторным сегментам",
+        "demographics": "демографии",
+        "autotargeting": "автотаргетингу",
     }
 
     def evidence_for_scope(campaign_name: Any, *, account: bool = False) -> dict[str, dict[str, Any]]:
@@ -3676,11 +3710,22 @@ def _reconcile_structured_evidence_claims(
         normalized = str(text or "").casefold()
         if not normalized or not any(marker in normalized for marker in missing_markers):
             return False, False
-        candidates = evidence_for_scope(campaign_name, account=account)
-        conflict = any(
-            any(term in normalized for term in capability_terms.get(str(item.get("capabilityId")), (str(item.get("capabilityId")),)))
+        candidates = account_claim_available if account else evidence_for_scope(campaign_name)
+        matched_capabilities = {
+            str(item.get("capabilityId"))
             for item in candidates.values()
-        )
+            if item.get("capabilityId")
+            and any(
+                term in normalized
+                for term in capability_terms.get(
+                    str(item.get("capabilityId")),
+                    (str(item.get("capabilityId")),),
+                )
+            )
+        }
+        if account:
+            partial_claim_capabilities.update(matched_capabilities & partial_account_capabilities)
+        conflict = bool(matched_capabilities)
         name = str(campaign_name or "").strip()
         ambiguous = name in ambiguous_names and any(
             any(term in normalized for term in capability_terms.get(str(item.get("capabilityId")), (str(item.get("capabilityId")),)))
@@ -3813,7 +3858,7 @@ def _reconcile_structured_evidence_claims(
     ]))
     drilldown["not_analyzed_levels"] = [
         item for item in (drilldown.get("not_analyzed_levels") or [])
-        if not any(candidate in account_available for candidate in capability_candidates(item))
+        if not any(candidate in account_claim_available for candidate in capability_candidates(item))
     ]
     drilldown["next_data_needed"] = normalize(
         drilldown.get("next_data_needed") or [], None, account=True,
@@ -3849,14 +3894,32 @@ def _reconcile_structured_evidence_claims(
         conflict, _ = text_conflict(result.get(field), account=True)
         if conflict:
             text_conflicts += 1
-            result[field] = (
-                "Результат согласован с фактически собранными account-wide данными; "
-                "оставшиеся ограничения относятся к качеству и объёму выборки."
-            )
+            if partial_claim_capabilities:
+                labels = list(dict.fromkeys(
+                    public_capability_label(capability)
+                    for capability in sorted(partial_claim_capabilities)
+                ))
+                result[field] = (
+                    f"Данные по {', '.join(labels)} собраны для части кампаний. "
+                    "Непокрытые кампании и ограничения выборки указаны в матрице покрытия."
+                )
+            else:
+                result[field] = (
+                    "Результат согласован с фактически собранными account-wide данными; "
+                    "оставшиеся ограничения относятся к качеству и объёму выборки."
+                )
 
-    if quality_limitations:
+    partial_coverage_limitations = [
+        (
+            f"Данные по {public_capability_label(capability)} собраны для "
+            f"{len(campaign_coverage_by_capability.get(capability, set()))} из {len(trusted_names)} кампаний; "
+            "для остальных кампаний выводы по этому срезу ограничены."
+        )
+        for capability in sorted(partial_claim_capabilities)
+    ]
+    if quality_limitations or partial_coverage_limitations:
         result["limitations"] = list(dict.fromkeys([
-            *(result.get("limitations") or []), *quality_limitations,
+            *(result.get("limitations") or []), *quality_limitations, *partial_coverage_limitations,
         ]))
     diagnostics = {
         "status": "final_output_evidence_reconciled" if removed or text_conflicts else "consistent",
@@ -3868,6 +3931,7 @@ def _reconcile_structured_evidence_claims(
         "capabilities": sorted({item["capabilityId"] for item in removed}),
         "accountCapabilities": sorted({str(item.get("capabilityId")) for item in account_collected.values()}),
         "completeAccountCoverage": sorted({str(item.get("capabilityId")) for item in complete_account_coverage.values()}),
+        "partialAccountCoverage": sorted(partial_account_capabilities),
     }
     snapshot["finalOutputEvidenceReconciliation"] = diagnostics
     return result, diagnostics

@@ -281,7 +281,7 @@ def test_trusted_result_data_coverage_reconciles_campaign_scoped_evidence():
                     "status": "collected",
                     "rowsReceived": 117,
                     "rowsAnalyzedByBackend": 117,
-                    "rowsSentToAi": 5,
+                    "rowsSentToAi": 0,
                     "source": "yandex_direct_live_report",
                 },
                 {
@@ -312,9 +312,10 @@ def test_trusted_result_data_coverage_reconciles_campaign_scoped_evidence():
     assert coverage["adGroups"]["analyzed"] == 2
     assert coverage["adsAndCreatives"]["available"] is True
     assert coverage["adsAndCreatives"]["total"] == 79
-    assert coverage["adsAndCreatives"]["analyzed"] == 5
+    assert coverage["adsAndCreatives"]["analyzed"] == 79
     assert coverage["autotargeting"]["available"] is True
     assert coverage["autotargeting"]["total"] == 117
+    assert coverage["autotargeting"]["analyzed"] == 117
     assert coverage["goals"]["available"] is True
     assert coverage["goals"]["reason"] is None
     assert coverage["placements"]["available"] is False

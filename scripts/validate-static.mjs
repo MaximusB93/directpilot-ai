@@ -322,7 +322,9 @@ const evidenceCoverageSmoke = renderAiAuditJob({
   escapeHtml,
 });
 if (!evidenceCoverageSmoke.includes('Что реально проанализировано')
-  || !evidenceCoverageSmoke.includes('Получено / backend / AI')
+  || !evidenceCoverageSmoke.includes('Получено / backend / сырые строки AI')
+  || !evidenceCoverageSmoke.includes('сырых строк передано AI')
+  || !evidenceCoverageSmoke.includes('агрегаты, рассчитанные backend по всем проверенным строкам')
   || !evidenceCoverageSmoke.includes('12 / 12 / 8')
   || !evidenceCoverageSmoke.includes('Полнота обязательных данных')
   || !evidenceCoverageSmoke.includes('Аудит не получил часть обязательных данных')
