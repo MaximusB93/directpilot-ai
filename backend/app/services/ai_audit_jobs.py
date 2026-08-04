@@ -82,6 +82,7 @@ from app.services.audit_evidence_policy import (
 )
 from app.services.audit_public_trace import build_public_audit_trace
 from app.services.audit_scheduler import (
+    collection_batch_can_start,
     build_minimum_coverage_requests,
     execution_profile_for_scope,
     initialize_scheduler_state,
@@ -6965,6 +6966,7 @@ async def advance_audit_job(
                 runtime.get("schedulerPhase") == "finalization"
                 or deadline["collectionDeadlineReached"]
                 or deadline["hardDeadlineReached"]
+                or not collection_batch_can_start(snapshot)
             ):
                 _finish_collection_for_deadline(
                     db,
@@ -6974,6 +6976,8 @@ async def advance_audit_job(
                     reason=(
                         "hard_deadline_reached"
                         if deadline["hardDeadlineReached"]
+                        else "collection_batch_reserve_protected"
+                        if not deadline["collectionDeadlineReached"]
                         else "collection_deadline_reached"
                     ),
                 )

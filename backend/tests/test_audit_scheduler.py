@@ -17,6 +17,7 @@ from app.services.audit_evidence_reconciliation import (
 )
 from app.services.audit_scheduler import (
     build_minimum_coverage_requests,
+    collection_batch_can_start,
     execution_profile_for_scope,
     initialize_scheduler_state,
     partition_breadth_and_depth_requests,
@@ -81,6 +82,22 @@ def test_execution_profiles_persist_deadlines_and_finalization_reserve():
     assert short["collectionDeadlineAt"] == (started + timedelta(seconds=225)).isoformat()
     assert short["maxDepthRounds"] == 1
     assert short["maxInvestigationRounds"] == 1
+
+
+def test_collection_batch_start_guard_protects_finalization_reserve():
+    started = datetime(2026, 7, 16, 10, 0, tzinfo=UTC)
+    snapshot = {}
+    initialize_scheduler_state(snapshot, scope="short_summary", started_at=started)
+
+    early = started + timedelta(seconds=179)
+    near_collection_deadline = started + timedelta(seconds=181)
+
+    assert scheduler_deadline_state(snapshot, now=early)["collectionRemainingSeconds"] == 46
+    assert collection_batch_can_start(snapshot, now=early) is True
+    assert scheduler_deadline_state(
+        snapshot, now=near_collection_deadline,
+    )["collectionRemainingSeconds"] == 44
+    assert collection_batch_can_start(snapshot, now=near_collection_deadline) is False
 
 
 def test_breadth_requests_cover_each_applicable_campaign_before_depth():

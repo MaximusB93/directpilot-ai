@@ -38,6 +38,7 @@ AUDIT_EXECUTION_PROFILES: dict[str, AuditExecutionProfile] = {
 }
 
 _SHORT_SCOPE_ALIASES = {"summary", "short_summary", "quick_summary", "campaign_summary"}
+COLLECTION_BATCH_START_RESERVE_SECONDS = 45
 
 MINIMUM_CAPABILITIES_BY_SUBTYPE: dict[str, tuple[str, ...]] = {
     "search": (
@@ -132,9 +133,30 @@ def scheduler_deadline_state(snapshot: dict[str, Any], now: datetime | None = No
         "collectionDeadlineReached": bool(collection and current >= collection),
         "hardDeadlineReached": bool(hard and current >= hard),
         "remainingSeconds": max(0, int((hard - current).total_seconds())) if hard else None,
+        "collectionRemainingSeconds": (
+            max(0, int((collection - current).total_seconds())) if collection else None
+        ),
         "hardDeadlineAt": hard.isoformat() if hard else None,
         "collectionDeadlineAt": collection.isoformat() if collection else None,
     }
+
+
+def collection_batch_can_start(
+    snapshot: dict[str, Any],
+    now: datetime | None = None,
+) -> bool:
+    """Protect finalization from a Direct batch that can overrun collection time."""
+
+    state = scheduler_deadline_state(snapshot, now=now)
+    remaining = state.get("collectionRemainingSeconds")
+    return bool(
+        not state["hardDeadlineReached"]
+        and not state["collectionDeadlineReached"]
+        and (
+            remaining is None
+            or int(remaining) > COLLECTION_BATCH_START_RESERVE_SECONDS
+        )
+    )
 
 
 def mark_scheduler_progress(
