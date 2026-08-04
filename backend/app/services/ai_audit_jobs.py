@@ -3360,7 +3360,7 @@ def _effective_final_model(job: AiAuditJob) -> str:
     """Use the latency-optimized structured model for the five-minute summary."""
 
     profile = execution_profile_for_scope(job.requested_scope)
-    return AI_AUDIT_HELPER_MODEL if profile.id == "short_summary" else job.model
+    return AI_FALLBACK_ECONOMY_MODEL if profile.id == "short_summary" else job.model
 
 
 def _remaining_final_provider_seconds(snapshot: dict[str, Any]) -> float | None:

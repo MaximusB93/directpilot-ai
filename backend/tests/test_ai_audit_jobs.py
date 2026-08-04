@@ -604,7 +604,7 @@ def test_short_staged_audit_uses_compact_final_output_budget():
 
     assert job.max_tokens == 2500
     assert audit_jobs._effective_final_output_tokens(job) == 2500
-    assert audit_jobs._effective_final_model(job) == audit_jobs.AI_AUDIT_HELPER_MODEL
+    assert audit_jobs._effective_final_model(job) == audit_jobs.AI_FALLBACK_ECONOMY_MODEL
 
 
 def test_short_final_model_uses_json_mode_without_qwen_reasoning(monkeypatch):
