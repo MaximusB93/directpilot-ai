@@ -734,6 +734,57 @@ function renderFindingSection(title, items, escapeHtml, { open = true } = {}) {
   return `<details class="aiAuditFindingSection" ${open ? 'open' : ''}><summary>${escapeHtml(title)} · ${items.length}</summary><div class="aiAuditFindingGrid">${items.map((item) => renderFinding(item, escapeHtml)).join('')}</div></details>`;
 }
 
+function auditSignalLabel(value) {
+  return {
+    spend_without_goal_conversions: 'Расход без конверсий',
+    cpa_above_target: 'CPA выше цели',
+    goal_conversions_drop: 'Снижение конверсий',
+    budget_spike: 'Рост расхода',
+    low_ctr: 'Низкий CTR',
+    conversion_data_unknown: 'Нет надёжных данных о конверсиях',
+    low_data: 'Мало статистики',
+    good_campaign: 'Эффективная кампания',
+    stable_efficiency: 'Стабильная эффективность',
+    campaign_health: 'Состояние кампании',
+  }[value] || value || 'Сигнал';
+}
+
+function formatAuditMetric(value, suffix = '') {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return '—';
+  return `${new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 }).format(number)}${suffix}`;
+}
+
+function renderCampaignInsights(items, escapeHtml) {
+  if (!items.length) return '';
+  const rows = items.map((item) => {
+    const verification = item.verification_status || 'unverified';
+    const statusClass = verification === 'confirmed' ? 'ready' : verification === 'rejected' ? 'error' : 'pending';
+    const metrics = [
+      `Расход: ${formatAuditMetric(item.cost, ' ₽')}`,
+      `Клики: ${formatAuditMetric(item.clicks)}`,
+      `Конверсии: ${formatAuditMetric(item.conversions)}`,
+      `CPA: ${formatAuditMetric(item.cpa, ' ₽')}`,
+      `Цель: ${formatAuditMetric(item.target_cpa, ' ₽')}`,
+      item.cpa_delta_pct === null || item.cpa_delta_pct === undefined
+        ? null
+        : `Отклонение: ${formatAuditMetric(item.cpa_delta_pct, '%')}`,
+    ].filter(Boolean);
+    return `<tr>
+      <th><strong>${escapeHtml(item.campaign_name || 'Кампания')}</strong><small>${escapeHtml(item.campaign_type || 'unknown')}</small></th>
+      <td><strong>${escapeHtml(auditSignalLabel(item.signal_type))}</strong><small>${metrics.map(escapeHtml).join(' · ')}</small></td>
+      <td><p>${escapeHtml(item.problem || '—')}</p>${item.evidence?.length ? `<ul>${item.evidence.map((value) => `<li>${escapeHtml(value)}</li>`).join('')}</ul>` : ''}</td>
+      <td><span class="aiStatusBadge ${statusClass}">${escapeHtml(auditVerificationLabel(verification))}</span>${item.hypothesis ? `<p>${escapeHtml(item.hypothesis)}</p>` : '<p>Причинная гипотеза ещё не сформирована.</p>'}${item.checked_capabilities?.length ? `<small>Проверено: ${item.checked_capabilities.map((value) => escapeHtml(auditDimensionLabel(value))).join(', ')}</small>` : ''}${item.missing_capabilities?.length ? `<small>Нужно: ${item.missing_capabilities.map((value) => escapeHtml(auditDimensionLabel(value))).join(', ')}</small>` : ''}</td>
+      <td><p><strong>${escapeHtml(item.recommendation || '—')}</strong></p><small>Ожидаемый эффект: ${escapeHtml(item.expected_effect || '—')}</small><small>Любое изменение — только после ручного подтверждения.</small></td>
+    </tr>`;
+  }).join('');
+  return `<section class="aiAuditCampaignInsights">
+    <div class="panelHeader"><div><span>Главный результат аудита</span><h4>Что оптимизировать по кампаниям</h4></div><span class="aiStatusBadge ready">${items.length} выводов</span></div>
+    <p>Сигнал и цифры рассчитаны backend по данным Яндекс.Директа. Причинная гипотеза показана отдельно: неподтверждённая причина не выдаётся за доказанный факт.</p>
+    <div class="markdownTableWrap"><table><thead><tr><th>Кампания</th><th>Сигнал и показатели</th><th>Основание</th><th>Гипотеза и проверка</th><th>Рекомендация</th></tr></thead><tbody>${rows}</tbody></table></div>
+  </section>`;
+}
+
 function renderAuditDataRequests(job, escapeHtml) {
   const dataRequests = job?.context_metadata?.investigation?.dataRequests || {};
   const statuses = dataRequests.statusCounts || {};
@@ -790,12 +841,14 @@ export function renderAiAuditResult(result, fallbackAnswer, escapeHtml, job = {}
   const critical = structured.critical_findings || [];
   const byStatus = (status) => critical.filter((item) => (item.verification_status || 'unverified') === status);
   const opportunities = (structured.opportunities || []).filter((item) => !['rejected', 'not_applicable'].includes(item.verification_status));
+  const campaignInsights = structured.campaign_insights || [];
   return `<div class="aiAuditResult">
     <p class="aiAuditPeriod">${periodLine}</p>
     <div class="aiAuditMeta"><span>Сравнение: ${formatAuditDate(period.comparison_date_from)}–${formatAuditDate(period.comparison_date_to)}</span><span>Модель: ${escapeHtml(structured.meta?.model || job.returned_model || job.model || '—')}</span><span>Лимит: ${escapeHtml(String(structured.meta?.output_budget_tokens || job.max_tokens || '—'))} токенов</span><span>Полнота: ${escapeHtml(result?.completeness || 'structured')}</span><span>Качество данных: ${escapeHtml(structured.data_quality?.status || 'partial')}</span><span>Время: ${escapeHtml(String(job.timings?.totalElapsedMs || '—'))} мс</span></div>
     ${result?.warnings?.filter((warning) => !String(warning).includes('достиг лимита')).map((warning) => `<div class="authStatus integrationStatus">${escapeHtml(warning)}</div>`).join('') || ''}
     ${result?.truncated ? '<div class="authStatus integrationStatus"><strong>Ответ модели достиг лимита и мог быть обрезан.</strong></div>' : ''}
     <section><h4>Итог</h4><p>${escapeHtml(structured.executive_summary || '')}</p></section>
+    ${renderCampaignInsights(campaignInsights, escapeHtml)}
     <details open><summary>Что проанализировано</summary><div class="markdownTableWrap"><table><thead><tr><th>Уровень</th><th>Статус</th><th>Проанализировано</th><th>Источник / причина</th></tr></thead><tbody>${coverageRows}</tbody></table></div></details>
     ${renderAuditDataRequests(job, escapeHtml)}
     ${renderFindingSection('Подтверждённые проблемы', byStatus('confirmed'), escapeHtml)}

@@ -1913,6 +1913,62 @@ def _second_round_requests(snapshot: dict[str, Any]) -> list[AuditDataRequest]:
             item for item in (snapshot.get("drilldownResults") or [])
             if item.get("hypothesis_id") == hypothesis_id
         ]
+        low_volume = next(
+            (
+                item for item in related
+                if item.get("status") == "insufficient_data"
+                and (item.get("capability_id") or item.get("dimension"))
+            ),
+            None,
+        )
+        if low_volume:
+            capability = str(low_volume.get("capability_id") or low_volume.get("dimension"))
+            prior_requests = [
+                item for item in (snapshot.get("validatedDataRequests") or [])
+                if item.get("hypothesis_id") == hypothesis_id
+                and str(item.get("capability_id") or item.get("dimension")) == capability
+            ]
+            prior_days = max(
+                [
+                    int((item.get("period") or {}).get("days") or 0)
+                    for item in prior_requests
+                ] or [int((snapshot.get("analysisPeriod") or {}).get("days") or 30)]
+            )
+            extended_days = 60 if prior_days < 60 else 90 if prior_days < 90 else None
+            period_source = snapshot.get("analysisPeriod") or {}
+            date_to_raw = str(period_source.get("dateTo") or "")
+            try:
+                date_to = datetime.fromisoformat(date_to_raw).date()
+            except ValueError:
+                date_to = None
+            if extended_days and date_to:
+                classification = {
+                    "campaign_name": hypothesis.get("campaign_name"),
+                    "campaign_family": hypothesis.get("campaign_family") or "unknown",
+                    "campaign_subtype": hypothesis.get("campaign_subtype") or "unknown",
+                }
+                extended_period = {
+                    "dateFrom": (date_to - timedelta(days=extended_days - 1)).isoformat(),
+                    "dateTo": date_to.isoformat(),
+                    "days": extended_days,
+                }
+                candidate = _request(
+                    str(hypothesis_id),
+                    classification,
+                    capability,
+                    (
+                        f"Статистики за {prior_days} дней недостаточно; повторить тот же read-only срез "
+                        f"за {extended_days} дней, чтобы проверить гипотезу на большей выборке."
+                    ),
+                    extended_period,
+                    priority="high",
+                    required=True,
+                )
+                candidate.request_id = (
+                    f"req_r{round_number + 1}_{len(candidates) + 1:03d}_{extended_days}d"
+                )
+                candidates.append(candidate)
+                continue
         if not any(item.get("status") in AVAILABLE_AUDIT_DATA_STATUSES for item in related):
             continue
         already = {
@@ -2585,6 +2641,7 @@ def _audit_result_contract(output_budget_tokens: int) -> dict[str, Any]:
         "data_quality": {"status": "sufficient|partial|insufficient", "facts": [], "limitations": []},
         "critical_findings": [finding],
         "opportunities": [finding],
+        "campaign_insights": [],
         "insufficient_data_campaigns": [{
             "campaign_name": "Название кампании",
             "reason": "Почему данных недостаточно",
@@ -2692,6 +2749,245 @@ def _final_fact_records(snapshot: dict[str, Any]) -> tuple[dict[str, dict[str, A
             seen.add(key)
             unique.append(item)
     return facts_by_id, unique
+
+
+_CAMPAIGN_SIGNAL_PRIORITY = {
+    "spend_without_goal_conversions": 0,
+    "cpa_above_target": 1,
+    "goal_conversions_drop": 2,
+    "budget_spike": 3,
+    "low_ctr": 4,
+    "conversion_data_unknown": 5,
+    "low_data": 6,
+    "good_campaign": 7,
+    "stable_efficiency": 8,
+    "campaign_health": 9,
+}
+
+
+def _campaign_insight_copy(
+    *,
+    metric: str,
+    subtype: str,
+    verification_status: str,
+) -> tuple[str, str, str]:
+    is_yan = subtype in {"yan_prospecting", "yan_retargeting"}
+    if metric == "spend_without_goal_conversions":
+        problem = "Есть расход без конверсий по выбранным целям."
+        recommendation = (
+            "Проверить площадки и аудитории с расходом без конверсий; после подтверждения причины "
+            "подготовить список исключений для ручного согласования."
+            if is_yan else
+            "Проверить поисковые запросы, группы и ключевые фразы с расходом без конверсий; "
+            "после подтверждения причины подготовить минус-фразы или корректировку структуры для согласования."
+        )
+        effect = "Сократить непроизводительный расход без автоматического изменения кампании."
+    elif metric == "cpa_above_target":
+        problem = "CPA выше целевого значения."
+        recommendation = (
+            "Определить площадки, аудитории и сегменты, формирующие отклонение CPA; подтверждённые "
+            "исключения или корректировки вынести на ручное согласование."
+            if is_yan else
+            "Определить запросы, группы, ключевые фразы, устройства или регионы, формирующие отклонение "
+            "CPA; подтверждённые изменения вынести на ручное согласование."
+        )
+        effect = "Снизить CPA в направлении целевого значения при сохранении контроля объёма конверсий."
+    elif metric == "goal_conversions_drop":
+        problem = "Конверсии снизились относительно предыдущего периода."
+        recommendation = "Проверить изменение трафика, стратегии, сегментов и трекинга между периодами до корректировки кампании."
+        effect = "Локализовать причину снижения и избежать изменения параметров, которые не связаны с проблемой."
+    elif metric == "budget_spike":
+        problem = "Расход резко вырос относительно предыдущего периода."
+        recommendation = "Проверить источники роста расхода и их конверсионность; изменения бюджета подготовить только после подтверждения причины."
+        effect = "Вернуть расход под контроль без преждевременного ограничения эффективного трафика."
+    elif metric == "low_ctr":
+        problem = "CTR ниже рабочего ориентира."
+        recommendation = "Проверить запросы, объявления и соответствие посадочной страницы намерению пользователя; варианты изменений подготовить для ручного теста."
+        effect = "Повысить релевантность трафика и объявлений."
+    elif metric in {"conversion_data_unknown", "low_data"}:
+        problem = (
+            "Конверсионные данные недоступны или некорректны."
+            if metric == "conversion_data_unknown"
+            else "Статистики недостаточно для надёжного вывода."
+        )
+        recommendation = (
+            "Проверить выбранные цели и передачу конверсий, затем повторить анализ."
+            if metric == "conversion_data_unknown"
+            else "Расширить период анализа до 60 дней, а при сохранении малого объёма — до 90 дней."
+        )
+        effect = "Получить достаточную выборку для проверяемого вывода без изменения настроек кампании."
+    elif metric in {"good_campaign", "stable_efficiency"}:
+        problem = "Кампания показывает стабильную эффективность в доступном периоде."
+        recommendation = "Рассмотреть контролируемый тест масштабирования с отдельным лимитом и последующей проверкой CPA."
+        effect = "Проверить потенциал роста без потери целевой эффективности."
+    else:
+        problem = "Сигнал по кампании зафиксирован, но причина не установлена."
+        recommendation = "Проверить доступные срезы и подтвердить причинную гипотезу до любых изменений."
+        effect = "Перевести наблюдение в проверяемое решение."
+    if verification_status == "rejected":
+        recommendation = "Не выполнять действие по опровергнутой причинной гипотезе; проверить другую причину отдельной гипотезой."
+    return problem, recommendation, effect
+
+
+def build_campaign_insights(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    """Build stable campaign-level conclusions from trusted backend facts and evidence."""
+
+    rows = {
+        str(item.get("name") or item.get("campaign_name") or ""): item
+        for item in (snapshot.get("campaignAnalysisRows") or [])
+        if isinstance(item, dict) and (item.get("name") or item.get("campaign_name"))
+    }
+    classifications = {
+        str(item.get("campaign_name") or item.get("campaignName") or ""): item
+        for item in (snapshot.get("campaignClassifications") or [])
+        if isinstance(item, dict)
+    }
+    registry = _hypothesis_registry(snapshot)
+    verifications = _verification_registry(snapshot)
+    hypotheses_by_campaign: dict[str, list[dict[str, Any]]] = {}
+    for hypothesis_id, item in registry.items():
+        if not isinstance(item, dict):
+            continue
+        campaign_name = str(item.get("campaign_name") or item.get("campaignName") or "")
+        if not campaign_name:
+            continue
+        hypotheses_by_campaign.setdefault(campaign_name, []).append({
+            **item,
+            "_hypothesis_id": hypothesis_id,
+            "_verification": verifications.get(hypothesis_id) or {},
+        })
+    evidence_by_hypothesis: dict[str, list[dict[str, Any]]] = {}
+    for item in snapshot.get("drilldownEvidenceSummaries") or []:
+        if not isinstance(item, dict):
+            continue
+        hypothesis_id = str(item.get("hypothesis_id") or item.get("hypothesisId") or "")
+        if hypothesis_id:
+            evidence_by_hypothesis.setdefault(hypothesis_id, []).append(item)
+
+    insights: list[dict[str, Any]] = []
+    for fact in snapshot.get("observedFacts") or []:
+        if not isinstance(fact, dict):
+            continue
+        campaign_name = str(fact.get("campaign_name") or fact.get("campaignName") or "")
+        if not campaign_name or campaign_name == "Аккаунт":
+            continue
+        metric = str(fact.get("metric") or "campaign_health")
+        linked = next(
+            (
+                item for item in hypotheses_by_campaign.get(campaign_name, [])
+                if str(fact.get("fact_id") or fact.get("factId") or "") in {
+                    str(value) for value in (item.get("fact_ids") or item.get("factIds") or [])
+                }
+            ),
+            None,
+        )
+        hypothesis_id = str((linked or {}).get("_hypothesis_id") or "") or None
+        verification = (linked or {}).get("_verification") or {}
+        verification_status = str(
+            verification.get("status")
+            or (linked or {}).get("current_status")
+            or (linked or {}).get("status")
+            or "unverified"
+        )
+        row = rows.get(campaign_name) or {}
+        classification = classifications.get(campaign_name) or linked or {}
+        subtype = str(
+            classification.get("campaign_subtype")
+            or classification.get("campaignSubtype")
+            or "unknown"
+        )
+        campaign_type = _final_campaign_type(classification)
+        conversions = _number(
+            row.get("goalConversions")
+            if "goalConversions" in row
+            else row.get("goal_conversions")
+        )
+        cpa = _number(row.get("goalCpa") if "goalCpa" in row else row.get("goal_cpa"))
+        target_cpa = _number((snapshot.get("targetKpis") or {}).get("targetCpa"))
+        cpa_delta = (
+            round((float(cpa) / float(target_cpa) - 1) * 100, 2)
+            if cpa is not None and target_cpa not in {None, 0}
+            else _number(fact.get("deviation"))
+        )
+        evidence = _bounded_strings(fact.get("evidence"), 3)
+        if cpa is not None and target_cpa is not None:
+            evidence.append(f"CPA {float(cpa):.2f} при цели {float(target_cpa):.2f}; отклонение {float(cpa_delta or 0):+.1f}%.")
+        evidence = list(dict.fromkeys(evidence))[:5]
+        summaries = evidence_by_hypothesis.get(hypothesis_id or "", [])
+        checked = list(dict.fromkeys(
+            str(item.get("capability_id") or item.get("capabilityId") or item.get("dimension"))
+            for item in summaries
+            if item.get("status") in AVAILABLE_AUDIT_DATA_STATUSES
+            and (item.get("capability_id") or item.get("capabilityId") or item.get("dimension"))
+        ))[:12]
+        missing = _bounded_strings(
+            verification.get("remaining_data_needed")
+            or (linked or {}).get("remaining_data_needed"),
+            12,
+        )
+        sufficient = bool(
+            fact.get("sufficient_data")
+            if "sufficient_data" in fact
+            else fact.get("sufficientData")
+        )
+        opportunity = metric in {"good_campaign", "stable_efficiency"}
+        data_needed = not sufficient or metric in {"low_data", "conversion_data_unknown"}
+        problem, recommendation, expected_effect = _campaign_insight_copy(
+            metric=metric,
+            subtype=subtype,
+            verification_status=verification_status,
+        )
+        priority = (
+            "data_needed" if data_needed
+            else "opportunity" if opportunity
+            else "critical" if metric == "spend_without_goal_conversions"
+            else "high" if metric in {"cpa_above_target", "goal_conversions_drop", "budget_spike"}
+            else "medium"
+        )
+        clicks = _number(row.get("clicks"))
+        impressions = _number(row.get("impressions"))
+        insights.append({
+            "priority": priority,
+            "campaign_name": campaign_name,
+            "campaign_type": campaign_type,
+            "signal_type": metric,
+            "signal_status": "data_needed" if data_needed else "opportunity" if opportunity else "detected",
+            "hypothesis_id": hypothesis_id,
+            "verification_status": verification_status,
+            "cost": _number(row.get("cost")),
+            "clicks": int(clicks) if clicks is not None else None,
+            "impressions": int(impressions) if impressions is not None else None,
+            "conversions": float(conversions) if conversions is not None else None,
+            "cpa": float(cpa) if cpa is not None else None,
+            "target_cpa": float(target_cpa) if target_cpa is not None else None,
+            "cpa_delta_pct": float(cpa_delta) if cpa_delta is not None else None,
+            "problem": problem,
+            "evidence": evidence,
+            "hypothesis": str((linked or {}).get("hypothesis") or "") or None,
+            "checked_capabilities": checked,
+            "missing_capabilities": missing,
+            "recommendation": recommendation,
+            "expected_effect": expected_effect,
+            "confidence": (
+                "high" if sufficient and verification_status == "confirmed"
+                else "medium" if sufficient
+                else "low"
+            ),
+            "requires_human_approval": True,
+        })
+    insights.sort(key=lambda item: (
+        _CAMPAIGN_SIGNAL_PRIORITY.get(item["signal_type"], 99),
+        -float(item.get("cost") or 0),
+        item["campaign_name"],
+    ))
+    primary_by_campaign: list[dict[str, Any]] = []
+    seen_campaigns: set[str] = set()
+    for item in insights:
+        if item["campaign_name"] in seen_campaigns:
+            continue
+        seen_campaigns.add(item["campaign_name"])
+        primary_by_campaign.append(item)
+    return primary_by_campaign[:50]
 
 
 def _final_rule_summaries(values: Any, limit: int) -> list[dict[str, Any]]:
@@ -2963,6 +3259,9 @@ def build_final_audit_projection(
     ]
 
     coverage = _final_canonical_coverage_projection(snapshot, compaction_level=level)
+    campaign_insights = build_campaign_insights(snapshot)
+    if level >= 2:
+        campaign_insights = campaign_insights[:15 if level == 2 else 10]
     return {
         "analysisPeriod": {
             key: analysis_period.get(key)
@@ -2985,6 +3284,7 @@ def build_final_audit_projection(
         "campaignClassificationSummary": _final_classification_summary(classifications),
         "campaignClassifications": compact_classifications,
         "observedFacts": observed_facts,
+        "campaignInsights": campaign_insights,
         "verificationRegistry": hypotheses,
         "omittedHypothesesSummary": {
             "count": len(omitted), "byStatus": omitted_by_status, "byCampaignType": omitted_by_type,
@@ -4245,6 +4545,9 @@ def _enforce_verified_result(result: dict[str, Any], snapshot: dict[str, Any]) -
         action["requires_human_approval"] = True
         safe_actions.append(action)
     result["action_plan"] = safe_actions[:10]
+    # The primary campaign table is always rebuilt from trusted backend facts.
+    # Model prose cannot remove, rename or overstate these conclusions.
+    result["campaign_insights"] = build_campaign_insights(snapshot)
     result["tracking_and_goals"] = _trusted_tracking_and_goals(snapshot)
     return result
 

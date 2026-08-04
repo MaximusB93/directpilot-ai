@@ -191,6 +191,17 @@ const auditSmoke = renderAiAuditResult({
     executive_summary: 'Итог', data_quality: { status: 'sufficient' },
     critical_findings: [{ campaign_name: 'Кампания Бренд', problem: 'Проблема', fact: 'Факт', recommendation: 'Проверить', risk: 'high' }],
     opportunities: [],
+    campaign_insights: [{
+      priority: 'high', campaign_name: 'Кампания Бренд', campaign_type: 'search',
+      signal_type: 'cpa_above_target', signal_status: 'detected',
+      verification_status: 'unverified', cost: 12000, clicks: 80, conversions: 2,
+      cpa: 6000, target_cpa: 4000, cpa_delta_pct: 50,
+      problem: 'CPA выше целевого значения.', evidence: ['CPA 6000 при цели 4000.'],
+      hypothesis: 'Нерелевантные запросы повышают CPA.',
+      checked_capabilities: ['campaign_performance'], missing_capabilities: ['search_queries'],
+      recommendation: 'Проверить запросы.', expected_effect: 'Снизить CPA.',
+      confidence: 'medium', requires_human_approval: true,
+    }],
     insufficient_data_campaigns: [{ campaign_name: 'Кампания РСЯ', reason: 'Мало кликов', recommendation: 'Собрать данные', next_data_needed: ['search_queries'] }],
     action_plan: [], prohibited_actions: [], limitations: [], conclusion: 'Вывод',
   },
@@ -211,6 +222,10 @@ const auditSmoke = renderAiAuditResult({
 if (!auditSmoke.includes('<p class="aiAuditPeriod">Период анализа: 10.06.2026–09.07.2026, 30 дней.')
   || auditSmoke.indexOf('Период анализа:') > auditSmoke.indexOf('Что проанализировано')
   || !auditSmoke.includes('Что проанализировано')
+  || !auditSmoke.includes('Что оптимизировать по кампаниям')
+  || !auditSmoke.includes('Сигнал и цифры рассчитаны backend')
+  || !auditSmoke.includes('CPA выше цели')
+  || !auditSmoke.includes('Ожидаемый эффект: Снизить CPA.')
   || !auditSmoke.includes('Кампания Бренд')
   || !auditSmoke.includes('Выполнено по данным последней синхронизации DirectPilot: 1')
   || !auditSmoke.includes('Не полностью проверено по отдельным кампаниям:')

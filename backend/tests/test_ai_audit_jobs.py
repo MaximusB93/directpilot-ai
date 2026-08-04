@@ -3317,3 +3317,113 @@ def test_completion_gate_blocks_final_provider_when_mandatory_evidence_is_missin
     assert result["structured"]["action_plan"] == []
     assert public["context_metadata"]["evidenceCoverage"]["completionState"] == "blocked_missing_evidence"
     assert "requestIds" not in audit_jobs._json_dump(public["context_metadata"]["evidenceCoverage"])
+
+
+def test_campaign_insights_keep_numeric_signal_separate_from_unverified_cause():
+    snapshot = {
+        "targetKpis": {"targetCpa": 8000},
+        "campaignAnalysisRows": [{
+            "name": "Search Brand",
+            "cost": 182569.92,
+            "clicks": 1005,
+            "impressions": 50000,
+            "goalConversions": 15,
+            "goalCpa": 12171.328,
+        }],
+        "campaignClassifications": [{
+            "campaign_name": "Search Brand",
+            "campaign_family": "search",
+            "campaign_subtype": "brand_search",
+        }],
+        "observedFacts": [{
+            "fact_id": "fact_001",
+            "campaign_name": "Search Brand",
+            "metric": "cpa_above_target",
+            "deviation": 52.14,
+            "sufficient_data": True,
+            "evidence": ["Расход 182569.92; клики 1005; конверсии по целям 15."],
+        }],
+        "hypothesisRegistry": {
+            "hyp_001": {
+                "hypothesis_id": "hyp_001",
+                "campaign_name": "Search Brand",
+                "campaign_family": "search",
+                "campaign_subtype": "brand_search",
+                "fact_ids": ["fact_001"],
+                "hypothesis": "Нерелевантные поисковые запросы повышают CPA.",
+            },
+        },
+        "verificationRegistry": {
+            "hyp_001": {
+                "hypothesis_id": "hyp_001",
+                "status": "unverified",
+                "remaining_data_needed": ["search_queries"],
+            },
+        },
+        "drilldownEvidenceSummaries": [{
+            "hypothesis_id": "hyp_001",
+            "capability_id": "campaign_performance",
+            "status": "collected",
+        }],
+    }
+
+    insight = audit_jobs.build_campaign_insights(snapshot)[0]
+
+    assert insight["signal_status"] == "detected"
+    assert insight["verification_status"] == "unverified"
+    assert insight["hypothesis_id"] == "hyp_001"
+    assert insight["cpa"] == 12171.33
+    assert insight["target_cpa"] == 8000
+    assert insight["cpa_delta_pct"] == 52.14
+    assert insight["checked_capabilities"] == ["campaign_performance"]
+    assert insight["missing_capabilities"] == ["search_queries"]
+    assert insight["requires_human_approval"] is True
+
+
+def test_second_round_extends_only_insufficient_data_period():
+    snapshot = {
+        "analysisPeriod": {"dateFrom": "2026-06-10", "dateTo": "2026-07-09", "days": 30},
+        "auditRuntime": {
+            "investigationRound": 1,
+            "requestsCount": 1,
+            "maxDepthRounds": 3,
+            "requestSafetyLimit": 20,
+        },
+        "activeHypothesisIds": ["hyp_001"],
+        "hypothesisRegistry": {
+            "hyp_001": {
+                "hypothesis_id": "hyp_001",
+                "hypothesis_type": "search_query_waste",
+                "campaign_name": "Search Brand",
+                "campaign_family": "search",
+                "campaign_subtype": "brand_search",
+                "fact_ids": ["fact_001"],
+            },
+        },
+        "verificationRegistry": {
+            "hyp_001": {"hypothesis_id": "hyp_001", "status": "unverified"},
+        },
+        "validatedDataRequests": [{
+            "hypothesis_id": "hyp_001",
+            "dimension": "search_queries",
+            "capability_id": "search_queries",
+            "period": {"date_from": "2026-06-10", "date_to": "2026-07-09", "days": 30},
+        }],
+        "drilldownResults": [{
+            "hypothesis_id": "hyp_001",
+            "dimension": "search_queries",
+            "capability_id": "search_queries",
+            "status": "insufficient_data",
+        }],
+    }
+
+    requests = audit_jobs._second_round_requests(snapshot)
+
+    assert len(requests) == 1
+    assert requests[0].capability_id == "search_queries"
+    assert requests[0].period.days == 60
+    assert requests[0].period.date_from == "2026-05-11"
+    assert requests[0].period.date_to == "2026-07-09"
+
+    snapshot["drilldownResults"][0]["status"] = "unavailable"
+    assert audit_jobs._second_round_requests(snapshot) == []
