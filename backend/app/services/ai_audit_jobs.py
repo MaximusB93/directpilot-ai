@@ -3895,7 +3895,10 @@ def _reconcile_structured_evidence_claims(
     result["drilldown_summary"] = drilldown
 
     safe_actions = []
-    account_scope_labels = {"account", "аккаунт", "весь аккаунт", "all account"}
+    account_scope_labels = {
+        "account", "аккаунт", "весь аккаунт", "all account",
+        "все кампании", "all campaigns",
+    }
     for action in result.get("action_plan") or []:
         scope = str(action.get("scope") or "").strip()
         is_account = scope.casefold() in account_scope_labels

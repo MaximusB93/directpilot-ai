@@ -275,6 +275,37 @@ def test_generic_action_stays_scoped_while_blanket_account_action_is_reconciled(
     assert reconciled["limitations"] == []
 
 
+def test_all_campaigns_action_cannot_claim_collected_conversions_are_absent():
+    snapshot = _snapshot()
+    snapshot["canonicalEvidenceCoverage"] = {
+        "accountWide": [],
+        "campaignScoped": [
+            _coverage_entry("Campaign A", "goals"),
+        ],
+        "capabilitySummary": [
+            {
+                "capabilityId": "goals",
+                "applicableCampaigns": 2,
+                "coveredCampaigns": 1,
+            },
+        ],
+    }
+    result = _structured_missing("Campaign A")
+    result["action_plan"] = [
+        {
+            "action": "Проверить синхронизацию целей в Яндекс.Метрике",
+            "reason": "Отсутствие данных по конверсиям блокирует анализ эффективности",
+            "scope": "Все кампании",
+        },
+    ]
+
+    reconciled, diagnostics = audit_jobs._reconcile_structured_evidence_claims(result, snapshot)
+
+    assert reconciled["action_plan"] == []
+    assert diagnostics["removedFreeTextConflicts"] >= 1
+    assert any("1 из 2 кампаний" in item for item in reconciled["limitations"])
+
+
 def _account_result(capability: str, rows: list[dict]) -> dict:
     return {
         "request_id": f"baseline_{capability}",
