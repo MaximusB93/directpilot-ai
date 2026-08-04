@@ -138,6 +138,63 @@ def test_reconciliation_preserves_campaign_factor_for_final_insight():
     assert any("1200.00" in item and "100.0%" in item for item in insight["evidence"])
 
 
+def test_campaign_factor_confirmation_replaces_unrelated_model_hypothesis_status():
+    snapshot = _snapshot()
+    snapshot["campaignAnalysisRows"] = [{
+        "name": "Campaign A",
+        "cost": 2400,
+        "clicks": 100,
+        "impressions": 5000,
+        "goalConversions": 4,
+        "goalCpa": 600,
+    }]
+    snapshot["campaignClassifications"] = [{
+        "campaign_name": "Campaign A",
+        "campaign_family": "search",
+        "campaign_subtype": "search",
+    }]
+    snapshot["observedFacts"] = [{
+        "fact_id": "fact-a",
+        "campaign_name": "Campaign A",
+        "metric": "cpa_above_target",
+        "sufficient_data": True,
+        "evidence": ["CPA exceeds target."],
+    }]
+    snapshot["verificationRegistry"]["hyp-active"]["status"] = "unverified"
+    geo_result = _search_result(
+        capability_id="geo",
+        dimension="geo",
+        rows_total=2,
+        rows_analyzed=2,
+        data=[
+            {
+                "location_of_presence_name": "Region high",
+                "impressions": 2500,
+                "clicks": 60,
+                "cost": 1800,
+                "conversions": 1,
+            },
+            {
+                "location_of_presence_name": "Region efficient",
+                "impressions": 2500,
+                "clicks": 40,
+                "cost": 600,
+                "conversions": 3,
+            },
+        ],
+    )
+
+    audit_jobs.reconcile_collected_audit_evidence(snapshot, [geo_result])
+    insight = audit_jobs.build_campaign_insights(snapshot)[0]
+
+    assert snapshot["verificationRegistry"]["hyp-active"]["status"] == "unverified"
+    assert insight["verification_status"] == "confirmed"
+    assert insight["confidence"] == "high"
+    assert "Region high" in insight["hypothesis"]
+    assert "9.00" in insight["hypothesis"]
+    assert "расширенном периоде" not in insight["recommendation"]
+
+
 def test_evidence_never_crosses_campaign_scope_or_inapplicable_subtype():
     snapshot = _snapshot()
     index = build_canonical_evidence_index(

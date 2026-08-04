@@ -2875,6 +2875,10 @@ def _campaign_primary_factor(summaries: list[dict[str, Any]]) -> dict[str, Any] 
         diagnostics = summary.get("diagnostics")
         if not isinstance(diagnostics, dict):
             continue
+        backend_confirmed = any(
+            isinstance(rule, dict) and rule.get("passed") is True
+            for rule in (summary.get("confirmation_rules") or [])
+        )
         if diagnostics.get("kind") == "performance_contributors":
             waste = diagnostics.get("top_waste") or []
             high_cpa = diagnostics.get("top_high_cpa") or []
@@ -2887,6 +2891,7 @@ def _campaign_primary_factor(summaries: list[dict[str, Any]]) -> dict[str, Any] 
                     "aggregate_waste_clicks": diagnostics.get("waste_clicks"),
                     "aggregate_waste_share_pct": diagnostics.get("waste_share_pct"),
                     "material": bool(diagnostics.get("material_waste")),
+                    "backend_confirmed": backend_confirmed,
                 }
                 candidates.append((
                     0 if factor["material"] else 2,
@@ -2899,6 +2904,7 @@ def _campaign_primary_factor(summaries: list[dict[str, Any]]) -> dict[str, Any] 
                     "capability_id": capability_id,
                     "factor_type": "high_cpa_segment",
                     "material": True,
+                    "backend_confirmed": False,
                 }
                 candidates.append((1, -float(factor.get("cost") or 0), factor))
         elif diagnostics.get("kind") == "segment_comparison":
@@ -2913,6 +2919,7 @@ def _campaign_primary_factor(summaries: list[dict[str, Any]]) -> dict[str, Any] 
                     "cpa_ratio": ratio,
                     "best_segment": best,
                     "material": ratio >= 1.5,
+                    "backend_confirmed": backend_confirmed,
                 }
                 candidates.append((
                     0 if factor["material"] else 2,
@@ -3001,6 +3008,28 @@ def _factor_copy(
     else:
         recommendation = base_recommendation
     return problem, recommendation
+
+
+def _factor_hypothesis(factor: dict[str, Any]) -> str:
+    capability_id = str(factor.get("capability_id") or "")
+    label = _FACTOR_CAPABILITY_LABELS.get(capability_id, "сегмент")
+    segment = str(factor.get("segment") or "без названия")
+    if factor.get("factor_type") == "segment_cpa_gap":
+        best = factor.get("best_segment") or {}
+        return (
+            f"{label.capitalize()} «{segment}» является подтверждённым измеримым фактором повышенного CPA: "
+            f"CPA в {float(factor.get('cpa_ratio') or 0):.2f} раза выше, чем у сопоставимого сегмента "
+            f"«{best.get('segment') or 'без названия'}»."
+        )
+    if factor.get("factor_type") == "waste_without_conversions":
+        return (
+            f"{label.capitalize()} «{segment}» входит в подтверждённый непродуктивный расход "
+            f"без конверсий по выбранным целям."
+        )
+    return (
+        f"{label.capitalize()} «{segment}» — наиболее сильный измеримый фактор отклонения, "
+        "который требует проверки перед изменением настроек."
+    )
 
 
 def build_campaign_insights(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
@@ -3126,12 +3155,17 @@ def build_campaign_insights(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             verification_status=verification_status,
         )
         factor = _campaign_primary_factor(summaries)
+        effective_verification_status = (
+            "confirmed"
+            if factor and factor.get("backend_confirmed")
+            else verification_status
+        )
         if factor:
             problem, recommendation = _factor_copy(
                 factor,
                 base_problem=problem,
                 base_recommendation=recommendation,
-                verification_status=verification_status,
+                verification_status=effective_verification_status,
             )
             evidence = list(dict.fromkeys(evidence + _factor_evidence(factor)))[:5]
         priority = (
@@ -3150,7 +3184,7 @@ def build_campaign_insights(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             "signal_type": metric,
             "signal_status": "data_needed" if data_needed else "opportunity" if opportunity else "detected",
             "hypothesis_id": hypothesis_id,
-            "verification_status": verification_status,
+            "verification_status": effective_verification_status,
             "cost": _number(row.get("cost")),
             "clicks": int(clicks) if clicks is not None else None,
             "impressions": int(impressions) if impressions is not None else None,
@@ -3160,13 +3194,17 @@ def build_campaign_insights(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             "cpa_delta_pct": float(cpa_delta) if cpa_delta is not None else None,
             "problem": problem,
             "evidence": evidence,
-            "hypothesis": str((linked or {}).get("hypothesis") or "") or None,
+            "hypothesis": (
+                _factor_hypothesis(factor)
+                if factor and factor.get("backend_confirmed")
+                else str((linked or {}).get("hypothesis") or "") or None
+            ),
             "checked_capabilities": checked,
             "missing_capabilities": missing,
             "recommendation": recommendation,
             "expected_effect": expected_effect,
             "confidence": (
-                "high" if sufficient and verification_status == "confirmed"
+                "high" if sufficient and effective_verification_status == "confirmed"
                 else "medium" if sufficient
                 else "low"
             ),
