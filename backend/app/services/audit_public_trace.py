@@ -145,9 +145,15 @@ def build_public_audit_trace(
         if item.get("request_id")
     }
     round_by_hypothesis = {}
+    round_by_request = {}
     for round_item in snapshot.get("investigationRounds") or []:
+        round_number = int(round_item.get("round_number") or 1)
+        for item in round_item.get("planned_requests") or []:
+            request_id = str(item.get("request_id") or "")
+            if request_id:
+                round_by_request[request_id] = round_number
         for item in round_item.get("hypotheses") or []:
-            round_by_hypothesis[str(item.get("hypothesis_id"))] = int(round_item.get("round_number") or 1)
+            round_by_hypothesis[str(item.get("hypothesis_id"))] = round_number
 
     trace: list[dict[str, Any]] = []
     for request_id, request in requests.items():
@@ -190,7 +196,10 @@ def build_public_audit_trace(
         report_accepted = bool(report_job and report_job.status in {"requested", "processing", "completed"})
         trace.append({
             "publicTraceId": _trace_id(request_id),
-            "roundNumber": round_by_hypothesis.get(hypothesis_id, 1),
+            "roundNumber": round_by_request.get(
+                request_id,
+                round_by_hypothesis.get(hypothesis_id, 1),
+            ),
             "hypothesisId": hypothesis_id,
             "hypothesisType": hypothesis.get("hypothesis_type") or "campaign_metadata_issue",
             "campaignName": request.get("campaign_name") or hypothesis.get("campaign_name") or "Аккаунт",

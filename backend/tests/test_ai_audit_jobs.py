@@ -1710,6 +1710,14 @@ def test_public_trace_is_safe_and_distinguishes_backend_and_ai_rows():
             "hypothesis_id": "hyp-safe", "hypothesis_type": "search_query_waste", "campaign_name": "Search",
         }},
         "activeHypothesisIds": ["hyp-safe"],
+        "investigationRounds": [{
+            "round_number": 3,
+            "hypotheses": [],
+            "planned_requests": [{
+                "request_id": "req-safe",
+                "hypothesis_id": "hyp-safe",
+            }],
+        }],
         "aiDrilldownSamples": [{**result, "data": result["data"][:1]}],
     })
     job.context_snapshot_json = audit_jobs._json_dump(snapshot)
@@ -1727,6 +1735,7 @@ def test_public_trace_is_safe_and_distinguishes_backend_and_ai_rows():
     trace = metadata["publicRequestTrace"][0]
 
     assert trace["rowsReceived"] == 2
+    assert trace["roundNumber"] == 3
     assert trace["rowsAnalyzedByBackend"] == 2
     assert trace["rowsSentToAi"] == 1
     assert trace["period"]["days"] == 60
