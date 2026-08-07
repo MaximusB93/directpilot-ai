@@ -3607,36 +3607,64 @@ def test_campaign_insights_keep_unconfirmed_factor_fields_consistent_after_90_da
         "verificationRegistry": {
             "hyp_001": {
                 "hypothesis_id": "hyp_001",
-                "status": "unverified",
+                "status": "rejected",
                 "remaining_data_needed": ["devices"],
             },
         },
-        "drilldownEvidenceSummaries": [{
-            "hypothesis_id": "remediation_geo",
-            "campaign_name": "Search Brand",
-            "capability_id": "geo",
-            "status": "collected",
-            "period": {"days": 90},
-            "diagnostics": {
-                "kind": "segment_comparison",
-                "cpa_ratio": 6.25,
-                "worst_segment": {
-                    "segment": "Москва",
-                    "cost": 197935.60,
-                    "cost_share_pct": 35.7,
-                    "clicks": 1590,
-                    "conversions": 39,
-                    "cpa": 5075.27,
-                },
-                "best_segment": {
-                    "segment": "Новороссийск",
-                    "cost": 12000,
-                    "clicks": 100,
-                    "conversions": 14,
-                    "cpa": 811.68,
+        "drilldownEvidenceSummaries": [
+            {
+                "hypothesis_id": "remediation_geo_60",
+                "campaign_name": "Search Brand",
+                "capability_id": "geo",
+                "status": "collected",
+                "period": {"days": 60},
+                "diagnostics": {
+                    "kind": "segment_comparison",
+                    "cpa_ratio": 7.5,
+                    "worst_segment": {
+                        "segment": "Сочи",
+                        "cost": 250000,
+                        "cost_share_pct": 40,
+                        "clicks": 1700,
+                        "conversions": 30,
+                        "cpa": 8333.33,
+                    },
+                    "best_segment": {
+                        "segment": "Краснодар",
+                        "cost": 11000,
+                        "clicks": 90,
+                        "conversions": 10,
+                        "cpa": 1100,
+                    },
                 },
             },
-        }],
+            {
+                "hypothesis_id": "remediation_geo_90",
+                "campaign_name": "Search Brand",
+                "capability_id": "geo",
+                "status": "collected",
+                "period": {"days": 90},
+                "diagnostics": {
+                    "kind": "segment_comparison",
+                    "cpa_ratio": 6.25,
+                    "worst_segment": {
+                        "segment": "Москва",
+                        "cost": 197935.60,
+                        "cost_share_pct": 35.7,
+                        "clicks": 1590,
+                        "conversions": 39,
+                        "cpa": 5075.27,
+                    },
+                    "best_segment": {
+                        "segment": "Новороссийск",
+                        "cost": 12000,
+                        "clicks": 100,
+                        "conversions": 14,
+                        "cpa": 811.68,
+                    },
+                },
+            },
+        ],
     }
 
     insight = audit_jobs.build_campaign_insights(snapshot)[0]
@@ -3644,6 +3672,7 @@ def test_campaign_insights_keep_unconfirmed_factor_fields_consistent_after_90_da
     assert "Москва" in insight["hypothesis"]
     assert "кандидатом причины повышенного CPA" in insight["hypothesis"]
     assert "Мобильные устройства" not in insight["hypothesis"]
+    assert insight["verification_status"] == "unverified"
     assert insight["missing_capabilities"] == []
     assert "проверен за 90 дней" in insight["recommendation"]
 

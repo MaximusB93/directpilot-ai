@@ -3025,7 +3025,7 @@ _FACTOR_CAPABILITY_LABELS = {
 
 
 def _campaign_primary_factor(summaries: list[dict[str, Any]]) -> dict[str, Any] | None:
-    candidates: list[tuple[int, float, dict[str, Any]]] = []
+    candidates: list[tuple[int, int, float, dict[str, Any]]] = []
     for summary in summaries:
         if not isinstance(summary, dict):
             continue
@@ -3049,6 +3049,7 @@ def _campaign_primary_factor(summaries: list[dict[str, Any]]) -> dict[str, Any] 
             if waste and isinstance(waste[0], dict):
                 factor = {
                     **waste[0],
+                    "hypothesis_id": summary.get("hypothesis_id") or summary.get("hypothesisId"),
                     "capability_id": capability_id,
                     "factor_type": "waste_without_conversions",
                     "aggregate_waste_cost": diagnostics.get("waste_cost"),
@@ -3060,19 +3061,21 @@ def _campaign_primary_factor(summaries: list[dict[str, Any]]) -> dict[str, Any] 
                 }
                 candidates.append((
                     0 if factor["material"] else 2,
+                    -period_days,
                     -float(factor.get("cost") or 0),
                     factor,
                 ))
             if high_cpa and isinstance(high_cpa[0], dict):
                 factor = {
                     **high_cpa[0],
+                    "hypothesis_id": summary.get("hypothesis_id") or summary.get("hypothesisId"),
                     "capability_id": capability_id,
                     "factor_type": "high_cpa_segment",
                     "material": True,
                     "backend_confirmed": False,
                     "period_days": period_days,
                 }
-                candidates.append((1, -float(factor.get("cost") or 0), factor))
+                candidates.append((1, -period_days, -float(factor.get("cost") or 0), factor))
         elif diagnostics.get("kind") == "segment_comparison":
             worst = diagnostics.get("worst_segment")
             best = diagnostics.get("best_segment")
@@ -3080,6 +3083,7 @@ def _campaign_primary_factor(summaries: list[dict[str, Any]]) -> dict[str, Any] 
             if isinstance(worst, dict) and isinstance(best, dict) and ratio > 1:
                 factor = {
                     **worst,
+                    "hypothesis_id": summary.get("hypothesis_id") or summary.get("hypothesisId"),
                     "capability_id": capability_id,
                     "factor_type": "segment_cpa_gap",
                     "cpa_ratio": ratio,
@@ -3090,10 +3094,11 @@ def _campaign_primary_factor(summaries: list[dict[str, Any]]) -> dict[str, Any] 
                 }
                 candidates.append((
                     0 if factor["material"] else 2,
+                    -period_days,
                     -float(factor.get("cost") or 0),
                     factor,
                 ))
-    return sorted(candidates, key=lambda item: (item[0], item[1]))[0][2] if candidates else None
+    return sorted(candidates, key=lambda item: (item[0], item[1], item[2]))[0][3] if candidates else None
 
 
 def _factor_evidence(factor: dict[str, Any]) -> list[str]:
@@ -3349,12 +3354,26 @@ def build_campaign_insights(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             verification_status=verification_status,
         )
         factor = _campaign_primary_factor(summaries)
+        factor_matches_linked_hypothesis = bool(
+            factor
+            and hypothesis_id
+            and str(factor.get("hypothesis_id") or "") == hypothesis_id
+        )
         effective_verification_status = (
             "confirmed"
-            if factor and factor.get("backend_confirmed")
+            if factor and (
+                factor.get("backend_confirmed")
+                or (
+                    factor_matches_linked_hypothesis
+                    and verification_status == "confirmed"
+                )
+            )
+            else "unverified"
+            if factor
             else verification_status
         )
         if factor:
+            factor["backend_confirmed"] = effective_verification_status == "confirmed"
             problem, recommendation = _factor_copy(
                 factor,
                 base_problem=problem,
