@@ -749,6 +749,26 @@ function auditSignalLabel(value) {
   }[value] || value || 'Сигнал';
 }
 
+function auditConversionStateLabel(value) {
+  return {
+    known_positive: 'Конверсии получены',
+    known_zero: 'Подтверждённый 0',
+    unknown: 'Метрика не получена',
+    low_sample: 'Малая выборка',
+    not_applicable: 'Нет показов в периоде',
+  }[value] || value || 'Состояние не определено';
+}
+
+function auditAnalysisModeLabel(value) {
+  return {
+    conversion_performance: 'анализ CPA и конверсий',
+    zero_conversion_investigation: 'расследование расхода без конверсий',
+    traffic_proxy: 'анализ качества трафика без CPA',
+    sample_extension: 'расширение периода и проверка выборки',
+    no_delivery: 'проверка статуса и настроек',
+  }[value] || value || 'базовый анализ';
+}
+
 function formatAuditMetric(value, suffix = '') {
   if (value === null || value === undefined || value === '') return '—';
   const number = Number(value);
@@ -773,9 +793,9 @@ function renderCampaignInsights(items, escapeHtml) {
     ].filter(Boolean);
     return `<tr>
       <th><strong>${escapeHtml(item.campaign_name || 'Кампания')}</strong><small>${escapeHtml(item.campaign_type || 'unknown')}</small></th>
-      <td><strong>${escapeHtml(auditSignalLabel(item.signal_type))}</strong><small>${metrics.map(escapeHtml).join(' · ')}</small></td>
+      <td><strong>${escapeHtml(auditSignalLabel(item.signal_type))}</strong><small>${metrics.map(escapeHtml).join(' · ')}</small><small>Состояние: ${escapeHtml(auditConversionStateLabel(item.conversion_state))}</small><small>Режим: ${escapeHtml(auditAnalysisModeLabel(item.analysis_mode))}</small></td>
       <td><p>${escapeHtml(item.problem || '—')}</p>${item.evidence?.length ? `<ul>${item.evidence.map((value) => `<li>${escapeHtml(value)}</li>`).join('')}</ul>` : ''}</td>
-      <td><span class="aiStatusBadge ${statusClass}">${escapeHtml(auditVerificationLabel(verification))}</span>${item.hypothesis ? `<p>${escapeHtml(item.hypothesis)}</p>` : '<p>Причинная гипотеза ещё не сформирована.</p>'}${item.checked_capabilities?.length ? `<small>Проверено: ${item.checked_capabilities.map((value) => escapeHtml(auditDimensionLabel(value))).join(', ')}</small>` : ''}${item.missing_capabilities?.length ? `<small>Нужно: ${item.missing_capabilities.map((value) => escapeHtml(auditDimensionLabel(value))).join(', ')}</small>` : ''}</td>
+      <td><span class="aiStatusBadge ${statusClass}">${escapeHtml(auditVerificationLabel(verification))}</span>${item.hypothesis ? `<p>${escapeHtml(item.hypothesis)}</p>` : '<p>Причинная гипотеза ещё не сформирована.</p>'}${item.scenario_checks?.length ? `<small>Сценарий проверяет: ${item.scenario_checks.map((value) => escapeHtml(auditDimensionLabel(value))).join(', ')}</small>` : ''}${item.checked_capabilities?.length ? `<small>Проверено: ${item.checked_capabilities.map((value) => escapeHtml(auditDimensionLabel(value))).join(', ')}</small>` : ''}${item.missing_capabilities?.length ? `<small>Нужно: ${item.missing_capabilities.map((value) => escapeHtml(auditDimensionLabel(value))).join(', ')}</small>` : ''}</td>
       <td><p><strong>${escapeHtml(item.recommendation || '—')}</strong></p><small>Ожидаемый эффект: ${escapeHtml(item.expected_effect || '—')}</small><small>Любое изменение — только после ручного подтверждения.</small></td>
     </tr>`;
   }).join('');

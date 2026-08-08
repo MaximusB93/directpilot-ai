@@ -7,6 +7,7 @@ from typing import Any
 KNOWLEDGE_DIR = Path(__file__).resolve().parents[1] / "knowledge"
 
 DOCUMENT_ORDER = [
+    "direct_conversion_scenarios.md",
     "direct_analysis_rules.md",
     "direct_budget_safety_rules.md",
     "direct_negative_keywords_rules.md",
@@ -15,6 +16,16 @@ DOCUMENT_ORDER = [
 ]
 
 KEYWORD_RULES: dict[str, tuple[str, ...]] = {
+    "direct_conversion_scenarios.md": (
+        "конверс",
+        "нет данных",
+        "неизвест",
+        "нул",
+        "мало статистики",
+        "unknown",
+        "low sample",
+        "traffic proxy",
+    ),
     "direct_analysis_rules.md": (
         "вчера",
         "сводка",
@@ -127,8 +138,13 @@ def _context_boosts(context: dict[str, Any]) -> dict[str, int]:
     )
     has_goal_data = conversion_context.get("has_goal_data")
     if has_goal_data is False or (isinstance(diagnostics, dict) and diagnostics.get("directGoalDataAvailable") is False):
+        boosts["direct_conversion_scenarios.md"] += 5
         boosts["direct_data_limitations.md"] += 4
         boosts["direct_analysis_rules.md"] += 2
+
+    decision_scenarios = context.get("campaignDecisionScenarios") or []
+    if decision_scenarios:
+        boosts["direct_conversion_scenarios.md"] += 6
 
     search_query_insights = (
         context.get("searchQueryInsights")

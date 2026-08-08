@@ -661,6 +661,18 @@ class AiAuditCampaignInsight(BaseModel):
     cpa: float | None = None
     target_cpa: float | None = None
     cpa_delta_pct: float | None = None
+    conversion_state: Literal[
+        "known_positive", "known_zero", "unknown", "low_sample", "not_applicable",
+    ]
+    conversion_state_reason: str
+    analysis_mode: Literal[
+        "conversion_performance", "zero_conversion_investigation", "traffic_proxy",
+        "sample_extension", "no_delivery",
+    ]
+    scenario_id: str
+    scenario_version: str
+    scenario_checks: list[str] = Field(default_factory=list, max_length=10)
+    forbidden_claims: list[str] = Field(default_factory=list, max_length=5)
     problem: str
     evidence: list[str] = Field(default_factory=list, max_length=5)
     hypothesis: str | None = None

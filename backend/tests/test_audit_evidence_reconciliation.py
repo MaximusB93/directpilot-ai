@@ -138,6 +138,59 @@ def test_reconciliation_preserves_campaign_factor_for_final_insight():
     assert any("1200.00" in item and "100.0%" in item for item in insight["evidence"])
 
 
+def test_unknown_conversions_use_traffic_proxy_without_claiming_sales_impact():
+    snapshot = _snapshot()
+    snapshot["campaignAnalysisRows"] = [{
+        "name": "Campaign A",
+        "cost": 3000,
+        "clicks": 100,
+        "impressions": 10000,
+        "goalConversions": None,
+        "goalCpa": None,
+    }]
+    snapshot["campaignClassifications"] = [{
+        "campaign_name": "Campaign A",
+        "campaign_family": "search",
+        "campaign_subtype": "search",
+    }]
+    snapshot["observedFacts"] = [{
+        "fact_id": "fact-a",
+        "campaign_name": "Campaign A",
+        "metric": "conversion_data_unknown",
+        "sufficient_data": False,
+        "evidence": ["Конверсионная метрика отсутствует."],
+    }]
+    unknown_result = _search_result(data=[
+        {
+            "query": "expensive query",
+            "impressions": 1000,
+            "clicks": 20,
+            "cost": 2000,
+            "conversions": None,
+        },
+        {
+            "query": "baseline query",
+            "impressions": 9000,
+            "clicks": 80,
+            "cost": 1000,
+            "conversions": None,
+        },
+    ])
+
+    audit_jobs.reconcile_collected_audit_evidence(snapshot, [unknown_result])
+    insight = audit_jobs.build_campaign_insights(snapshot)[0]
+
+    summary = snapshot["drilldownEvidenceSummaries"][0]
+    assert summary["traffic_diagnostics"]["candidates"][0]["segment"] == "expensive query"
+    assert insight["conversion_state"] == "unknown"
+    assert insight["analysis_mode"] == "traffic_proxy"
+    assert "expensive query" in insight["problem"]
+    assert "CPC" in insight["hypothesis"]
+    assert "Влияние на конверсии не подтверждено" in insight["hypothesis"]
+    assert "не связывая отклонение с продажами" in insight["recommendation"]
+    assert insight["verification_status"] == "unverified"
+
+
 def test_campaign_factor_confirmation_replaces_unrelated_model_hypothesis_status():
     snapshot = _snapshot()
     snapshot["campaignAnalysisRows"] = [{

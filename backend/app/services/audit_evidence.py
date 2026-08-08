@@ -323,6 +323,83 @@ def _performance_diagnostics(
     }
 
 
+def _traffic_proxy_diagnostics(
+    capability_id: str,
+    rows: list[dict[str, Any]],
+    *,
+    total_cost: float,
+) -> dict[str, Any]:
+    """Find traffic-quality outliers without interpreting unknown conversions as zero."""
+
+    total_clicks = int(sum(_row_number(row, "clicks") for row in rows))
+    total_impressions = int(sum(_row_number(row, "impressions") for row in rows))
+    baseline_cpc = total_cost / total_clicks if total_clicks > 0 else None
+    baseline_ctr = total_clicks / total_impressions * 100 if total_impressions > 0 else None
+    candidates: list[dict[str, Any]] = []
+    for row in rows:
+        clicks = int(_row_number(row, "clicks"))
+        impressions = int(_row_number(row, "impressions"))
+        cost = float(_row_number(row, "cost"))
+        if clicks < 20 or cost <= 0:
+            continue
+        cost_share = cost / total_cost * 100 if total_cost > 0 else 0.0
+        cpc = cost / clicks if clicks > 0 else None
+        ctr = clicks / impressions * 100 if impressions > 0 else None
+        segment = _segment_key(capability_id, row)[:300]
+        if (
+            baseline_cpc
+            and cpc is not None
+            and cpc >= baseline_cpc * 1.5
+            and cost_share >= 10
+        ):
+            candidates.append({
+                "capability_id": capability_id,
+                "segment": segment,
+                "metric": "cpc",
+                "value": round(cpc, 2),
+                "benchmark": round(baseline_cpc, 2),
+                "deviation_ratio": round(cpc / baseline_cpc, 3),
+                "cost": round(cost, 2),
+                "cost_share_pct": round(cost_share, 2),
+                "clicks": clicks,
+                "impressions": impressions,
+            })
+        if (
+            baseline_ctr
+            and ctr is not None
+            and impressions >= 1000
+            and ctr <= baseline_ctr * 0.65
+        ):
+            candidates.append({
+                "capability_id": capability_id,
+                "segment": segment,
+                "metric": "ctr",
+                "value": round(ctr, 2),
+                "benchmark": round(baseline_ctr, 2),
+                "deviation_ratio": round(baseline_ctr / ctr, 3) if ctr > 0 else None,
+                "cost": round(cost, 2),
+                "cost_share_pct": round(cost_share, 2),
+                "clicks": clicks,
+                "impressions": impressions,
+            })
+    candidates.sort(
+        key=lambda item: (
+            float(item.get("deviation_ratio") or 0),
+            float(item.get("cost") or 0),
+        ),
+        reverse=True,
+    )
+    return {
+        "kind": "traffic_proxy",
+        "baseline_cpc": round(baseline_cpc, 2) if baseline_cpc is not None else None,
+        "baseline_ctr": round(baseline_ctr, 2) if baseline_ctr is not None else None,
+        "candidates": candidates[:5],
+        "limitations": [
+            "Traffic-proxy сигнал не подтверждает влияние на конверсии или продажи."
+        ] if candidates else [],
+    }
+
+
 def _comparison_diagnostics(
     capability_id: str,
     rows: list[dict[str, Any]],
@@ -440,6 +517,11 @@ def evaluate_capability_evidence(
             None if available and sufficiency.sufficient and conversion_evidence_complete
             else "unknown_conversion_metric" if available and not conversion_evidence_complete
             else "low_data"
+        ),
+        "traffic_diagnostics": _traffic_proxy_diagnostics(
+            capability_id,
+            rows,
+            total_cost=float(totals["cost"]),
         ),
     }
     rules: list[dict[str, Any]] = []

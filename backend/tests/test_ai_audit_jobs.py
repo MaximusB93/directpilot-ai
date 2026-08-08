@@ -1467,6 +1467,20 @@ def test_text_and_unified_mixed_campaigns_use_current_strategy_metadata():
     assert unified_mixed["warnings"]
 
 
+def test_rtg_abbreviation_selects_retargeting_subtype_with_network_strategy():
+    classified = audit_jobs._campaign_classification("ЕПК | РТГ | База СРМ", {
+        "type": "UNIFIED_CAMPAIGN",
+        "unified_campaign": {"bidding_strategy": {
+            "search": {"bidding_strategy_type": "SERVING_OFF"},
+            "network": {"bidding_strategy_type": "AVERAGE_CPA"},
+        }},
+    })
+
+    assert classified["campaign_family"] == "yan"
+    assert classified["campaign_subtype"] == "yan_retargeting"
+    assert classified["classification_source"] == "direct_api_strategy"
+
+
 def test_classification_summary_contains_only_aggregate_categories():
     summary = audit_jobs._classification_summary([
         {"campaign_name": "private search", "campaign_family": "search", "campaign_subtype": "search", "classification_source": "direct_api_strategy"},
@@ -3221,6 +3235,9 @@ def test_final_projection_is_an_allowlist_without_private_ids_or_samples():
     assert projection["evidenceCoverageSummary"]["required"] > 0
     assert isinstance(projection["missingRequiredEvidence"], list)
     assert isinstance(projection["partialRequiredEvidence"], list)
+    assert projection["campaignDecisionScenarios"]
+    assert projection["campaignDecisionScenarios"][0]["scenarioVersion"]
+    assert projection["campaignDecisionScenarios"][0]["forbiddenClaims"]
     assert "requestIds" not in serialized
 
 
@@ -3503,6 +3520,86 @@ def test_campaign_insights_keep_numeric_signal_separate_from_unverified_cause():
     assert insight["checked_capabilities"] == ["campaign_performance"]
     assert insight["missing_capabilities"] == ["search_queries"]
     assert insight["requires_human_approval"] is True
+
+
+@pytest.mark.parametrize(
+    (
+        "goal_value", "cost", "clicks", "impressions", "sufficient", "metric",
+        "expected_state", "expected_reason", "expected_mode", "expected_scenario",
+    ),
+    [
+        (
+            None, 10000, 100, 5000, False, "conversion_data_unknown",
+            "unknown", "conversion_metric_missing", "traffic_proxy", "search_unknown_conversions",
+        ),
+        (
+            "bad", 10000, 100, 5000, False, "conversion_data_unknown",
+            "unknown", "conversion_metric_invalid", "traffic_proxy", "search_unknown_conversions",
+        ),
+        (
+            0, 10000, 100, 5000, True, "spend_without_goal_conversions",
+            "known_zero", "observed_zero", "zero_conversion_investigation", "known_zero_conversions",
+        ),
+        (
+            5, 10000, 100, 5000, True, "good_campaign",
+            "known_positive", "observed_positive", "conversion_performance", "known_positive_conversions",
+        ),
+        (
+            1, 1000, 10, 400, False, "low_data",
+            "low_sample", "known_positive_low_sample", "sample_extension", "known_conversions_low_sample",
+        ),
+        (
+            0, 0, 0, 0, False, "low_data",
+            "not_applicable", "no_delivery_in_period", "no_delivery", "no_delivery_in_period",
+        ),
+    ],
+)
+def test_campaign_insights_expose_explicit_conversion_state_and_scenario(
+    goal_value,
+    cost,
+    clicks,
+    impressions,
+    sufficient,
+    metric,
+    expected_state,
+    expected_reason,
+    expected_mode,
+    expected_scenario,
+):
+    snapshot = {
+        "targetKpis": {"targetCpa": 8000},
+        "campaignAnalysisRows": [{
+            "name": "Search Campaign",
+            "cost": cost,
+            "clicks": clicks,
+            "impressions": impressions,
+            "goalConversions": goal_value,
+            "goalCpa": 2000 if isinstance(goal_value, (int, float)) and goal_value > 0 else None,
+        }],
+        "campaignClassifications": [{
+            "campaign_name": "Search Campaign",
+            "campaign_family": "search",
+            "campaign_subtype": "search",
+        }],
+        "observedFacts": [{
+            "fact_id": "fact_001",
+            "campaign_name": "Search Campaign",
+            "metric": metric,
+            "sufficient_data": sufficient,
+            "evidence": ["Backend fact."],
+        }],
+    }
+
+    insight = audit_jobs.build_campaign_insights(snapshot)[0]
+
+    assert insight["conversion_state"] == expected_state
+    assert insight["conversion_state_reason"] == expected_reason
+    assert insight["analysis_mode"] == expected_mode
+    assert insight["scenario_id"] == expected_scenario
+    assert insight["scenario_version"]
+    assert insight["scenario_checks"]
+    if expected_state == "unknown":
+        assert "кампания не приносит конверсий" in insight["forbidden_claims"]
 
 
 def test_campaign_insights_use_ranked_backend_factor_instead_of_generic_template():

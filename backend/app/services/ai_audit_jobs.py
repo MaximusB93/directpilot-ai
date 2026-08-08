@@ -93,6 +93,10 @@ from app.services.audit_scheduler import (
     scheduler_deadline_state,
     scheduler_health,
 )
+from app.services.audit_scenario_library import (
+    classify_conversion_state,
+    select_audit_scenario,
+)
 from app.services.cascade_investigation import (
     MAX_DATA_REQUESTS_PER_AUDIT,
     MAX_INVESTIGATION_ROUNDS,
@@ -586,12 +590,16 @@ def _query_snapshot(item: dict[str, Any]) -> dict[str, Any]:
 
 def _name_campaign_classification(name: str) -> dict[str, str]:
     normalized = name.lower().replace("ё", "е")
-    is_retargeting = any(marker in normalized for marker in ("ретарг", "retarget", "ремаркет"))
-    is_yan = any(marker in normalized for marker in ("рся", "yan", "сети", "network"))
+    is_retargeting = any(marker in normalized for marker in ("ретарг", "ртг", "retarget", "ремаркет"))
+    is_search = any(marker in normalized for marker in ("поиск", "search"))
+    is_yan = (
+        any(marker in normalized for marker in ("рся", "yan", "сети", "network"))
+        or (is_retargeting and not is_search)
+    )
     is_brand = any(marker in normalized for marker in ("бренд", "brand"))
     if is_yan:
         return {"campaign_name": name, "campaign_family": "yan", "campaign_subtype": "yan_retargeting" if is_retargeting else "yan_prospecting", "classification_source": "name_heuristic", "warnings": []}
-    if any(marker in normalized for marker in ("поиск", "search")) or is_brand:
+    if is_search or is_brand:
         return {"campaign_name": name, "campaign_family": "search", "campaign_subtype": "brand_search" if is_brand else "search", "classification_source": "name_heuristic", "warnings": []}
     return {"campaign_name": name, "campaign_family": "unknown", "campaign_subtype": "unknown", "classification_source": "unresolved", "warnings": []}
 
@@ -2991,12 +2999,12 @@ def _campaign_insight_copy(
         effect = "Повысить релевантность трафика и объявлений."
     elif metric in {"conversion_data_unknown", "low_data"}:
         problem = (
-            "Конверсионные данные недоступны или некорректны."
+            "Конверсионная метрика не получена или некорректна; это неизвестное значение, а не ноль."
             if metric == "conversion_data_unknown"
             else "Статистики недостаточно для надёжного вывода."
         )
         recommendation = (
-            "Проверить выбранные цели и передачу конверсий, затем повторить анализ."
+            "Проверить выбранные цели и передачу конверсий; одновременно продолжить независимый анализ качества трафика по доступным срезам без выводов о CPA и продажах."
             if metric == "conversion_data_unknown"
             else "Расширить период анализа до 60 дней, а при сохранении малого объёма — до 90 дней."
         )
@@ -3024,7 +3032,11 @@ _FACTOR_CAPABILITY_LABELS = {
 }
 
 
-def _campaign_primary_factor(summaries: list[dict[str, Any]]) -> dict[str, Any] | None:
+def _campaign_primary_factor(
+    summaries: list[dict[str, Any]],
+    *,
+    allow_traffic_proxy: bool = False,
+) -> dict[str, Any] | None:
     candidates: list[tuple[int, int, float, dict[str, Any]]] = []
     for summary in summaries:
         if not isinstance(summary, dict):
@@ -3036,14 +3048,12 @@ def _campaign_primary_factor(summaries: list[dict[str, Any]]) -> dict[str, Any] 
             or ""
         )
         diagnostics = summary.get("diagnostics")
-        if not isinstance(diagnostics, dict):
-            continue
         backend_confirmed = any(
             isinstance(rule, dict) and rule.get("passed") is True
             for rule in (summary.get("confirmation_rules") or [])
         )
         period_days = int((summary.get("period") or {}).get("days") or 0)
-        if diagnostics.get("kind") == "performance_contributors":
+        if isinstance(diagnostics, dict) and diagnostics.get("kind") == "performance_contributors":
             waste = diagnostics.get("top_waste") or []
             high_cpa = diagnostics.get("top_high_cpa") or []
             if waste and isinstance(waste[0], dict):
@@ -3076,7 +3086,7 @@ def _campaign_primary_factor(summaries: list[dict[str, Any]]) -> dict[str, Any] 
                     "period_days": period_days,
                 }
                 candidates.append((1, -period_days, -float(factor.get("cost") or 0), factor))
-        elif diagnostics.get("kind") == "segment_comparison":
+        elif isinstance(diagnostics, dict) and diagnostics.get("kind") == "segment_comparison":
             worst = diagnostics.get("worst_segment")
             best = diagnostics.get("best_segment")
             ratio = float(diagnostics.get("cpa_ratio") or 0)
@@ -3098,6 +3108,26 @@ def _campaign_primary_factor(summaries: list[dict[str, Any]]) -> dict[str, Any] 
                     -float(factor.get("cost") or 0),
                     factor,
                 ))
+        traffic_diagnostics = summary.get("traffic_diagnostics")
+        if allow_traffic_proxy and isinstance(traffic_diagnostics, dict):
+            for traffic_candidate in (traffic_diagnostics.get("candidates") or [])[:3]:
+                if not isinstance(traffic_candidate, dict):
+                    continue
+                factor = {
+                    **traffic_candidate,
+                    "hypothesis_id": summary.get("hypothesis_id") or summary.get("hypothesisId"),
+                    "capability_id": capability_id,
+                    "factor_type": f"traffic_proxy_{traffic_candidate.get('metric') or 'signal'}",
+                    "material": False,
+                    "backend_confirmed": False,
+                    "period_days": period_days,
+                }
+                candidates.append((
+                    3,
+                    -period_days,
+                    -float(factor.get("cost") or 0),
+                    factor,
+                ))
     return sorted(candidates, key=lambda item: (item[0], item[1], item[2]))[0][3] if candidates else None
 
 
@@ -3105,6 +3135,18 @@ def _factor_evidence(factor: dict[str, Any]) -> list[str]:
     capability_id = str(factor.get("capability_id") or "")
     label = _FACTOR_CAPABILITY_LABELS.get(capability_id, "сегмент")
     segment = str(factor.get("segment") or "без названия")
+    if str(factor.get("factor_type") or "").startswith("traffic_proxy_"):
+        metric = str(factor.get("metric") or "")
+        metric_label = "CPC" if metric == "cpc" else "CTR"
+        return [
+            (
+                f"{label.capitalize()} «{segment}»: {metric_label} {float(factor.get('value') or 0):.2f} "
+                f"против ориентира среза {float(factor.get('benchmark') or 0):.2f}; "
+                f"расход {float(factor.get('cost') or 0):.2f} ₽, клики {int(factor.get('clicks') or 0)}, "
+                f"доля расхода {float(factor.get('cost_share_pct') or 0):.1f}%."
+            ),
+            "Это traffic-proxy сигнал: он не подтверждает влияние на конверсии или продажи.",
+        ]
     evidence = [
         (
             f"{label.capitalize()} «{segment}»: расход {float(factor.get('cost') or 0):.2f} ₽, "
@@ -3144,6 +3186,18 @@ def _factor_copy(
     label = _FACTOR_CAPABILITY_LABELS.get(capability_id, "сегмент")
     segment = str(factor.get("segment") or "без названия")
     confirmed = verification_status == "confirmed"
+    if str(factor.get("factor_type") or "").startswith("traffic_proxy_"):
+        metric_label = "CPC" if factor.get("metric") == "cpc" else "CTR"
+        problem = (
+            f"{base_problem} Измеримый traffic-proxy кандидат: {label} «{segment}» "
+            f"отклоняется по {metric_label} от ориентира доступного среза."
+        )
+        recommendation = (
+            f"Проверить релевантность и структуру трафика для {label} «{segment}», "
+            "не связывая отклонение с продажами до восстановления конверсионной метрики; "
+            "любую корректировку подготовить только как черновик для ручного согласования."
+        )
+        return problem, recommendation
     status_prefix = "Подтверждённый измеримый фактор" if confirmed else "Наиболее сильный измеримый фактор"
     problem = f"{base_problem} {status_prefix}: {label} «{segment}»."
     period_days = int(factor.get("period_days") or 0)
@@ -3203,6 +3257,13 @@ def _factor_hypothesis(factor: dict[str, Any]) -> str:
     capability_id = str(factor.get("capability_id") or "")
     label = _FACTOR_CAPABILITY_LABELS.get(capability_id, "сегмент")
     segment = str(factor.get("segment") or "без названия")
+    if str(factor.get("factor_type") or "").startswith("traffic_proxy_"):
+        metric_label = "CPC" if factor.get("metric") == "cpc" else "CTR"
+        return (
+            f"{label.capitalize()} «{segment}» является кандидатом отклонения качества трафика: "
+            f"{metric_label} отличается от ориентира среза. Влияние на конверсии не подтверждено, "
+            "поскольку конверсионная метрика неизвестна."
+        )
     if factor.get("factor_type") == "segment_cpa_gap":
         best = factor.get("best_segment") or {}
         status = (
@@ -3347,21 +3408,47 @@ def build_campaign_insights(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             else fact.get("sufficientData")
         )
         opportunity = metric in {"good_campaign", "stable_efficiency"}
+        clicks = _number(row.get("clicks"))
+        impressions = _number(row.get("impressions"))
+        cost = _number(row.get("cost"))
+        raw_conversions = (
+            row.get("goalConversions")
+            if "goalConversions" in row
+            else row.get("goal_conversions")
+        )
+        conversion_decision = classify_conversion_state(
+            raw_conversions,
+            sufficient_data=sufficient,
+            cost=float(cost or 0),
+            clicks=int(clicks or 0),
+            impressions=int(impressions or 0),
+        )
+        scenario = select_audit_scenario(
+            campaign_type=campaign_type,
+            conversion_state=conversion_decision.state,
+        )
         data_needed = not sufficient or metric in {"low_data", "conversion_data_unknown"}
         problem, recommendation, expected_effect = _campaign_insight_copy(
             metric=metric,
             subtype=subtype,
             verification_status=verification_status,
         )
-        factor = _campaign_primary_factor(summaries)
+        factor = _campaign_primary_factor(
+            summaries,
+            allow_traffic_proxy=conversion_decision.state == "unknown",
+        )
         factor_matches_linked_hypothesis = bool(
             factor
             and hypothesis_id
             and str(factor.get("hypothesis_id") or "") == hypothesis_id
         )
+        traffic_proxy_factor = bool(
+            factor
+            and str(factor.get("factor_type") or "").startswith("traffic_proxy_")
+        )
         effective_verification_status = (
             "confirmed"
-            if factor and (
+            if factor and not traffic_proxy_factor and (
                 factor.get("backend_confirmed")
                 or (
                     factor_matches_linked_hypothesis
@@ -3393,8 +3480,6 @@ def build_campaign_insights(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             else "high" if metric in {"cpa_above_target", "goal_conversions_drop", "budget_spike"}
             else "medium"
         )
-        clicks = _number(row.get("clicks"))
-        impressions = _number(row.get("impressions"))
         insights.append({
             "priority": priority,
             "campaign_name": campaign_name,
@@ -3403,13 +3488,20 @@ def build_campaign_insights(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             "signal_status": "data_needed" if data_needed else "opportunity" if opportunity else "detected",
             "hypothesis_id": hypothesis_id,
             "verification_status": effective_verification_status,
-            "cost": _number(row.get("cost")),
+            "cost": cost,
             "clicks": int(clicks) if clicks is not None else None,
             "impressions": int(impressions) if impressions is not None else None,
             "conversions": float(conversions) if conversions is not None else None,
             "cpa": float(cpa) if cpa is not None else None,
             "target_cpa": float(target_cpa) if target_cpa is not None else None,
             "cpa_delta_pct": float(cpa_delta) if cpa_delta is not None else None,
+            "conversion_state": conversion_decision.state,
+            "conversion_state_reason": conversion_decision.reason,
+            "analysis_mode": scenario.analysis_mode,
+            "scenario_id": scenario.scenario_id,
+            "scenario_version": scenario.public_dict()["scenario_version"],
+            "scenario_checks": list(scenario.must_analyze)[:10],
+            "forbidden_claims": list(scenario.forbidden_claims)[:5],
             "problem": problem,
             "evidence": evidence,
             "hypothesis": (
@@ -3751,6 +3843,21 @@ def build_final_audit_projection(
     ]
 
     coverage = _final_canonical_coverage_projection(snapshot, compaction_level=level)
+    decision_limit = 20 if level < 2 else 10
+    decision_scenarios = [
+        {
+            "campaignName": item["campaign_name"],
+            "campaignType": item["campaign_type"],
+            "conversionState": item["conversion_state"],
+            "conversionStateReason": item["conversion_state_reason"],
+            "analysisMode": item["analysis_mode"],
+            "scenarioId": item["scenario_id"],
+            "scenarioVersion": item["scenario_version"],
+            "mustAnalyze": item["scenario_checks"][:6 if level < 2 else 3],
+            "forbiddenClaims": item["forbidden_claims"][:3],
+        }
+        for item in build_campaign_insights(snapshot)[:decision_limit]
+    ]
     return {
         "analysisPeriod": {
             key: analysis_period.get(key)
@@ -3772,6 +3879,7 @@ def build_final_audit_projection(
         },
         "campaignClassificationSummary": _final_classification_summary(classifications),
         "campaignClassifications": compact_classifications,
+        "campaignDecisionScenarios": decision_scenarios,
         "observedFacts": observed_facts,
         "verificationRegistry": hypotheses,
         "omittedHypothesesSummary": {
@@ -4005,6 +4113,7 @@ Final audit projection:
 {json.dumps(snapshot, ensure_ascii=False, indent=2)}
 
 Evidence policy обязателен: сначала проверь auditCompletionState и evidenceCoverageSummary.
+campaignDecisionScenarios выбраны backend по фактическому состоянию данных. Соблюдай mustAnalyze и forbiddenClaims. При conversionState=unknown продолжай traffic-proxy анализ, но не рассчитывай CPA и не называй неизвестную метрику нулём.
 Если auditCompletionState=partial_coverage, явно перечисли ограничения и не выдавай частично подтверждённую причину за установленный факт.
 Если auditCompletionState=blocked_missing_evidence, полный причинный аудит не завершён: не формируй уверенный action_plan по затронутым сигналам и укажи недостающие обязательные данные.
 Статусы unavailable, partial и missing не заменяй нулевыми значениями.
