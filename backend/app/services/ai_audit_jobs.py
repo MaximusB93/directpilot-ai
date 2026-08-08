@@ -3049,6 +3049,13 @@ _FACTOR_CAPABILITY_LABELS = {
     "geo": "регион",
 }
 
+_CAMPAIGN_SUBTYPE_LABELS = {
+    "search": "Поиск",
+    "brand_search": "брендовый Поиск",
+    "yan_prospecting": "привлечение новой аудитории в РСЯ",
+    "yan_retargeting": "ретаргетинг в РСЯ",
+}
+
 
 def _campaign_peer_traffic_factor(
     campaign_name: str,
@@ -3274,9 +3281,14 @@ def _factor_evidence(factor: dict[str, Any]) -> list[str]:
             "Это traffic-proxy сигнал: он не подтверждает влияние на конверсии или продажи.",
         ]
         if int(factor.get("peer_campaigns") or 0) >= 2:
+            benchmark_scope = str(factor.get("benchmark_scope") or "peer cohort")
+            benchmark_scope_label = _CAMPAIGN_SUBTYPE_LABELS.get(
+                benchmark_scope,
+                "сопоставимая группа кампаний",
+            )
             evidence.insert(1, (
                 f"Ориентир рассчитан по {int(factor.get('peer_campaigns') or 0)} "
-                f"сопоставимым кампаниям типа «{factor.get('benchmark_scope') or 'peer cohort'}»; "
+                f"сопоставимым кампаниям типа «{benchmark_scope_label}»; "
                 "конверсии в сравнении не использовались."
             ))
         return evidence
@@ -3326,7 +3338,7 @@ def _factor_copy(
             f"отклоняется по {metric_label} от ориентира доступного среза."
         )
         recommendation = (
-            f"Проверить релевантность и структуру трафика для {label} «{segment}», "
+            f"Проверить релевантность и структуру трафика для объекта: {label} «{segment}», "
             "не связывая отклонение с продажами до восстановления конверсионной метрики; "
             "любую корректировку подготовить только как черновик для ручного согласования."
         )

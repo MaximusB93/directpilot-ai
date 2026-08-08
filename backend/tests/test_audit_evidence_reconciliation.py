@@ -244,6 +244,9 @@ def test_unknown_conversions_use_peer_campaign_proxy_when_breakdowns_are_unavail
     assert "CPC" in insight["hypothesis"]
     assert any("120.00" in item and "20.00" in item for item in insight["evidence"])
     assert any("2 сопоставимым кампаниям" in item for item in insight["evidence"])
+    assert any("ретаргетинг в РСЯ" in item for item in insight["evidence"])
+    assert all("yan_retargeting" not in item for item in insight["evidence"])
+    assert "для объекта: кампания «RTG Expensive»" in insight["recommendation"]
     assert any(
         "не подтверждает влияние на конверсии или продажи" in item
         for item in insight["evidence"]
