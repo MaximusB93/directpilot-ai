@@ -1481,6 +1481,28 @@ def test_rtg_abbreviation_selects_retargeting_subtype_with_network_strategy():
     assert classified["classification_source"] == "direct_api_strategy"
 
 
+def test_rtg_search_traffic_label_does_not_conflict_with_network_strategy():
+    classified = audit_jobs._campaign_classification("EPK | RTG | Search traffic", {
+        "type": "UNIFIED_CAMPAIGN",
+        "unified_campaign": {"bidding_strategy": {
+            "search": {"bidding_strategy_type": "SERVING_OFF"},
+            "network": {"bidding_strategy_type": "AVERAGE_CPA"},
+        }},
+    })
+
+    assert classified["campaign_family"] == "yan"
+    assert classified["campaign_subtype"] == "yan_retargeting"
+    assert classified["classification_source"] == "direct_api_strategy"
+
+
+def test_interest_marker_outweighs_brand_marker_when_api_metadata_is_missing():
+    classified = audit_jobs._campaign_classification("Product | Brand | Interests")
+
+    assert classified["campaign_family"] == "yan"
+    assert classified["campaign_subtype"] == "yan_prospecting"
+    assert classified["classification_source"] == "name_fallback"
+
+
 def test_classification_summary_contains_only_aggregate_categories():
     summary = audit_jobs._classification_summary([
         {"campaign_name": "private search", "campaign_family": "search", "campaign_subtype": "search", "classification_source": "direct_api_strategy"},

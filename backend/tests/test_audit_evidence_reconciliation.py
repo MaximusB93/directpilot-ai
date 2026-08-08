@@ -191,6 +191,110 @@ def test_unknown_conversions_use_traffic_proxy_without_claiming_sales_impact():
     assert insight["verification_status"] == "unverified"
 
 
+def test_unknown_conversions_use_peer_campaign_proxy_when_breakdowns_are_unavailable():
+    snapshot = _snapshot()
+    snapshot["campaignAnalysisRows"] = [
+        {
+            "name": "RTG Expensive",
+            "cost": 6000,
+            "clicks": 50,
+            "impressions": 5000,
+            "goalConversions": None,
+            "goalCpa": None,
+        },
+        {
+            "name": "RTG Peer A",
+            "cost": 2000,
+            "clicks": 100,
+            "impressions": 10000,
+            "goalConversions": None,
+            "goalCpa": None,
+        },
+        {
+            "name": "RTG Peer B",
+            "cost": 3000,
+            "clicks": 150,
+            "impressions": 15000,
+            "goalConversions": None,
+            "goalCpa": None,
+        },
+    ]
+    snapshot["campaignClassifications"] = [
+        {
+            "campaign_name": name,
+            "campaign_family": "yan",
+            "campaign_subtype": "yan_retargeting",
+        }
+        for name in ("RTG Expensive", "RTG Peer A", "RTG Peer B")
+    ]
+    snapshot["observedFacts"] = [{
+        "fact_id": "fact-expensive",
+        "campaign_name": "RTG Expensive",
+        "metric": "conversion_data_unknown",
+        "sufficient_data": False,
+        "evidence": ["Conversion metric is unavailable."],
+    }]
+    snapshot["drilldownEvidenceSummaries"] = []
+
+    insight = audit_jobs.build_campaign_insights(snapshot)[0]
+
+    assert insight["conversion_state"] == "unknown"
+    assert insight["analysis_mode"] == "traffic_proxy"
+    assert "RTG Expensive" in insight["problem"]
+    assert "CPC" in insight["hypothesis"]
+    assert any("120.00" in item and "20.00" in item for item in insight["evidence"])
+    assert any("2 сопоставимым кампаниям" in item for item in insight["evidence"])
+    assert any(
+        "не подтверждает влияние на конверсии или продажи" in item
+        for item in insight["evidence"]
+    )
+    assert insight["verification_status"] == "unverified"
+
+
+def test_peer_campaign_proxy_does_not_mix_campaign_subtypes():
+    snapshot = _snapshot()
+    snapshot["campaignAnalysisRows"] = [
+        {
+            "name": "RTG Candidate", "cost": 6000, "clicks": 50,
+            "impressions": 5000, "goalConversions": None,
+        },
+        {
+            "name": "RTG Peer", "cost": 2000, "clicks": 100,
+            "impressions": 10000, "goalConversions": None,
+        },
+        {
+            "name": "Prospecting Peer", "cost": 3000, "clicks": 150,
+            "impressions": 15000, "goalConversions": None,
+        },
+    ]
+    snapshot["campaignClassifications"] = [
+        {
+            "campaign_name": "RTG Candidate", "campaign_family": "yan",
+            "campaign_subtype": "yan_retargeting",
+        },
+        {
+            "campaign_name": "RTG Peer", "campaign_family": "yan",
+            "campaign_subtype": "yan_retargeting",
+        },
+        {
+            "campaign_name": "Prospecting Peer", "campaign_family": "yan",
+            "campaign_subtype": "yan_prospecting",
+        },
+    ]
+    snapshot["observedFacts"] = [{
+        "fact_id": "fact-candidate",
+        "campaign_name": "RTG Candidate",
+        "metric": "conversion_data_unknown",
+        "sufficient_data": False,
+    }]
+    snapshot["drilldownEvidenceSummaries"] = []
+
+    insight = audit_jobs.build_campaign_insights(snapshot)[0]
+
+    assert insight["hypothesis"] is None
+    assert not any("ориентир рассчитан" in item.lower() for item in insight["evidence"])
+
+
 def test_campaign_factor_confirmation_replaces_unrelated_model_hypothesis_status():
     snapshot = _snapshot()
     snapshot["campaignAnalysisRows"] = [{

@@ -590,11 +590,28 @@ def _query_snapshot(item: dict[str, Any]) -> dict[str, Any]:
 
 def _name_campaign_classification(name: str) -> dict[str, str]:
     normalized = name.lower().replace("ё", "е")
-    is_retargeting = any(marker in normalized for marker in ("ретарг", "ртг", "retarget", "ремаркет"))
-    is_search = any(marker in normalized for marker in ("поиск", "search"))
+    is_retargeting = any(
+        marker in normalized
+        for marker in ("ретарг", "ртг", "rtg", "retarget", "ремаркет")
+    )
+    explicit_search_retargeting = any(
+        marker in normalized
+        for marker in ("поисковый ретаргетинг", "search retargeting")
+    )
+    is_search_marker = any(marker in normalized for marker in ("поиск", "search"))
+    is_search = bool(
+        is_search_marker
+        and (not is_retargeting or explicit_search_retargeting)
+    )
     is_yan = (
-        any(marker in normalized for marker in ("рся", "yan", "сети", "network"))
-        or (is_retargeting and not is_search)
+        any(
+            marker in normalized
+            for marker in (
+                "рся", "yan", "сети", "network", "интерес", "interest",
+                "аудитор", "audience", "lookalike",
+            )
+        )
+        or (is_retargeting and not explicit_search_retargeting)
     )
     is_brand = any(marker in normalized for marker in ("бренд", "brand"))
     if is_yan:
@@ -3023,6 +3040,7 @@ def _campaign_insight_copy(
 
 
 _FACTOR_CAPABILITY_LABELS = {
+    "campaign_performance": "кампания",
     "search_queries": "поисковый запрос",
     "ad_group_performance": "группа объявлений",
     "keyword_performance": "ключевая фраза",
@@ -3030,6 +3048,114 @@ _FACTOR_CAPABILITY_LABELS = {
     "devices": "устройство",
     "geo": "регион",
 }
+
+
+def _campaign_peer_traffic_factor(
+    campaign_name: str,
+    row: dict[str, Any],
+    classification: dict[str, Any],
+    *,
+    rows: dict[str, dict[str, Any]],
+    classifications: dict[str, dict[str, Any]],
+    period_days: int = 0,
+) -> dict[str, Any] | None:
+    """Compare traffic metrics only with a stable peer cohort, never with conversions."""
+
+    family = str(
+        classification.get("campaign_family")
+        or classification.get("campaignFamily")
+        or "unknown"
+    )
+    subtype = str(
+        classification.get("campaign_subtype")
+        or classification.get("campaignSubtype")
+        or "unknown"
+    )
+    if family == "unknown" or subtype == "unknown":
+        return None
+
+    peer_rows: list[dict[str, Any]] = []
+    for peer_name, peer_row in rows.items():
+        if peer_name == campaign_name:
+            continue
+        peer_classification = classifications.get(peer_name) or {}
+        peer_subtype = str(
+            peer_classification.get("campaign_subtype")
+            or peer_classification.get("campaignSubtype")
+            or "unknown"
+        )
+        if peer_subtype != subtype:
+            continue
+        clicks = int(_number(peer_row.get("clicks")) or 0)
+        impressions = int(_number(peer_row.get("impressions")) or 0)
+        cost = float(_number(peer_row.get("cost")) or 0)
+        if clicks > 0 and impressions > 0 and cost > 0:
+            peer_rows.append({
+                "clicks": clicks,
+                "impressions": impressions,
+                "cost": cost,
+            })
+    if len(peer_rows) < 2:
+        return None
+
+    clicks = int(_number(row.get("clicks")) or 0)
+    impressions = int(_number(row.get("impressions")) or 0)
+    cost = float(_number(row.get("cost")) or 0)
+    if clicks < 20 or impressions <= 0 or cost <= 0:
+        return None
+
+    peer_clicks = sum(item["clicks"] for item in peer_rows)
+    peer_impressions = sum(item["impressions"] for item in peer_rows)
+    peer_cost = sum(item["cost"] for item in peer_rows)
+    if peer_clicks < 40 or peer_impressions < 2000 or peer_cost <= 0:
+        return None
+
+    cpc = cost / clicks
+    ctr = clicks / impressions * 100
+    baseline_cpc = peer_cost / peer_clicks
+    baseline_ctr = peer_clicks / peer_impressions * 100
+    cohort_cost = peer_cost + cost
+    common = {
+        "capability_id": "campaign_performance",
+        "segment": campaign_name,
+        "cost": round(cost, 2),
+        "cost_share_pct": round(cost / cohort_cost * 100, 2) if cohort_cost else 0,
+        "clicks": clicks,
+        "impressions": impressions,
+        "peer_campaigns": len(peer_rows),
+        "benchmark_scope": subtype,
+        "material": False,
+        "backend_confirmed": False,
+        "period_days": int(period_days or 0),
+    }
+    candidates: list[dict[str, Any]] = []
+    if baseline_cpc > 0 and cpc >= baseline_cpc * 1.5:
+        candidates.append({
+            **common,
+            "metric": "cpc",
+            "factor_type": "traffic_proxy_cpc",
+            "value": round(cpc, 2),
+            "benchmark": round(baseline_cpc, 2),
+            "deviation_ratio": round(cpc / baseline_cpc, 3),
+        })
+    if baseline_ctr > 0 and impressions >= 1000 and ctr <= baseline_ctr * 0.65:
+        candidates.append({
+            **common,
+            "metric": "ctr",
+            "factor_type": "traffic_proxy_ctr",
+            "value": round(ctr, 2),
+            "benchmark": round(baseline_ctr, 2),
+            "deviation_ratio": round(baseline_ctr / ctr, 3) if ctr > 0 else None,
+        })
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda item: (
+            float(item.get("deviation_ratio") or 0),
+            float(item.get("cost") or 0),
+        ),
+    )
 
 
 def _campaign_primary_factor(
@@ -3138,7 +3264,7 @@ def _factor_evidence(factor: dict[str, Any]) -> list[str]:
     if str(factor.get("factor_type") or "").startswith("traffic_proxy_"):
         metric = str(factor.get("metric") or "")
         metric_label = "CPC" if metric == "cpc" else "CTR"
-        return [
+        evidence = [
             (
                 f"{label.capitalize()} «{segment}»: {metric_label} {float(factor.get('value') or 0):.2f} "
                 f"против ориентира среза {float(factor.get('benchmark') or 0):.2f}; "
@@ -3147,6 +3273,13 @@ def _factor_evidence(factor: dict[str, Any]) -> list[str]:
             ),
             "Это traffic-proxy сигнал: он не подтверждает влияние на конверсии или продажи.",
         ]
+        if int(factor.get("peer_campaigns") or 0) >= 2:
+            evidence.insert(1, (
+                f"Ориентир рассчитан по {int(factor.get('peer_campaigns') or 0)} "
+                f"сопоставимым кампаниям типа «{factor.get('benchmark_scope') or 'peer cohort'}»; "
+                "конверсии в сравнении не использовались."
+            ))
+        return evidence
     evidence = [
         (
             f"{label.capitalize()} «{segment}»: расход {float(factor.get('cost') or 0):.2f} ₽, "
@@ -3437,6 +3570,20 @@ def build_campaign_insights(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             summaries,
             allow_traffic_proxy=conversion_decision.state == "unknown",
         )
+        if factor is None and conversion_decision.state == "unknown":
+            analysis_period = snapshot.get("analysisPeriod") or {}
+            factor = _campaign_peer_traffic_factor(
+                campaign_name,
+                row,
+                classification,
+                rows=rows,
+                classifications=classifications,
+                period_days=int(
+                    analysis_period.get("days")
+                    or analysis_period.get("periodDays")
+                    or 0
+                ),
+            )
         factor_matches_linked_hypothesis = bool(
             factor
             and hypothesis_id
@@ -3471,7 +3618,7 @@ def build_campaign_insights(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             factor_capability = str(factor.get("capability_id") or "")
             if factor.get("backend_confirmed") or int(factor.get("period_days") or 0) >= 90:
                 missing = []
-            elif factor_capability:
+            elif factor_capability and not traffic_proxy_factor:
                 missing = [factor_capability]
         priority = (
             "data_needed" if data_needed
