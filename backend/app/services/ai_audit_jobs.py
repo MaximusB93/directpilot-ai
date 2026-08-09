@@ -2967,9 +2967,12 @@ _CAMPAIGN_SIGNAL_PRIORITY = {
     "goal_conversions_drop": 2,
     "budget_spike": 3,
     "low_ctr": 4,
+    "high_cpc_traffic_proxy": 4,
+    "traffic_metrics_available": 5,
     "conversion_data_unknown": 5,
     "low_data": 6,
     "good_campaign": 7,
+    "traffic_metrics_reviewed": 8,
     "stable_efficiency": 8,
     "campaign_health": 9,
 }
@@ -3155,7 +3158,16 @@ def _campaign_peer_traffic_factor(
             "deviation_ratio": round(baseline_ctr / ctr, 3) if ctr > 0 else None,
         })
     if not candidates:
-        return None
+        return {
+            **common,
+            "metric": "traffic",
+            "factor_type": "traffic_proxy_within_peer_range",
+            "cpc": round(cpc, 2),
+            "ctr": round(ctr, 2),
+            "benchmark_cpc": round(baseline_cpc, 2),
+            "benchmark_ctr": round(baseline_ctr, 2),
+            "deviation_ratio": 1.0,
+        }
     return max(
         candidates,
         key=lambda item: (
@@ -3268,6 +3280,26 @@ def _factor_evidence(factor: dict[str, Any]) -> list[str]:
     capability_id = str(factor.get("capability_id") or "")
     label = _FACTOR_CAPABILITY_LABELS.get(capability_id, "сегмент")
     segment = str(factor.get("segment") or "без названия")
+    if factor.get("factor_type") == "traffic_proxy_within_peer_range":
+        benchmark_scope = str(factor.get("benchmark_scope") or "peer cohort")
+        benchmark_scope_label = _CAMPAIGN_SUBTYPE_LABELS.get(
+            benchmark_scope,
+            "сопоставимая группа кампаний",
+        )
+        return [
+            (
+                f"{label.capitalize()} «{segment}»: CTR {float(factor.get('ctr') or 0):.2f}% "
+                f"против ориентира {float(factor.get('benchmark_ctr') or 0):.2f}%; "
+                f"CPC {float(factor.get('cpc') or 0):.2f} ₽ против ориентира "
+                f"{float(factor.get('benchmark_cpc') or 0):.2f} ₽."
+            ),
+            (
+                f"Ориентир рассчитан по {int(factor.get('peer_campaigns') or 0)} "
+                f"сопоставимым кампаниям типа «{benchmark_scope_label}»; "
+                "материального отклонения трафика по заданным порогам не выявлено."
+            ),
+            "Конверсии в traffic-proxy сравнении не использовались.",
+        ]
     if str(factor.get("factor_type") or "").startswith("traffic_proxy_"):
         metric = str(factor.get("metric") or "")
         metric_label = "CPC" if metric == "cpc" else "CTR"
@@ -3331,11 +3363,20 @@ def _factor_copy(
     label = _FACTOR_CAPABILITY_LABELS.get(capability_id, "сегмент")
     segment = str(factor.get("segment") or "без названия")
     confirmed = verification_status == "confirmed"
+    if factor.get("factor_type") == "traffic_proxy_within_peer_range":
+        return (
+            "Конверсионная метрика недоступна, но CTR и CPC проверены: "
+            "материального отклонения от сопоставимых кампаний не выявлено.",
+            "Не ограничиваться проверкой целей: продолжить разбор уже собранных срезов "
+            "по запросам, группам, устройствам, регионам или площадкам; восстановление "
+            "конверсионной метрики выполнять параллельно.",
+        )
     if str(factor.get("factor_type") or "").startswith("traffic_proxy_"):
         metric_label = "CPC" if factor.get("metric") == "cpc" else "CTR"
         problem = (
-            f"{base_problem} Измеримый traffic-proxy кандидат: {label} «{segment}» "
-            f"отклоняется по {metric_label} от ориентира доступного среза."
+            f"Измеримый traffic-proxy кандидат: {label} «{segment}» отклоняется по "
+            f"{metric_label} от ориентира доступного среза. Конверсионная метрика "
+            "недоступна, поэтому влияние на продажи не подтверждено."
         )
         recommendation = (
             f"Проверить релевантность и структуру трафика для объекта: {label} «{segment}», "
@@ -3402,6 +3443,13 @@ def _factor_hypothesis(factor: dict[str, Any]) -> str:
     capability_id = str(factor.get("capability_id") or "")
     label = _FACTOR_CAPABILITY_LABELS.get(capability_id, "сегмент")
     segment = str(factor.get("segment") or "без названия")
+    if factor.get("factor_type") == "traffic_proxy_within_peer_range":
+        return (
+            "CTR и CPC находятся в пределах заданных порогов сопоставимой группы; "
+            "гипотеза о проблеме на верхнем уровне трафика не подтверждена. "
+            "Следующий уровень проверки — структура запросов, групп, устройств, "
+            "регионов или площадок."
+        )
     if str(factor.get("factor_type") or "").startswith("traffic_proxy_"):
         metric_label = "CPC" if factor.get("metric") == "cpc" else "CTR"
         return (
@@ -3556,6 +3604,28 @@ def build_campaign_insights(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
         clicks = _number(row.get("clicks"))
         impressions = _number(row.get("impressions"))
         cost = _number(row.get("cost"))
+        ctr = _number(row.get("ctr"))
+        if ctr is None and clicks is not None and impressions not in {None, 0}:
+            ctr = float(clicks) / float(impressions) * 100
+        cpc = _number(row.get("cpc") or row.get("avgCpc") or row.get("avg_cpc"))
+        if cpc is None and cost is not None and clicks not in {None, 0}:
+            cpc = float(cost) / float(clicks)
+        traffic_metric_parts = []
+        if impressions is not None:
+            traffic_metric_parts.append(f"показы {int(impressions)}")
+        if ctr is not None:
+            traffic_metric_parts.append(f"CTR {float(ctr):.2f}%")
+        if cpc is not None:
+            traffic_metric_parts.append(f"CPC {float(cpc):.2f} ₽")
+        traffic_metrics_summary = ", ".join(traffic_metric_parts)
+        if traffic_metrics_summary:
+            evidence = list(dict.fromkeys([
+                (
+                    f"Трафик кампании: {traffic_metrics_summary}; "
+                    "эти показатели рассчитаны независимо от доступности конверсий."
+                ),
+                *evidence,
+            ]))[:5]
         raw_conversions = (
             row.get("goalConversions")
             if "goalConversions" in row
@@ -3632,6 +3702,43 @@ def build_campaign_insights(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
                 missing = []
             elif factor_capability and not traffic_proxy_factor:
                 missing = [factor_capability]
+        traffic_hypothesis = None
+        if conversion_decision.state == "unknown" and factor is None and traffic_metrics_summary:
+            problem = (
+                "Конверсионная метрика недоступна, но трафик не оставлен без анализа: "
+                f"{traffic_metrics_summary}. Для безопасного сравнительного вывода "
+                "пока недостаточно однородной контрольной группы."
+            )
+            traffic_hypothesis = (
+                "CTR и CPC рассчитаны, но отклонение нельзя надёжно подтвердить без "
+                "сопоставимой группы или детального среза; следующим шагом проверяются "
+                "запросы, группы, устройства, регионы и площадки."
+            )
+            recommendation = (
+                "Не ограничиваться проверкой выбранных целей: использовать уже собранные "
+                "срезы для поиска запросов, групп, устройств, регионов или площадок с "
+                "аномальными CTR/CPC; корректность целей и передачу конверсий проверить параллельно."
+            )
+            expected_effect = (
+                "Выделить проверяемую причину отклонения качества трафика, не подменяя "
+                "неизвестные конверсии нулевыми."
+            )
+        elif traffic_proxy_factor:
+            expected_effect = (
+                "Локализовать отклонение качества трафика по измеримым CTR/CPC и затем "
+                "проверить его на конверсионных данных."
+            )
+        display_metric = metric
+        if conversion_decision.state == "unknown":
+            factor_metric = str((factor or {}).get("metric") or "")
+            if factor_metric == "cpc":
+                display_metric = "high_cpc_traffic_proxy"
+            elif factor_metric == "ctr":
+                display_metric = "low_ctr"
+            elif factor and factor.get("factor_type") == "traffic_proxy_within_peer_range":
+                display_metric = "traffic_metrics_reviewed"
+            elif traffic_metrics_summary:
+                display_metric = "traffic_metrics_available"
         priority = (
             "data_needed" if data_needed
             else "opportunity" if opportunity
@@ -3643,13 +3750,15 @@ def build_campaign_insights(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             "priority": priority,
             "campaign_name": campaign_name,
             "campaign_type": campaign_type,
-            "signal_type": metric,
+            "signal_type": display_metric,
             "signal_status": "data_needed" if data_needed else "opportunity" if opportunity else "detected",
             "hypothesis_id": hypothesis_id,
             "verification_status": effective_verification_status,
             "cost": cost,
             "clicks": int(clicks) if clicks is not None else None,
             "impressions": int(impressions) if impressions is not None else None,
+            "ctr": round(float(ctr), 4) if ctr is not None else None,
+            "cpc": round(float(cpc), 4) if cpc is not None else None,
             "conversions": float(conversions) if conversions is not None else None,
             "cpa": float(cpa) if cpa is not None else None,
             "target_cpa": float(target_cpa) if target_cpa is not None else None,
@@ -3666,7 +3775,9 @@ def build_campaign_insights(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             "hypothesis": (
                 _factor_hypothesis(factor)
                 if factor
-                else str((linked or {}).get("hypothesis") or "") or None
+                else traffic_hypothesis
+                or str((linked or {}).get("hypothesis") or "")
+                or None
             ),
             "checked_capabilities": checked,
             "missing_capabilities": missing,

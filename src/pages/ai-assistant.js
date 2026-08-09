@@ -741,6 +741,9 @@ function auditSignalLabel(value) {
     goal_conversions_drop: 'Снижение конверсий',
     budget_spike: 'Рост расхода',
     low_ctr: 'Низкий CTR',
+    high_cpc_traffic_proxy: 'Высокий CPC относительно кампаний-аналогов',
+    traffic_metrics_reviewed: 'CTR и CPC проверены',
+    traffic_metrics_available: 'CTR и CPC рассчитаны',
     conversion_data_unknown: 'Нет надёжных данных о конверсиях',
     low_data: 'Мало статистики',
     good_campaign: 'Эффективная кампания',
@@ -783,7 +786,10 @@ function renderCampaignInsights(items, escapeHtml) {
     const statusClass = verification === 'confirmed' ? 'ready' : verification === 'rejected' ? 'error' : 'pending';
     const metrics = [
       `Расход: ${formatAuditMetric(item.cost, ' ₽')}`,
+      `Показы: ${formatAuditMetric(item.impressions)}`,
       `Клики: ${formatAuditMetric(item.clicks)}`,
+      `CTR: ${formatAuditMetric(item.ctr, '%')}`,
+      `CPC: ${formatAuditMetric(item.cpc, ' ₽')}`,
       `Конверсии: ${formatAuditMetric(item.conversions)}`,
       `CPA: ${formatAuditMetric(item.cpa, ' ₽')}`,
       `Цель: ${formatAuditMetric(item.target_cpa, ' ₽')}`,

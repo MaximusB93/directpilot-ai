@@ -294,8 +294,119 @@ def test_peer_campaign_proxy_does_not_mix_campaign_subtypes():
 
     insight = audit_jobs.build_campaign_insights(snapshot)[0]
 
-    assert insight["hypothesis"] is None
+    assert "CTR и CPC рассчитаны" in insight["hypothesis"]
     assert not any("ориентир рассчитан" in item.lower() for item in insight["evidence"])
+
+
+def test_unknown_conversions_still_expose_absolute_ctr_cpc_without_peer_cohort():
+    snapshot = _snapshot()
+    snapshot["campaignAnalysisRows"] = [{
+        "name": "Single Search Campaign",
+        "cost": 12000,
+        "clicks": 120,
+        "impressions": 12000,
+        "goalConversions": None,
+        "goalCpa": None,
+    }]
+    snapshot["campaignClassifications"] = [{
+        "campaign_name": "Single Search Campaign",
+        "campaign_family": "search",
+        "campaign_subtype": "search",
+    }]
+    snapshot["observedFacts"] = [{
+        "fact_id": "fact-single",
+        "campaign_name": "Single Search Campaign",
+        "metric": "conversion_data_unknown",
+        "sufficient_data": False,
+        "evidence": ["Conversion metric is unavailable."],
+    }]
+    snapshot["drilldownEvidenceSummaries"] = []
+
+    insight = audit_jobs.build_campaign_insights(snapshot)[0]
+
+    assert insight["ctr"] == 1.0
+    assert insight["cpc"] == 100.0
+    assert insight["signal_type"] == "traffic_metrics_available"
+    assert any("показы 12000, CTR 1.00%, CPC 100.00 ₽" in item for item in insight["evidence"])
+    assert "трафик не оставлен без анализа" in insight["problem"]
+    assert "CTR и CPC рассчитаны" in insight["hypothesis"]
+    assert "Не ограничиваться проверкой выбранных целей" in insight["recommendation"]
+    assert "проверить параллельно" in insight["recommendation"]
+
+
+def test_unknown_conversions_report_when_ctr_cpc_are_within_peer_range():
+    snapshot = _snapshot()
+    snapshot["campaignAnalysisRows"] = [
+        {
+            "name": "RTG Candidate", "cost": 2100, "clicks": 100,
+            "impressions": 10000, "goalConversions": None,
+        },
+        {
+            "name": "RTG Peer A", "cost": 2000, "clicks": 100,
+            "impressions": 10000, "goalConversions": None,
+        },
+        {
+            "name": "RTG Peer B", "cost": 2200, "clicks": 100,
+            "impressions": 10000, "goalConversions": None,
+        },
+    ]
+    snapshot["campaignClassifications"] = [
+        {
+            "campaign_name": name,
+            "campaign_family": "yan",
+            "campaign_subtype": "yan_retargeting",
+        }
+        for name in ("RTG Candidate", "RTG Peer A", "RTG Peer B")
+    ]
+    snapshot["observedFacts"] = [{
+        "fact_id": "fact-candidate",
+        "campaign_name": "RTG Candidate",
+        "metric": "conversion_data_unknown",
+        "sufficient_data": False,
+        "evidence": ["Conversion metric is unavailable."],
+    }]
+    snapshot["drilldownEvidenceSummaries"] = []
+
+    insight = audit_jobs.build_campaign_insights(snapshot)[0]
+
+    assert insight["analysis_mode"] == "traffic_proxy"
+    assert insight["signal_type"] == "traffic_metrics_reviewed"
+    assert "CTR и CPC проверены" in insight["problem"]
+    assert "материального отклонения" in insight["problem"]
+    assert any("CTR 1.00% против ориентира 1.00%" in item for item in insight["evidence"])
+    assert any("CPC 21.00 ₽ против ориентира 21.00 ₽" in item for item in insight["evidence"])
+    assert "Следующий уровень проверки" in insight["hypothesis"]
+    assert "Не ограничиваться проверкой целей" in insight["recommendation"]
+
+
+def test_traffic_summary_does_not_turn_missing_metrics_into_zero():
+    snapshot = _snapshot()
+    snapshot["campaignAnalysisRows"] = [{
+        "name": "Partial Traffic Campaign",
+        "cost": 100,
+        "clicks": 10,
+        "goalConversions": None,
+    }]
+    snapshot["campaignClassifications"] = [{
+        "campaign_name": "Partial Traffic Campaign",
+        "campaign_family": "search",
+        "campaign_subtype": "search",
+    }]
+    snapshot["observedFacts"] = [{
+        "fact_id": "fact-partial",
+        "campaign_name": "Partial Traffic Campaign",
+        "metric": "conversion_data_unknown",
+        "sufficient_data": False,
+    }]
+    snapshot["drilldownEvidenceSummaries"] = []
+
+    insight = audit_jobs.build_campaign_insights(snapshot)[0]
+
+    assert insight["impressions"] is None
+    assert insight["ctr"] is None
+    assert insight["cpc"] == 10.0
+    assert any("CPC 10.00 ₽" in item for item in insight["evidence"])
+    assert all("показы 0" not in item and "CTR 0.00%" not in item for item in insight["evidence"])
 
 
 def test_campaign_factor_confirmation_replaces_unrelated_model_hypothesis_status():

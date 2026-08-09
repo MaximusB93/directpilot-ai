@@ -657,6 +657,8 @@ class AiAuditCampaignInsight(BaseModel):
     cost: float | None = None
     clicks: int | None = None
     impressions: int | None = None
+    ctr: float | None = None
+    cpc: float | None = None
     conversions: float | None = None
     cpa: float | None = None
     target_cpa: float | None = None
