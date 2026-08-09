@@ -409,6 +409,90 @@ def test_traffic_summary_does_not_turn_missing_metrics_into_zero():
     assert all("показы 0" not in item and "CTR 0.00%" not in item for item in insight["evidence"])
 
 
+def test_low_sample_uses_peer_traffic_signal_before_waiting_for_more_conversions():
+    snapshot = _snapshot()
+    snapshot["campaignAnalysisRows"] = [
+        {
+            "name": "RTG Low Sample", "cost": 10000, "clicks": 50,
+            "impressions": 10000, "goalConversions": 1, "goalCpa": 10000,
+        },
+        {
+            "name": "RTG Peer A", "cost": 2000, "clicks": 100,
+            "impressions": 10000, "goalConversions": 5,
+        },
+        {
+            "name": "RTG Peer B", "cost": 2200, "clicks": 100,
+            "impressions": 10000, "goalConversions": 4,
+        },
+    ]
+    snapshot["campaignClassifications"] = [
+        {
+            "campaign_name": name,
+            "campaign_family": "yan",
+            "campaign_subtype": "yan_retargeting",
+        }
+        for name in ("RTG Low Sample", "RTG Peer A", "RTG Peer B")
+    ]
+    snapshot["observedFacts"] = [{
+        "fact_id": "fact-low-sample",
+        "campaign_name": "RTG Low Sample",
+        "metric": "low_data",
+        "sufficient_data": False,
+        "evidence": ["Only one conversion is available."],
+    }]
+    snapshot["drilldownEvidenceSummaries"] = []
+
+    insight = audit_jobs.build_campaign_insights(snapshot)[0]
+
+    assert insight["conversion_state"] == "low_sample"
+    assert insight["scenario_id"] == "retargeting_low_sample"
+    assert {"retargeting_segments", "placements", "campaign_dynamics"} <= set(insight["scenario_checks"])
+    assert insight["signal_type"] == "high_cpc_traffic_proxy"
+    assert "Конверсионная выборка мала" in insight["problem"]
+    assert "CPC 200.00" in " ".join(insight["evidence"])
+    assert "периода до 60–90 дней" in insight["recommendation"]
+    assert "пока мала" in insight["hypothesis"]
+    assert insight["verification_status"] == "unverified"
+
+
+def test_low_sample_without_peer_cohort_analyzes_search_traffic_and_extends_period():
+    snapshot = _snapshot()
+    snapshot["campaignAnalysisRows"] = [{
+        "name": "Search Low Sample",
+        "cost": 9000,
+        "clicks": 90,
+        "impressions": 3000,
+        "goalConversions": 1,
+        "goalCpa": 9000,
+    }]
+    snapshot["campaignClassifications"] = [{
+        "campaign_name": "Search Low Sample",
+        "campaign_family": "search",
+        "campaign_subtype": "search",
+    }]
+    snapshot["observedFacts"] = [{
+        "fact_id": "fact-search-low",
+        "campaign_name": "Search Low Sample",
+        "metric": "low_data",
+        "sufficient_data": False,
+    }]
+    snapshot["drilldownEvidenceSummaries"] = []
+
+    insight = audit_jobs.build_campaign_insights(snapshot)[0]
+
+    assert insight["scenario_id"] == "search_low_sample"
+    assert {"search_queries", "keywords", "autotargeting", "campaign_dynamics"} <= set(
+        insight["scenario_checks"]
+    )
+    assert insight["signal_type"] == "traffic_metrics_available"
+    assert insight["ctr"] == 3.0
+    assert insight["cpc"] == 100.0
+    assert "трафик не оставлен без анализа" in insight["problem"]
+    assert "Не ограничиваться расширением периода" in insight["recommendation"]
+    assert "расширить период до 60 дней" in insight["recommendation"]
+    assert "аномальными CTR/CPC" in insight["recommendation"]
+
+
 def test_campaign_factor_confirmation_replaces_unrelated_model_hypothesis_status():
     snapshot = _snapshot()
     snapshot["campaignAnalysisRows"] = [{

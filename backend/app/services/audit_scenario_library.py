@@ -21,7 +21,7 @@ AnalysisMode = Literal[
     "no_delivery",
 ]
 
-SCENARIO_LIBRARY_VERSION = "2026-08-08.1"
+SCENARIO_LIBRARY_VERSION = "2026-08-09.1"
 
 
 @dataclass(frozen=True)
@@ -165,4 +165,26 @@ def select_audit_scenario(
 ) -> AuditScenario:
     if conversion_state == "unknown":
         return _UNKNOWN_BY_CAMPAIGN_TYPE.get(campaign_type, _UNKNOWN_BY_CAMPAIGN_TYPE["unknown"])
+    if conversion_state == "low_sample":
+        campaign_key = campaign_type if campaign_type in _UNKNOWN_BY_CAMPAIGN_TYPE else "unknown"
+        traffic_scenario = _UNKNOWN_BY_CAMPAIGN_TYPE[campaign_key]
+        base = _STATE_SCENARIOS["low_sample"]
+        return AuditScenario(
+            scenario_id=f"{campaign_key}_low_sample",
+            title="Анализ трафика при малой конверсионной выборке",
+            analysis_mode="sample_extension",
+            must_analyze=tuple(dict.fromkeys(
+                base.must_analyze + traffic_scenario.must_analyze
+            )),
+            forbidden_claims=tuple(dict.fromkeys(
+                base.forbidden_claims
+                + (
+                    "CPA является устойчивым по одной-двум конверсиям",
+                    "отклонение CTR или CPC доказывает влияние на продажи",
+                )
+            )),
+            next_data=tuple(dict.fromkeys(
+                base.next_data + traffic_scenario.next_data
+            )),
+        )
     return _STATE_SCENARIOS[conversion_state]

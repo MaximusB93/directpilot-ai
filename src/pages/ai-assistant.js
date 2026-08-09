@@ -767,7 +767,7 @@ function auditAnalysisModeLabel(value) {
     conversion_performance: 'анализ CPA и конверсий',
     zero_conversion_investigation: 'расследование расхода без конверсий',
     traffic_proxy: 'анализ качества трафика без CPA',
-    sample_extension: 'расширение периода и проверка выборки',
+    sample_extension: 'анализ трафика и расширение выборки',
     no_delivery: 'проверка статуса и настроек',
   }[value] || value || 'базовый анализ';
 }

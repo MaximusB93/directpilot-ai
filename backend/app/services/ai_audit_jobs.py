@@ -3181,6 +3181,7 @@ def _campaign_primary_factor(
     summaries: list[dict[str, Any]],
     *,
     allow_traffic_proxy: bool = False,
+    allow_conversion_factors: bool = True,
 ) -> dict[str, Any] | None:
     candidates: list[tuple[int, int, float, dict[str, Any]]] = []
     for summary in summaries:
@@ -3198,7 +3199,11 @@ def _campaign_primary_factor(
             for rule in (summary.get("confirmation_rules") or [])
         )
         period_days = int((summary.get("period") or {}).get("days") or 0)
-        if isinstance(diagnostics, dict) and diagnostics.get("kind") == "performance_contributors":
+        if (
+            allow_conversion_factors
+            and isinstance(diagnostics, dict)
+            and diagnostics.get("kind") == "performance_contributors"
+        ):
             waste = diagnostics.get("top_waste") or []
             high_cpa = diagnostics.get("top_high_cpa") or []
             if waste and isinstance(waste[0], dict):
@@ -3231,7 +3236,11 @@ def _campaign_primary_factor(
                     "period_days": period_days,
                 }
                 candidates.append((1, -period_days, -float(factor.get("cost") or 0), factor))
-        elif isinstance(diagnostics, dict) and diagnostics.get("kind") == "segment_comparison":
+        elif (
+            allow_conversion_factors
+            and isinstance(diagnostics, dict)
+            and diagnostics.get("kind") == "segment_comparison"
+        ):
             worst = diagnostics.get("worst_segment")
             best = diagnostics.get("best_segment")
             ratio = float(diagnostics.get("cpa_ratio") or 0)
@@ -3363,24 +3372,43 @@ def _factor_copy(
     label = _FACTOR_CAPABILITY_LABELS.get(capability_id, "сегмент")
     segment = str(factor.get("segment") or "без названия")
     confirmed = verification_status == "confirmed"
+    low_sample = factor.get("conversion_state") == "low_sample"
     if factor.get("factor_type") == "traffic_proxy_within_peer_range":
         return (
-            "Конверсионная метрика недоступна, но CTR и CPC проверены: "
+            (
+                "Конверсионная выборка мала, но CTR и CPC проверены: "
+                if low_sample
+                else "Конверсионная метрика недоступна, но CTR и CPC проверены: "
+            )
+            +
             "материального отклонения от сопоставимых кампаний не выявлено.",
             "Не ограничиваться проверкой целей: продолжить разбор уже собранных срезов "
-            "по запросам, группам, устройствам, регионам или площадкам; восстановление "
-            "конверсионной метрики выполнять параллельно.",
+            "по запросам, группам, устройствам, регионам или площадкам; "
+            + (
+                "параллельно расширить период до 60 дней и при необходимости до 90 дней."
+                if low_sample
+                else "восстановление конверсионной метрики выполнять параллельно."
+            ),
         )
     if str(factor.get("factor_type") or "").startswith("traffic_proxy_"):
         metric_label = "CPC" if factor.get("metric") == "cpc" else "CTR"
         problem = (
             f"Измеримый traffic-proxy кандидат: {label} «{segment}» отклоняется по "
-            f"{metric_label} от ориентира доступного среза. Конверсионная метрика "
-            "недоступна, поэтому влияние на продажи не подтверждено."
+            f"{metric_label} от ориентира доступного среза. "
+            + (
+                "Конверсионная выборка мала, поэтому влияние на продажи пока не подтверждено."
+                if low_sample
+                else "Конверсионная метрика недоступна, поэтому влияние на продажи не подтверждено."
+            )
         )
         recommendation = (
             f"Проверить релевантность и структуру трафика для объекта: {label} «{segment}», "
-            "не связывая отклонение с продажами до восстановления конверсионной метрики; "
+            + (
+                "не связывая отклонение с продажами до расширения периода до 60–90 дней; "
+                if low_sample
+                else "не связывая отклонение с продажами до восстановления конверсионной метрики; "
+            )
+            +
             "любую корректировку подготовить только как черновик для ручного согласования."
         )
         return problem, recommendation
@@ -3452,10 +3480,14 @@ def _factor_hypothesis(factor: dict[str, Any]) -> str:
         )
     if str(factor.get("factor_type") or "").startswith("traffic_proxy_"):
         metric_label = "CPC" if factor.get("metric") == "cpc" else "CTR"
+        limitation = (
+            "Конверсионная выборка пока мала; период нужно расширить до 60–90 дней."
+            if factor.get("conversion_state") == "low_sample"
+            else "Влияние на конверсии не подтверждено, поскольку конверсионная метрика неизвестна."
+        )
         return (
             f"{label.capitalize()} «{segment}» является кандидатом отклонения качества трафика: "
-            f"{metric_label} отличается от ориентира среза. Влияние на конверсии не подтверждено, "
-            "поскольку конверсионная метрика неизвестна."
+            f"{metric_label} отличается от ориентира среза. {limitation}"
         )
     if factor.get("factor_type") == "segment_cpa_gap":
         best = factor.get("best_segment") or {}
@@ -3650,9 +3682,10 @@ def build_campaign_insights(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
         )
         factor = _campaign_primary_factor(
             summaries,
-            allow_traffic_proxy=conversion_decision.state == "unknown",
+            allow_traffic_proxy=conversion_decision.state in {"unknown", "low_sample"},
+            allow_conversion_factors=conversion_decision.state != "low_sample",
         )
-        if factor is None and conversion_decision.state == "unknown":
+        if factor is None and conversion_decision.state in {"unknown", "low_sample"}:
             analysis_period = snapshot.get("analysisPeriod") or {}
             factor = _campaign_peer_traffic_factor(
                 campaign_name,
@@ -3690,6 +3723,7 @@ def build_campaign_insights(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
         )
         if factor:
             factor["backend_confirmed"] = effective_verification_status == "confirmed"
+            factor["conversion_state"] = conversion_decision.state
             problem, recommendation = _factor_copy(
                 factor,
                 base_problem=problem,
@@ -3703,10 +3737,15 @@ def build_campaign_insights(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             elif factor_capability and not traffic_proxy_factor:
                 missing = [factor_capability]
         traffic_hypothesis = None
-        if conversion_decision.state == "unknown" and factor is None and traffic_metrics_summary:
+        if conversion_decision.state in {"unknown", "low_sample"} and factor is None and traffic_metrics_summary:
+            low_sample = conversion_decision.state == "low_sample"
             problem = (
-                "Конверсионная метрика недоступна, но трафик не оставлен без анализа: "
-                f"{traffic_metrics_summary}. Для безопасного сравнительного вывода "
+                (
+                    "Конверсионная выборка мала, но трафик не оставлен без анализа: "
+                    if low_sample
+                    else "Конверсионная метрика недоступна, но трафик не оставлен без анализа: "
+                )
+                + f"{traffic_metrics_summary}. Для безопасного сравнительного вывода "
                 "пока недостаточно однородной контрольной группы."
             )
             traffic_hypothesis = (
@@ -3715,12 +3754,25 @@ def build_campaign_insights(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
                 "запросы, группы, устройства, регионы и площадки."
             )
             recommendation = (
-                "Не ограничиваться проверкой выбранных целей: использовать уже собранные "
+                (
+                    "Не ограничиваться расширением периода: использовать уже собранные "
+                    if low_sample
+                    else "Не ограничиваться проверкой выбранных целей: использовать уже собранные "
+                )
+                +
                 "срезы для поиска запросов, групп, устройств, регионов или площадок с "
-                "аномальными CTR/CPC; корректность целей и передачу конверсий проверить параллельно."
+                "аномальными CTR/CPC; "
+                + (
+                    "параллельно расширить период до 60 дней и при необходимости до 90 дней."
+                    if low_sample
+                    else "корректность целей и передачу конверсий проверить параллельно."
+                )
             )
             expected_effect = (
-                "Выделить проверяемую причину отклонения качества трафика, не подменяя "
+                "Выделить проверяемую причину отклонения качества трафика и подтвердить "
+                "её на достаточной конверсионной выборке."
+                if low_sample
+                else "Выделить проверяемую причину отклонения качества трафика, не подменяя "
                 "неизвестные конверсии нулевыми."
             )
         elif traffic_proxy_factor:
@@ -3729,7 +3781,7 @@ def build_campaign_insights(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
                 "проверить его на конверсионных данных."
             )
         display_metric = metric
-        if conversion_decision.state == "unknown":
+        if conversion_decision.state in {"unknown", "low_sample"}:
             factor_metric = str((factor or {}).get("metric") or "")
             if factor_metric == "cpc":
                 display_metric = "high_cpc_traffic_proxy"

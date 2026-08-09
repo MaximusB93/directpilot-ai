@@ -3568,7 +3568,7 @@ def test_campaign_insights_keep_numeric_signal_separate_from_unverified_cause():
         ),
         (
             1, 1000, 10, 400, False, "low_data",
-            "low_sample", "known_positive_low_sample", "sample_extension", "known_conversions_low_sample",
+            "low_sample", "known_positive_low_sample", "sample_extension", "search_low_sample",
         ),
         (
             0, 0, 0, 0, False, "low_data",
