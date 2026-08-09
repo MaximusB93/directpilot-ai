@@ -493,6 +493,27 @@ def test_low_sample_without_peer_cohort_analyzes_search_traffic_and_extends_peri
     assert "аномальными CTR/CPC" in insight["recommendation"]
 
 
+def test_low_sample_with_normal_peer_traffic_does_not_send_user_back_to_goals():
+    factor = {
+        "factor_type": "traffic_proxy_within_peer_range",
+        "conversion_state": "low_sample",
+        "capability_id": "campaign_performance",
+        "segment": "RTG Low Sample",
+    }
+
+    problem, recommendation = audit_jobs._factor_copy(
+        factor,
+        base_problem="Малая выборка.",
+        base_recommendation="Расширить период.",
+        verification_status="unverified",
+    )
+
+    assert "Конверсионная выборка мала" in problem
+    assert "Не ограничиваться расширением периода" in recommendation
+    assert "проверкой целей" not in recommendation
+    assert "до 90 дней" in recommendation
+
+
 def test_campaign_factor_confirmation_replaces_unrelated_model_hypothesis_status():
     snapshot = _snapshot()
     snapshot["campaignAnalysisRows"] = [{
