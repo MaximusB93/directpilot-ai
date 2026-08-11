@@ -912,12 +912,17 @@ def _report_outcome(
         db.add(report_job)
         db.flush()
     account_client_ids = _account_client_ids(db, account_id)
-    active_count = len(list(db.scalars(select(DirectReportJob.id).where(
+    active_reports = list(db.scalars(select(DirectReportJob).where(
         DirectReportJob.client_id.in_(account_client_ids),
         DirectReportJob.id != report_job.id,
         DirectReportJob.status.in_(("requested", "processing")),
         or_(DirectReportJob.expires_at.is_(None), DirectReportJob.expires_at > now),
-    ))))
+    )))
+    active_count = sum(
+        1
+        for item in active_reports
+        if not item.audit_job_id or _report_owner_is_active(db, item)
+    )
     if active_count >= MAX_PROCESSING_REPORTS_PER_ACCOUNT:
         _record_queue_full(report_job, now=now)
         return _queue_wait_outcome(

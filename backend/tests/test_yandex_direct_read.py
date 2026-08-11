@@ -706,6 +706,66 @@ def test_report_queue_limit_is_shared_by_clients_of_connected_account(monkeypatc
     assert waiting.next_retry_at is not None
 
 
+def test_terminal_audit_reports_do_not_exhaust_connected_account_queue(monkeypatch):
+    db = _db()
+    terminal = AiAuditJob(
+        id="audit-terminal-owner",
+        organization_id="org-a",
+        client_id="client-a",
+        status="completed",
+        current_stage="finalize",
+        model="test/model",
+        system_prompt_version="test",
+        system_prompt_hash="hash",
+    )
+    current = AiAuditJob(
+        id="audit-current-owner",
+        organization_id="org-a",
+        client_id="client-a",
+        status="context_ready",
+        current_stage="collect_live_data",
+        model="test/model",
+        system_prompt_version="test",
+        system_prompt_hash="hash",
+    )
+    db.add_all([terminal, current])
+    for index in range(direct_read.MAX_PROCESSING_REPORTS_PER_ACCOUNT):
+        db.add(DirectReportJob(
+            audit_job_id=terminal.id,
+            client_id="client-a",
+            capability_id="devices",
+            request_hash=f"terminal-{index}",
+            report_name=f"terminal-{index}",
+            report_spec_json="{}",
+            status="processing",
+            expires_at=datetime.now(UTC) + timedelta(minutes=10),
+        ))
+    db.commit()
+    monkeypatch.setattr(direct_read, "get_yandex_access_token_for_account", lambda *args: "secret")
+    calls = {"count": 0}
+
+    def completed_report(self, spec, *, processing_mode="auto"):
+        calls["count"] += 1
+        return {
+            "status": "completed",
+            "rows": [{"CampaignId": "101", "CampaignName": "Search Brand", "Clicks": "4"}],
+            "limited_by": None,
+        }
+
+    monkeypatch.setattr(YandexDirectConnector, "request_report", completed_report)
+    outcome = direct_read.execute_direct_read(
+        db,
+        "client-a",
+        _request("campaign_performance", family="search", subtype="search"),
+        audit_job_id=current.id,
+        cache_policy="fresh",
+    )
+
+    assert outcome.result.status == "collected"
+    assert outcome.api_calls == 1
+    assert calls["count"] == 1
+
+
 def test_report_queue_full_persists_backoff_and_skips_early_poll(monkeypatch):
     db = _db()
     now = datetime(2026, 7, 16, 10, 0, tzinfo=UTC)
