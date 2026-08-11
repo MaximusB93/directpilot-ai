@@ -816,13 +816,21 @@ def merge_mandatory_and_ai_requests(
 
 def public_evidence_coverage(snapshot: dict[str, Any], *, legacy_completed: bool = False) -> dict[str, Any]:
     if not snapshot.get("evidenceCoverageRegistry") and legacy_completed:
-        return {
+        coverage = {
             "policyVersion": None,
             "completionState": "legacy_unknown",
-            "summary": {"requiredTotal": 0, "satisfied": 0, "partial": 0, "unavailable": 0, "notApplicable": 0, "blocked": 0, "missing": 0, "processing": 0},
+            "requiredTotal": 0,
+            "satisfied": 0,
+            "partial": 0,
+            "unavailable": 0,
+            "notApplicable": 0,
+            "blocked": 0,
+            "missing": 0,
+            "processing": 0,
             "requirements": [],
         }
-    coverage = evaluate_audit_evidence_coverage(snapshot)
+    else:
+        coverage = evaluate_audit_evidence_coverage(snapshot)
     runtime = snapshot.get("auditRuntime") or {}
     stop_reason = str(runtime.get("stopReason") or "")
     if (
@@ -859,7 +867,10 @@ def public_evidence_coverage(snapshot: dict[str, Any], *, legacy_completed: bool
         ],
     } for item in coverage["requirements"]]
     return {
-        "policyVersion": AUDIT_EVIDENCE_POLICY_VERSION,
+        "policyVersion": (
+            coverage["policyVersion"]
+            if "policyVersion" in coverage else AUDIT_EVIDENCE_POLICY_VERSION
+        ),
         "completionState": coverage["completionState"],
         "summary": {key: value for key, value in coverage.items() if key not in {"requirements", "completionState"}},
         "requirements": requirements,

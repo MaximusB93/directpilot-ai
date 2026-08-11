@@ -268,6 +268,20 @@ def test_scheduler_limited_completion_is_public_partial_coverage():
     assert coverage["summary"]["missing"] == 1
 
 
+def test_deadline_without_registry_is_public_partial_coverage():
+    snapshot = {
+        "auditRuntime": {
+            "schedulerPhase": "finalization",
+            "stopReason": "collection_deadline_reached",
+        },
+    }
+
+    coverage = public_evidence_coverage(snapshot, legacy_completed=True)
+
+    assert coverage["completionState"] == "partial_coverage"
+    assert coverage["summary"]["requiredTotal"] == 0
+
+
 def test_controlled_retargeting_data_alias_resolves_without_fuzzy_matching():
     assert "retargeting_segments" in capability_candidates("retargeting_segments_data")
     assert capability_candidates("retargeting_segment_typo") == ("retargeting_segment_typo",)
