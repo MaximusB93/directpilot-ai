@@ -6923,7 +6923,7 @@ def get_latest_active_audit_job(
     client_id: str,
     organization_id: str,
 ) -> AiAuditJob | None:
-    """Return the most recently updated non-terminal audit for an owned client.
+    """Return the most recently created non-terminal audit for an owned client.
 
     The browser keeps a job id as a convenience only. This lookup is the
     server-side recovery path after a reload or local storage loss, and is
@@ -6940,7 +6940,10 @@ def get_latest_active_audit_job(
             AiAuditJob.client_id == client_id,
             AiAuditJob.status.notin_(TERMINAL_AUDIT_STATUSES),
         )
-        .order_by(AiAuditJob.updated_at.desc(), AiAuditJob.created_at.desc())
+        # A newly-created queued audit must win over an older audit whose
+        # scheduler heartbeat happened more recently. Otherwise a reload made
+        # immediately after starting an audit can restore the previous run.
+        .order_by(AiAuditJob.created_at.desc(), AiAuditJob.updated_at.desc())
     ).all()
     for job in jobs:
         if recover_stale_audit_job(job, _now(), db=db):

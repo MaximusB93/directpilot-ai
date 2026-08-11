@@ -504,6 +504,27 @@ def test_latest_active_audit_job_recovers_by_client_and_organization():
         )
 
 
+def test_latest_active_audit_job_prefers_new_run_over_recently_updated_old_run():
+    db = _db()
+    old = _create(db)
+    old.created_at = datetime.now(UTC) - timedelta(minutes=5)
+    old.updated_at = datetime.now(UTC) + timedelta(minutes=1)
+    db.commit()
+
+    new = _create(db)
+    new.created_at = datetime.now(UTC)
+    db.commit()
+
+    recovered = audit_jobs.get_latest_active_audit_job(
+        db,
+        client_id="client-a",
+        organization_id="org-a",
+    )
+
+    assert recovered is not None
+    assert recovered.id == new.id
+
+
 def test_latest_active_audit_job_does_not_restore_abandoned_context_collection():
     db = _db()
     abandoned = _create(db)
