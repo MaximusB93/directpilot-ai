@@ -799,6 +799,122 @@ def test_report_queue_full_honors_clamped_retry_after_then_completes(monkeypatch
     assert job.attempts == 2
 
 
+def test_fresh_audit_adopts_processing_report_from_terminal_owner(monkeypatch):
+    db = _db()
+    old = AiAuditJob(
+        id="audit-old",
+        organization_id="org-a",
+        client_id="client-a",
+        status="context_ready",
+        current_stage="collect_fresh_baseline",
+        model="test/model",
+        system_prompt_version="test",
+        system_prompt_hash="hash",
+    )
+    new = AiAuditJob(
+        id="audit-new",
+        organization_id="org-a",
+        client_id="client-a",
+        status="queued",
+        current_stage="collect_context",
+        model="test/model",
+        system_prompt_version="test",
+        system_prompt_hash="hash",
+    )
+    db.add_all([old, new])
+    db.commit()
+    monkeypatch.setattr(direct_read, "get_yandex_access_token_for_account", lambda *args: "secret")
+    responses = iter([
+        {"status": "processing", "rows": [], "retry_after_seconds": 1},
+        {
+            "status": "completed",
+            "rows": [{"CampaignId": "101", "CampaignName": "Search Brand", "Clicks": "4"}],
+            "limited_by": None,
+        },
+    ])
+    calls = {"count": 0}
+
+    def fake_report(self, spec, *, processing_mode="auto"):
+        calls["count"] += 1
+        return next(responses)
+
+    monkeypatch.setattr(YandexDirectConnector, "request_report", fake_report)
+    request = _request("campaign_performance", family="search", subtype="search")
+
+    first = direct_read.execute_direct_read(
+        db, "client-a", request, audit_job_id=old.id, cache_policy="fresh",
+    )
+    report = db.scalar(select(DirectReportJob))
+    assert first.result.status == "processing"
+    assert report.audit_job_id == old.id
+
+    old.status = "completed"
+    report.next_retry_at = datetime.now(UTC) - timedelta(seconds=1)
+    db.commit()
+    completed = direct_read.execute_direct_read(
+        db, "client-a", request, audit_job_id=new.id, cache_policy="fresh",
+    )
+    db.flush()
+    db.refresh(report)
+
+    assert completed.result.status == "collected"
+    assert completed.api_calls == 1
+    assert calls["count"] == 2
+    assert report.audit_job_id == new.id
+    assert report.status == "completed"
+
+
+def test_fresh_audit_does_not_adopt_processing_report_from_active_owner(monkeypatch):
+    db = _db()
+    old = AiAuditJob(
+        id="audit-old-active",
+        organization_id="org-a",
+        client_id="client-a",
+        status="context_ready",
+        current_stage="collect_fresh_baseline",
+        model="test/model",
+        system_prompt_version="test",
+        system_prompt_hash="hash",
+    )
+    new = AiAuditJob(
+        id="audit-new-waiting",
+        organization_id="org-a",
+        client_id="client-a",
+        status="queued",
+        current_stage="collect_context",
+        model="test/model",
+        system_prompt_version="test",
+        system_prompt_hash="hash",
+    )
+    db.add_all([old, new])
+    db.commit()
+    monkeypatch.setattr(direct_read, "get_yandex_access_token_for_account", lambda *args: "secret")
+    calls = {"count": 0}
+
+    def processing_report(self, spec, *, processing_mode="auto"):
+        calls["count"] += 1
+        return {"status": "processing", "rows": [], "retry_after_seconds": 1}
+
+    monkeypatch.setattr(YandexDirectConnector, "request_report", processing_report)
+    request = _request("campaign_performance", family="search", subtype="search")
+    direct_read.execute_direct_read(
+        db, "client-a", request, audit_job_id=old.id, cache_policy="fresh",
+    )
+    report = db.scalar(select(DirectReportJob))
+    report.next_retry_at = datetime.now(UTC) - timedelta(seconds=1)
+    db.commit()
+
+    waiting = direct_read.execute_direct_read(
+        db, "client-a", request, audit_job_id=new.id, cache_policy="fresh",
+    )
+
+    assert waiting.result.status == "processing"
+    assert waiting.result.error_code == "fresh_report_busy"
+    assert waiting.api_calls == 0
+    assert calls["count"] == 1
+    assert report.audit_job_id == old.id
+
+
 def test_report_queue_full_retry_limit_becomes_safe_unavailable(monkeypatch):
     db = _db()
     now = datetime(2026, 7, 16, 12, 0, tzinfo=UTC)

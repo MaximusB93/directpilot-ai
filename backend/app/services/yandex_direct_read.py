@@ -50,6 +50,7 @@ REPORT_QUEUE_MAX_WAIT_SECONDS = max(60, _env_int("DIRECT_REPORT_QUEUE_MAX_WAIT_S
 REPORT_QUEUE_MAX_ATTEMPTS = max(1, _env_int("DIRECT_REPORT_QUEUE_MAX_ATTEMPTS", 8))
 REPORT_QUEUE_MIN_RETRY_SECONDS = 15
 REPORT_QUEUE_MAX_RETRY_SECONDS = 120
+TERMINAL_AUDIT_OWNER_STATUSES = {"completed", "failed", "cancelled"}
 
 
 @dataclass(frozen=True)
@@ -760,6 +761,17 @@ def _audit_cancelled(db: Session, audit_job_id: str | None) -> bool:
     return bool(audit_job and (audit_job.cancel_requested or audit_job.status == "cancelled"))
 
 
+def _report_owner_is_active(db: Session, report_job: DirectReportJob) -> bool:
+    if not report_job.audit_job_id:
+        return False
+    owner = db.get(AiAuditJob, report_job.audit_job_id)
+    return bool(
+        owner
+        and owner.status not in TERMINAL_AUDIT_OWNER_STATUSES
+        and not owner.cancel_requested
+    )
+
+
 def _report_outcome(
     db: Session,
     client_id: str,
@@ -791,7 +803,10 @@ def _report_outcome(
             error_code="audit_cancelled",
         ))
     if cache_policy == "fresh" and report_job and report_job.audit_job_id != audit_job_id:
-        if report_job.status in {"queued", "requested", "processing", "waiting_for_report_queue"}:
+        if (
+            report_job.status in {"queued", "requested", "processing", "waiting_for_report_queue"}
+            and _report_owner_is_active(db, report_job)
+        ):
             retry_at = _aware(report_job.next_retry_at) or (now + timedelta(seconds=15))
             return DirectReadOutcome(_base_result(
                 request,
@@ -805,9 +820,21 @@ def _report_outcome(
                 summary="Другой fresh-аудит формирует такой же отчёт; текущий аудит дождётся своей live-попытки.",
                 error_code="fresh_report_busy",
             ))
-        db.delete(report_job)
-        db.flush()
-        report_job = None
+        if report_job.status in {"queued", "requested", "processing", "waiting_for_report_queue"}:
+            logger.info(
+                "DIRECT_READ_REPORT_ADOPTED audit_job_id=%s previous_audit_job_id=%s "
+                "capability_id=%s request_hash=%s status=%s",
+                audit_job_id,
+                report_job.audit_job_id,
+                capability.id,
+                request_hash,
+                report_job.status,
+            )
+            report_job.audit_job_id = audit_job_id
+        else:
+            db.delete(report_job)
+            db.flush()
+            report_job = None
     if report_job and report_job.expires_at:
         expires_at = _aware(report_job.expires_at)
         if expires_at <= now:
