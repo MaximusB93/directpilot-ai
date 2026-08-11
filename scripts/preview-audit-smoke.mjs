@@ -35,6 +35,7 @@ const maxRuntimeMs = Math.max(60, Number(process.env.E2E_AUDIT_MAX_RUNTIME_SECON
 const requiredCapabilities = (process.env.E2E_AUDIT_REQUIRED_CAPABILITIES || '')
   .split(',').map((value) => value.trim()).filter(Boolean);
 const bypassSecret = process.env.VERCEL_AUTOMATION_BYPASS_SECRET?.trim();
+const resumeJobId = process.env.E2E_AUDIT_RESUME_JOB_ID?.trim() || '';
 const startedAt = Date.now();
 let sessionToken = process.env.E2E_AUDIT_SESSION_TOKEN?.trim() || '';
 let clientId = process.env.E2E_AUDIT_CLIENT_ID?.trim() || '';
@@ -181,28 +182,36 @@ function validateTerminalAudit(job, scope) {
 }
 
 async function runScope(scope) {
-  const job = await request('/ai/audits', {
-    method: 'POST',
-    body: JSON.stringify({
-      client_id: clientId,
-      scope,
-      period: 'last_30_days',
-      ai_preset: 'economy',
-      max_tokens: 1600,
-      cache_policy: 'fresh',
-      allow_saved_fallback: false,
-      options: {
-        include_search_queries: true,
-        include_dynamics: true,
-        include_tracking: true,
-        include_recommendations: true,
-      },
-    }),
-  });
-  console.log(JSON.stringify({ event: 'audit_created', ...summarize(job) }));
+  let job;
+  if (resumeJobId) {
+    job = await request(`/ai/audits/${encodeURIComponent(resumeJobId)}`);
+    assert(job?.client_id === clientId, 'Resumed audit belongs to a different smoke client');
+    assert(job?.requested_scope === scope, `Resumed audit scope is ${job?.requested_scope}, expected ${scope}`);
+    console.log(JSON.stringify({ event: 'audit_resumed', ...summarize(job) }));
+  } else {
+    job = await request('/ai/audits', {
+      method: 'POST',
+      body: JSON.stringify({
+        client_id: clientId,
+        scope,
+        period: 'last_30_days',
+        ai_preset: 'economy',
+        max_tokens: 1600,
+        cache_policy: 'fresh',
+        allow_saved_fallback: false,
+        options: {
+          include_search_queries: true,
+          include_dynamics: true,
+          include_tracking: true,
+          include_recommendations: true,
+        },
+      }),
+    });
+    console.log(JSON.stringify({ event: 'audit_created', ...summarize(job) }));
 
-  const active = await request(`/ai/audits/active?client_id=${encodeURIComponent(clientId)}`);
-  assert(active?.job_id === job.job_id, `Active-audit recovery endpoint did not return the new ${scope} job`);
+    const active = await request(`/ai/audits/active?client_id=${encodeURIComponent(clientId)}`);
+    assert(active?.job_id === job.job_id, `Active-audit recovery endpoint did not return the new ${scope} job`);
+  }
 
   let current = job;
   let lastLog = '';
