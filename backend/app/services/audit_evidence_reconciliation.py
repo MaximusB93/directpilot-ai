@@ -274,6 +274,7 @@ def canonical_coverage_projection(
     account = [public(item) for item in index.get("entries") or [] if item.get("scope") == "account"]
     campaigns = [public(item) for item in index.get("entries") or [] if item.get("scope") == "campaign"]
     matrix: list[dict[str, Any]] = []
+    minimum_expected_keys: set[tuple[str, str]] = set()
     if snapshot is not None:
         runtime = snapshot.get("auditRuntime") or {}
         collection_terminal = str(runtime.get("schedulerPhase") or "") in {
@@ -286,6 +287,7 @@ def canonical_coverage_projection(
             key = (str(item.get("campaignName") or ""), str(item.get("capabilityId") or ""))
             if all(key):
                 expected[key] = dict(item)
+                minimum_expected_keys.add(key)
         for request in snapshot.get("validatedDataRequests") or []:
             if not isinstance(request, dict):
                 continue
@@ -364,10 +366,15 @@ def canonical_coverage_projection(
             })
 
     applicable = [item for item in matrix if item.get("applicable")]
-    campaign_names = sorted({str(item.get("campaignName")) for item in applicable})
+    minimum_applicable = [
+        item for item in applicable
+        if not minimum_expected_keys
+        or (str(item.get("campaignName")), str(item.get("capabilityId"))) in minimum_expected_keys
+    ]
+    campaign_names = sorted({str(item.get("campaignName")) for item in minimum_applicable})
     terminal_statuses = {"collected", "partial", "insufficient_data", "unavailable", "failed"}
     by_campaign: dict[str, list[dict[str, Any]]] = {}
-    for item in applicable:
+    for item in minimum_applicable:
         by_campaign.setdefault(str(item.get("campaignName")), []).append(item)
     covered_campaigns = sorted(
         campaign_name

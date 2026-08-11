@@ -823,8 +823,12 @@ def public_evidence_coverage(snapshot: dict[str, Any], *, legacy_completed: bool
             "requirements": [],
         }
     coverage = evaluate_audit_evidence_coverage(snapshot)
-    stop_reason = str((snapshot.get("auditRuntime") or {}).get("stopReason") or "")
-    if stop_reason in {"collection_deadline_reached", "hard_deadline_reached"}:
+    runtime = snapshot.get("auditRuntime") or {}
+    stop_reason = str(runtime.get("stopReason") or "")
+    if (
+        stop_reason in {"collection_deadline_reached", "hard_deadline_reached"}
+        or runtime.get("completionGateLimitedByScheduler") is True
+    ):
         coverage = {**coverage, "completionState": "partial_coverage"}
     sensitive_markers = (
         "authorization", "oauth", "access_token", "refresh_token", "client-login",

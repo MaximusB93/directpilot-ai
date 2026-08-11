@@ -15,6 +15,7 @@ from app.services.audit_evidence_reconciliation import (
     canonical_coverage_projection,
     capability_candidates,
 )
+from app.services.audit_evidence_policy import public_evidence_coverage
 from app.services.audit_scheduler import (
     build_minimum_coverage_requests,
     collection_batch_can_start,
@@ -211,6 +212,60 @@ def test_canonical_campaign_matrix_distinguishes_collected_insufficient_and_not_
     public_dump = json.dumps(projection)
     for forbidden in ("CampaignId", "AdGroupId", "request_hash", "raw_rows"):
         assert forbidden not in public_dump
+
+
+def test_campaign_coverage_uses_minimum_plan_not_unfinished_depth_requests():
+    snapshot = {
+        "minimumCoveragePlan": [{
+            "campaignName": "Search A", "capabilityId": "search_queries", "applicable": True,
+        }],
+        "validatedDataRequests": [{
+            "campaign_name": "Search A", "capability_id": "devices", "dimension": "devices",
+        }],
+        "auditRuntime": {"schedulerPhase": "finalization"},
+    }
+    index = {"entries": [
+        {
+            "scope": "campaign", "campaignName": "Search A", "capabilityId": "search_queries",
+            "status": "collected", "rowsReceived": 12, "rowsAnalyzedByBackend": 12,
+            "rowsSentToAi": 3,
+        },
+        {
+            "scope": "campaign", "campaignName": "Search A", "capabilityId": "devices",
+            "status": "skipped_budget_limit", "rowsReceived": 0, "rowsAnalyzedByBackend": 0,
+            "rowsSentToAi": 0,
+            "result": {"error_code": "audit_collection_deadline_reached"},
+        },
+    ]}
+
+    projection = canonical_coverage_projection(index, snapshot)
+
+    assert projection["summary"]["applicableCampaigns"] == 1
+    assert projection["summary"]["coveredCampaigns"] == 1
+    depth = next(
+        item for item in projection["campaignMatrix"] if item["capabilityId"] == "devices"
+    )
+    assert depth["status"] == "not_requested"
+
+
+def test_scheduler_limited_completion_is_public_partial_coverage():
+    snapshot = {
+        "auditRuntime": {
+            "schedulerPhase": "finalization",
+            "completionGateLimitedByScheduler": True,
+        },
+        "evidenceCoverageRegistry": [{
+            "campaignName": "Search A",
+            "signal": "high_cpa",
+            "dimension": "devices",
+            "status": "missing",
+        }],
+    }
+
+    coverage = public_evidence_coverage(snapshot)
+
+    assert coverage["completionState"] == "partial_coverage"
+    assert coverage["summary"]["missing"] == 1
 
 
 def test_controlled_retargeting_data_alias_resolves_without_fuzzy_matching():
