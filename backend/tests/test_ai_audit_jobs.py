@@ -1919,6 +1919,96 @@ def test_fresh_baseline_queue_timeout_continues_to_classification(monkeypatch):
     assert any(item.get("error_code") == "direct_report_queue_full_timeout" for item in stored)
 
 
+def test_fresh_baseline_deadline_classifies_collected_campaign_structure_without_more_direct_calls(monkeypatch):
+    db = _db()
+    job = _create(db)
+    snapshot = audit_jobs.build_compact_audit_context(_context())
+    snapshot["analysisPeriod"] = {"dateFrom": "2026-06-10", "dateTo": "2026-07-09", "days": 30}
+    audit_jobs.initialize_scheduler_state(
+        snapshot,
+        scope="short_summary",
+        started_at=datetime.now(UTC) - timedelta(minutes=5),
+    )
+    snapshot["auditRuntime"]["collectionDeadlineAt"] = (
+        datetime.now(UTC) - timedelta(seconds=1)
+    ).isoformat()
+    snapshot["auditRuntime"]["hardDeadlineAt"] = (
+        datetime.now(UTC) + timedelta(seconds=60)
+    ).isoformat()
+    job.context_snapshot_json = audit_jobs._json_dump(snapshot)
+    job.status = "context_ready"
+    job.current_stage = "collect_fresh_baseline"
+    db.commit()
+    audit_jobs._save_full_baseline_results(db, job, [
+        {
+            "request_id": "baseline_campaigns",
+            "hypothesis_id": "baseline",
+            "capability_id": "campaigns",
+            "dimension": "campaigns",
+            "status": "collected",
+            "source": "yandex_direct_live_service",
+            "source_type": "service_get",
+            "data": [
+                {
+                    "campaign_id": "101",
+                    "campaign_scope_key": "campaign_scope:a",
+                    "name": "Search Brand",
+                    "type": "TEXT_CAMPAIGN",
+                    "status": "ACCEPTED",
+                    "state": "ON",
+                    "text_campaign": {"bidding_strategy": {
+                        "search": {"bidding_strategy_type": "AVERAGE_CPA"},
+                        "network": {"bidding_strategy_type": "SERVING_OFF"},
+                    }},
+                },
+                {
+                    "campaign_id": "202",
+                    "campaign_scope_key": "campaign_scope:b",
+                    "name": "YAN Retargeting",
+                    "type": "UNIFIED_CAMPAIGN",
+                    "status": "ACCEPTED",
+                    "state": "ON",
+                    "unified_campaign": {"bidding_strategy": {
+                        "search": {"bidding_strategy_type": "SERVING_OFF"},
+                        "network": {"bidding_strategy_type": "AVERAGE_CPA"},
+                    }},
+                },
+            ],
+            "rows_total": 2,
+        },
+        {
+            "request_id": "baseline_campaign_performance",
+            "hypothesis_id": "baseline",
+            "capability_id": "campaign_performance",
+            "dimension": "campaign_performance",
+            "status": "processing",
+            "source": "yandex_direct_live_report",
+            "source_type": "report",
+            "error_code": "direct_report_queue_full",
+            "data": [],
+            "rows_total": 0,
+        },
+    ])
+
+    def forbidden_collect(*args, **kwargs):
+        raise AssertionError("Collection deadline must prevent new Direct calls")
+
+    monkeypatch.setattr(audit_jobs, "collect_audit_data_requests", forbidden_collect)
+    current = asyncio.run(audit_jobs.advance_audit_job(db, job.id, organization_id="org-a"))
+    stored_snapshot = audit_jobs._json_load(current.context_snapshot_json, {})
+    response = audit_jobs.audit_job_response(current, db)
+
+    assert current.current_stage == "generate_answer"
+    assert stored_snapshot["auditRuntime"]["schedulerPhase"] == "finalization"
+    assert stored_snapshot["auditRuntime"]["stopReason"] == "collection_deadline_reached"
+    assert [item["campaign_family"] for item in stored_snapshot["campaignClassifications"]] == [
+        "search",
+        "yan",
+    ]
+    assert len(stored_snapshot["minimumCoveragePlan"]) == 7
+    assert len(response.context_metadata["canonicalEvidenceCoverage"]["campaignMatrix"]) == 7
+
+
 def test_public_trace_is_safe_and_distinguishes_backend_and_ai_rows():
     db = _db()
     job = _create(db)

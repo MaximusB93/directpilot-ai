@@ -44,6 +44,7 @@ from app.schemas import (
     AuditInvestigationPlan,
     AuditNextRoundPlan,
     AuditNextRoundRequest,
+    AuditObservedFact,
 )
 from app.services.audit_data_tools import (
     MAX_AUDIT_DATA_REQUESTS,
@@ -756,6 +757,29 @@ def _classification_summary(classifications: list[dict[str, Any]]) -> dict[str, 
         ))
         summary[key] = summary.get(key, 0) + 1
     return dict(sorted(summary.items()))
+
+
+def _prepare_campaign_classification(
+    snapshot: dict[str, Any],
+    *,
+    scheduler_phase: str = "breadth",
+) -> tuple[dict[str, int], list[AuditDataRequest], list[AuditObservedFact]]:
+    snapshot["campaignClassifications"] = classify_audit_campaigns(snapshot)
+    classification_summary = _classification_summary(snapshot["campaignClassifications"])
+    breadth_requests = build_minimum_coverage_requests(snapshot)
+    snapshot["minimumCoveragePlan"] = _minimum_coverage_plan(breadth_requests, snapshot)
+    runtime = _audit_runtime(snapshot)
+    runtime["campaignsTotal"] = len(snapshot["campaignClassifications"])
+    runtime["breadthRequestsTotal"] = len(breadth_requests)
+    runtime["classificationSummary"] = classification_summary
+    runtime["schedulerPhase"] = scheduler_phase
+    observed_facts = build_observed_facts(snapshot)
+    snapshot["observedFacts"] = [item.model_dump(mode="json") for item in observed_facts]
+    base_plan = build_rule_based_investigation_plan(snapshot)
+    snapshot["ruleBasedInvestigationPlan"] = base_plan.model_dump(mode="json")
+    ensure_evidence_coverage_registry(snapshot)
+    _sync_policy_runtime(snapshot)
+    return classification_summary, breadth_requests, observed_facts
 
 
 def _request(
@@ -7634,6 +7658,13 @@ async def advance_audit_job(
             processing = [AuditDataRequest.model_validate(item) for item in processing_source]
             deadline = scheduler_deadline_state(snapshot)
             if deadline["collectionDeadlineReached"] or deadline["hardDeadlineReached"]:
+                full_baseline_results = _load_full_baseline_results(db, job)
+                _refresh_baseline_projections(snapshot, full_baseline_results)
+                _apply_live_baseline(
+                    snapshot,
+                    full_baseline_results,
+                    allow_saved_fallback=False,
+                )
                 runtime = _audit_runtime(snapshot)
                 runtime["schedulerPhase"] = "finalization"
                 runtime["stopReason"] = (
@@ -7643,7 +7674,20 @@ async def advance_audit_job(
                 )
                 snapshot["pendingBaselineRequests"] = []
                 snapshot["processingBaselineRequests"] = []
+                classification_summary, breadth_requests, observed_facts = _prepare_campaign_classification(
+                    snapshot,
+                    scheduler_phase="finalization",
+                )
                 mark_scheduler_progress(snapshot, action=runtime["stopReason"])
+                logger.info(
+                    "CASCADE_AUDIT_DEADLINE_CLASSIFICATION audit_job_id=%s "
+                    "campaign_count=%s fact_count=%s breadth_requests=%s classifications=%s",
+                    job.id,
+                    len(snapshot["campaignClassifications"]),
+                    len(observed_facts),
+                    len(breadth_requests),
+                    classification_summary,
+                )
                 job.context_snapshot_json = _json_dump(snapshot)
                 job.status = "context_ready"
                 job.current_stage = "generate_answer"
@@ -7736,21 +7780,7 @@ async def advance_audit_job(
             timings["collectFreshBaselineMs"] = int(timings.get("collectFreshBaselineMs") or 0) + _elapsed_ms(started_at)
         elif stage == "classify_campaigns":
             snapshot = _json_load(job.context_snapshot_json, {})
-            snapshot["campaignClassifications"] = classify_audit_campaigns(snapshot)
-            classification_summary = _classification_summary(snapshot["campaignClassifications"])
-            breadth_requests = build_minimum_coverage_requests(snapshot)
-            snapshot["minimumCoveragePlan"] = _minimum_coverage_plan(breadth_requests, snapshot)
-            runtime = _audit_runtime(snapshot)
-            runtime["campaignsTotal"] = len(snapshot["campaignClassifications"])
-            runtime["breadthRequestsTotal"] = len(breadth_requests)
-            runtime["classificationSummary"] = classification_summary
-            runtime["schedulerPhase"] = "breadth"
-            observed_facts = build_observed_facts(snapshot)
-            snapshot["observedFacts"] = [item.model_dump(mode="json") for item in observed_facts]
-            base_plan = build_rule_based_investigation_plan(snapshot)
-            snapshot["ruleBasedInvestigationPlan"] = base_plan.model_dump(mode="json")
-            ensure_evidence_coverage_registry(snapshot)
-            _sync_policy_runtime(snapshot)
+            classification_summary, breadth_requests, observed_facts = _prepare_campaign_classification(snapshot)
             logger.info(
                 "CASCADE_AUDIT_FACTS_CREATED audit_job_id=%s round=1 campaign_count=%s fact_count=%s",
                 job.id,
