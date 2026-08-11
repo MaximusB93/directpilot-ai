@@ -1554,6 +1554,41 @@ def test_direct_strategy_overrides_master_name_probe(
     assert classified["classification_source"] == "direct_api_strategy"
 
 
+def test_master_campaign_classification_is_valid_for_observed_facts_and_plan():
+    campaign_name = "Товарная | Общие | Конкуренты"
+    campaign = {
+        "name": campaign_name,
+        "cost": 150000,
+        "clicks": 3000,
+        "impressions": 150000,
+        "goalConversions": 12,
+        "goalCpa": 12500,
+        "flags": ["high_cpa"],
+    }
+    snapshot = {
+        "analysisPeriod": {"dateFrom": "2026-07-01", "dateTo": "2026-07-30", "days": 30},
+        "targetKpis": {"targetCpa": 8000},
+        "campaignAnalysisRows": [campaign],
+        "campaignGroups": {
+            "critical": [],
+            "warning": [campaign],
+            "opportunity": [],
+            "low_data": [],
+            "stable": [],
+        },
+        "campaignClassifications": [audit_jobs._campaign_classification(campaign_name)],
+    }
+
+    facts = audit_jobs.build_observed_facts(snapshot)
+    snapshot["observedFacts"] = [item.model_dump(mode="json") for item in facts]
+    plan = audit_jobs.build_rule_based_investigation_plan(snapshot)
+
+    assert facts[0].campaign_family == "mixed"
+    assert facts[0].campaign_subtype == "mixed"
+    assert plan.hypotheses[0].campaign_family == "mixed"
+    assert plan.hypotheses[0].campaign_subtype == "mixed"
+
+
 def test_classification_summary_contains_only_aggregate_categories():
     summary = audit_jobs._classification_summary([
         {"campaign_name": "private search", "campaign_family": "search", "campaign_subtype": "search", "classification_source": "direct_api_strategy"},

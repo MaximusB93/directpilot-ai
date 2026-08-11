@@ -710,8 +710,8 @@ class AuditDataRequest(BaseModel):
     request_id: str
     hypothesis_id: str
     campaign_name: str
-    campaign_family: Literal["search", "yan", "unknown"]
-    campaign_subtype: Literal["search", "brand_search", "yan_prospecting", "yan_retargeting", "unknown"]
+    campaign_family: Literal["search", "yan", "mixed", "unknown"]
+    campaign_subtype: Literal["search", "brand_search", "yan_prospecting", "yan_retargeting", "mixed", "unknown"]
     dimension: Literal[
         "account_summary", "campaigns", "campaign_performance", "campaign_daily_dynamics",
         "campaign_settings", "campaign_strategy", "campaign_status", "campaign_bid_modifiers",
@@ -797,8 +797,8 @@ class AuditInvestigationHypothesis(BaseModel):
     parent_hypothesis_id: str | None = None
     supersedes_hypothesis_id: str | None = None
     campaign_name: str
-    campaign_family: Literal["search", "yan", "unknown"]
-    campaign_subtype: Literal["search", "brand_search", "yan_prospecting", "yan_retargeting", "unknown"]
+    campaign_family: Literal["search", "yan", "mixed", "unknown"]
+    campaign_subtype: Literal["search", "brand_search", "yan_prospecting", "yan_retargeting", "mixed", "unknown"]
     observed_fact: str
     hypothesis: str
     current_status: Literal[
@@ -830,8 +830,8 @@ class AuditObservedFact(BaseModel):
 
     fact_id: str
     campaign_name: str
-    campaign_family: Literal["search", "yan", "unknown"]
-    campaign_subtype: Literal["search", "brand_search", "yan_prospecting", "yan_retargeting", "unknown"]
+    campaign_family: Literal["search", "yan", "mixed", "unknown"]
+    campaign_subtype: Literal["search", "brand_search", "yan_prospecting", "yan_retargeting", "mixed", "unknown"]
     analysis_level: Literal["account", "campaign", "ad_group", "keyword", "query", "placement", "audience", "device", "geo", "demographic", "tracking"]
     metric: str
     current_value: float | int | str | None = None

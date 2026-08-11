@@ -9,10 +9,25 @@
  * every Yandex Direct operation exercised by it is a read operation.
  */
 
-const required = ['E2E_AUDIT_BASE_URL', 'E2E_AUDIT_SESSION_TOKEN', 'E2E_AUDIT_CLIENT_ID'];
+const required = ['E2E_AUDIT_BASE_URL'];
 const missing = required.filter((name) => !process.env[name]?.trim());
 if (missing.length) {
   throw new Error(`Missing required CI secret(s): ${missing.join(', ')}`);
+}
+
+const hasSessionCredentials = Boolean(
+  process.env.E2E_AUDIT_SESSION_TOKEN?.trim()
+  && process.env.E2E_AUDIT_CLIENT_ID?.trim(),
+);
+const hasDevLoginCredentials = Boolean(
+  process.env.E2E_AUDIT_EMAIL?.trim()
+  && process.env.E2E_AUDIT_CLIENT_NAME?.trim(),
+);
+if (!hasSessionCredentials && !hasDevLoginCredentials) {
+  throw new Error(
+    'Provide E2E_AUDIT_SESSION_TOKEN + E2E_AUDIT_CLIENT_ID or '
+    + 'E2E_AUDIT_EMAIL + E2E_AUDIT_CLIENT_NAME.',
+  );
 }
 
 const baseUrl = process.env.E2E_AUDIT_BASE_URL.replace(/\/$/, '');
@@ -21,6 +36,8 @@ const requiredCapabilities = (process.env.E2E_AUDIT_REQUIRED_CAPABILITIES || '')
   .split(',').map((value) => value.trim()).filter(Boolean);
 const bypassSecret = process.env.VERCEL_AUTOMATION_BYPASS_SECRET?.trim();
 const startedAt = Date.now();
+let sessionToken = process.env.E2E_AUDIT_SESSION_TOKEN?.trim() || '';
+let clientId = process.env.E2E_AUDIT_CLIENT_ID?.trim() || '';
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -61,11 +78,11 @@ function summarize(job) {
   };
 }
 
-async function request(path, options = {}) {
+async function request(path, options = {}, { authenticated = true } = {}) {
   const response = await fetch(apiUrl(path), {
     ...options,
     headers: {
-      authorization: `Bearer ${process.env.E2E_AUDIT_SESSION_TOKEN}`,
+      ...(authenticated && sessionToken ? { authorization: `Bearer ${sessionToken}` } : {}),
       ...(bypassSecret ? { 'x-vercel-protection-bypass': bypassSecret } : {}),
       ...(options.body ? { 'content-type': 'application/json' } : {}),
       ...(options.headers || {}),
@@ -77,6 +94,38 @@ async function request(path, options = {}) {
     throw new Error(`${options.method || 'GET'} ${path} failed (${response.status}): ${detail.slice(0, 400)}`);
   }
   return body;
+}
+
+async function bootstrapDevLogin() {
+  if (sessionToken && clientId) return;
+
+  const email = process.env.E2E_AUDIT_EMAIL.trim();
+  const requested = await request('/auth/email/request-code', {
+    method: 'POST',
+    body: JSON.stringify({ email }),
+  }, { authenticated: false });
+  assert(requested?.dev_code, 'Preview did not return a dev login code');
+
+  const verified = await request('/auth/email/verify-code', {
+    method: 'POST',
+    body: JSON.stringify({ email, code: requested.dev_code }),
+  }, { authenticated: false });
+  assert(verified?.session_token, 'Preview email verification returned no session token');
+  sessionToken = verified.session_token;
+
+  const requestedName = process.env.E2E_AUDIT_CLIENT_NAME.trim().toLocaleLowerCase('ru-RU');
+  const clients = await request('/clients');
+  assert(Array.isArray(clients), 'Clients endpoint did not return a list');
+  const exact = clients.filter(
+    (item) => String(item?.name || '').trim().toLocaleLowerCase('ru-RU') === requestedName,
+  );
+  const partial = clients.filter(
+    (item) => String(item?.name || '').trim().toLocaleLowerCase('ru-RU').includes(requestedName),
+  );
+  const matches = exact.length ? exact : partial;
+  assert(matches.length === 1, `Expected one matching smoke client, found ${matches.length}`);
+  clientId = String(matches[0]?.id || '').trim();
+  assert(clientId, 'Matching smoke client returned no id');
 }
 
 function assert(condition, message) {
@@ -135,7 +184,7 @@ async function runScope(scope) {
   const job = await request('/ai/audits', {
     method: 'POST',
     body: JSON.stringify({
-      client_id: process.env.E2E_AUDIT_CLIENT_ID,
+      client_id: clientId,
       scope,
       period: 'last_30_days',
       ai_preset: 'economy',
@@ -152,7 +201,7 @@ async function runScope(scope) {
   });
   console.log(JSON.stringify({ event: 'audit_created', ...summarize(job) }));
 
-  const active = await request(`/ai/audits/active?client_id=${encodeURIComponent(process.env.E2E_AUDIT_CLIENT_ID)}`);
+  const active = await request(`/ai/audits/active?client_id=${encodeURIComponent(clientId)}`);
   assert(active?.job_id === job.job_id, `Active-audit recovery endpoint did not return the new ${scope} job`);
 
   let current = job;
@@ -192,6 +241,7 @@ const scopes = (process.env.E2E_AUDIT_SCOPES || 'full_account,short_summary')
   .split(',').map((value) => value.trim()).filter(Boolean);
 assert(scopes.length > 0, 'E2E_AUDIT_SCOPES must contain at least one scope');
 
+await bootstrapDevLogin();
 const results = [];
 for (const scope of scopes) results.push(await runScope(scope));
 console.log(JSON.stringify({ event: 'preview_audit_smoke_passed', results }));
