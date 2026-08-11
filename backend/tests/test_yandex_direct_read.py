@@ -915,6 +915,80 @@ def test_fresh_audit_does_not_adopt_processing_report_from_active_owner(monkeypa
     assert report.audit_job_id == old.id
 
 
+def test_fresh_audit_restarts_expired_queue_wait_from_terminal_owner(monkeypatch):
+    db = _db()
+    old = AiAuditJob(
+        id="audit-old-expired",
+        organization_id="org-a",
+        client_id="client-a",
+        status="completed",
+        current_stage="finalize",
+        model="test/model",
+        system_prompt_version="test",
+        system_prompt_hash="hash",
+    )
+    new = AiAuditJob(
+        id="audit-new-retry",
+        organization_id="org-a",
+        client_id="client-a",
+        status="queued",
+        current_stage="collect_context",
+        model="test/model",
+        system_prompt_version="test",
+        system_prompt_hash="hash",
+    )
+    db.add_all([old, new])
+    db.commit()
+    monkeypatch.setattr(direct_read, "get_yandex_access_token_for_account", lambda *args: "secret")
+    request = _request("campaign_performance", family="search", subtype="search")
+    trusted = direct_read._trusted_spec(
+        db.get(ClientAccount, "client-a"),
+        YANDEX_DIRECT_READ_CAPABILITIES["campaign_performance"],
+        request,
+        ["101"],
+    )
+    report = DirectReportJob(
+        audit_job_id=old.id,
+        client_id="client-a",
+        capability_id="campaign_performance",
+        request_hash=direct_read._request_hash(trusted),
+        report_name="expired-queue",
+        report_spec_json=direct_read._json_dump(direct_read._report_spec(
+            YANDEX_DIRECT_READ_CAPABILITIES["campaign_performance"], trusted,
+            direct_read._request_hash(trusted),
+        )),
+        status="waiting_for_report_queue",
+        queue_full_attempts=1,
+        first_queue_full_at=datetime.now(UTC) - timedelta(seconds=direct_read.REPORT_QUEUE_MAX_WAIT_SECONDS + 1),
+        next_retry_at=datetime.now(UTC) - timedelta(seconds=1),
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    db.add(report)
+    db.commit()
+    calls = {"count": 0}
+
+    def completed_report(self, spec, *, processing_mode="auto"):
+        calls["count"] += 1
+        return {
+            "status": "completed",
+            "rows": [{"CampaignId": "101", "CampaignName": "Search Brand", "Clicks": "4"}],
+            "limited_by": None,
+        }
+
+    monkeypatch.setattr(YandexDirectConnector, "request_report", completed_report)
+    completed = direct_read.execute_direct_read(
+        db, "client-a", request, audit_job_id=new.id, cache_policy="fresh",
+    )
+    replacement = db.scalar(select(DirectReportJob))
+
+    assert completed.result.status == "collected"
+    assert completed.api_calls == 1
+    assert calls["count"] == 1
+    assert replacement.audit_job_id == new.id
+    assert replacement.status == "completed"
+    assert replacement.id != report.id
+
+
 def test_report_queue_full_retry_limit_becomes_safe_unavailable(monkeypatch):
     db = _db()
     now = datetime(2026, 7, 16, 12, 0, tzinfo=UTC)

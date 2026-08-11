@@ -820,7 +820,14 @@ def _report_outcome(
                 summary="Другой fresh-аудит формирует такой же отчёт; текущий аудит дождётся своей live-попытки.",
                 error_code="fresh_report_busy",
             ))
-        if report_job.status in {"queued", "requested", "processing", "waiting_for_report_queue"}:
+        stale_queue_wait = (
+            report_job.status == "waiting_for_report_queue"
+            and _queue_wait_expired(report_job, now)
+        )
+        if (
+            report_job.status in {"queued", "requested", "processing", "waiting_for_report_queue"}
+            and not stale_queue_wait
+        ):
             logger.info(
                 "DIRECT_READ_REPORT_ADOPTED audit_job_id=%s previous_audit_job_id=%s "
                 "capability_id=%s request_hash=%s status=%s",

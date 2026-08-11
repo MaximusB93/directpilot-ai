@@ -1437,6 +1437,69 @@ def test_fresh_baseline_is_live_required_and_never_silently_uses_saved_campaigns
     assert snapshot["accountTotals"]["cost"] == 0
 
 
+def test_fresh_campaign_structure_still_builds_classification_when_performance_is_unavailable():
+    snapshot = {
+        "analysisPeriod": {"dateFrom": "2026-06-10", "dateTo": "2026-07-09", "days": 30},
+        "campaignGroups": {"critical": [{"name": "Saved campaign", "cost": 9999}]},
+        "accountTotals": {"cost": 9999, "clicks": 100},
+    }
+    campaign_rows = [
+        {
+            "campaign_id": "101",
+            "campaign_scope_key": "campaign_scope:a",
+            "name": "Search Brand",
+            "type": "TEXT_CAMPAIGN",
+            "status": "ACCEPTED",
+            "state": "ON",
+            "text_campaign": {"bidding_strategy": {
+                "search": {"bidding_strategy_type": "AVERAGE_CPA"},
+                "network": {"bidding_strategy_type": "SERVING_OFF"},
+            }},
+        },
+        {
+            "campaign_id": "202",
+            "campaign_scope_key": "campaign_scope:b",
+            "name": "YAN Retargeting",
+            "type": "UNIFIED_CAMPAIGN",
+            "status": "ACCEPTED",
+            "state": "ON",
+            "unified_campaign": {"bidding_strategy": {
+                "search": {"bidding_strategy_type": "SERVING_OFF"},
+                "network": {"bidding_strategy_type": "AVERAGE_CPA"},
+            }},
+        },
+    ]
+
+    audit_jobs._apply_live_baseline(
+        snapshot,
+        [
+            {
+                "capability_id": "campaigns",
+                "status": "collected",
+                "source": "yandex_direct_live_service",
+                "data": campaign_rows,
+            },
+            {
+                "capability_id": "campaign_performance",
+                "status": "unavailable",
+                "source": "unavailable",
+                "error_code": "direct_report_queue_full_timeout",
+            },
+        ],
+        allow_saved_fallback=False,
+    )
+
+    classifications = audit_jobs.classify_audit_campaigns(snapshot)
+    assert [(item["campaign_name"], item["campaign_family"]) for item in classifications] == [
+        ("Search Brand", "search"),
+        ("YAN Retargeting", "yan"),
+    ]
+    assert snapshot["freshBaseline"]["status"] == "partial"
+    assert snapshot["dataCoverage"]["campaigns"]["freshness"] == "live_structure_only"
+    assert snapshot["dataCoverage"]["campaigns"]["analyzed"] == 0
+    assert len(snapshot["campaignAnalysisRows"]) == 2
+
+
 def test_fresh_baseline_with_150_campaigns_is_recompacted_with_full_aggregates():
     rows = [
         {

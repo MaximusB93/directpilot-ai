@@ -1104,9 +1104,52 @@ def _apply_live_baseline(
             snapshot["accountTotals"] = {
                 "cost": 0, "impressions": 0, "clicks": 0, "goalConversions": None,
             }
+        structure_rows = []
+        if campaign_available:
+            for row in campaign_result.get("data") or []:
+                if not isinstance(row, dict):
+                    continue
+                name = str(row.get("name") or "").strip()
+                if not name or name not in metadata_by_name:
+                    continue
+                structure_rows.append({
+                    "name": name,
+                    "type": row.get("type"),
+                    "status": row.get("status"),
+                    "state": row.get("state"),
+                    "cost": 0,
+                    "clicks": 0,
+                    "impressions": 0,
+                    "ctr": 0,
+                    "goalConversions": None,
+                    "goalCpa": None,
+                    "flags": ["performance_unavailable"],
+                    "diagnostic": "Campaign structure is live; period performance is unavailable.",
+                })
+        if structure_rows:
+            snapshot["campaignAnalysisRows"] = structure_rows
+            snapshot["campaignGroups"]["low_data"] = structure_rows[:5]
+            baseline["campaignAggregates"] = {
+                "campaignsTotal": len(structure_rows),
+                "groupCounts": {"low_data": len(structure_rows)},
+                "totals": snapshot["accountTotals"],
+            }
+            metadata = snapshot.setdefault("metadata", {})
+            metadata.update({
+                "campaignsTotal": len(structure_rows),
+                "campaignsIncluded": min(5, len(structure_rows)),
+                "campaignEvidenceSource": str(campaign_result.get("source") or "yandex_direct_live_service"),
+                "campaignEvidenceFetchedAt": fetched_at,
+            })
+        else:
+            snapshot["campaignAnalysisRows"] = []
         snapshot.setdefault("dataCoverage", {})["campaigns"] = {
-            "available": 0, "total": 0, "analyzed": 0,
-            "source": "yandex_direct_live", "freshness": "live_failed",
+            "available": len(structure_rows),
+            "total": len(structure_rows),
+            "analyzed": 0,
+            "source": str(campaign_result.get("source") or "yandex_direct_live"),
+            "freshness": "live_structure_only" if structure_rows else "live_failed",
+            "limitations": ["Period performance is unavailable; only campaign structure can be classified."],
         }
         snapshot["freshBaseline"] = baseline
         return
