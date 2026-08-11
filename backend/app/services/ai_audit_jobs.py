@@ -3707,6 +3707,19 @@ def build_campaign_insights(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             allow_traffic_proxy=conversion_decision.state in {"unknown", "low_sample"},
             allow_conversion_factors=conversion_decision.state != "low_sample",
         )
+        if factor is None and metric in {
+            "cpa_above_target", "spend_without_goal_conversions",
+            "conversion_data_unknown", "low_data", "low_ctr",
+        }:
+            # Campaign-level conversions can be known while a detailed Direct
+            # slice has no reliable goal attribution. In that case a concrete
+            # CTR/CPC outlier is still useful as a traffic-quality hypothesis,
+            # but must not be presented as a proven cause of CPA or sales.
+            factor = _campaign_primary_factor(
+                summaries,
+                allow_traffic_proxy=True,
+                allow_conversion_factors=False,
+            )
         if factor is None and conversion_decision.state in {"unknown", "low_sample"}:
             analysis_period = snapshot.get("analysisPeriod") or {}
             factor = _campaign_peer_traffic_factor(
@@ -6316,29 +6329,46 @@ def _safe_ai_sample(value: Any) -> Any:
 
 def _cap_drilldown_results(results: list[dict[str, Any]], token_target: int = DRILLDOWN_TOKEN_TARGET) -> list[dict[str, Any]]:
     compact: list[dict[str, Any]] = []
+    source_rows: list[list[dict[str, Any]]] = []
     used = 0
     for original in results:
         item = _safe_ai_sample(dict(original))
         rows = list(item.pop("data", []) or [])
         base_tokens = estimate_tokens(_json_dump(item))
-        if used + base_tokens > token_target:
-            item["data"] = []
-            item["limitations"] = list(item.get("limitations") or []) + ["Данные исключены из AI-контекста из-за общего token budget."]
-            compact.append(item)
-            continue
-        included = []
         used += base_tokens
-        for row in rows:
+        item["data"] = []
+        item["ai_sample_rows"] = 0
+        compact.append(item)
+        source_rows.append(rows)
+
+    # Allocate rows round-robin across evidence sets. The previous sequential
+    # fill allowed early 500-row reports to consume the whole budget and left
+    # later campaigns with zero AI evidence even though backend analyzed them.
+    row_indexes = [0] * len(compact)
+    while used < token_target:
+        added = False
+        for index, rows in enumerate(source_rows):
+            row_index = row_indexes[index]
+            if row_index >= len(rows):
+                continue
+            row = rows[row_index]
             row_tokens = estimate_tokens(_json_dump(row))
             if used + row_tokens > token_target:
-                break
-            included.append(row)
+                continue
+            compact[index]["data"].append(row)
+            compact[index]["ai_sample_rows"] += 1
+            row_indexes[index] += 1
             used += row_tokens
-        item["data"] = included
-        item["ai_sample_rows"] = len(included)
-        if len(included) < len(rows):
-            item["limitations"] = list(item.get("limitations") or []) + [f"В AI-контекст включено {len(included)} из {len(rows)} строк."]
-        compact.append(item)
+            added = True
+        if not added:
+            break
+
+    for item, rows in zip(compact, source_rows):
+        included = int(item.get("ai_sample_rows") or 0)
+        if included < len(rows):
+            item["limitations"] = list(item.get("limitations") or []) + [
+                f"В AI-контекст включено {included} из {len(rows)} строк."
+            ]
     return compact
 
 

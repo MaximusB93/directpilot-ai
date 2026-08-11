@@ -62,11 +62,27 @@ MINIMUM_CAPABILITIES_BY_SUBTYPE: dict[str, tuple[str, ...]] = {
     "unknown": ("campaign_settings",),
 }
 
+# A short summary has room for one diagnostic layer, not the full subtype
+# checklist. Keep one high-signal traffic slice per campaign (two only where
+# the subtype itself spans two families) so every campaign is visited before
+# the collection deadline.
+SHORT_MINIMUM_CAPABILITIES_BY_SUBTYPE: dict[str, tuple[str, ...]] = {
+    "search": ("search_queries",),
+    "brand_search": ("search_queries",),
+    "yan_prospecting": ("placements",),
+    "yan_retargeting": ("placements", "retargeting_segments"),
+    "unknown": ("campaign_settings",),
+}
+
 # Direct text and unified campaigns can serve both Search and Network traffic.
 # They need two family-specific evidence slices, but keeping this small preserves
 # breadth-first coverage within the fixed request budget.
 MIXED_MINIMUM_CAPABILITY_VARIANTS: tuple[tuple[str, str, str], ...] = (
     ("campaign_settings", "search", "search"),
+    ("search_queries", "search", "search"),
+    ("placements", "yan", "yan_prospecting"),
+)
+SHORT_MIXED_MINIMUM_CAPABILITY_VARIANTS: tuple[tuple[str, str, str], ...] = (
     ("search_queries", "search", "search"),
     ("placements", "yan", "yan_prospecting"),
 )
@@ -235,6 +251,9 @@ def build_minimum_coverage_requests(snapshot: dict[str, Any]) -> list[AuditDataR
 
     result: list[AuditDataRequest] = []
     period = _period(snapshot)
+    short_profile = str(
+        (snapshot.get("auditRuntime") or {}).get("executionProfile") or ""
+    ) == "short_summary"
     for campaign_index, classification in enumerate(snapshot.get("campaignClassifications") or []):
         if not isinstance(classification, dict):
             continue
@@ -244,11 +263,16 @@ def build_minimum_coverage_requests(snapshot: dict[str, Any]) -> list[AuditDataR
         if not campaign_name:
             continue
         variants = (
-            MIXED_MINIMUM_CAPABILITY_VARIANTS
+            SHORT_MIXED_MINIMUM_CAPABILITY_VARIANTS
+            if subtype == "mixed" and short_profile
+            else MIXED_MINIMUM_CAPABILITY_VARIANTS
             if subtype == "mixed"
             else tuple(
                 (capability_id, family, subtype)
-                for capability_id in MINIMUM_CAPABILITIES_BY_SUBTYPE.get(subtype, ("campaign_settings",))
+                for capability_id in (
+                    SHORT_MINIMUM_CAPABILITIES_BY_SUBTYPE
+                    if short_profile else MINIMUM_CAPABILITIES_BY_SUBTYPE
+                ).get(subtype, ("campaign_settings",))
             )
         )
         for capability_index, (capability_id, request_family, request_subtype) in enumerate(variants):

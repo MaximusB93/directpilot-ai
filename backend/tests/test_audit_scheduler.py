@@ -134,6 +134,35 @@ def test_breadth_requests_cover_each_applicable_campaign_before_depth():
     assert [item.capability_id for item in depth_partition] == ["demographics"]
 
 
+def test_short_summary_uses_one_diagnostic_layer_per_campaign():
+    started = datetime(2026, 7, 16, 10, 0, tzinfo=UTC)
+    snapshot = {
+        "analysisPeriod": {"dateFrom": "2026-06-01", "dateTo": "2026-06-30", "days": 30},
+        "campaignClassifications": [
+            {"campaign_name": "Search A", "campaign_family": "search", "campaign_subtype": "search"},
+            {"campaign_name": "YAN A", "campaign_family": "yan", "campaign_subtype": "yan_prospecting"},
+            {"campaign_name": "RTG A", "campaign_family": "yan", "campaign_subtype": "yan_retargeting"},
+            {"campaign_name": "Mixed A", "campaign_family": "mixed", "campaign_subtype": "mixed"},
+            {"campaign_name": "Unknown A", "campaign_family": "unknown", "campaign_subtype": "unknown"},
+        ],
+    }
+    initialize_scheduler_state(snapshot, scope="short_summary", started_at=started)
+
+    breadth = build_minimum_coverage_requests(snapshot)
+    by_campaign = {}
+    for request in breadth:
+        by_campaign.setdefault(request.campaign_name, set()).add(request.capability_id)
+
+    assert by_campaign == {
+        "Search A": {"search_queries"},
+        "YAN A": {"placements"},
+        "RTG A": {"placements", "retargeting_segments"},
+        "Mixed A": {"search_queries", "placements"},
+        "Unknown A": {"campaign_settings"},
+    }
+    assert len(breadth) == 7
+
+
 def test_scheduler_health_distinguishes_expected_wait_from_delay_and_recovery():
     now = datetime(2026, 7, 16, 10, 2, tzinfo=UTC)
     waiting = {"auditRuntime": {

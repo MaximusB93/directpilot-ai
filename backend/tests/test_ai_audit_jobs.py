@@ -1202,6 +1202,36 @@ def test_full_drilldown_evidence_is_not_limited_by_ai_sample_budget():
     assert backend["matched_confirmation_rules"][0]["result"]["matching_rows"] == 1200
 
 
+def test_ai_drilldown_sample_is_breadth_first_across_evidence_sets():
+    large_rows = [
+        {"query": f"query-{index}", "cost": 10, "clicks": 2, "impressions": 100}
+        for index in range(500)
+    ]
+    results = [
+        {
+            "request_id": "first",
+            "hypothesis_id": "hyp-first",
+            "capability_id": "search_queries",
+            "status": "collected",
+            "data": large_rows,
+        },
+        {
+            "request_id": "second",
+            "hypothesis_id": "hyp-second",
+            "capability_id": "placements",
+            "status": "collected",
+            "data": [{"placement": "late-placement", "cost": 100, "clicks": 20, "impressions": 1000}],
+        },
+    ]
+
+    samples = audit_jobs._cap_drilldown_results(results, token_target=1500)
+
+    assert samples[0]["ai_sample_rows"] > 0
+    assert samples[0]["ai_sample_rows"] < len(large_rows)
+    assert samples[1]["ai_sample_rows"] == 1
+    assert samples[1]["data"][0]["placement"] == "late-placement"
+
+
 def test_verification_registry_preserves_prior_round_and_filters_active_prompt():
     snapshot = {
         "hypothesisRegistry": {
@@ -3841,6 +3871,63 @@ def test_master_campaign_high_cpa_uses_concrete_applicable_slice():
     assert "example-placement.test" in insight["problem"]
     assert "example-placement.test" in insight["recommendation"]
     assert "исключение" in insight["recommendation"]
+    assert "Определить запросы" not in insight["recommendation"]
+
+
+def test_high_cpa_uses_concrete_traffic_proxy_when_slice_conversions_are_unknown():
+    campaign_name = "Товарная | Общие | Конкуренты"
+    snapshot = {
+        "targetKpis": {"targetCpa": 8000},
+        "campaignAnalysisRows": [{
+            "name": campaign_name,
+            "cost": 153000,
+            "clicks": 3700,
+            "impressions": 190000,
+            "goalConversions": 13,
+            "goalCpa": 11769.23,
+        }],
+        "campaignClassifications": [audit_jobs._campaign_classification(campaign_name)],
+        "observedFacts": [{
+            "fact_id": "fact_001",
+            "campaign_name": campaign_name,
+            "metric": "cpa_above_target",
+            "sufficient_data": True,
+            "evidence": ["CPA кампании выше цели."],
+        }],
+        "drilldownEvidenceSummaries": [{
+            "hypothesis_id": "breadth_000",
+            "campaign_name": campaign_name,
+            "capability_id": "search_queries",
+            "status": "collected",
+            "diagnostics": {
+                "kind": "performance_contributors",
+                "top_waste": [],
+                "top_high_cpa": [],
+            },
+            "traffic_diagnostics": {
+                "kind": "traffic_proxy",
+                "candidates": [{
+                    "segment": "слишком общий запрос",
+                    "metric": "cpc",
+                    "value": 180,
+                    "benchmark": 80,
+                    "deviation_ratio": 2.25,
+                    "cost": 18000,
+                    "cost_share_pct": 11.76,
+                    "clicks": 100,
+                    "impressions": 3000,
+                }],
+            },
+        }],
+    }
+
+    insight = audit_jobs.build_campaign_insights(snapshot)[0]
+
+    assert insight["verification_status"] == "unverified"
+    assert "слишком общий запрос" in insight["problem"]
+    assert "CPC" in insight["problem"]
+    assert "слишком общий запрос" in insight["recommendation"]
+    assert "не связывая отклонение с продажами" in insight["recommendation"]
     assert "Определить запросы" not in insight["recommendation"]
 
 
