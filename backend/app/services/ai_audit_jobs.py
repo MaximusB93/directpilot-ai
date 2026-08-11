@@ -614,10 +614,25 @@ def _name_campaign_classification(name: str) -> dict[str, str]:
         or (is_retargeting and not explicit_search_retargeting)
     )
     is_brand = any(marker in normalized for marker in ("бренд", "brand"))
+    is_master = any(
+        marker in normalized
+        for marker in ("товарн", "епк", "единая перфоманс", "unified")
+    )
     if is_yan:
         return {"campaign_name": name, "campaign_family": "yan", "campaign_subtype": "yan_retargeting" if is_retargeting else "yan_prospecting", "classification_source": "name_heuristic", "warnings": []}
     if is_search or is_brand:
         return {"campaign_name": name, "campaign_family": "search", "campaign_subtype": "brand_search" if is_brand else "search", "classification_source": "name_heuristic", "warnings": []}
+    if is_master:
+        return {
+            "campaign_name": name,
+            "campaign_family": "mixed",
+            "campaign_subtype": "mixed",
+            "classification_source": "name_heuristic_master",
+            "warnings": [
+                "Campaign name indicates a unified/product campaign; Search and Network "
+                "evidence are probed separately and only applicable Direct data is analyzed."
+            ],
+        }
     return {"campaign_name": name, "campaign_family": "unknown", "campaign_subtype": "unknown", "classification_source": "unresolved", "warnings": []}
 
 
@@ -675,7 +690,9 @@ def _campaign_classification(name: str, explicit_type: str | dict[str, Any] | No
             "api_type": api_type or None,
             "warnings": (["Campaign API metadata is insufficient; name heuristic was used."] if heuristic["campaign_family"] != "unknown" else []),
         }
-    if heuristic["campaign_family"] not in {"unknown", api_family}:
+    # A name-inferred master campaign is a safe capability probe, not a claim
+    # that both placements are active. Exact Direct strategy metadata wins.
+    if heuristic["campaign_family"] not in {"unknown", "mixed", api_family}:
         return {
             "campaign_name": name,
             "campaign_family": "unknown",
@@ -2933,7 +2950,7 @@ def _final_campaign_type(item: dict[str, Any]) -> str:
         return "search"
     if family == "yan":
         return "yan"
-    if "master" in subtype:
+    if family == "mixed" or subtype == "mixed" or "master" in subtype:
         return "master_campaign"
     return "unknown"
 

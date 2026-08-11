@@ -1503,6 +1503,57 @@ def test_interest_marker_outweighs_brand_marker_when_api_metadata_is_missing():
     assert classified["classification_source"] == "name_fallback"
 
 
+@pytest.mark.parametrize(
+    "name",
+    (
+        "Товарная | Общие | Конкуренты | РБ | Горы и море",
+        "ЕПК | База CPM",
+        "Unified product campaign",
+    ),
+)
+def test_master_name_markers_probe_search_and_network_when_api_metadata_is_missing(name):
+    classified = audit_jobs._campaign_classification(name)
+
+    assert classified["campaign_family"] == "mixed"
+    assert classified["campaign_subtype"] == "mixed"
+    assert classified["classification_source"] == "name_fallback"
+    assert classified["warnings"]
+    assert audit_jobs._final_campaign_type(classified) == "master_campaign"
+
+
+def test_explicit_search_or_network_marker_overrides_master_name_probe():
+    search = audit_jobs._campaign_classification("ЕПК | Поиск | Бренд")
+    network = audit_jobs._campaign_classification("ЕПК | РСЯ | Ретаргетинг")
+
+    assert search["campaign_family"] == "search"
+    assert network["campaign_family"] == "yan"
+
+
+@pytest.mark.parametrize(
+    ("section", "search_strategy", "network_strategy", "expected_family"),
+    (
+        ("unified_campaign", "AVERAGE_CPA", "SERVING_OFF", "search"),
+        ("unified_campaign", "SERVING_OFF", "AVERAGE_CPA", "yan"),
+    ),
+)
+def test_direct_strategy_overrides_master_name_probe(
+    section,
+    search_strategy,
+    network_strategy,
+    expected_family,
+):
+    classified = audit_jobs._campaign_classification("Товарная | Общие", {
+        "type": "UNIFIED_CAMPAIGN",
+        section: {"bidding_strategy": {
+            "search": {"bidding_strategy_type": search_strategy},
+            "network": {"bidding_strategy_type": network_strategy},
+        }},
+    })
+
+    assert classified["campaign_family"] == expected_family
+    assert classified["classification_source"] == "direct_api_strategy"
+
+
 def test_classification_summary_contains_only_aggregate_categories():
     summary = audit_jobs._classification_summary([
         {"campaign_name": "private search", "campaign_family": "search", "campaign_subtype": "search", "classification_source": "direct_api_strategy"},
@@ -3696,6 +3747,65 @@ def test_campaign_insights_use_ranked_backend_factor_instead_of_generic_template
     assert "купить бесплатно" in insight["recommendation"]
     assert "минус-фразу" in insight["recommendation"]
     assert any("16000.00" in item and "16.0%" in item for item in insight["evidence"])
+    assert "Определить запросы" not in insight["recommendation"]
+
+
+def test_master_campaign_high_cpa_uses_concrete_applicable_slice():
+    campaign_name = "Товарная | Общие | Конкуренты | РБ | Горы и море"
+    classification = audit_jobs._campaign_classification(campaign_name)
+    snapshot = {
+        "targetKpis": {"targetCpa": 8000},
+        "campaignAnalysisRows": [{
+            "name": campaign_name,
+            "cost": 153282.97,
+            "clicks": 3795,
+            "impressions": 197551,
+            "goalConversions": 13,
+            "goalCpa": 11790.9977,
+        }],
+        "campaignClassifications": [classification],
+        "observedFacts": [{
+            "fact_id": "fact_001",
+            "campaign_name": campaign_name,
+            "metric": "cpa_above_target",
+            "deviation": 47.39,
+            "sufficient_data": True,
+            "evidence": ["CPA кампании выше цели."],
+        }],
+        "drilldownEvidenceSummaries": [{
+            "hypothesis_id": "breadth_000",
+            "campaign_name": campaign_name,
+            "capability_id": "placements",
+            "status": "collected",
+            "period": {"days": 30},
+            "diagnostics": {
+                "kind": "performance_contributors",
+                "material_waste": True,
+                "waste_cost": 18000,
+                "waste_clicks": 240,
+                "waste_share_pct": 11.74,
+                "top_waste": [{
+                    "segment": "example-placement.test",
+                    "cost": 12000,
+                    "cost_share_pct": 7.83,
+                    "clicks": 170,
+                    "impressions": 14000,
+                    "conversions": 0,
+                    "cpa": None,
+                }],
+                "top_high_cpa": [],
+            },
+            "confirmation_rules": [{"rule_code": "placement_waste", "passed": True}],
+        }],
+    }
+
+    insight = audit_jobs.build_campaign_insights(snapshot)[0]
+
+    assert insight["campaign_type"] == "master_campaign"
+    assert insight["verification_status"] == "confirmed"
+    assert "example-placement.test" in insight["problem"]
+    assert "example-placement.test" in insight["recommendation"]
+    assert "исключение" in insight["recommendation"]
     assert "Определить запросы" not in insight["recommendation"]
 
 
