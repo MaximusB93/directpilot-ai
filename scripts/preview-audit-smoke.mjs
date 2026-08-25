@@ -34,6 +34,10 @@ const baseUrl = process.env.E2E_AUDIT_BASE_URL.replace(/\/$/, '');
 const maxRuntimeMs = Math.max(60, Number(process.env.E2E_AUDIT_MAX_RUNTIME_SECONDS || 900)) * 1000;
 const requiredCapabilities = (process.env.E2E_AUDIT_REQUIRED_CAPABILITIES || '')
   .split(',').map((value) => value.trim()).filter(Boolean);
+const requestedMaxTokens = Math.max(
+  1,
+  Number(process.env.E2E_AUDIT_MAX_TOKENS || 4000),
+);
 const bypassSecret = process.env.VERCEL_AUTOMATION_BYPASS_SECRET?.trim();
 const resumeJobId = process.env.E2E_AUDIT_RESUME_JOB_ID?.trim() || '';
 const startedAt = Date.now();
@@ -150,6 +154,22 @@ function validateTerminalAudit(job, scope) {
   assert(job.status === 'completed', `${scope} audit did not complete: ${job.status} (${job.error_code || job.error_message || job.current_stage})`);
   assert(!job.result?.backendFallbackUsed, `${scope} audit completed using backend fallback instead of model analysis`);
   assert(typeof job.answer === 'string' && job.answer.trim().length > 40, `${scope} audit returned no usable final answer`);
+  const structured = job.result?.structured;
+  assert(structured && typeof structured === 'object', `${scope} audit returned no structured result`);
+  const campaignInsights = structured.campaign_insights;
+  assert(Array.isArray(campaignInsights) && campaignInsights.length > 0, `${scope} audit returned no campaign insights`);
+  assert(
+    campaignInsights.every((item) => typeof item?.signal_verification_status === 'string'),
+    `${scope} campaign insights do not separate measured signal verification`,
+  );
+  assert(
+    campaignInsights.every((item) => typeof item?.factor_verification_status === 'string'),
+    `${scope} campaign insights do not separate factor verification`,
+  );
+  assert(
+    campaignInsights.some((item) => item.signal_verification_status === 'confirmed'),
+    `${scope} campaign insights contain no confirmed measured signal`,
+  );
 
   const coverage = job.context_metadata?.canonicalEvidenceCoverage || {};
   const summary = coverage.summary || {};
@@ -196,7 +216,7 @@ async function runScope(scope) {
         scope,
         period: 'last_30_days',
         ai_preset: 'economy',
-        max_tokens: 1600,
+        max_tokens: requestedMaxTokens,
         cache_policy: 'fresh',
         allow_saved_fallback: false,
         options: {
