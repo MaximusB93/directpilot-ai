@@ -448,9 +448,11 @@ def test_low_sample_uses_peer_traffic_signal_before_waiting_for_more_conversions
     assert insight["scenario_id"] == "retargeting_low_sample"
     assert {"retargeting_segments", "placements", "campaign_dynamics"} <= set(insight["scenario_checks"])
     assert insight["signal_type"] == "high_cpc_traffic_proxy"
+    assert insight["signal_verification_status"] == "confirmed"
+    assert insight["factor_verification_status"] == "confirmed"
     assert "Конверсионная выборка мала" in insight["problem"]
     assert "CPC 200.00" in " ".join(insight["evidence"])
-    assert "периода до 60–90 дней" in insight["recommendation"]
+    assert "за период 60–90 дней" in insight["recommendation"]
     assert "пока мала" in insight["hypothesis"]
     assert insight["verification_status"] == "unverified"
 

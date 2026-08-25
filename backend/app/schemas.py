@@ -650,6 +650,12 @@ class AiAuditCampaignInsight(BaseModel):
     campaign_type: Literal["search", "yan", "retargeting", "master_campaign", "unknown"] = "unknown"
     signal_type: str
     signal_status: Literal["detected", "opportunity", "data_needed"] = "detected"
+    signal_verification_status: Literal[
+        "confirmed", "partially_confirmed", "rejected", "unverified", "not_applicable",
+    ] = "unverified"
+    factor_verification_status: Literal[
+        "confirmed", "partially_confirmed", "rejected", "unverified", "not_applicable",
+    ] = "unverified"
     hypothesis_id: str | None = None
     verification_status: Literal[
         "confirmed", "partially_confirmed", "rejected", "unverified", "not_applicable",

@@ -784,6 +784,10 @@ function renderCampaignInsights(items, escapeHtml) {
   const rows = items.map((item) => {
     const verification = item.verification_status || 'unverified';
     const statusClass = verification === 'confirmed' ? 'ready' : verification === 'rejected' ? 'error' : 'pending';
+    const signalVerification = item.signal_verification_status || 'unverified';
+    const signalStatusClass = signalVerification === 'confirmed' ? 'ready' : signalVerification === 'rejected' ? 'error' : 'pending';
+    const factorVerification = item.factor_verification_status || 'unverified';
+    const factorStatusClass = factorVerification === 'confirmed' ? 'ready' : factorVerification === 'rejected' ? 'error' : 'pending';
     const metrics = [
       `Расход: ${formatAuditMetric(item.cost, ' ₽')}`,
       `Показы: ${formatAuditMetric(item.impressions)}`,
@@ -799,16 +803,16 @@ function renderCampaignInsights(items, escapeHtml) {
     ].filter(Boolean);
     return `<tr>
       <th><strong>${escapeHtml(item.campaign_name || 'Кампания')}</strong><small>${escapeHtml(item.campaign_type || 'unknown')}</small></th>
-      <td><strong>${escapeHtml(auditSignalLabel(item.signal_type))}</strong><small>${metrics.map(escapeHtml).join(' · ')}</small><small>Состояние: ${escapeHtml(auditConversionStateLabel(item.conversion_state))}</small><small>Режим: ${escapeHtml(auditAnalysisModeLabel(item.analysis_mode))}</small></td>
+      <td><strong>${escapeHtml(auditSignalLabel(item.signal_type))}</strong><span class="aiStatusBadge ${signalStatusClass}">Сигнал: ${escapeHtml(auditVerificationLabel(signalVerification))}</span><small>${metrics.map(escapeHtml).join(' · ')}</small><small>Состояние: ${escapeHtml(auditConversionStateLabel(item.conversion_state))}</small><small>Режим: ${escapeHtml(auditAnalysisModeLabel(item.analysis_mode))}</small></td>
       <td><p>${escapeHtml(item.problem || '—')}</p>${item.evidence?.length ? `<ul>${item.evidence.map((value) => `<li>${escapeHtml(value)}</li>`).join('')}</ul>` : ''}</td>
-      <td><span class="aiStatusBadge ${statusClass}">${escapeHtml(auditVerificationLabel(verification))}</span>${item.hypothesis ? `<p>${escapeHtml(item.hypothesis)}</p>` : '<p>Причинная гипотеза ещё не сформирована.</p>'}${item.scenario_checks?.length ? `<small>Сценарий проверяет: ${item.scenario_checks.map((value) => escapeHtml(auditDimensionLabel(value))).join(', ')}</small>` : ''}${item.checked_capabilities?.length ? `<small>Проверено: ${item.checked_capabilities.map((value) => escapeHtml(auditDimensionLabel(value))).join(', ')}</small>` : ''}${item.missing_capabilities?.length ? `<small>Нужно: ${item.missing_capabilities.map((value) => escapeHtml(auditDimensionLabel(value))).join(', ')}</small>` : ''}</td>
+      <td><span class="aiStatusBadge ${factorStatusClass}">Фактор: ${escapeHtml(auditVerificationLabel(factorVerification))}</span><span class="aiStatusBadge ${statusClass}">Влияние на результат: ${escapeHtml(auditVerificationLabel(verification))}</span>${item.hypothesis ? `<p>${escapeHtml(item.hypothesis)}</p>` : '<p>Причинная гипотеза ещё не сформирована.</p>'}${item.scenario_checks?.length ? `<small>Сценарий проверяет: ${item.scenario_checks.map((value) => escapeHtml(auditDimensionLabel(value))).join(', ')}</small>` : ''}${item.checked_capabilities?.length ? `<small>Проверено: ${item.checked_capabilities.map((value) => escapeHtml(auditDimensionLabel(value))).join(', ')}</small>` : ''}${item.missing_capabilities?.length ? `<small>Нужно: ${item.missing_capabilities.map((value) => escapeHtml(auditDimensionLabel(value))).join(', ')}</small>` : ''}</td>
       <td><p><strong>${escapeHtml(item.recommendation || '—')}</strong></p><small>Ожидаемый эффект: ${escapeHtml(item.expected_effect || '—')}</small><small>Любое изменение — только после ручного подтверждения.</small></td>
     </tr>`;
   }).join('');
   return `<section class="aiAuditCampaignInsights">
     <div class="panelHeader"><div><span>Главный результат аудита</span><h4>Что оптимизировать по кампаниям</h4></div><span class="aiStatusBadge ready">${items.length} выводов</span></div>
-    <p>Сигнал и цифры рассчитаны backend по данным Яндекс.Директа. Причинная гипотеза показана отдельно: неподтверждённая причина не выдаётся за доказанный факт.</p>
-    <div class="markdownTableWrap"><table><thead><tr><th>Кампания</th><th>Сигнал и показатели</th><th>Основание</th><th>Гипотеза и проверка</th><th>Рекомендация</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <p>Сигнал, измеримый фактор и его влияние на результат проверяются отдельно. Поэтому подтверждённое отклонение CTR/CPC видно как факт, даже если его влияние на CPA ещё требует проверки.</p>
+    <div class="markdownTableWrap"><table><thead><tr><th>Кампания</th><th>Что обнаружено</th><th>Факты и вклад</th><th>Фактор и влияние</th><th>Что сделать</th></tr></thead><tbody>${rows}</tbody></table></div>
   </section>`;
 }
 

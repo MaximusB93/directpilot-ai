@@ -3396,10 +3396,19 @@ def _factor_evidence(factor: dict[str, Any]) -> list[str]:
     if str(factor.get("factor_type") or "").startswith("traffic_proxy_"):
         metric = str(factor.get("metric") or "")
         metric_label = "CPC" if metric == "cpc" else "CTR"
+        value = float(factor.get("value") or 0)
+        benchmark = float(factor.get("benchmark") or 0)
+        delta_pct = (
+            (value / benchmark - 1) * 100
+            if benchmark > 0
+            else None
+        )
         evidence = [
             (
-                f"{label.capitalize()} «{segment}»: {metric_label} {float(factor.get('value') or 0):.2f} "
-                f"против ориентира среза {float(factor.get('benchmark') or 0):.2f}; "
+                f"{label.capitalize()} «{segment}»: {metric_label} {value:.2f} "
+                f"против ориентира среза {benchmark:.2f}"
+                + (f" ({delta_pct:+.1f}%)" if delta_pct is not None else "")
+                + "; "
                 f"расход {float(factor.get('cost') or 0):.2f} ₽, клики {int(factor.get('clicks') or 0)}, "
                 f"доля расхода {float(factor.get('cost_share_pct') or 0):.1f}%."
             ),
@@ -3481,24 +3490,69 @@ def _factor_copy(
         )
     if str(factor.get("factor_type") or "").startswith("traffic_proxy_"):
         metric_label = "CPC" if factor.get("metric") == "cpc" else "CTR"
+        value = float(factor.get("value") or 0)
+        benchmark = float(factor.get("benchmark") or 0)
+        delta_pct = (
+            (value / benchmark - 1) * 100
+            if benchmark > 0
+            else None
+        )
+        measured = (
+            f"{metric_label} {value:.2f} против {benchmark:.2f}"
+            + (f" ({delta_pct:+.1f}%)" if delta_pct is not None else "")
+        )
         problem = (
-            f"Измеримый traffic-proxy кандидат: {label} «{segment}» отклоняется по "
-            f"{metric_label} от ориентира доступного среза. "
+            f"Подтверждённое отклонение качества трафика: {label} «{segment}», {measured}; "
+            f"доля расхода {float(factor.get('cost_share_pct') or 0):.1f}%. "
             + (
                 "Конверсионная выборка мала, поэтому влияние на продажи пока не подтверждено."
                 if low_sample
                 else "Конверсионная метрика недоступна, поэтому влияние на продажи не подтверждено."
             )
         )
-        recommendation = (
-            f"Проверить релевантность и структуру трафика для объекта: {label} «{segment}», "
-            + (
-                "не связывая отклонение с продажами до расширения периода до 60–90 дней; "
-                if low_sample
-                else "не связывая отклонение с продажами до восстановления конверсионной метрики; "
+        if capability_id == "search_queries":
+            action = (
+                f"сопоставить запрос «{segment}» с объявлением и посадочной; если намерение "
+                "нерелевантно, подготовить его как минус-фразу"
             )
-            +
-            "любую корректировку подготовить только как черновик для ручного согласования."
+        elif capability_id == "keyword_performance":
+            action = (
+                f"сопоставить ключевую фразу «{segment}» с фактическими запросами и подготовить "
+                "уточнение оператора или минус-фразы"
+            )
+        elif capability_id == "ad_group_performance":
+            action = (
+                f"разобрать объявления и запросы группы «{segment}» и подготовить разделение "
+                "неоднородного трафика"
+            )
+        elif capability_id == "placements":
+            action = (
+                f"проверить площадку «{segment}» на нерелевантные визиты и подготовить её исключение"
+            )
+        elif capability_id == "devices":
+            action = (
+                f"проверить посадочную и конверсионный путь на устройстве «{segment}» и подготовить "
+                "корректировку устройства"
+            )
+        elif capability_id == "geo":
+            action = (
+                f"проверить спрос и обработку лидов в регионе «{segment}» и подготовить отдельную "
+                "геокорректировку"
+            )
+        else:
+            action = (
+                f"для объекта: кампания «{segment}» — разобрать объявления, запросы и посадочную"
+            )
+        recommendation = (
+            f"Кандидат для ручного теста: {action}. Основание — {measured}, расход "
+            f"{float(factor.get('cost') or 0):.2f} ₽. Проводить тест, не связывая отклонение "
+            "с продажами до проверки. Не считать это доказанным влиянием на продажи; "
+            + (
+                "сначала повторить проверку за период 60–90 дней, затем оформить изменение "
+                "черновиком и проверить на сопоставимом периоде."
+                if low_sample
+                else "изменение сначала оформить черновиком и проверить на сопоставимом периоде."
+            )
         )
         return problem, recommendation
     status_prefix = "Подтверждённый измеримый фактор" if confirmed else "Наиболее сильный измеримый фактор"
@@ -3547,9 +3601,16 @@ def _factor_copy(
             "корректировку по устройствам подготовить только как черновик для согласования."
         )
     elif capability_id == "geo":
+        best = factor.get("best_segment") or {}
+        comparison = (
+            f"CPA {float(factor.get('cpa') or 0):.2f} ₽ против "
+            f"{float(best.get('cpa') or 0):.2f} ₽ у региона «{best.get('segment') or 'без названия'}»"
+            if factor.get("factor_type") == "segment_cpa_gap"
+            else "измеримый вклад региона в отклонение"
+        )
         recommendation = (
-            f"{review_prefix}проверить спрос, условия показа и обработку лидов в регионе «{segment}»; "
-            "геокорректировку подготовить только как черновик для согласования."
+            f"{review_prefix}подготовить отдельный ручной тест для региона «{segment}»: проверить "
+            f"спрос и обработку лидов, затем вынести геокорректировку как черновик. Основание — {comparison}."
         )
     else:
         recommendation = base_recommendation
@@ -3604,6 +3665,46 @@ def _factor_hypothesis(factor: dict[str, Any]) -> str:
         f"{label.capitalize()} «{segment}» — наиболее сильный измеримый фактор отклонения, "
         "который требует проверки перед изменением настроек."
     )
+
+
+def _factor_verification_status(factor: dict[str, Any] | None) -> str:
+    """Describe what the numbers prove without claiming causal sales impact."""
+
+    if not factor:
+        return "unverified"
+    factor_type = str(factor.get("factor_type") or "")
+    if factor_type == "traffic_proxy_within_peer_range":
+        return "rejected"
+    if factor_type.startswith("traffic_proxy_"):
+        return "confirmed"
+    if factor.get("backend_confirmed"):
+        return "confirmed"
+    if factor_type in {"segment_cpa_gap", "waste_without_conversions", "high_cpa_segment"}:
+        return "partially_confirmed"
+    return "unverified"
+
+
+def _signal_verification_status(
+    *,
+    metric: str,
+    sufficient: bool,
+    cost: float | None,
+    clicks: float | None,
+    impressions: float | None,
+    conversions: float | None,
+    cpa: float | None,
+) -> str:
+    if metric in {"conversion_data_unknown", "low_data"}:
+        if clicks is not None and clicks >= 20 and impressions is not None and impressions > 0:
+            return "partially_confirmed"
+        return "unverified"
+    if metric in {"low_ctr", "high_cpc_traffic_proxy", "traffic_metrics_available", "traffic_metrics_reviewed"}:
+        return "confirmed" if clicks is not None and clicks >= 20 and impressions not in {None, 0} else "partially_confirmed"
+    if metric == "spend_without_goal_conversions":
+        return "confirmed" if sufficient and cost not in {None, 0} and conversions == 0 else "partially_confirmed"
+    if metric == "cpa_above_target":
+        return "confirmed" if sufficient and cpa is not None else "partially_confirmed"
+    return "confirmed" if sufficient else "partially_confirmed"
 
 
 def build_campaign_insights(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
@@ -3838,6 +3939,7 @@ def build_campaign_insights(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
                 missing = []
             elif factor_capability and not traffic_proxy_factor:
                 missing = [factor_capability]
+        factor_verification_status = _factor_verification_status(factor)
         traffic_hypothesis = None
         if conversion_decision.state in {"unknown", "low_sample"} and factor is None and traffic_metrics_summary:
             low_sample = conversion_decision.state == "low_sample"
@@ -3906,6 +4008,16 @@ def build_campaign_insights(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             "campaign_type": campaign_type,
             "signal_type": display_metric,
             "signal_status": "data_needed" if data_needed else "opportunity" if opportunity else "detected",
+            "signal_verification_status": _signal_verification_status(
+                metric=display_metric,
+                sufficient=sufficient,
+                cost=float(cost) if cost is not None else None,
+                clicks=float(clicks) if clicks is not None else None,
+                impressions=float(impressions) if impressions is not None else None,
+                conversions=float(conversions) if conversions is not None else None,
+                cpa=float(cpa) if cpa is not None else None,
+            ),
+            "factor_verification_status": factor_verification_status,
             "hypothesis_id": hypothesis_id,
             "verification_status": effective_verification_status,
             "cost": cost,

@@ -3824,6 +3824,8 @@ def test_campaign_insights_keep_numeric_signal_separate_from_unverified_cause():
     insight = audit_jobs.build_campaign_insights(snapshot)[0]
 
     assert insight["signal_status"] == "detected"
+    assert insight["signal_verification_status"] == "confirmed"
+    assert insight["factor_verification_status"] == "unverified"
     assert insight["verification_status"] == "unverified"
     assert insight["hypothesis_id"] == "hyp_001"
     assert insight["cpa"] == 12171.33
@@ -4098,10 +4100,14 @@ def test_high_cpa_uses_concrete_traffic_proxy_when_slice_conversions_are_unknown
     insight = audit_jobs.build_campaign_insights(snapshot)[0]
 
     assert insight["verification_status"] == "unverified"
+    assert insight["signal_verification_status"] == "confirmed"
+    assert insight["factor_verification_status"] == "confirmed"
     assert "слишком общий запрос" in insight["problem"]
     assert "CPC" in insight["problem"]
     assert "слишком общий запрос" in insight["recommendation"]
-    assert "не связывая отклонение с продажами" in insight["recommendation"]
+    assert "CPC 180.00 против 80.00 (+125.0%)" in insight["recommendation"]
+    assert "минус-фразу" in insight["recommendation"]
+    assert "Не считать это доказанным влиянием на продажи" in insight["recommendation"]
     assert "Определить запросы" not in insight["recommendation"]
 
 
@@ -4207,6 +4213,8 @@ def test_campaign_insights_keep_unconfirmed_factor_fields_consistent_after_90_da
     assert "кандидатом причины повышенного CPA" in insight["hypothesis"]
     assert "Мобильные устройства" not in insight["hypothesis"]
     assert insight["verification_status"] == "unverified"
+    assert insight["signal_verification_status"] == "confirmed"
+    assert insight["factor_verification_status"] == "partially_confirmed"
     assert insight["missing_capabilities"] == []
     assert "проверен за 90 дней" in insight["recommendation"]
 

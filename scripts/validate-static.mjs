@@ -160,6 +160,7 @@ const checks = [
   ['adaptive audit progress', ['classify_campaigns', 'create_investigation_plan', 'collect_drilldowns', 'verify_hypotheses'].every((stage) => has('src/pages/ai-assistant.js', stage)) && has('src/pages/ai-assistant.js', 'Ход расследования: факты, гипотезы и доказательства') && has('src/pages/ai-assistant.js', 'Следующий уровень')],
   ['safe audit request trace', has('src/pages/ai-assistant.js', 'Запросы к данным') && has('src/pages/ai-assistant.js', 'Техническая диагностика аудита') && has('src/pages/ai-assistant.js', 'rowsAnalyzedByBackend') && has('src/main.js', 'data-audit-trace-filter')],
   ['audit helper fallback UX', has('src/pages/ai-assistant.js', 'Аудит продолжен безопасно.') && has('src/pages/ai-assistant.js', 'helperProviderCallsCount') && lacks('src/pages/ai-assistant.js', ['helper_model || job.model'])],
+  ['audit separates measured signal from causal impact', has('src/pages/ai-assistant.js', 'Сигнал: ${escapeHtml(auditVerificationLabel(signalVerification))}') && has('src/pages/ai-assistant.js', 'Влияние на результат: ${escapeHtml(auditVerificationLabel(verification))}')],
   ['staged audit GET polling recovery', has('src/main.js', 'function refreshActiveAiAudit()') && has('src/main.js', 'aiAuditStatusCanAdvance') && has('src/main.js', 'void refreshActiveAiAudit()') && has('src/services/ai-service.js', '/reset')],
   ['staged audit timeout switches to polling', has('src/main.js', "error?.code === 'ai_audit_generation_timeout'") && has('src/main.js', 'scheduleAiAuditProgress(job.poll_after_ms, pollOnlyAfterRequest)')],
   ['staged audit assistant order', appearsInOrder('src/pages/ai-assistant.js', ['${renderAiAuditJob(context)}', '${renderAiQuickActions(context)}', '${renderAiChat(context)}'])],
@@ -194,6 +195,7 @@ const auditSmoke = renderAiAuditResult({
     campaign_insights: [{
       priority: 'high', campaign_name: 'Кампания Бренд', campaign_type: 'search',
       signal_type: 'cpa_above_target', signal_status: 'detected',
+      signal_verification_status: 'confirmed', factor_verification_status: 'unverified',
       verification_status: 'unverified', cost: 12000, clicks: 80, conversions: 2,
       cpa: 6000, target_cpa: 4000, cpa_delta_pct: 50,
       problem: 'CPA выше целевого значения.', evidence: ['CPA 6000 при цели 4000.'],
@@ -223,7 +225,9 @@ if (!auditSmoke.includes('<p class="aiAuditPeriod">Период анализа: 
   || auditSmoke.indexOf('Период анализа:') > auditSmoke.indexOf('Что проанализировано')
   || !auditSmoke.includes('Что проанализировано')
   || !auditSmoke.includes('Что оптимизировать по кампаниям')
-  || !auditSmoke.includes('Сигнал и цифры рассчитаны backend')
+  || !auditSmoke.includes('Сигнал, измеримый фактор и его влияние на результат проверяются отдельно')
+  || !auditSmoke.includes('Сигнал: Подтверждено')
+  || !auditSmoke.includes('Влияние на результат: Не подтверждено')
   || !auditSmoke.includes('CPA выше цели')
   || !auditSmoke.includes('Ожидаемый эффект: Снизить CPA.')
   || !auditSmoke.includes('Кампания Бренд')
