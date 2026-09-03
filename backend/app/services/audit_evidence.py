@@ -241,6 +241,200 @@ def _segment_key(capability_id: str, row: dict[str, Any]) -> str:
     return f"row-{id(row)}"
 
 
+def _segment_diagnostic(
+    capability_id: str,
+    row: dict[str, Any],
+    *,
+    total_cost: float,
+    aggregation_policy: str | None,
+) -> dict[str, Any]:
+    conversions = _row_conversion_value(row, aggregation_policy)
+    cost = _row_number(row, "cost")
+    clicks = int(_row_number(row, "clicks"))
+    impressions = int(_row_number(row, "impressions"))
+    cpa = round(cost / conversions, 2) if conversions and conversions > 0 else None
+    return {
+        "capability_id": capability_id,
+        "segment": _segment_key(capability_id, row)[:300],
+        "cost": round(cost, 2),
+        "cost_share_pct": round(cost / total_cost * 100, 2) if total_cost > 0 else 0.0,
+        "clicks": clicks,
+        "impressions": impressions,
+        "conversions": round(conversions, 4) if conversions is not None else None,
+        "cpa": cpa,
+    }
+
+
+def _performance_diagnostics(
+    capability_id: str,
+    rows: list[dict[str, Any]],
+    *,
+    target_cpa: float,
+    aggregation_policy: str | None,
+    total_cost: float,
+) -> dict[str, Any]:
+    diagnostics = [
+        _segment_diagnostic(
+            capability_id, row, total_cost=total_cost, aggregation_policy=aggregation_policy,
+        )
+        for row in rows
+        if _row_conversion_metric(row, aggregation_policy).state == "known"
+    ]
+    zero_conversion = [
+        item for item in diagnostics
+        if item["conversions"] == 0 and item["clicks"] > 0 and item["cost"] > 0
+    ]
+    zero_conversion.sort(key=lambda item: (item["cost"], item["clicks"]), reverse=True)
+    waste_cost = round(sum(float(item["cost"]) for item in zero_conversion), 2)
+    waste_clicks = sum(int(item["clicks"]) for item in zero_conversion)
+    waste_share = round(waste_cost / total_cost * 100, 2) if total_cost > 0 else 0.0
+    spend_floor = target_cpa if target_cpa > 0 else 500.0
+    material_waste = bool(
+        waste_clicks >= 20
+        and waste_cost >= spend_floor
+        and waste_share >= 10
+    )
+
+    high_cpa = [
+        item for item in diagnostics
+        if item["conversions"] is not None
+        and item["conversions"] > 0
+        and item["clicks"] >= 15
+        and item["cpa"] is not None
+        and target_cpa > 0
+        and item["cpa"] >= target_cpa * 1.3
+    ]
+    high_cpa.sort(
+        key=lambda item: (
+            float(item["cpa"]) / target_cpa if target_cpa > 0 else 0,
+            item["cost"],
+        ),
+        reverse=True,
+    )
+    return {
+        "kind": "performance_contributors",
+        "material_waste": material_waste,
+        "waste_rows_count": len(zero_conversion),
+        "waste_cost": waste_cost,
+        "waste_clicks": waste_clicks,
+        "waste_share_pct": waste_share,
+        "top_waste": zero_conversion[:5],
+        "top_high_cpa": high_cpa[:5],
+    }
+
+
+def _traffic_proxy_diagnostics(
+    capability_id: str,
+    rows: list[dict[str, Any]],
+    *,
+    total_cost: float,
+) -> dict[str, Any]:
+    """Find traffic-quality outliers without interpreting unknown conversions as zero."""
+
+    total_clicks = int(sum(_row_number(row, "clicks") for row in rows))
+    total_impressions = int(sum(_row_number(row, "impressions") for row in rows))
+    baseline_cpc = total_cost / total_clicks if total_clicks > 0 else None
+    baseline_ctr = total_clicks / total_impressions * 100 if total_impressions > 0 else None
+    candidates: list[dict[str, Any]] = []
+    for row in rows:
+        clicks = int(_row_number(row, "clicks"))
+        impressions = int(_row_number(row, "impressions"))
+        cost = float(_row_number(row, "cost"))
+        if clicks < 20 or cost <= 0:
+            continue
+        cost_share = cost / total_cost * 100 if total_cost > 0 else 0.0
+        cpc = cost / clicks if clicks > 0 else None
+        ctr = clicks / impressions * 100 if impressions > 0 else None
+        segment = _segment_key(capability_id, row)[:300]
+        if (
+            baseline_cpc
+            and cpc is not None
+            and cpc >= baseline_cpc * 1.5
+            and cost_share >= 10
+        ):
+            candidates.append({
+                "capability_id": capability_id,
+                "segment": segment,
+                "metric": "cpc",
+                "value": round(cpc, 2),
+                "benchmark": round(baseline_cpc, 2),
+                "deviation_ratio": round(cpc / baseline_cpc, 3),
+                "cost": round(cost, 2),
+                "cost_share_pct": round(cost_share, 2),
+                "clicks": clicks,
+                "impressions": impressions,
+            })
+        if (
+            baseline_ctr
+            and ctr is not None
+            and impressions >= 1000
+            and ctr <= baseline_ctr * 0.65
+        ):
+            candidates.append({
+                "capability_id": capability_id,
+                "segment": segment,
+                "metric": "ctr",
+                "value": round(ctr, 2),
+                "benchmark": round(baseline_ctr, 2),
+                "deviation_ratio": round(baseline_ctr / ctr, 3) if ctr > 0 else None,
+                "cost": round(cost, 2),
+                "cost_share_pct": round(cost_share, 2),
+                "clicks": clicks,
+                "impressions": impressions,
+            })
+    candidates.sort(
+        key=lambda item: (
+            float(item.get("deviation_ratio") or 0),
+            float(item.get("cost") or 0),
+        ),
+        reverse=True,
+    )
+    return {
+        "kind": "traffic_proxy",
+        "baseline_cpc": round(baseline_cpc, 2) if baseline_cpc is not None else None,
+        "baseline_ctr": round(baseline_ctr, 2) if baseline_ctr is not None else None,
+        "candidates": candidates[:5],
+        "limitations": [
+            "Traffic-proxy сигнал не подтверждает влияние на конверсии или продажи."
+        ] if candidates else [],
+    }
+
+
+def _comparison_diagnostics(
+    capability_id: str,
+    rows: list[dict[str, Any]],
+    *,
+    aggregation_policy: str | None,
+    total_cost: float,
+) -> dict[str, Any]:
+    comparable = [
+        _segment_diagnostic(
+            capability_id, row, total_cost=total_cost, aggregation_policy=aggregation_policy,
+        )
+        for row in rows
+        if _row_number(row, "clicks") >= 15
+        and _row_conversion_metric(row, aggregation_policy).state == "known"
+        and float(_row_conversion_value(row, aggregation_policy) or 0) > 0
+    ]
+    comparable.sort(key=lambda item: float(item["cpa"] or 0), reverse=True)
+    positive_cpas = [float(item["cpa"]) for item in comparable if item["cpa"]]
+    ratio = (
+        max(positive_cpas) / min(positive_cpas)
+        if len(positive_cpas) >= 2 and min(positive_cpas) > 0
+        else 0.0
+    )
+    best = min(comparable, key=lambda item: float(item["cpa"] or 0), default=None)
+    worst = max(comparable, key=lambda item: float(item["cpa"] or 0), default=None)
+    return {
+        "kind": "segment_comparison",
+        "cpa_ratio": round(ratio, 3),
+        "comparable_segments": len(comparable),
+        "worst_segment": worst,
+        "best_segment": best,
+        "top_high_cpa": comparable[:5],
+    }
+
+
 def evaluate_capability_evidence(
     result: dict[str, Any],
     *,
@@ -248,6 +442,16 @@ def evaluate_capability_evidence(
     period_days: int = 30,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     capability_id = str(result.get("capability_id") or result.get("dimension") or "")
+    result_period = result.get("period") if isinstance(result.get("period"), dict) else {}
+    fallback_period_days = int(period_days or 30)
+    try:
+        period_days = int(
+            result_period.get("days")
+            or result_period.get("period_days")
+            or fallback_period_days
+        )
+    except (TypeError, ValueError):
+        period_days = fallback_period_days
     rows = [row for row in (result.get("data") or []) if isinstance(row, dict)]
     aggregation_policy = str(result.get("aggregation_policy") or "") or None
     selected_goal_ids = [str(item) for item in (result.get("selected_goal_ids") or [])]
@@ -297,6 +501,11 @@ def evaluate_capability_evidence(
         "known_conversion_coverage": round(conversion_coverage, 4),
         "aggregation_policy": aggregation_policy,
         "selected_goal_ids": selected_goal_ids,
+        "period": {
+            "date_from": result_period.get("date_from") or result_period.get("dateFrom"),
+            "date_to": result_period.get("date_to") or result_period.get("dateTo"),
+            "days": period_days,
+        },
         "data_quality_warnings": list(result.get("warnings") or []) + (
             ["Conversion coverage is incomplete; causal confirmation and rejection are blocked."]
             if conversion_required and not conversion_evidence_complete else []
@@ -309,66 +518,124 @@ def evaluate_capability_evidence(
             else "unknown_conversion_metric" if available and not conversion_evidence_complete
             else "low_data"
         ),
+        "traffic_diagnostics": _traffic_proxy_diagnostics(
+            capability_id,
+            rows,
+            total_cost=float(totals["cost"]),
+        ),
     }
     rules: list[dict[str, Any]] = []
     if capability_id in {"search_queries", "ad_group_performance", "keyword_performance", "placements"}:
-        waste_rows = [
-            row for row in rows
-            if _row_conversion_metric(row, aggregation_policy).state == "known"
-            and _row_conversion_value(row, aggregation_policy) == 0
-            and _row_number(row, "clicks") >= 20
-            and _row_number(row, "cost") >= (target_cpa if target_cpa > 0 else 500)
-        ]
-        waste_cost = round(sum(_row_number(row, "cost") for row in waste_rows), 2)
-        passed = bool(available and sufficiency.sufficient and conversion_evidence_complete and waste_rows)
+        diagnostics = _performance_diagnostics(
+            capability_id,
+            rows,
+            target_cpa=target_cpa,
+            aggregation_policy=aggregation_policy,
+            total_cost=float(totals["cost"]),
+        )
+        summary["diagnostics"] = diagnostics
+        waste_cost = float(diagnostics["waste_cost"])
+        passed = bool(
+            available
+            and sufficiency.sufficient
+            and conversion_evidence_complete
+            and diagnostics["material_waste"]
+        )
         rules.append({
             "rule_code": f"{capability_id}_waste_without_goals",
-            "parameters": {**sufficiency.parameters, "minimum_clicks": 20},
-            "result": {"matching_rows": len(waste_rows), "waste_cost": waste_cost},
+            "parameters": {
+                **sufficiency.parameters,
+                "minimum_combined_clicks": 20,
+                "minimum_combined_cost": target_cpa if target_cpa > 0 else 500.0,
+                "minimum_cost_share_pct": 10,
+            },
+            "result": {
+                "matching_rows": diagnostics["waste_rows_count"],
+                "waste_cost": waste_cost,
+                "waste_clicks": diagnostics["waste_clicks"],
+                "waste_share_pct": diagnostics["waste_share_pct"],
+                "top_factors": diagnostics["top_waste"],
+            },
             "passed": passed,
-            "evidence": [f"rows={len(waste_rows)}", f"waste_cost={waste_cost:.2f}"],
+            "evidence": [
+                f"rows={diagnostics['waste_rows_count']}",
+                f"waste_cost={waste_cost:.2f}",
+                f"waste_clicks={diagnostics['waste_clicks']}",
+                f"waste_share_pct={diagnostics['waste_share_pct']:.2f}",
+            ],
         })
         no_material_waste = bool(
-            available and sufficiency.sufficient and conversion_evidence_complete and rows and not waste_rows
+            available
+            and sufficiency.sufficient
+            and conversion_evidence_complete
+            and rows
+            and not diagnostics["material_waste"]
         )
         rules.append({
             "rule_code": f"{capability_id}_no_material_waste",
-            "parameters": {**sufficiency.parameters, "minimum_clicks": 20},
-            "result": {"matching_rows": 0, "rows_checked": len(rows)},
+            "parameters": {
+                **sufficiency.parameters,
+                "minimum_combined_clicks": 20,
+                "minimum_cost_share_pct": 10,
+            },
+            "result": {
+                "material_waste": False,
+                "rows_checked": len(rows),
+                "waste_cost": waste_cost,
+                "waste_share_pct": diagnostics["waste_share_pct"],
+            },
             "passed": no_material_waste,
-            "evidence": [f"rows_checked={len(rows)}", "material_waste_rows=0"],
+            "evidence": [
+                f"rows_checked={len(rows)}",
+                f"waste_cost={waste_cost:.2f}",
+                f"waste_share_pct={diagnostics['waste_share_pct']:.2f}",
+            ],
         })
     elif capability_id in {"devices", "geo"}:
-        comparable = [
-            row for row in rows
-            if _row_number(row, "clicks") >= 15
-            and _row_conversion_metric(row, aggregation_policy).state == "known"
-        ]
-        cpas = [
-            _row_number(row, "cost") / float(_row_conversion_value(row, aggregation_policy) or 0)
-            for row in comparable if float(_row_conversion_value(row, aggregation_policy) or 0) > 0
-        ]
-        ratio = max(cpas) / min(cpas) if len(cpas) >= 2 and min(cpas) > 0 else 0
+        diagnostics = _comparison_diagnostics(
+            capability_id,
+            rows,
+            aggregation_policy=aggregation_policy,
+            total_cost=float(totals["cost"]),
+        )
+        summary["diagnostics"] = diagnostics
+        ratio = float(diagnostics["cpa_ratio"])
         passed = bool(
             available and sufficiency.sufficient and conversion_evidence_complete and ratio >= 1.5
         )
         rules.append({
             "rule_code": f"{capability_id}_cpa_segment_gap",
             "parameters": {**sufficiency.parameters, "minimum_ratio": 1.5},
-            "result": {"comparable_segments": len(comparable), "cpa_ratio": round(ratio, 3)},
+            "result": {
+                "comparable_segments": diagnostics["comparable_segments"],
+                "cpa_ratio": round(ratio, 3),
+                "worst_segment": diagnostics["worst_segment"],
+                "best_segment": diagnostics["best_segment"],
+            },
             "passed": passed,
-            "evidence": [f"comparable_segments={len(comparable)}", f"cpa_ratio={ratio:.3f}"],
+            "evidence": [
+                f"comparable_segments={diagnostics['comparable_segments']}",
+                f"cpa_ratio={ratio:.3f}",
+            ],
         })
         comparable_cpas = bool(
             available and sufficiency.sufficient and conversion_evidence_complete
-            and len(cpas) >= 2 and 0 < ratio <= 1.2
+            and diagnostics["comparable_segments"] >= 2 and 0 < ratio <= 1.2
         )
         rules.append({
             "rule_code": f"{capability_id}_cpa_segments_comparable",
             "parameters": {**sufficiency.parameters, "maximum_ratio": 1.2},
-            "result": {"comparable_segments": len(comparable), "cpa_ratio": round(ratio, 3)},
+            "result": {
+                "comparable_segments": diagnostics["comparable_segments"],
+                "cpa_ratio": round(ratio, 3),
+                "worst_segment": diagnostics["worst_segment"],
+                "best_segment": diagnostics["best_segment"],
+            },
             "passed": comparable_cpas,
-            "evidence": [f"comparable_segments={len(comparable)}", f"cpa_ratio={ratio:.3f}"],
+            "evidence": [
+                f"comparable_segments={diagnostics['comparable_segments']}",
+                f"cpa_ratio={ratio:.3f}",
+            ],
         })
     elif capability_id == "retargeting_lists":
         unavailable = [row for row in rows if row.get("is_available") is False or str(row.get("is_available")).lower() == "false"]

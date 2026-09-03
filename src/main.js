@@ -1216,15 +1216,27 @@ async function advanceActiveAiAudit(retry = false, compactRetry = false) {
 async function restoreAiAuditJob() {
   if (!selectedClientId || aiFeatureState.audit.loadedFor === selectedClientId) return;
   aiFeatureState.audit.loadedFor = selectedClientId;
-  const jobId = window.localStorage.getItem(aiAuditStorageKey());
-  if (!jobId) return;
+  const storageKey = aiAuditStorageKey();
+  const jobId = window.localStorage.getItem(storageKey);
+  let storedJob = null;
+  if (jobId) {
+    try {
+      storedJob = await aiService.fetchAiAuditJob(jobId);
+    } catch {
+      window.localStorage.removeItem(storageKey);
+    }
+  }
   try {
-    const job = await aiService.fetchAiAuditJob(jobId);
+    const activeJob = await aiService.fetchActiveAiAuditJob(selectedClientId);
+    const job = aiStore.newestAiAuditJob(activeJob, storedJob);
+    if (!job) {
+      window.localStorage.removeItem(storageKey);
+      return;
+    }
     applyAiAuditJob(job);
     render();
     if (!aiStore.isTerminalAiAuditStatus(job.status)) scheduleAiAuditProgress(job.poll_after_ms);
   } catch (error) {
-    window.localStorage.removeItem(aiAuditStorageKey());
     aiFeatureState.audit.error = error.message || 'Не удалось восстановить AI-аудит.';
     render();
   }
@@ -2523,9 +2535,17 @@ app.addEventListener('change', (event) => {
       [...container.querySelectorAll('[data-audit-trace-filter]')]
         .map((input) => [input.dataset.auditTraceFilter, input.value]),
     );
-    container.querySelectorAll('[data-audit-trace-row]').forEach((row) => {
+    const rows = [...container.querySelectorAll('[data-audit-trace-row]')];
+    rows.forEach((row) => {
       row.hidden = Object.entries(filters).some(([key, value]) => value && row.dataset[key] !== value);
     });
+    const overflow = container.querySelector('[data-audit-trace-overflow]');
+    if (overflow) {
+      const hasActiveFilter = Object.values(filters).some(Boolean);
+      const hasVisibleOverflowRows = [...overflow.querySelectorAll('[data-audit-trace-row]')]
+        .some((row) => !row.hidden);
+      overflow.open = hasActiveFilter && hasVisibleOverflowRows;
+    }
     return;
   }
   if (event.target.closest('[data-journal-filters]')) {
@@ -2610,6 +2630,7 @@ const CABINET_ACTION_CLICK_SELECTOR = [
   '[data-ai-chat-sample]',
   '[data-ai-prompt]',
   '[data-ai-audit-start]',
+  '[data-ai-audit-advance]',
   '[data-ai-audit-cancel]',
   '[data-ai-audit-retry]',
   '[data-ai-audit-compact-retry]',
@@ -2760,6 +2781,10 @@ async function handleCabinetActionClick(event) {
   const auditStartButton = event.target.closest('[data-ai-audit-start]');
   if (auditStartButton) {
     await startAiAudit(auditStartButton.dataset.aiAuditStart || 'full_account');
+    return true;
+  }
+  if (event.target.closest('[data-ai-audit-advance]')) {
+    await advanceActiveAiAudit();
     return true;
   }
   if (event.target.closest('[data-ai-audit-cancel]')) {

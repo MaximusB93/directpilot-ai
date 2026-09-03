@@ -101,3 +101,16 @@ def test_openrouter_audit_cap_does_not_change_default_cap(monkeypatch):
 
     assert regular["max_tokens"] == 8000
     assert audit["max_tokens"] == 10000
+
+
+def test_openrouter_payload_supports_compact_json_generation_controls():
+    payload = openrouter_module.build_openrouter_payload(
+        "qwen/qwen3-14b",
+        "Return JSON.",
+        max_tokens=2500,
+        reasoning={"effort": "none"},
+        response_format={"type": "json_object"},
+    )
+
+    assert payload["reasoning"] == {"effort": "none"}
+    assert payload["response_format"] == {"type": "json_object"}

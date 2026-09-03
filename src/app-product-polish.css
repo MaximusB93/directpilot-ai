@@ -451,6 +451,13 @@ body[data-page="app"] .wordstatChartPanel svg {
 .aiAuditFinding { padding: 14px; border: 1px solid #e2e8f0; border-radius: 8px; background: #fff; }
 .aiAuditFinding p { margin: 8px 0; }
 .aiAuditFindingBadges { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+.aiAuditCampaignInsights { display: grid; gap: 10px; }
+.aiAuditCampaignInsights table { min-width: 1180px; }
+.aiAuditCampaignInsights th { min-width: 170px; text-align: left; vertical-align: top; }
+.aiAuditCampaignInsights td { min-width: 210px; vertical-align: top; }
+.aiAuditCampaignInsights p { margin: 6px 0; }
+.aiAuditCampaignInsights ul { margin: 6px 0; padding-left: 18px; }
+.aiAuditCampaignInsights small { display: block; margin-top: 6px; color: #64748b; line-height: 1.4; }
 .aiAuditRequestSummary { display: grid; gap: 10px; }
 .aiAuditRequestCounters { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
 .aiAuditRequestCounters span { padding: 10px; border: 1px solid #e2e8f0; border-radius: 8px; background: #f8fafc; }

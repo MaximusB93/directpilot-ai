@@ -640,6 +640,58 @@ class AiAuditInsufficientDataCampaign(BaseModel):
     next_data_needed: list[str] = Field(default_factory=list, max_length=5)
 
 
+class AiAuditCampaignInsight(BaseModel):
+    """Backend-derived campaign conclusion shown independently from LLM prose."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    priority: Literal["critical", "high", "medium", "opportunity", "data_needed"] = "medium"
+    campaign_name: str
+    campaign_type: Literal["search", "yan", "retargeting", "master_campaign", "unknown"] = "unknown"
+    signal_type: str
+    signal_status: Literal["detected", "opportunity", "data_needed"] = "detected"
+    signal_verification_status: Literal[
+        "confirmed", "partially_confirmed", "rejected", "unverified", "not_applicable",
+    ] = "unverified"
+    factor_verification_status: Literal[
+        "confirmed", "partially_confirmed", "rejected", "unverified", "not_applicable",
+    ] = "unverified"
+    hypothesis_id: str | None = None
+    verification_status: Literal[
+        "confirmed", "partially_confirmed", "rejected", "unverified", "not_applicable",
+    ] = "unverified"
+    cost: float | None = None
+    clicks: int | None = None
+    impressions: int | None = None
+    ctr: float | None = None
+    cpc: float | None = None
+    conversions: float | None = None
+    cpa: float | None = None
+    target_cpa: float | None = None
+    cpa_delta_pct: float | None = None
+    conversion_state: Literal[
+        "known_positive", "known_zero", "unknown", "low_sample", "not_applicable",
+    ]
+    conversion_state_reason: str
+    analysis_mode: Literal[
+        "conversion_performance", "zero_conversion_investigation", "traffic_proxy",
+        "sample_extension", "no_delivery",
+    ]
+    scenario_id: str
+    scenario_version: str
+    scenario_checks: list[str] = Field(default_factory=list, max_length=10)
+    forbidden_claims: list[str] = Field(default_factory=list, max_length=5)
+    problem: str
+    evidence: list[str] = Field(default_factory=list, max_length=5)
+    hypothesis: str | None = None
+    checked_capabilities: list[str] = Field(default_factory=list, max_length=12)
+    missing_capabilities: list[str] = Field(default_factory=list, max_length=12)
+    recommendation: str
+    expected_effect: str
+    confidence: Literal["low", "medium", "high"] = "low"
+    requires_human_approval: bool = True
+
+
 class AiAuditResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -648,6 +700,7 @@ class AiAuditResult(BaseModel):
     data_quality: AiAuditDataQuality = Field(default_factory=AiAuditDataQuality)
     critical_findings: list[AiAuditFinding] = Field(default_factory=list, max_length=5)
     opportunities: list[AiAuditFinding] = Field(default_factory=list, max_length=5)
+    campaign_insights: list[AiAuditCampaignInsight] = Field(default_factory=list, max_length=50)
     insufficient_data_campaigns: list[AiAuditInsufficientDataCampaign] = Field(default_factory=list)
     tracking_and_goals: dict = Field(default_factory=dict)
     drilldown_summary: AiAuditDrilldownSummary = Field(default_factory=AiAuditDrilldownSummary)
@@ -663,8 +716,8 @@ class AuditDataRequest(BaseModel):
     request_id: str
     hypothesis_id: str
     campaign_name: str
-    campaign_family: Literal["search", "yan", "unknown"]
-    campaign_subtype: Literal["search", "brand_search", "yan_prospecting", "yan_retargeting", "unknown"]
+    campaign_family: Literal["search", "yan", "mixed", "unknown"]
+    campaign_subtype: Literal["search", "brand_search", "yan_prospecting", "yan_retargeting", "mixed", "unknown"]
     dimension: Literal[
         "account_summary", "campaigns", "campaign_performance", "campaign_daily_dynamics",
         "campaign_settings", "campaign_strategy", "campaign_status", "campaign_bid_modifiers",
@@ -750,8 +803,8 @@ class AuditInvestigationHypothesis(BaseModel):
     parent_hypothesis_id: str | None = None
     supersedes_hypothesis_id: str | None = None
     campaign_name: str
-    campaign_family: Literal["search", "yan", "unknown"]
-    campaign_subtype: Literal["search", "brand_search", "yan_prospecting", "yan_retargeting", "unknown"]
+    campaign_family: Literal["search", "yan", "mixed", "unknown"]
+    campaign_subtype: Literal["search", "brand_search", "yan_prospecting", "yan_retargeting", "mixed", "unknown"]
     observed_fact: str
     hypothesis: str
     current_status: Literal[
@@ -783,8 +836,8 @@ class AuditObservedFact(BaseModel):
 
     fact_id: str
     campaign_name: str
-    campaign_family: Literal["search", "yan", "unknown"]
-    campaign_subtype: Literal["search", "brand_search", "yan_prospecting", "yan_retargeting", "unknown"]
+    campaign_family: Literal["search", "yan", "mixed", "unknown"]
+    campaign_subtype: Literal["search", "brand_search", "yan_prospecting", "yan_retargeting", "mixed", "unknown"]
     analysis_level: Literal["account", "campaign", "ad_group", "keyword", "query", "placement", "audience", "device", "geo", "demographic", "tracking"]
     metric: str
     current_value: float | int | str | None = None

@@ -8,6 +8,7 @@ from app.services.yandex_direct_read_capabilities import (
     ALL_SUBTYPES,
     YANDEX_DIRECT_READ_CAPABILITIES,
 )
+from app.services.audit_evidence_identity import ensure_trusted_campaign_scopes
 
 
 AUDIT_EVIDENCE_POLICY_VERSION = "audit-evidence-v1"
@@ -509,6 +510,7 @@ def ensure_evidence_coverage_registry(snapshot: dict[str, Any]) -> list[dict[str
                 "signal": signal,
                 "hypothesisId": signal_item.get("hypothesisId") or f"policy_{signal}_{len(registry) + 1:03d}",
                 "campaignName": signal_item["campaignName"],
+                "campaignScopeKey": ensure_trusted_campaign_scopes(snapshot).get(signal_item["campaignName"]),
                 "campaignFamily": signal_item["campaignFamily"],
                 "campaignSubtype": subtype,
                 "dimension": dimension,
@@ -558,10 +560,20 @@ def ensure_evidence_coverage_registry(snapshot: dict[str, Any]) -> list[dict[str
     return registry
 
 
-def _request_matches(requirement: dict[str, Any], request: dict[str, Any]) -> bool:
+def _request_matches(
+    snapshot: dict[str, Any], requirement: dict[str, Any], request: dict[str, Any],
+) -> bool:
     capability = str(request.get("capability_id") or request.get("dimension") or "")
+    campaign_name = str(request.get("campaign_name") or "")
+    requirement_scope = requirement.get("campaignScopeKey")
+    request_scope = ensure_trusted_campaign_scopes(snapshot).get(campaign_name)
+    same_campaign = bool(requirement_scope and request_scope and requirement_scope == request_scope)
+    if not requirement_scope and not request_scope:
+        # Compatibility for snapshots created before trusted scope keys existed.
+        # Exact-name matching is allowed only when the snapshot has no identity map.
+        same_campaign = not ensure_trusted_campaign_scopes(snapshot) and campaign_name == requirement["campaignName"]
     return (
-        str(request.get("campaign_name") or "") in {requirement["campaignName"], "__all_campaigns__"}
+        same_campaign
         and capability in set(requirement.get("capabilityCandidates") or [])
     )
 
@@ -578,8 +590,8 @@ def refresh_evidence_coverage_registry(snapshot: dict[str, Any], results: list[d
         "processing": 2, "planned": 1, "missing": 0,
     }
     for requirement in registry:
-        matches = [item for item in result_items if _request_matches(requirement, item)]
-        planned = [item for item in requests if _request_matches(requirement, item)]
+        matches = [item for item in result_items if _request_matches(snapshot, requirement, item)]
+        planned = [item for item in requests if _request_matches(snapshot, requirement, item)]
         best = requirement["status"]
         best_payload: dict[str, Any] | None = None
         for item in matches:
@@ -595,6 +607,11 @@ def refresh_evidence_coverage_registry(snapshot: dict[str, Any], results: list[d
                 coverage_status = "partial"
             elif result_status == "processing":
                 coverage_status = "processing"
+            elif (
+                result_status == "skipped_budget_limit"
+                and str(item.get("error_code") or "") == "audit_collection_deadline_reached"
+            ):
+                coverage_status = "partial"
             elif result_status in {"failed", "skipped_budget_limit"}:
                 coverage_status = "blocked"
             else:
@@ -799,13 +816,28 @@ def merge_mandatory_and_ai_requests(
 
 def public_evidence_coverage(snapshot: dict[str, Any], *, legacy_completed: bool = False) -> dict[str, Any]:
     if not snapshot.get("evidenceCoverageRegistry") and legacy_completed:
-        return {
+        coverage = {
             "policyVersion": None,
             "completionState": "legacy_unknown",
-            "summary": {"requiredTotal": 0, "satisfied": 0, "partial": 0, "unavailable": 0, "notApplicable": 0, "blocked": 0, "missing": 0, "processing": 0},
+            "requiredTotal": 0,
+            "satisfied": 0,
+            "partial": 0,
+            "unavailable": 0,
+            "notApplicable": 0,
+            "blocked": 0,
+            "missing": 0,
+            "processing": 0,
             "requirements": [],
         }
-    coverage = evaluate_audit_evidence_coverage(snapshot)
+    else:
+        coverage = evaluate_audit_evidence_coverage(snapshot)
+    runtime = snapshot.get("auditRuntime") or {}
+    stop_reason = str(runtime.get("stopReason") or "")
+    if (
+        stop_reason in {"collection_deadline_reached", "hard_deadline_reached"}
+        or runtime.get("completionGateLimitedByScheduler") is True
+    ):
+        coverage = {**coverage, "completionState": "partial_coverage"}
     sensitive_markers = (
         "authorization", "oauth", "access_token", "refresh_token", "client-login",
         "campaignid", "adgroupid", "request_hash", "raw provider", "raw request",
@@ -835,7 +867,10 @@ def public_evidence_coverage(snapshot: dict[str, Any], *, legacy_completed: bool
         ],
     } for item in coverage["requirements"]]
     return {
-        "policyVersion": AUDIT_EVIDENCE_POLICY_VERSION,
+        "policyVersion": (
+            coverage["policyVersion"]
+            if "policyVersion" in coverage else AUDIT_EVIDENCE_POLICY_VERSION
+        ),
         "completionState": coverage["completionState"],
         "summary": {key: value for key, value in coverage.items() if key not in {"requirements", "completionState"}},
         "requirements": requirements,

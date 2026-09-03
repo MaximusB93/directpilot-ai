@@ -9,18 +9,40 @@
  * every Yandex Direct operation exercised by it is a read operation.
  */
 
-const required = ['E2E_AUDIT_BASE_URL', 'E2E_AUDIT_SESSION_TOKEN', 'E2E_AUDIT_CLIENT_ID'];
+const required = ['E2E_AUDIT_BASE_URL'];
 const missing = required.filter((name) => !process.env[name]?.trim());
 if (missing.length) {
   throw new Error(`Missing required CI secret(s): ${missing.join(', ')}`);
+}
+
+const hasSessionCredentials = Boolean(
+  process.env.E2E_AUDIT_SESSION_TOKEN?.trim()
+  && process.env.E2E_AUDIT_CLIENT_ID?.trim(),
+);
+const hasDevLoginCredentials = Boolean(
+  process.env.E2E_AUDIT_EMAIL?.trim()
+  && process.env.E2E_AUDIT_CLIENT_NAME?.trim(),
+);
+if (!hasSessionCredentials && !hasDevLoginCredentials) {
+  throw new Error(
+    'Provide E2E_AUDIT_SESSION_TOKEN + E2E_AUDIT_CLIENT_ID or '
+    + 'E2E_AUDIT_EMAIL + E2E_AUDIT_CLIENT_NAME.',
+  );
 }
 
 const baseUrl = process.env.E2E_AUDIT_BASE_URL.replace(/\/$/, '');
 const maxRuntimeMs = Math.max(60, Number(process.env.E2E_AUDIT_MAX_RUNTIME_SECONDS || 900)) * 1000;
 const requiredCapabilities = (process.env.E2E_AUDIT_REQUIRED_CAPABILITIES || '')
   .split(',').map((value) => value.trim()).filter(Boolean);
+const requestedMaxTokens = Math.max(
+  1,
+  Number(process.env.E2E_AUDIT_MAX_TOKENS || 4000),
+);
 const bypassSecret = process.env.VERCEL_AUTOMATION_BYPASS_SECRET?.trim();
+const resumeJobId = process.env.E2E_AUDIT_RESUME_JOB_ID?.trim() || '';
 const startedAt = Date.now();
+let sessionToken = process.env.E2E_AUDIT_SESSION_TOKEN?.trim() || '';
+let clientId = process.env.E2E_AUDIT_CLIENT_ID?.trim() || '';
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -61,11 +83,11 @@ function summarize(job) {
   };
 }
 
-async function request(path, options = {}) {
+async function request(path, options = {}, { authenticated = true } = {}) {
   const response = await fetch(apiUrl(path), {
     ...options,
     headers: {
-      authorization: `Bearer ${process.env.E2E_AUDIT_SESSION_TOKEN}`,
+      ...(authenticated && sessionToken ? { authorization: `Bearer ${sessionToken}` } : {}),
       ...(bypassSecret ? { 'x-vercel-protection-bypass': bypassSecret } : {}),
       ...(options.body ? { 'content-type': 'application/json' } : {}),
       ...(options.headers || {}),
@@ -77,6 +99,38 @@ async function request(path, options = {}) {
     throw new Error(`${options.method || 'GET'} ${path} failed (${response.status}): ${detail.slice(0, 400)}`);
   }
   return body;
+}
+
+async function bootstrapDevLogin() {
+  if (sessionToken && clientId) return;
+
+  const email = process.env.E2E_AUDIT_EMAIL.trim();
+  const requested = await request('/auth/email/request-code', {
+    method: 'POST',
+    body: JSON.stringify({ email }),
+  }, { authenticated: false });
+  assert(requested?.dev_code, 'Preview did not return a dev login code');
+
+  const verified = await request('/auth/email/verify-code', {
+    method: 'POST',
+    body: JSON.stringify({ email, code: requested.dev_code }),
+  }, { authenticated: false });
+  assert(verified?.session_token, 'Preview email verification returned no session token');
+  sessionToken = verified.session_token;
+
+  const requestedName = process.env.E2E_AUDIT_CLIENT_NAME.trim().toLocaleLowerCase('ru-RU');
+  const clients = await request('/clients');
+  assert(Array.isArray(clients), 'Clients endpoint did not return a list');
+  const exact = clients.filter(
+    (item) => String(item?.name || '').trim().toLocaleLowerCase('ru-RU') === requestedName,
+  );
+  const partial = clients.filter(
+    (item) => String(item?.name || '').trim().toLocaleLowerCase('ru-RU').includes(requestedName),
+  );
+  const matches = exact.length ? exact : partial;
+  assert(matches.length === 1, `Expected one matching smoke client, found ${matches.length}`);
+  clientId = String(matches[0]?.id || '').trim();
+  assert(clientId, 'Matching smoke client returned no id');
 }
 
 function assert(condition, message) {
@@ -116,6 +170,22 @@ function validateTerminalAudit(job, scope) {
   assert(job.status === 'completed', `${scope} audit did not complete: ${job.status} (${job.error_code || job.error_message || job.current_stage})`);
   assert(!job.result?.backendFallbackUsed, `${scope} audit completed using backend fallback instead of model analysis`);
   assert(typeof job.answer === 'string' && job.answer.trim().length > 40, `${scope} audit returned no usable final answer`);
+  const structured = job.result?.structured;
+  assert(structured && typeof structured === 'object', `${scope} audit returned no structured result`);
+  const campaignInsights = structured.campaign_insights;
+  assert(Array.isArray(campaignInsights) && campaignInsights.length > 0, `${scope} audit returned no campaign insights`);
+  assert(
+    campaignInsights.every((item) => typeof item?.signal_verification_status === 'string'),
+    `${scope} campaign insights do not separate measured signal verification`,
+  );
+  assert(
+    campaignInsights.every((item) => typeof item?.factor_verification_status === 'string'),
+    `${scope} campaign insights do not separate factor verification`,
+  );
+  assert(
+    campaignInsights.some((item) => item.signal_verification_status === 'confirmed'),
+    `${scope} campaign insights contain no confirmed measured signal`,
+  );
 
   const coverage = job.context_metadata?.canonicalEvidenceCoverage || {};
   const summary = coverage.summary || {};
@@ -141,6 +211,9 @@ function validateTerminalAudit(job, scope) {
     for (const capability of requiredCapabilities) {
       assert(capabilityIds.has(capability), `${scope} audit did not include required capability: ${capability}`);
     }
+    // Search and YAN are intentionally verified by their family-specific
+    // baseline capabilities. A short summary has a smaller request budget,
+    // so this assertion belongs to the full audit only.
     assert(capabilityIds.has('search_queries'), `${scope} audit has no Search capability (search_queries)`);
     assert(
       capabilityIds.has('placements') || capabilityIds.has('placement_or_network_breakdown'),
@@ -150,28 +223,36 @@ function validateTerminalAudit(job, scope) {
 }
 
 async function runScope(scope) {
-  const job = await request('/ai/audits', {
-    method: 'POST',
-    body: JSON.stringify({
-      client_id: process.env.E2E_AUDIT_CLIENT_ID,
-      scope,
-      period: 'last_30_days',
-      ai_preset: 'economy',
-      max_tokens: 1600,
-      cache_policy: 'fresh',
-      allow_saved_fallback: false,
-      options: {
-        include_search_queries: true,
-        include_dynamics: true,
-        include_tracking: true,
-        include_recommendations: true,
-      },
-    }),
-  });
-  console.log(JSON.stringify({ event: 'audit_created', ...summarize(job) }));
+  let job;
+  if (resumeJobId) {
+    job = await request(`/ai/audits/${encodeURIComponent(resumeJobId)}`);
+    assert(job?.client_id === clientId, 'Resumed audit belongs to a different smoke client');
+    assert(job?.requested_scope === scope, `Resumed audit scope is ${job?.requested_scope}, expected ${scope}`);
+    console.log(JSON.stringify({ event: 'audit_resumed', ...summarize(job) }));
+  } else {
+    job = await request('/ai/audits', {
+      method: 'POST',
+      body: JSON.stringify({
+        client_id: clientId,
+        scope,
+        period: 'last_30_days',
+        ai_preset: 'economy',
+        max_tokens: requestedMaxTokens,
+        cache_policy: 'fresh',
+        allow_saved_fallback: false,
+        options: {
+          include_search_queries: true,
+          include_dynamics: true,
+          include_tracking: true,
+          include_recommendations: true,
+        },
+      }),
+    });
+    console.log(JSON.stringify({ event: 'audit_created', ...summarize(job) }));
 
-  const active = await request(`/ai/audits/active?client_id=${encodeURIComponent(process.env.E2E_AUDIT_CLIENT_ID)}`);
-  assert(active?.job_id === job.job_id, `Active-audit recovery endpoint did not return the new ${scope} job`);
+    const active = await request(`/ai/audits/active?client_id=${encodeURIComponent(clientId)}`);
+    assert(active?.job_id === job.job_id, `Active-audit recovery endpoint did not return the new ${scope} job`);
+  }
 
   let current = job;
   let lastLog = '';
@@ -210,6 +291,7 @@ const scopes = (process.env.E2E_AUDIT_SCOPES || 'full_account,short_summary')
   .split(',').map((value) => value.trim()).filter(Boolean);
 assert(scopes.length > 0, 'E2E_AUDIT_SCOPES must contain at least one scope');
 
+await bootstrapDevLogin();
 const results = [];
 for (const scope of scopes) results.push(await runScope(scope));
 console.log(JSON.stringify({ event: 'preview_audit_smoke_passed', results }));
