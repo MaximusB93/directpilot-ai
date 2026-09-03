@@ -11,3 +11,6 @@ __pycache__/
 .DS_Store
 node_modules/
 frontend/public/
+
+# Claude Code local permissions (personal, not shared)
+.claude/settings.local.json
