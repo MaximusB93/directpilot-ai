@@ -449,6 +449,16 @@ def estimate_savings(segment: SegmentMetrics, *, baseline_cpa: float | None) -> 
     """Project a segment's cost (and, if known, conversions) onto a 30-day month."""
 
     metrics = segment.metrics
+    if metrics.days <= 0:
+        # Degenerate period (date_to before date_from). No division may raise here:
+        # a missing result is None or zero, never an exception (see TZ-01 section 1).
+        return SavingsEstimate(
+            monthly_cost_saved=0.0,
+            conversions_at_risk=None,
+            confidence="insufficient",
+            assumption="период сегмента вырожден: date_to раньше date_from, оценка не построена",
+        )
+
     monthly_cost_saved = metrics.cost / metrics.days * 30
 
     if metrics.conversions is None:

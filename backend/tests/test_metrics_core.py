@@ -437,3 +437,21 @@ def test_estimate_savings_single_day_period() -> None:
     estimate = estimate_savings(segment, baseline_cpa=None)
     assert math.isclose(estimate.monthly_cost_saved, 3000.0)
     assert math.isclose(estimate.conversions_at_risk, 30.0)
+
+
+def test_estimate_savings_degenerate_period_does_not_raise() -> None:
+    segment = SegmentMetrics(
+        key="a",
+        label="A",
+        metrics=_period(
+            date_from=date(2026, 8, 10),
+            date_to=date(2026, 8, 9),
+            cost=1000.0,
+            clicks=10,
+            conversions=2.0,
+        ),
+    )
+    estimate = estimate_savings(segment, baseline_cpa=None)
+    assert estimate.monthly_cost_saved == 0.0
+    assert estimate.conversions_at_risk is None
+    assert estimate.confidence == "insufficient"
