@@ -1,4 +1,5 @@
 import json
+import logging
 from typing import Any
 
 from fastapi import HTTPException
@@ -16,6 +17,8 @@ from app.services.campaign_dynamics_analyzer import analyze_campaign_dynamics
 from app.services.knowledge_base import select_knowledge_snippets
 from app.services.openrouter import DEFAULT_SYSTEM_PROMPT, generate_openrouter_response
 from app.services.performance_summary import build_optimization_plan, build_performance_summary
+
+logger = logging.getLogger(__name__)
 
 AI_RATE_LIMIT_MESSAGE = "Выбранная AI-модель временно перегружена или ограничена по лимитам. Выберите другую модель или повторите позже."
 
@@ -137,10 +140,16 @@ def build_client_ai_context_from_db(db, client_id: str, selected_campaign_name: 
     client = db.get(ClientAccount, client_id)
     if not client:
         raise ValueError("Client not found")
+    logger.info("AI_AUDIT_CONTEXT_SUMMARY_START client_id=%s", client_id)
     summary = build_performance_summary(db, client_id)
+    logger.info("AI_AUDIT_CONTEXT_SUMMARY_DONE client_id=%s", client_id)
+    logger.info("AI_AUDIT_CONTEXT_PLAN_START client_id=%s", client_id)
     plan = build_optimization_plan(db, client_id)
+    logger.info("AI_AUDIT_CONTEXT_PLAN_DONE client_id=%s", client_id)
     try:
+        logger.info("AI_AUDIT_CONTEXT_DYNAMICS_START client_id=%s", client_id)
         campaign_dynamics_analysis = analyze_campaign_dynamics(db, client_id)
+        logger.info("AI_AUDIT_CONTEXT_DYNAMICS_DONE client_id=%s", client_id)
     except Exception as exc:
         campaign_dynamics_analysis = {
             "dataQuality": {"rows": 0, "campaigns": 0, "hasGoalData": False, "limitations": [str(exc)[:300]]},

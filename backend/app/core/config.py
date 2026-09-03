@@ -17,6 +17,12 @@ def _looks_redacted(value: str | None) -> bool:
     return "•" in stripped or stripped in {"********", "****"} or stripped.startswith("<")
 
 
+def _database_schema_patch_default() -> str:
+    """Keep schema DDL out of serverless request startup by default."""
+    environment = os.getenv("ENVIRONMENT", "development").lower()
+    return "false" if environment == "production" or os.getenv("VERCEL") else "true"
+
+
 AI_MODEL_PRESETS: dict[str, dict[str, object]] = {
     "economy": {
         "id": "economy",
@@ -50,6 +56,7 @@ AI_AUDIT_PLANNER_MAX_TOKENS = 1_200
 AI_AUDIT_VERIFICATION_MAX_TOKENS = 1_600
 AI_AUDIT_FINAL_MAX_TOKENS = 10_000
 AI_AUDIT_MAX_OUTPUT_TOKENS = AI_AUDIT_FINAL_MAX_TOKENS
+AI_AUDIT_SHORT_MAX_OUTPUT_TOKENS = 2_500
 AI_AUDIT_PLANNER_READ_TIMEOUT_SECONDS = 45.0
 AI_AUDIT_VERIFICATION_READ_TIMEOUT_SECONDS = 55.0
 AI_FALLBACK_ECONOMY_MODEL = "openai/gpt-4o-mini"
@@ -196,7 +203,11 @@ def normalize_ai_audit_request_options(
 
     preset_id = ai_preset if ai_preset in AI_MODEL_PRESETS else AI_RECOMMENDED_DEFAULT_PRESET
     selected_model = normalize_production_ai_model(model)
-    default_tokens = AI_AUDIT_MAX_OUTPUT_TOKENS if scope == "full_account" else 5_000
+    default_tokens = (
+        AI_AUDIT_MAX_OUTPUT_TOKENS
+        if scope == "full_account"
+        else AI_AUDIT_SHORT_MAX_OUTPUT_TOKENS
+    )
     requested_tokens = default_tokens if max_tokens is None else int(max_tokens)
     return {
         "model": selected_model,
@@ -216,7 +227,7 @@ class Settings:
     database_url: str | None = os.getenv("DATABASE_URL")
     database_schema_patch_on_startup: bool = os.getenv(
         "DATABASE_SCHEMA_PATCH_ON_STARTUP",
-        "false" if os.getenv("ENVIRONMENT", "development").lower() == "production" else "true",
+        _database_schema_patch_default(),
     ).lower() == "true"
     token_encryption_key: str | None = os.getenv("TOKEN_ENCRYPTION_KEY")
     email_auth_dev_mode: bool = os.getenv("EMAIL_AUTH_DEV_MODE", "false").lower() == "true"
@@ -271,7 +282,11 @@ class Settings:
             "http://127.0.0.1:5173",
             "https://maximusb93.github.io",
             "https://directpilot-ai-backend-mvp.vercel.app",
+            "https://directpilot-ai-frontend-preview-directpilot-ai1.vercel.app",
         ]
+    )
+    allowed_origin_regex: str = (
+        r"https://directpilot-ai-frontend(?:-preview)?(?:-[a-z0-9]+)*-directpilot-ai1\.vercel\.app"
     )
 
     @property

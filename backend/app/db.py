@@ -1,5 +1,7 @@
 from collections.abc import Generator
+from contextlib import contextmanager
 import logging
+from typing import Iterator
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import ArgumentError
@@ -9,6 +11,12 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+_POSTGRES_CONNECT_TIMEOUT_SECONDS = 10
+_POSTGRES_STATEMENT_TIMEOUT_MS = 20_000
+_POSTGRES_LOCK_TIMEOUT_MS = 5_000
+_DATABASE_POOL_TIMEOUT_SECONDS = 10
+_SCHEMA_PATCH_ADVISORY_LOCK_KEY = 7_367_241
+
 
 def _normalize_database_url(url: str) -> str:
     if url.startswith("postgres://"):
@@ -16,6 +24,24 @@ def _normalize_database_url(url: str) -> str:
     if url.startswith("postgresql://"):
         return url.replace("postgresql://", "postgresql+psycopg://", 1)
     return url
+
+
+def _database_engine_options(url: str) -> dict[str, object]:
+    """Return bounded connection settings suitable for serverless requests."""
+    options: dict[str, object] = {
+        "pool_pre_ping": True,
+        "pool_recycle": 300,
+        "pool_timeout": _DATABASE_POOL_TIMEOUT_SECONDS,
+    }
+    if url.startswith(("postgres://", "postgresql://", "postgresql+psycopg://")):
+        options["connect_args"] = {
+            "connect_timeout": _POSTGRES_CONNECT_TIMEOUT_SECONDS,
+            "options": (
+                f"-c statement_timeout={_POSTGRES_STATEMENT_TIMEOUT_MS} "
+                f"-c lock_timeout={_POSTGRES_LOCK_TIMEOUT_MS}"
+            ),
+        }
+    return options
 
 
 class Base(DeclarativeBase):
@@ -31,7 +57,14 @@ def _safe_database_error(exc: Exception) -> str:
 
 database_engine_error: str | None = None
 try:
-    engine = create_engine(_normalize_database_url(settings.database_url), pool_pre_ping=True) if settings.database_url else None
+    engine = (
+        create_engine(
+            _normalize_database_url(settings.database_url),
+            **_database_engine_options(settings.database_url),
+        )
+        if settings.database_url
+        else None
+    )
 except (ArgumentError, ValueError) as exc:
     database_engine_error = _safe_database_error(exc)
     logger.exception("DATABASE_URL is configured but SQLAlchemy could not create an engine.")
@@ -170,6 +203,9 @@ DIRECT_READ_SCHEMA_STATEMENTS = (
         status VARCHAR(32) NOT NULL DEFAULT 'queued',
         retry_after_seconds INTEGER NOT NULL DEFAULT 1,
         attempts INTEGER NOT NULL DEFAULT 0,
+        queue_full_attempts INTEGER NOT NULL DEFAULT 0,
+        first_queue_full_at TIMESTAMPTZ,
+        last_queue_full_at TIMESTAMPTZ,
         rows_count INTEGER NOT NULL DEFAULT 0,
         next_offset INTEGER NOT NULL DEFAULT 0,
         rows_collected INTEGER NOT NULL DEFAULT 0,
@@ -201,6 +237,9 @@ DIRECT_READ_SCHEMA_STATEMENTS = (
     "ALTER TABLE direct_report_jobs ADD COLUMN IF NOT EXISTS pages_completed INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE direct_report_jobs ADD COLUMN IF NOT EXISTS partial BOOLEAN NOT NULL DEFAULT FALSE",
     "ALTER TABLE direct_report_jobs ADD COLUMN IF NOT EXISTS row_limit_reached BOOLEAN NOT NULL DEFAULT FALSE",
+    "ALTER TABLE direct_report_jobs ADD COLUMN IF NOT EXISTS queue_full_attempts INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE direct_report_jobs ADD COLUMN IF NOT EXISTS first_queue_full_at TIMESTAMPTZ",
+    "ALTER TABLE direct_report_jobs ADD COLUMN IF NOT EXISTS last_queue_full_at TIMESTAMPTZ",
 )
 
 
@@ -220,16 +259,42 @@ def init_db(*, run_schema_patch: bool = True) -> None:
         return
     if not run_schema_patch:
         check_db_connection()
-        ensure_ai_audit_job_schema()
-        ensure_direct_read_schema()
         return
     import app.models  # noqa: F401
     import app.models_wordstat  # noqa: F401
     import app.models_workflow  # noqa: F401
 
-    Base.metadata.create_all(bind=engine)
-    ensure_mvp_schema()
-    ensure_direct_read_schema()
+    with _schema_patch_lock() as acquired:
+        if not acquired:
+            logger.warning("Skipping concurrent database schema patch during startup.")
+            return
+        Base.metadata.create_all(bind=engine)
+        ensure_mvp_schema()
+        ensure_direct_read_schema()
+
+
+@contextmanager
+def _schema_patch_lock() -> Iterator[bool]:
+    """Serialize PostgreSQL startup patches across concurrent serverless instances."""
+    if engine is None or engine.dialect.name != "postgresql":
+        yield True
+        return
+
+    with engine.connect() as connection:
+        acquired = bool(
+            connection.scalar(
+                text("SELECT pg_try_advisory_lock(:lock_key)"),
+                {"lock_key": _SCHEMA_PATCH_ADVISORY_LOCK_KEY},
+            )
+        )
+        try:
+            yield acquired
+        finally:
+            if acquired:
+                connection.execute(
+                    text("SELECT pg_advisory_unlock(:lock_key)"),
+                    {"lock_key": _SCHEMA_PATCH_ADVISORY_LOCK_KEY},
+                )
 
 
 def ensure_ai_audit_job_schema() -> None:

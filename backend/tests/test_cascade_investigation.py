@@ -343,6 +343,104 @@ def test_real_zero_conversion_remains_zero_and_can_confirm_waste():
     assert waste["passed"] is True
 
 
+def test_combined_material_waste_confirms_and_keeps_ranked_query_factors():
+    result = {
+        "request_id": "req-query",
+        "hypothesis_id": "hyp-query",
+        "capability_id": "search_queries",
+        "dimension": "search_queries",
+        "status": "collected",
+        "rows_analyzed": 3,
+        "data": [
+            {"query": "дорогой запрос", "clicks": 12, "cost": 500, "conversions": 0},
+            {"query": "второй запрос", "clicks": 10, "cost": 400, "conversions": 0},
+            {"query": "третий запрос", "clicks": 8, "cost": 300, "conversions": 0},
+        ],
+    }
+
+    summary, rules = evaluate_capability_evidence(result, target_cpa=1000, period_days=30)
+    waste = next(item for item in rules if item["rule_code"] == "search_queries_waste_without_goals")
+
+    assert waste["passed"] is True
+    assert waste["result"]["matching_rows"] == 3
+    assert waste["result"]["waste_cost"] == 1200
+    assert waste["result"]["waste_clicks"] == 30
+    assert waste["result"]["waste_share_pct"] == 100
+    assert summary["diagnostics"]["top_waste"][0]["segment"] == "дорогой запрос"
+    assert summary["diagnostics"]["top_waste"][0]["cost_share_pct"] == 41.67
+
+
+def test_device_gap_diagnostics_name_worst_and_best_segments():
+    result = {
+        "request_id": "req-device",
+        "hypothesis_id": "hyp-device",
+        "capability_id": "devices",
+        "dimension": "devices",
+        "status": "collected",
+        "rows_analyzed": 2,
+        "period": {
+            "date_from": "2026-05-11",
+            "date_to": "2026-07-09",
+            "days": 60,
+        },
+        "data": [
+            {"device": "MOBILE", "clicks": 40, "cost": 2400, "conversions": 2},
+            {"device": "DESKTOP", "clicks": 40, "cost": 1200, "conversions": 3},
+        ],
+    }
+
+    summary, rules = evaluate_capability_evidence(result, target_cpa=500, period_days=30)
+    gap = next(item for item in rules if item["rule_code"] == "devices_cpa_segment_gap")
+
+    assert gap["passed"] is True
+    assert gap["result"]["cpa_ratio"] == 3
+    assert summary["diagnostics"]["worst_segment"]["segment"] == "MOBILE"
+    assert summary["diagnostics"]["worst_segment"]["cpa"] == 1200
+    assert summary["diagnostics"]["best_segment"]["segment"] == "DESKTOP"
+    assert summary["diagnostics"]["best_segment"]["cpa"] == 400
+    assert summary["period"]["days"] == 60
+
+
+def test_backend_rule_confirms_hypothesis_even_when_model_left_it_unverified():
+    proposed = AuditHypothesisVerification(
+        hypothesis_id="hyp-device",
+        status="unverified",
+        verification_summary="Модель не сформировала вывод.",
+    )
+    request = _request(1, "devices").model_copy(update={
+        "request_id": "req-device",
+        "hypothesis_id": "hyp-device",
+    }).model_dump(mode="json")
+    result = {
+        "request_id": "req-device",
+        "hypothesis_id": "hyp-device",
+        "capability_id": "devices",
+        "dimension": "devices",
+        "status": "collected",
+        "rows_analyzed": 2,
+        "data": [
+            {"device": "MOBILE", "clicks": 40, "cost": 2400, "conversions": 2},
+            {"device": "DESKTOP", "clicks": 40, "cost": 1200, "conversions": 3},
+        ],
+    }
+
+    enforced = enforce_hypothesis_verification(
+        proposed,
+        hypothesis={
+            "hypothesis_type": "device_segment_gap",
+            "fact_sufficient_data": True,
+            "confirmation_rule_codes": ["devices_cpa_segment_gap"],
+        },
+        requests=[request],
+        results=[result],
+        target_cpa=500,
+    )
+
+    assert enforced.status == "confirmed"
+    assert "Backend подтвердил" in enforced.verification_summary
+    assert enforced.supporting_evidence
+
+
 @pytest.mark.parametrize("proposed_status", ["confirmed", "rejected"])
 def test_unknown_conversions_block_confirmation_and_rejection(proposed_status):
     proposed = AuditHypothesisVerification(

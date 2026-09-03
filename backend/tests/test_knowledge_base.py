@@ -42,6 +42,21 @@ def test_empty_business_context_returns_data_limitations():
     assert "direct_data_limitations.md" in _sources(snippets)
 
 
+def test_unknown_conversion_context_returns_conversion_scenarios():
+    snippets = select_knowledge_snippets(
+        "Что делать при неизвестных конверсиях?",
+        {
+            "campaignDecisionScenarios": [{
+                "conversionState": "unknown",
+                "scenarioId": "yan_unknown_conversions",
+            }],
+        },
+        limit=5,
+    )
+
+    assert "direct_conversion_scenarios.md" in _sources(snippets)
+
+
 def test_snippet_selection_is_limited_to_five():
     snippets = select_knowledge_snippets(
         "вчера сводка бюджет ставки расход минус поисковые запросы CPA CTR CPC CR конверсии",
@@ -56,7 +71,7 @@ def test_knowledge_documents_load_without_external_retrieval():
     documents = load_knowledge_documents()
     source = inspect.getsource(knowledge_base)
 
-    assert len(documents) == 5
+    assert len(documents) == 6
     assert "requests" not in source
     assert "httpx" not in source
     assert "openai" not in source.lower()

@@ -333,14 +333,44 @@ def enforce_hypothesis_verification(
     statuses = {item.get("status") for item in related}
     fact_sufficient = bool(hypothesis.get("fact_sufficient_data", True))
     status = proposed.status
+    verification_summary = proposed.verification_summary
     limitations = list(proposed.limitations)
     if hypothesis.get("status") == "rejected" or hypothesis.get("current_status") == "rejected":
         status = "rejected"
         limitations.append("Отклонённая гипотеза неизменяема; новые причины проверяются отдельной дочерней гипотезой.")
     elif related and statuses == {"not_applicable"}:
         status = "not_applicable"
-    elif proposed.status == "rejected" and backend_evaluation["matched_rejection_rules"]:
+    elif (
+        proposed.status == "rejected"
+        and backend_evaluation["matched_rejection_rules"]
+        and not backend_evaluation["matched_confirmation_rules"]
+    ):
         status = "rejected"
+        verification_summary = (
+            "Backend опроверг гипотезу по детерминированному правилу и собранным read-only данным."
+        )
+    elif (
+        backend_evaluation["has_passed_confirmation_rule"]
+        and backend_evaluation["required_prerequisites_passed"]
+        and fact_sufficient
+    ):
+        status = (
+            "partially_confirmed"
+            if missing_required
+            or not backend_evaluation["required_data_available"]
+            or any(
+                item.get("status") in {
+                    "unavailable", "insufficient_data", "failed", "processing", "partial",
+                }
+                for item in related
+            )
+            else "confirmed"
+        )
+        verification_summary = (
+            "Backend подтвердил гипотезу по детерминированному правилу и собранным read-only данным."
+            if status == "confirmed"
+            else "Backend нашёл подтверждающий фактор, но часть обязательных данных остаётся неполной."
+        )
     elif proposed.status == "rejected":
         status = "unverified"
         limitations.append("Backend не нашёл доверенного правила, подтверждающего противоречие.")
@@ -362,6 +392,7 @@ def enforce_hypothesis_verification(
         status = "partially_confirmed"
     return proposed.model_copy(update={
         "status": status,
+        "verification_summary": verification_summary,
         "supporting_evidence": trusted if status in {"confirmed", "partially_confirmed"} else [],
         "contradicting_evidence": trusted_contradictions if status == "rejected" else [],
         "limitations": list(dict.fromkeys(limitations))[:8],
@@ -388,15 +419,16 @@ def next_cascade_capabilities(
 
 def round_stop_reason(
     *, round_number: int, pending: int, processing: int, verifications: list[dict[str, Any]],
-    request_count: int,
+    request_count: int, max_rounds: int = MAX_INVESTIGATION_ROUNDS,
+    max_requests: int = MAX_DATA_REQUESTS_PER_AUDIT,
 ) -> str | None:
     if pending or processing:
         return None
     statuses = {item.get("status") for item in verifications}
     if statuses and statuses <= {"confirmed", "not_applicable"}:
         return "sufficient_evidence_or_rejected"
-    if round_number >= MAX_INVESTIGATION_ROUNDS:
+    if round_number >= max_rounds:
         return "max_rounds_reached"
-    if request_count >= MAX_DATA_REQUESTS_PER_AUDIT:
+    if request_count >= max_requests:
         return "request_budget_reached"
     return None

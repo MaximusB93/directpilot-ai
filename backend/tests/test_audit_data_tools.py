@@ -2,12 +2,13 @@ from datetime import UTC, datetime
 
 import pytest
 from pydantic import ValidationError
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.db import Base
-from app.models import DirectCampaignPeriodStat, DirectSearchQueryPeriodStat
+from app.models import DirectCampaignPeriodStat, DirectReadCache, DirectSearchQueryPeriodStat
 from app.schemas import AuditDataRequest
+from app.services import audit_data_tools as audit_tools
 from app.services.audit_data_tools import (
     collect_audit_data_requests,
     public_audit_tool_manifest,
@@ -80,6 +81,41 @@ def test_search_queries_are_not_applicable_to_yan_retargeting():
     assert rejected[0].error_code == "dimension_not_applicable"
 
 
+def test_breadth_requests_are_not_limited_by_the_per_hypothesis_depth_budget():
+    capabilities = [
+        "ad_groups", "ads", "keywords", "autotargeting", "search_queries",
+        "goals", "devices", "geo",
+    ]
+    requests = [
+        _request(
+            dimension=capability_id,
+            request_id=f"breadth_000_{index:02d}_{capability_id}",
+        )
+        for index, capability_id in enumerate(capabilities)
+    ]
+
+    accepted, rejected = validate_audit_data_requests(requests, max_requests=len(requests))
+
+    assert {item.capability_id for item in accepted} == set(capabilities)
+    assert rejected == []
+
+
+def test_ai_requests_remain_limited_by_the_per_hypothesis_depth_budget():
+    requests = [
+        _request(dimension=capability_id, request_id=f"depth_{index:02d}")
+        for index, capability_id in enumerate((
+            "ad_groups", "ads", "keywords", "autotargeting", "search_queries",
+        ))
+    ]
+
+    accepted, rejected = validate_audit_data_requests(requests, max_requests=len(requests))
+
+    assert len(accepted) == 4
+    assert len(rejected) == 1
+    assert rejected[0].status == "skipped_budget_limit"
+    assert rejected[0].error_code == "audit_request_budget_exceeded"
+
+
 def test_unknown_campaign_type_cannot_request_specialized_dimension():
     accepted, rejected = validate_audit_data_requests([
         _request(family="unknown", subtype="unknown", dimension="retargeting_segments")
@@ -98,6 +134,32 @@ def test_live_capability_without_trusted_client_returns_unavailable():
     assert rejected == []
     assert results[0].status == "unavailable"
     assert results[0].error_code == "direct_no_data"
+
+
+def test_live_adapter_failure_does_not_abort_the_outer_audit_transaction(monkeypatch):
+    db = _db()
+    now = datetime.now(UTC)
+    db.add(DirectReadCache(
+        client_id="client-a", request_hash="collision", capability_id="placements",
+        source="yandex_direct_live_report", fetched_at=now, expires_at=now,
+    ))
+    db.commit()
+
+    def conflicting_cache(*args, **kwargs):
+        db.add(DirectReadCache(
+            client_id="client-a", request_hash="collision", capability_id="placements",
+            source="yandex_direct_live_report", fetched_at=now, expires_at=now,
+        ))
+        db.flush()
+
+    monkeypatch.setattr(audit_tools, "execute_direct_read", conflicting_cache)
+    results, direct_calls = collect_audit_data_requests(
+        db, "client-a", [_request(family="yan", subtype="yan_retargeting", dimension="placements")],
+    )
+
+    assert direct_calls == 0
+    assert results[0].status == "failed"
+    assert db.scalar(select(DirectReadCache).where(DirectReadCache.request_hash == "collision")) is not None
 
 
 def test_registry_is_read_only_and_does_not_expose_endpoints_or_credentials():

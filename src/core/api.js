@@ -42,7 +42,7 @@ export function resolveApiBase() {
   if (hostname === 'localhost' || hostname === '127.0.0.1') {
     return 'http://localhost:8000/api/v1';
   }
-  if (hostname === 'maximusb93.github.io') {
+  if (hostname === 'maximusb93.github.io' || hostname.endsWith('.vercel.app')) {
     return DEFAULT_PRODUCTION_API_BASE;
   }
 

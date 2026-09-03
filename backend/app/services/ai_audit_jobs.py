@@ -23,6 +23,7 @@ from app.core.config import (
     AI_AUDIT_PLANNER_READ_TIMEOUT_SECONDS,
     AI_AUDIT_VERIFICATION_MAX_TOKENS,
     AI_AUDIT_VERIFICATION_READ_TIMEOUT_SECONDS,
+    AI_FALLBACK_ECONOMY_MODEL,
     normalize_ai_audit_request_options,
 )
 from app.models import AiAuditJob, ClientAccount, DirectReportJob
@@ -43,6 +44,7 @@ from app.schemas import (
     AuditInvestigationPlan,
     AuditNextRoundPlan,
     AuditNextRoundRequest,
+    AuditObservedFact,
 )
 from app.services.audit_data_tools import (
     MAX_AUDIT_DATA_REQUESTS,
@@ -63,6 +65,14 @@ from app.services.audit_evidence_store import (
     load_audit_evidence_results,
     save_audit_evidence_results,
 )
+from app.services.audit_evidence_reconciliation import (
+    apply_canonical_coverage_to_registry,
+    build_canonical_evidence_index,
+    capability_candidates,
+    canonical_coverage_projection,
+    evidence_for_hypothesis,
+)
+from app.services.audit_evidence_identity import campaign_scope_for_name, campaign_scope_key
 from app.services.audit_evidence_policy import (
     AUDIT_EVIDENCE_POLICY_VERSION,
     evidence_dimension_forbidden,
@@ -73,6 +83,21 @@ from app.services.audit_evidence_policy import (
     refresh_evidence_coverage_registry,
 )
 from app.services.audit_public_trace import build_public_audit_trace
+from app.services.audit_scheduler import (
+    collection_batch_can_start,
+    build_minimum_coverage_requests,
+    execution_profile_for_scope,
+    initialize_scheduler_state,
+    mark_scheduler_progress,
+    mark_scheduler_waiting,
+    partition_breadth_and_depth_requests,
+    scheduler_deadline_state,
+    scheduler_health,
+)
+from app.services.audit_scenario_library import (
+    classify_conversion_state,
+    select_audit_scenario,
+)
 from app.services.cascade_investigation import (
     MAX_DATA_REQUESTS_PER_AUDIT,
     MAX_INVESTIGATION_ROUNDS,
@@ -112,6 +137,11 @@ DRILLDOWN_TOKEN_TARGET = 18000
 FINAL_PROMPT_SAFETY_MARGIN_TOKENS = 2048
 FINAL_COMPACTION_LEVELS = (0, 1, 2, 3)
 FINAL_AUDIT_PROVIDER_MAX_TOKENS = 4000
+FINAL_SCHEMA_REPAIR_MAX_SECONDS = 45
+FINAL_SCHEMA_REPAIR_MIN_REMAINING_SECONDS = 20
+FINALIZATION_COMMIT_RESERVE_SECONDS = 10
+NON_PROVIDER_STAGE_STALE_SECONDS = 15 * 60
+QUEUED_AUDIT_STALE_SECONDS = 24 * 60 * 60
 PROVIDER_CONTEXT_OVERFLOW_CODE = "provider_context_limit_rejected"
 FINAL_PROVIDER_TIMEOUT_WARNING_CODE = "final_provider_timeout"
 _FINAL_PROVIDER_TIMEOUT_CODES = frozenset({"openrouter_timeout", "openrouter_total_timeout"})
@@ -561,13 +591,49 @@ def _query_snapshot(item: dict[str, Any]) -> dict[str, Any]:
 
 def _name_campaign_classification(name: str) -> dict[str, str]:
     normalized = name.lower().replace("ё", "е")
-    is_retargeting = any(marker in normalized for marker in ("ретарг", "retarget", "ремаркет"))
-    is_yan = any(marker in normalized for marker in ("рся", "yan", "сети", "network"))
+    is_retargeting = any(
+        marker in normalized
+        for marker in ("ретарг", "ртг", "rtg", "retarget", "ремаркет")
+    )
+    explicit_search_retargeting = any(
+        marker in normalized
+        for marker in ("поисковый ретаргетинг", "search retargeting")
+    )
+    is_search_marker = any(marker in normalized for marker in ("поиск", "search"))
+    is_search = bool(
+        is_search_marker
+        and (not is_retargeting or explicit_search_retargeting)
+    )
+    is_yan = (
+        any(
+            marker in normalized
+            for marker in (
+                "рся", "yan", "сети", "network", "интерес", "interest",
+                "аудитор", "audience", "lookalike",
+            )
+        )
+        or (is_retargeting and not explicit_search_retargeting)
+    )
     is_brand = any(marker in normalized for marker in ("бренд", "brand"))
+    is_master = any(
+        marker in normalized
+        for marker in ("товарн", "епк", "единая перфоманс", "unified")
+    )
     if is_yan:
         return {"campaign_name": name, "campaign_family": "yan", "campaign_subtype": "yan_retargeting" if is_retargeting else "yan_prospecting", "classification_source": "name_heuristic", "warnings": []}
-    if any(marker in normalized for marker in ("поиск", "search")) or is_brand:
+    if is_search or is_brand:
         return {"campaign_name": name, "campaign_family": "search", "campaign_subtype": "brand_search" if is_brand else "search", "classification_source": "name_heuristic", "warnings": []}
+    if is_master:
+        return {
+            "campaign_name": name,
+            "campaign_family": "mixed",
+            "campaign_subtype": "mixed",
+            "classification_source": "name_heuristic_master",
+            "warnings": [
+                "Campaign name indicates a unified/product campaign; Search and Network "
+                "evidence are probed separately and only applicable Direct data is analyzed."
+            ],
+        }
     return {"campaign_name": name, "campaign_family": "unknown", "campaign_subtype": "unknown", "classification_source": "unresolved", "warnings": []}
 
 
@@ -609,11 +675,14 @@ def _campaign_classification(name: str, explicit_type: str | dict[str, Any] | No
     if api_family == "mixed":
         return {
             "campaign_name": name,
-            "campaign_family": "unknown",
-            "campaign_subtype": "unknown",
+            "campaign_family": "mixed",
+            "campaign_subtype": "mixed",
             "classification_source": "direct_api_mixed",
             "api_type": api_type or None,
-            "warnings": ["Direct API reports both search and network placements; subtype cascade is disabled."],
+            "warnings": [
+                "Direct API reports both search and network placements; "
+                "the breadth plan requests explicit Search and Network evidence."
+            ],
         }
     if api_family is None:
         return {
@@ -622,7 +691,9 @@ def _campaign_classification(name: str, explicit_type: str | dict[str, Any] | No
             "api_type": api_type or None,
             "warnings": (["Campaign API metadata is insufficient; name heuristic was used."] if heuristic["campaign_family"] != "unknown" else []),
         }
-    if heuristic["campaign_family"] not in {"unknown", api_family}:
+    # A name-inferred master campaign is a safe capability probe, not a claim
+    # that both placements are active. Exact Direct strategy metadata wins.
+    if heuristic["campaign_family"] not in {"unknown", "mixed", api_family}:
         return {
             "campaign_name": name,
             "campaign_family": "unknown",
@@ -662,8 +733,53 @@ def classify_audit_campaigns(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
                 continue
             seen.add(name)
             api_metadata = (snapshot.get("campaignApiMetadata") or {}).get(name) or {}
-            result.append(_campaign_classification(name, api_metadata or {"type": item.get("type")}))
+            classification = _campaign_classification(name, api_metadata or {"type": item.get("type")})
+            scope_key = (
+                api_metadata.get("campaign_scope_key")
+                or (snapshot.get("_trustedCampaignScopes") or {}).get(name)
+            )
+            if scope_key:
+                classification["campaign_scope_key"] = scope_key
+            result.append(classification)
     return result
+
+
+def _classification_summary(classifications: list[dict[str, Any]]) -> dict[str, int]:
+    """Expose only aggregate classification diagnostics; campaign identities stay private."""
+    summary: dict[str, int] = {}
+    for item in classifications:
+        if not isinstance(item, dict):
+            continue
+        key = ":".join((
+            str(item.get("campaign_family") or "unknown")[:40],
+            str(item.get("campaign_subtype") or "unknown")[:40],
+            str(item.get("classification_source") or "unknown")[:60],
+        ))
+        summary[key] = summary.get(key, 0) + 1
+    return dict(sorted(summary.items()))
+
+
+def _prepare_campaign_classification(
+    snapshot: dict[str, Any],
+    *,
+    scheduler_phase: str = "breadth",
+) -> tuple[dict[str, int], list[AuditDataRequest], list[AuditObservedFact]]:
+    snapshot["campaignClassifications"] = classify_audit_campaigns(snapshot)
+    classification_summary = _classification_summary(snapshot["campaignClassifications"])
+    breadth_requests = build_minimum_coverage_requests(snapshot)
+    snapshot["minimumCoveragePlan"] = _minimum_coverage_plan(breadth_requests, snapshot)
+    runtime = _audit_runtime(snapshot)
+    runtime["campaignsTotal"] = len(snapshot["campaignClassifications"])
+    runtime["breadthRequestsTotal"] = len(breadth_requests)
+    runtime["classificationSummary"] = classification_summary
+    runtime["schedulerPhase"] = scheduler_phase
+    observed_facts = build_observed_facts(snapshot)
+    snapshot["observedFacts"] = [item.model_dump(mode="json") for item in observed_facts]
+    base_plan = build_rule_based_investigation_plan(snapshot)
+    snapshot["ruleBasedInvestigationPlan"] = base_plan.model_dump(mode="json")
+    ensure_evidence_coverage_registry(snapshot)
+    _sync_policy_runtime(snapshot)
+    return classification_summary, breadth_requests, observed_facts
 
 
 def _request(
@@ -909,18 +1025,83 @@ def _apply_live_baseline(
         (str(item.get("fetched_at")) for item in (campaign_result, performance_result) if item.get("fetched_at")),
         default=None,
     )
-    metadata_by_name = {
-        str(row.get("name")): {
+    metadata_by_name: dict[str, dict[str, Any]] = {}
+    trusted_scopes = snapshot.setdefault("_trustedCampaignScopes", {})
+    trusted_scope_names = snapshot.setdefault("_trustedCampaignScopeNames", {})
+    ambiguous_scope_names = {
+        str(item) for item in (snapshot.get("_ambiguousCampaignNames") or [])
+    }
+    for row in (campaign_result.get("data") or []):
+        if not isinstance(row, dict) or not row.get("name"):
+            continue
+        name = str(row.get("name"))
+        scope = str(row.get("campaign_scope_key") or row.get("campaignScopeKey") or "").strip() or campaign_scope_key(
+            row.get("campaign_id") or row.get("CampaignId") or row.get("id")
+        )
+        metadata = {
             "type": row.get("type"), "status": row.get("status"), "state": row.get("state"),
             "text_campaign": row.get("text_campaign"),
             "mobile_app_campaign": row.get("mobile_app_campaign"),
             "cpm_banner_campaign": row.get("cpm_banner_campaign"),
             "unified_campaign": row.get("unified_campaign"),
+            "campaign_scope_key": scope,
         }
-        for row in (campaign_result.get("data") or [])
-        if isinstance(row, dict) and row.get("name")
-    }
+        if scope:
+            trusted_scope_names[scope] = name
+        prior_scope = trusted_scopes.get(name)
+        if name in ambiguous_scope_names or (prior_scope and scope and prior_scope != scope):
+            ambiguous_scope_names.add(name)
+            trusted_scopes.pop(name, None)
+            metadata_by_name.pop(name, None)
+            continue
+        if scope:
+            trusted_scopes[name] = scope
+        metadata_by_name[name] = metadata
+    # A campaign can be present in a fresh performance report while absent from
+    # the current Campaigns service response (for example, historical data for
+    # an archived campaign). The report already carries a one-way scope key;
+    # register it so no-data follow-up reads stay terminal rather than becoming
+    # indistinguishable from an unrequested campaign.
+    for row_index, row in enumerate(performance_result.get("data") or [], start=1):
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("campaign_name") or row.get("CampaignName") or "").strip()
+        scope = str(row.get("campaign_scope_key") or row.get("campaignScopeKey") or "").strip() or campaign_scope_key(
+            row.get("campaign_id") or row.get("CampaignId")
+        )
+        if not scope:
+            continue
+        if not name:
+            # Direct performance rows occasionally omit CampaignName. Keep the
+            # campaign in breadth coverage under a deterministic safe alias so
+            # zero-row follow-ups resolve to an explicit terminal status rather
+            # than silently dropping the campaign from evidence reconciliation.
+            name = f"Campaign without name {row_index}"
+            row["campaign_name"] = name
+        trusted_scope_names[scope] = name
+        prior_scope = trusted_scopes.get(name)
+        if name in ambiguous_scope_names or (prior_scope and prior_scope != scope):
+            ambiguous_scope_names.add(name)
+            trusted_scopes.pop(name, None)
+            metadata_by_name.pop(name, None)
+            continue
+        trusted_scopes[name] = scope
+    for name in ambiguous_scope_names:
+        trusted_scopes.pop(name, None)
+        metadata_by_name.pop(name, None)
+    snapshot["_ambiguousCampaignNames"] = sorted(ambiguous_scope_names)
+    snapshot["_trustedCampaignScopeNames"] = trusted_scope_names
     snapshot["campaignApiMetadata"] = metadata_by_name
+    if ambiguous_scope_names:
+        limitations = snapshot.setdefault("evidenceIdentityLimitations", [])
+        for name in sorted(ambiguous_scope_names):
+            item = {
+                "code": "ambiguous_campaign_identity",
+                "campaignName": name,
+                "message": "Имя кампании неоднозначно; доказательства не объединяются между кампаниями с одинаковым названием.",
+            }
+            if item not in limitations:
+                limitations.append(item)
     baseline = {
         "policy": "fresh",
         "status": "complete" if campaign_available and performance_available else "partial",
@@ -947,9 +1128,52 @@ def _apply_live_baseline(
             snapshot["accountTotals"] = {
                 "cost": 0, "impressions": 0, "clicks": 0, "goalConversions": None,
             }
+        structure_rows = []
+        if campaign_available:
+            for row in campaign_result.get("data") or []:
+                if not isinstance(row, dict):
+                    continue
+                name = str(row.get("name") or "").strip()
+                if not name or name not in metadata_by_name:
+                    continue
+                structure_rows.append({
+                    "name": name,
+                    "type": row.get("type"),
+                    "status": row.get("status"),
+                    "state": row.get("state"),
+                    "cost": 0,
+                    "clicks": 0,
+                    "impressions": 0,
+                    "ctr": 0,
+                    "goalConversions": None,
+                    "goalCpa": None,
+                    "flags": ["performance_unavailable"],
+                    "diagnostic": "Campaign structure is live; period performance is unavailable.",
+                })
+        if structure_rows:
+            snapshot["campaignAnalysisRows"] = structure_rows
+            snapshot["campaignGroups"]["low_data"] = structure_rows[:5]
+            baseline["campaignAggregates"] = {
+                "campaignsTotal": len(structure_rows),
+                "groupCounts": {"low_data": len(structure_rows)},
+                "totals": snapshot["accountTotals"],
+            }
+            metadata = snapshot.setdefault("metadata", {})
+            metadata.update({
+                "campaignsTotal": len(structure_rows),
+                "campaignsIncluded": min(5, len(structure_rows)),
+                "campaignEvidenceSource": str(campaign_result.get("source") or "yandex_direct_live_service"),
+                "campaignEvidenceFetchedAt": fetched_at,
+            })
+        else:
+            snapshot["campaignAnalysisRows"] = []
         snapshot.setdefault("dataCoverage", {})["campaigns"] = {
-            "available": 0, "total": 0, "analyzed": 0,
-            "source": "yandex_direct_live", "freshness": "live_failed",
+            "available": len(structure_rows),
+            "total": len(structure_rows),
+            "analyzed": 0,
+            "source": str(campaign_result.get("source") or "yandex_direct_live"),
+            "freshness": "live_structure_only" if structure_rows else "live_failed",
+            "limitations": ["Period performance is unavailable; only campaign structure can be classified."],
         }
         snapshot["freshBaseline"] = baseline
         return
@@ -1620,15 +1844,346 @@ def _apply_verification_statuses(snapshot: dict[str, Any], verification: AuditHy
     _sync_active_investigation_plan(snapshot)
 
 
+def reconcile_collected_audit_evidence(
+    snapshot: dict[str, Any], full_results: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Reconcile policy and AI evidence before final generation without new API calls."""
+
+    index = build_canonical_evidence_index(snapshot, full_results)
+    facts_by_id = {
+        str(item.get("fact_id")): item
+        for item in snapshot.get("observedFacts") or []
+        if isinstance(item, dict) and item.get("fact_id")
+    }
+    prior = _verification_registry(snapshot)
+    reconciled: list[AuditHypothesisVerification] = []
+    linked_summaries: list[dict[str, Any]] = []
+    for hypothesis in _active_hypotheses(snapshot):
+        hypothesis_id = str(hypothesis.get("hypothesis_id") or "")
+        requests, results = evidence_for_hypothesis(snapshot, hypothesis, index)
+        current = prior.get(hypothesis_id) or {}
+        proposed = AuditHypothesisVerification(
+            hypothesis_id=hypothesis_id,
+            status=str(current.get("status") or "unverified"),
+            verification_summary=str(
+                current.get("verification_summary")
+                or "Backend повторно сопоставил гипотезу с фактически собранными данными."
+            ),
+            supporting_evidence=list(current.get("supporting_evidence") or []),
+            contradicting_evidence=list(current.get("contradicting_evidence") or []),
+            limitations=list(current.get("limitations") or []),
+            remaining_data_needed=list(current.get("remaining_data_needed") or []),
+        )
+        fact_ids = [str(item) for item in (hypothesis.get("fact_ids") or [])]
+        trusted_hypothesis = {
+            **hypothesis,
+            "status": current.get("status") or hypothesis.get("current_status"),
+            "fact_sufficient_data": all(
+                bool((facts_by_id.get(fact_id) or {}).get("sufficient_data"))
+                for fact_id in fact_ids
+            ) if fact_ids else False,
+        }
+        enforced = enforce_hypothesis_verification(
+            proposed,
+            hypothesis=trusted_hypothesis,
+            requests=requests,
+            results=results,
+            target_cpa=float((snapshot.get("targetKpis") or {}).get("targetCpa") or 0),
+            period_days=int((snapshot.get("analysisPeriod") or {}).get("days") or 30),
+        )
+        limitations = list(enforced.limitations)
+        truly_missing: list[str] = []
+        required_capabilities = {
+            str(item.get("capability_id") or item.get("dimension") or "")
+            for item in requests if item.get("required_for_conclusion")
+        }
+        required_capabilities.update(
+            str(item) for item in (hypothesis.get("required_capabilities") or []) if str(item)
+        )
+        hypothesis_scope = campaign_scope_for_name(snapshot, hypothesis.get("campaign_name"))
+        entries = {
+            candidate: item
+            for item in index.get("entries") or []
+            if item.get("scopeKey") == hypothesis_scope
+            if any(
+                str(result.get("request_id")) == str(item.get("requestId"))
+                for result in results
+            )
+            for candidate in capability_candidates(item.get("capabilityId"))
+        }
+        for capability in sorted(required_capabilities):
+            entry = next(
+                (entries.get(candidate) for candidate in capability_candidates(capability) if entries.get(candidate)),
+                None,
+            )
+            if entry and int(entry.get("rowsReceived") or 0) > 0:
+                if entry.get("dataQuality") != "sufficient":
+                    limitations.append(
+                        f"{capability}: данные собраны, но вывод ограничен ({entry.get('qualityReason') or 'low_data'})."
+                    )
+                continue
+            if entry and entry.get("status") == "not_applicable":
+                continue
+            reason = (entry or {}).get("qualityReason") or "not_collected"
+            truly_missing.append(capability)
+            limitations.append(f"{capability}: данные недоступны ({reason}).")
+        enforced = enforced.model_copy(update={
+            "remaining_data_needed": truly_missing[:8],
+            "limitations": list(dict.fromkeys(limitations))[:8],
+        })
+        reconciled.append(enforced)
+        for summary in enforced.evidence_summaries:
+            linked_summaries.append({**summary, "hypothesis_id": hypothesis_id})
+    if reconciled:
+        _apply_verification_statuses(
+            snapshot, AuditHypothesisVerificationSet(verifications=reconciled),
+        )
+    # Keep campaign-scoped diagnostics for every collected capability, not only
+    # the at-most-five active hypotheses. The final campaign table is a backend
+    # projection over all trusted evidence, so dropping these summaries here
+    # turns already collected query/device/geo rows back into generic advice.
+    campaign_results = [
+        item.get("result")
+        for item in index.get("entries") or []
+        if item.get("scope") == "campaign"
+        and isinstance(item.get("result"), dict)
+    ]
+    campaign_summaries = _drilldown_evidence_summaries(snapshot, campaign_results)
+    merged_summaries: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    for summary in campaign_summaries + linked_summaries:
+        key = (
+            str(summary.get("campaign_name") or summary.get("campaignName") or ""),
+            str(summary.get("capability_id") or summary.get("capabilityId") or ""),
+            str(summary.get("request_id") or summary.get("requestId") or ""),
+            str(summary.get("hypothesis_id") or summary.get("hypothesisId") or ""),
+        )
+        merged_summaries[key] = summary
+    snapshot["drilldownEvidenceSummaries"] = list(merged_summaries.values())
+    coverage = canonical_coverage_projection(index, snapshot)
+    snapshot["canonicalEvidenceCoverage"] = coverage
+    apply_canonical_coverage_to_registry(snapshot, index)
+
+    requested = snapshot.get("analysisPeriod") or {}
+    requested_from = str(requested.get("dateFrom") or "")
+    requested_to = str(requested.get("dateTo") or "")
+    checkable_periods: list[tuple[str, str, str, str]] = []
+    mismatches: list[dict[str, str]] = []
+    for item in index.get("entries") or []:
+        if (
+            item.get("status") not in AVAILABLE_AUDIT_DATA_STATUSES
+            or not item.get("live")
+            or item.get("cached")
+            or item.get("savedFallback")
+        ):
+            continue
+        period = item.get("period") or {}
+        date_from = str(period.get("date_from") or period.get("dateFrom") or "")
+        date_to = str(period.get("date_to") or period.get("dateTo") or "")
+        if not date_from or not date_to:
+            continue
+        key = (
+            str(item.get("campaignName") or "Аккаунт"),
+            str(item.get("capabilityId") or "unknown"),
+            date_from,
+            date_to,
+        )
+        if key not in checkable_periods:
+            checkable_periods.append(key)
+        if requested_from and requested_to and (date_from != requested_from or date_to != requested_to):
+            mismatches.append({
+                "campaignName": key[0],
+                "capabilityId": key[1],
+                "reasonCode": "evidence_period_mismatch",
+            })
+    requested["evidencePeriodsChecked"] = len(checkable_periods)
+    requested["requestedMatchesAvailableData"] = bool(
+        checkable_periods and requested_from and requested_to and not mismatches
+    )
+    snapshot["periodEvidenceLimitations"] = mismatches[:20]
+    for mismatch in mismatches:
+        for section in ("accountWide", "campaignScoped"):
+            for item in coverage.get(section) or []:
+                if (
+                    str(item.get("campaignName") or "Аккаунт") == mismatch["campaignName"]
+                    and str(item.get("capabilityId") or "unknown") == mismatch["capabilityId"]
+                ):
+                    item["limitations"] = list(dict.fromkeys([
+                        *(item.get("limitations") or []),
+                        "Фактический период evidence отличается от запрошенного периода аудита.",
+                    ]))[:5]
+    return index
+
+
 def _normalized_verifications(answer: str, snapshot: dict[str, Any]) -> AuditHypothesisVerificationSet:
     return _parse_verifications(answer, snapshot)[0]
+
+
+_REMEDIATION_HYPOTHESIS_TYPES = {
+    "search_queries": "search_query_waste",
+    "ad_group_performance": "ad_group_concentration",
+    "keyword_performance": "keyword_waste",
+    "placements": "placement_waste",
+    "devices": "device_segment_gap",
+    "geo": "geo_segment_gap",
+}
+
+
+def _diagnostic_remediation_requests(
+    snapshot: dict[str, Any],
+    *,
+    round_number: int,
+    remaining_budget: int,
+) -> list[AuditDataRequest]:
+    """Repeat concrete but quality-limited factors on 60/90-day windows."""
+
+    if remaining_budget <= 0:
+        return []
+    classifications = {
+        str(item.get("campaign_name") or ""): item
+        for item in (snapshot.get("campaignClassifications") or [])
+        if isinstance(item, dict) and item.get("campaign_name")
+    }
+    validated = [
+        item for item in (snapshot.get("validatedDataRequests") or [])
+        if isinstance(item, dict)
+    ]
+    date_to_raw = str((snapshot.get("analysisPeriod") or {}).get("dateTo") or "")
+    try:
+        date_to = datetime.fromisoformat(date_to_raw).date()
+    except ValueError:
+        return []
+    candidates: list[AuditDataRequest] = []
+    registry = _hypothesis_registry(snapshot)
+    for summary in snapshot.get("drilldownEvidenceSummaries") or []:
+        if len(candidates) >= min(15, remaining_budget):
+            break
+        if not isinstance(summary, dict) or summary.get("sufficient_data") is True:
+            continue
+        if str(summary.get("stop_reason") or "") not in {"low_data", "unknown_conversion_metric"}:
+            continue
+        capability = str(summary.get("capability_id") or summary.get("dimension") or "")
+        hypothesis_type = _REMEDIATION_HYPOTHESIS_TYPES.get(capability)
+        campaign_name = str(summary.get("campaign_name") or "")
+        classification = classifications.get(campaign_name)
+        diagnostics = summary.get("diagnostics")
+        if not hypothesis_type or not classification or not isinstance(diagnostics, dict):
+            continue
+        has_factor = bool(
+            diagnostics.get("top_waste")
+            or diagnostics.get("top_high_cpa")
+            or (
+                diagnostics.get("kind") == "segment_comparison"
+                and float(diagnostics.get("cpa_ratio") or 0) > 1
+            )
+        )
+        if not has_factor:
+            continue
+        prior_requests = [
+            item for item in validated
+            if str(item.get("campaign_name") or "") == campaign_name
+            and str(item.get("capability_id") or item.get("dimension") or "") == capability
+        ]
+        prior_days = max(
+            [int((item.get("period") or {}).get("days") or 0) for item in prior_requests]
+            or [int((snapshot.get("analysisPeriod") or {}).get("days") or 30)]
+        )
+        extended_days = 60 if prior_days < 60 else 90 if prior_days < 90 else None
+        if not extended_days:
+            continue
+        if any(
+            item.campaign_name == campaign_name
+            and (item.capability_id or item.dimension) == capability
+            and int(item.period.days or 0) == extended_days
+            for item in candidates
+        ):
+            continue
+        hypothesis_id = f"remediation_r{round_number + 1}_{len(candidates) + 1:03d}"
+        fact_ids = [
+            str(item.get("fact_id"))
+            for item in (snapshot.get("observedFacts") or [])
+            if item.get("campaign_name") == campaign_name and item.get("fact_id")
+        ][:5]
+        registry[hypothesis_id] = {
+            "hypothesis_id": hypothesis_id,
+            "hypothesis_type": hypothesis_type,
+            "parent_hypothesis_id": summary.get("hypothesis_id"),
+            "fact_ids": fact_ids,
+            "campaign_name": campaign_name,
+            "campaign_family": classification.get("campaign_family") or "unknown",
+            "campaign_subtype": classification.get("campaign_subtype") or "unknown",
+            "hypothesis": f"Измеримый фактор в срезе {capability} сохраняется на расширенном периоде.",
+            "rationale": (
+                f"Данные за {prior_days} дней выявили фактор, но их качество недостаточно "
+                "для детерминированного подтверждения."
+            ),
+            "current_status": "unverified",
+            "required_capabilities": [capability],
+            "optional_capabilities": [],
+            "confirmation_rule_codes": [CONFIRMATION_RULE_BY_CAPABILITY[capability]],
+            "rejection_rule_codes": [REJECTION_RULE_BY_CAPABILITY[capability]],
+            "remaining_data_needed": [capability],
+            "investigation_round": round_number + 1,
+        }
+        extended_period = {
+            "dateFrom": (date_to - timedelta(days=extended_days - 1)).isoformat(),
+            "dateTo": date_to.isoformat(),
+            "days": extended_days,
+        }
+        candidate = _request(
+            hypothesis_id,
+            classification,
+            capability,
+            (
+                f"Backend нашёл измеримый фактор, но данных за {prior_days} дней недостаточно; "
+                f"повторить тот же read-only срез за {extended_days} дней."
+            ),
+            extended_period,
+            priority="high",
+            required=True,
+        )
+        candidate.request_id = (
+            f"remediation_r{round_number + 1}_{len(candidates) + 1:03d}_{capability}_{extended_days}d"
+        )
+        candidates.append(candidate)
+    snapshot["hypothesisRegistry"] = registry
+    return candidates
+
+
+def _validated_diagnostic_remediation_requests(
+    snapshot: dict[str, Any],
+) -> list[AuditDataRequest]:
+    """Prefer deterministic 60/90-day checks before another AI planning call."""
+
+    runtime = _audit_runtime(snapshot)
+    round_number = int(runtime.get("investigationRound") or 1)
+    request_count = int(runtime.get("requestsCount") or 0)
+    max_rounds = int(runtime.get("maxDepthRounds") or MAX_INVESTIGATION_ROUNDS)
+    max_requests = int(runtime.get("requestSafetyLimit") or MAX_DATA_REQUESTS_PER_AUDIT)
+    if round_number >= max_rounds or request_count >= max_requests:
+        return []
+    candidates = _diagnostic_remediation_requests(
+        snapshot,
+        round_number=round_number,
+        remaining_budget=max_requests - request_count,
+    )
+    accepted, rejected = validate_audit_data_requests(
+        candidates,
+        max_requests=max_requests,
+    )
+    if rejected:
+        snapshot["drilldownResults"] = (
+            snapshot.get("drilldownResults") or []
+        ) + [item.model_dump(mode="json") for item in rejected]
+    return accepted
 
 
 def _second_round_requests(snapshot: dict[str, Any]) -> list[AuditDataRequest]:
     runtime = _audit_runtime(snapshot)
     round_number = int(runtime.get("investigationRound") or 1)
     request_count = int(runtime.get("requestsCount") or 0)
-    if round_number >= MAX_INVESTIGATION_ROUNDS or request_count >= MAX_DATA_REQUESTS_PER_AUDIT:
+    max_rounds = int(runtime.get("maxDepthRounds") or MAX_INVESTIGATION_ROUNDS)
+    max_requests = int(runtime.get("requestSafetyLimit") or MAX_DATA_REQUESTS_PER_AUDIT)
+    if round_number >= max_rounds or request_count >= max_requests:
         return []
     hypotheses = {
         item.get("hypothesis_id"): item
@@ -1639,7 +2194,11 @@ def _second_round_requests(snapshot: dict[str, Any]) -> list[AuditDataRequest]:
         (item.get("hypothesis_id"), item.get("capability_id") or item.get("dimension"))
         for item in (snapshot.get("validatedDataRequests") or [])
     }
-    candidates: list[AuditDataRequest] = []
+    candidates = _diagnostic_remediation_requests(
+        snapshot,
+        round_number=round_number,
+        remaining_budget=max_requests - request_count,
+    )
     for hypothesis_id, hypothesis in hypotheses.items():
         verification = verifications.get(hypothesis_id) or {}
         if verification.get("status") not in {"unverified", "partially_confirmed"}:
@@ -1648,6 +2207,62 @@ def _second_round_requests(snapshot: dict[str, Any]) -> list[AuditDataRequest]:
             item for item in (snapshot.get("drilldownResults") or [])
             if item.get("hypothesis_id") == hypothesis_id
         ]
+        low_volume = next(
+            (
+                item for item in related
+                if item.get("status") == "insufficient_data"
+                and (item.get("capability_id") or item.get("dimension"))
+            ),
+            None,
+        )
+        if low_volume:
+            capability = str(low_volume.get("capability_id") or low_volume.get("dimension"))
+            prior_requests = [
+                item for item in (snapshot.get("validatedDataRequests") or [])
+                if item.get("hypothesis_id") == hypothesis_id
+                and str(item.get("capability_id") or item.get("dimension")) == capability
+            ]
+            prior_days = max(
+                [
+                    int((item.get("period") or {}).get("days") or 0)
+                    for item in prior_requests
+                ] or [int((snapshot.get("analysisPeriod") or {}).get("days") or 30)]
+            )
+            extended_days = 60 if prior_days < 60 else 90 if prior_days < 90 else None
+            period_source = snapshot.get("analysisPeriod") or {}
+            date_to_raw = str(period_source.get("dateTo") or "")
+            try:
+                date_to = datetime.fromisoformat(date_to_raw).date()
+            except ValueError:
+                date_to = None
+            if extended_days and date_to:
+                classification = {
+                    "campaign_name": hypothesis.get("campaign_name"),
+                    "campaign_family": hypothesis.get("campaign_family") or "unknown",
+                    "campaign_subtype": hypothesis.get("campaign_subtype") or "unknown",
+                }
+                extended_period = {
+                    "dateFrom": (date_to - timedelta(days=extended_days - 1)).isoformat(),
+                    "dateTo": date_to.isoformat(),
+                    "days": extended_days,
+                }
+                candidate = _request(
+                    str(hypothesis_id),
+                    classification,
+                    capability,
+                    (
+                        f"Статистики за {prior_days} дней недостаточно; повторить тот же read-only срез "
+                        f"за {extended_days} дней, чтобы проверить гипотезу на большей выборке."
+                    ),
+                    extended_period,
+                    priority="high",
+                    required=True,
+                )
+                candidate.request_id = (
+                    f"req_r{round_number + 1}_{len(candidates) + 1:03d}_{extended_days}d"
+                )
+                candidates.append(candidate)
+                continue
         if not any(item.get("status") in AVAILABLE_AUDIT_DATA_STATUSES for item in related):
             continue
         already = {
@@ -1656,7 +2271,7 @@ def _second_round_requests(snapshot: dict[str, Any]) -> list[AuditDataRequest]:
         next_capabilities = next_cascade_capabilities(
             subtype=str(hypothesis.get("campaign_subtype") or "unknown"),
             already_requested=already,
-            remaining_budget=MAX_DATA_REQUESTS_PER_AUDIT - request_count - len(candidates),
+            remaining_budget=max_requests - request_count - len(candidates),
         )
         next_capabilities = [
             capability for capability in next_capabilities
@@ -1677,8 +2292,11 @@ def _second_round_requests(snapshot: dict[str, Any]) -> list[AuditDataRequest]:
         )
         candidate.request_id = f"req_r{round_number + 1}_{len(candidates) + 1:03d}"
         candidates.append(candidate)
-    remaining = max(0, MAX_DATA_REQUESTS_PER_AUDIT - request_count)
-    accepted, rejected = validate_audit_data_requests(candidates[:remaining])
+    remaining = max(0, max_requests - request_count)
+    accepted, rejected = validate_audit_data_requests(
+        candidates[:remaining],
+        max_requests=max_requests,
+    )
     if rejected:
         snapshot["drilldownResults"] = (snapshot.get("drilldownResults") or []) + [item.model_dump(mode="json") for item in rejected]
     return accepted
@@ -1768,8 +2386,16 @@ def build_next_round_prompt(snapshot: dict[str, Any]) -> str:
         "completed_capabilities": completed,
         "unavailable_capabilities": unavailable,
         "public_capability_manifest": compact_manifest,
-        "remaining_request_budget": max(0, MAX_DATA_REQUESTS_PER_AUDIT - int(runtime.get("requestsCount") or 0)),
-        "remaining_rounds": max(0, MAX_INVESTIGATION_ROUNDS - int(runtime.get("investigationRound") or 1)),
+        "remaining_request_budget": max(
+            0,
+            int(runtime.get("requestSafetyLimit") or MAX_DATA_REQUESTS_PER_AUDIT)
+            - int(runtime.get("requestsCount") or 0),
+        ),
+        "remaining_rounds": max(
+            0,
+            int(runtime.get("maxDepthRounds") or MAX_INVESTIGATION_ROUNDS)
+            - int(runtime.get("investigationRound") or 1),
+        ),
         "local_documentation": _planner_docs_lookup(snapshot),
     }
     return """Plan the next read-only investigation round from verified evidence, not from a fixed sequence.
@@ -1798,7 +2424,11 @@ def _next_round_requests_from_plan(
     if not plan.continue_investigation:
         return [], []
     runtime = _audit_runtime(snapshot)
-    remaining = max(0, MAX_DATA_REQUESTS_PER_AUDIT - int(runtime.get("requestsCount") or 0))
+    remaining = max(
+        0,
+        int(runtime.get("requestSafetyLimit") or MAX_DATA_REQUESTS_PER_AUDIT)
+        - int(runtime.get("requestsCount") or 0),
+    )
     hypotheses = _hypothesis_registry(snapshot)
     verifications = _verification_registry(snapshot)
     manifest = {str(item.get("id")): item for item in public_audit_tool_manifest()}
@@ -2003,7 +2633,10 @@ def _next_round_requests_from_plan(
             continue
         append_request(item, hypothesis)
 
-    accepted, rejected = validate_audit_data_requests(candidates)
+    accepted, rejected = validate_audit_data_requests(
+        candidates,
+        max_requests=max(1, remaining),
+    )
     rejected = validation_rejections + rejected
     active_ids = list(dict.fromkeys(item.hypothesis_id for item in accepted))[:5]
     active_set = set(active_ids)
@@ -2030,6 +2663,7 @@ def _apply_next_round_requests(snapshot: dict[str, Any], requests: list[AuditDat
         previous_round["completed_at"] = _now().isoformat()
         previous_round["stop_reason"] = "next_level_requested"
     runtime.pop("stopReason", None)
+    runtime["schedulerPhase"] = "depth"
     runtime["investigationRound"] = int(runtime.get("investigationRound") or 1) + 1
     runtime["requestsCount"] = int(runtime.get("requestsCount") or 0) + len(requests)
     snapshot["validatedDataRequests"] = (snapshot.get("validatedDataRequests") or []) + [
@@ -2227,6 +2861,57 @@ def build_compact_audit_context(
     return snapshot
 
 
+def _fresh_initial_audit_context(
+    db: Session,
+    job: AiAuditJob,
+) -> dict[str, Any]:
+    """Build the smallest honest context required before live Direct collection.
+
+    A fresh staged audit must establish live campaign coverage before interpreting
+    historical aggregates.  The generic recommendation context deliberately
+    performs richer summary, plan, and dynamics queries, which made the first
+    audit transition depend on data that the scheduler is about to refresh.
+    """
+    client = db.get(ClientAccount, job.client_id)
+    date_to = (_now() - timedelta(days=1)).date()
+    requested_days = {
+        "last_7_days": 7,
+        "last_14_days": 14,
+        "last_30_days": 30,
+    }.get(job.requested_period, 30)
+    date_from = date_to - timedelta(days=requested_days - 1)
+    return {
+        "client": {
+            "id": job.client_id,
+            "name": client.name if client else None,
+            "target_cpa": client.target_cpa if client else None,
+            "last_synced_at": client.last_synced_at.isoformat() if client and client.last_synced_at else None,
+        },
+        "business_context": {"status": "unavailable", "fields": {}},
+        "goals": {
+            "selected_goal_ids": [],
+            "has_goal_data": False,
+            "source_message": "Goal evidence is collected during the read-only audit.",
+        },
+        "summary": {
+            "totals": {},
+            "campaigns": [],
+            "period": {"from": date_from.isoformat(), "to": date_to.isoformat()},
+        },
+        "campaigns": [],
+        "search_query_insights": {"totalQueries": 0, "insights": []},
+        "campaign_dynamics_analysis": {
+            "dataQuality": {"rows": 0},
+            "campaignDynamics": {"worstCampaigns": [], "bestCampaigns": []},
+            "missingData": ["Historical context is deferred until fresh Direct evidence is collected."],
+        },
+        "yandex_direct_audit": {},
+        "sync_diagnostics": {},
+        "optimization_plan": [],
+        "warnings": ["Fresh audit starts from live read-only Direct data; saved history is not used as evidence."],
+    }
+
+
 def _audit_result_contract(output_budget_tokens: int) -> dict[str, Any]:
     finding = {
         "hypothesis_id": "hyp_001 или null для чистого факта",
@@ -2250,6 +2935,7 @@ def _audit_result_contract(output_budget_tokens: int) -> dict[str, Any]:
         "data_quality": {"status": "sufficient|partial|insufficient", "facts": [], "limitations": []},
         "critical_findings": [finding],
         "opportunities": [finding],
+        "campaign_insights": [],
         "insufficient_data_campaigns": [{
             "campaign_name": "Название кампании",
             "reason": "Почему данных недостаточно",
@@ -2331,7 +3017,7 @@ def _final_campaign_type(item: dict[str, Any]) -> str:
         return "search"
     if family == "yan":
         return "yan"
-    if "master" in subtype:
+    if family == "mixed" or subtype == "mixed" or "master" in subtype:
         return "master_campaign"
     return "unknown"
 
@@ -2359,6 +3045,1042 @@ def _final_fact_records(snapshot: dict[str, Any]) -> tuple[dict[str, dict[str, A
     return facts_by_id, unique
 
 
+_CAMPAIGN_SIGNAL_PRIORITY = {
+    "spend_without_goal_conversions": 0,
+    "cpa_above_target": 1,
+    "goal_conversions_drop": 2,
+    "budget_spike": 3,
+    "low_ctr": 4,
+    "high_cpc_traffic_proxy": 4,
+    "traffic_metrics_available": 5,
+    "conversion_data_unknown": 5,
+    "low_data": 6,
+    "good_campaign": 7,
+    "traffic_metrics_reviewed": 8,
+    "stable_efficiency": 8,
+    "campaign_health": 9,
+}
+
+
+def _campaign_insight_copy(
+    *,
+    metric: str,
+    subtype: str,
+    verification_status: str,
+) -> tuple[str, str, str]:
+    is_yan = subtype in {"yan_prospecting", "yan_retargeting"}
+    if metric == "spend_without_goal_conversions":
+        problem = "Есть расход без конверсий по выбранным целям."
+        recommendation = (
+            "Проверить площадки и аудитории с расходом без конверсий; после подтверждения причины "
+            "подготовить список исключений для ручного согласования."
+            if is_yan else
+            "Проверить поисковые запросы, группы и ключевые фразы с расходом без конверсий; "
+            "после подтверждения причины подготовить минус-фразы или корректировку структуры для согласования."
+        )
+        effect = "Сократить непроизводительный расход без автоматического изменения кампании."
+    elif metric == "cpa_above_target":
+        problem = "CPA выше целевого значения."
+        recommendation = (
+            "Определить площадки, аудитории и сегменты, формирующие отклонение CPA; подтверждённые "
+            "исключения или корректировки вынести на ручное согласование."
+            if is_yan else
+            "Определить запросы, группы, ключевые фразы, устройства или регионы, формирующие отклонение "
+            "CPA; подтверждённые изменения вынести на ручное согласование."
+        )
+        effect = "Снизить CPA в направлении целевого значения при сохранении контроля объёма конверсий."
+    elif metric == "goal_conversions_drop":
+        problem = "Конверсии снизились относительно предыдущего периода."
+        recommendation = "Проверить изменение трафика, стратегии, сегментов и трекинга между периодами до корректировки кампании."
+        effect = "Локализовать причину снижения и избежать изменения параметров, которые не связаны с проблемой."
+    elif metric == "budget_spike":
+        problem = "Расход резко вырос относительно предыдущего периода."
+        recommendation = "Проверить источники роста расхода и их конверсионность; изменения бюджета подготовить только после подтверждения причины."
+        effect = "Вернуть расход под контроль без преждевременного ограничения эффективного трафика."
+    elif metric == "low_ctr":
+        problem = "CTR ниже рабочего ориентира."
+        recommendation = "Проверить запросы, объявления и соответствие посадочной страницы намерению пользователя; варианты изменений подготовить для ручного теста."
+        effect = "Повысить релевантность трафика и объявлений."
+    elif metric in {"conversion_data_unknown", "low_data"}:
+        problem = (
+            "Конверсионная метрика не получена или некорректна; это неизвестное значение, а не ноль."
+            if metric == "conversion_data_unknown"
+            else "Статистики недостаточно для надёжного вывода."
+        )
+        recommendation = (
+            "Проверить выбранные цели и передачу конверсий; одновременно продолжить независимый анализ качества трафика по доступным срезам без выводов о CPA и продажах."
+            if metric == "conversion_data_unknown"
+            else "Расширить период анализа до 60 дней, а при сохранении малого объёма — до 90 дней."
+        )
+        effect = "Получить достаточную выборку для проверяемого вывода без изменения настроек кампании."
+    elif metric in {"good_campaign", "stable_efficiency"}:
+        problem = "Кампания показывает стабильную эффективность в доступном периоде."
+        recommendation = "Рассмотреть контролируемый тест масштабирования с отдельным лимитом и последующей проверкой CPA."
+        effect = "Проверить потенциал роста без потери целевой эффективности."
+    else:
+        problem = "Сигнал по кампании зафиксирован, но причина не установлена."
+        recommendation = "Проверить доступные срезы и подтвердить причинную гипотезу до любых изменений."
+        effect = "Перевести наблюдение в проверяемое решение."
+    if verification_status == "rejected":
+        recommendation = "Не выполнять действие по опровергнутой причинной гипотезе; проверить другую причину отдельной гипотезой."
+    return problem, recommendation, effect
+
+
+_FACTOR_CAPABILITY_LABELS = {
+    "campaign_performance": "кампания",
+    "search_queries": "поисковый запрос",
+    "ad_group_performance": "группа объявлений",
+    "keyword_performance": "ключевая фраза",
+    "placements": "площадка",
+    "devices": "устройство",
+    "geo": "регион",
+}
+
+_CAMPAIGN_SUBTYPE_LABELS = {
+    "search": "Поиск",
+    "brand_search": "брендовый Поиск",
+    "yan_prospecting": "привлечение новой аудитории в РСЯ",
+    "yan_retargeting": "ретаргетинг в РСЯ",
+}
+
+
+def _campaign_peer_traffic_factor(
+    campaign_name: str,
+    row: dict[str, Any],
+    classification: dict[str, Any],
+    *,
+    rows: dict[str, dict[str, Any]],
+    classifications: dict[str, dict[str, Any]],
+    period_days: int = 0,
+) -> dict[str, Any] | None:
+    """Compare traffic metrics only with a stable peer cohort, never with conversions."""
+
+    family = str(
+        classification.get("campaign_family")
+        or classification.get("campaignFamily")
+        or "unknown"
+    )
+    subtype = str(
+        classification.get("campaign_subtype")
+        or classification.get("campaignSubtype")
+        or "unknown"
+    )
+    if family == "unknown" or subtype == "unknown":
+        return None
+
+    peer_rows: list[dict[str, Any]] = []
+    for peer_name, peer_row in rows.items():
+        if peer_name == campaign_name:
+            continue
+        peer_classification = classifications.get(peer_name) or {}
+        peer_subtype = str(
+            peer_classification.get("campaign_subtype")
+            or peer_classification.get("campaignSubtype")
+            or "unknown"
+        )
+        if peer_subtype != subtype:
+            continue
+        clicks = int(_number(peer_row.get("clicks")) or 0)
+        impressions = int(_number(peer_row.get("impressions")) or 0)
+        cost = float(_number(peer_row.get("cost")) or 0)
+        if clicks > 0 and impressions > 0 and cost > 0:
+            peer_rows.append({
+                "clicks": clicks,
+                "impressions": impressions,
+                "cost": cost,
+            })
+    if len(peer_rows) < 2:
+        return None
+
+    clicks = int(_number(row.get("clicks")) or 0)
+    impressions = int(_number(row.get("impressions")) or 0)
+    cost = float(_number(row.get("cost")) or 0)
+    if clicks < 20 or impressions <= 0 or cost <= 0:
+        return None
+
+    peer_clicks = sum(item["clicks"] for item in peer_rows)
+    peer_impressions = sum(item["impressions"] for item in peer_rows)
+    peer_cost = sum(item["cost"] for item in peer_rows)
+    if peer_clicks < 40 or peer_impressions < 2000 or peer_cost <= 0:
+        return None
+
+    cpc = cost / clicks
+    ctr = clicks / impressions * 100
+    baseline_cpc = peer_cost / peer_clicks
+    baseline_ctr = peer_clicks / peer_impressions * 100
+    cohort_cost = peer_cost + cost
+    common = {
+        "capability_id": "campaign_performance",
+        "segment": campaign_name,
+        "cost": round(cost, 2),
+        "cost_share_pct": round(cost / cohort_cost * 100, 2) if cohort_cost else 0,
+        "clicks": clicks,
+        "impressions": impressions,
+        "peer_campaigns": len(peer_rows),
+        "benchmark_scope": subtype,
+        "material": False,
+        "backend_confirmed": False,
+        "period_days": int(period_days or 0),
+    }
+    candidates: list[dict[str, Any]] = []
+    if baseline_cpc > 0 and cpc >= baseline_cpc * 1.5:
+        candidates.append({
+            **common,
+            "metric": "cpc",
+            "factor_type": "traffic_proxy_cpc",
+            "value": round(cpc, 2),
+            "benchmark": round(baseline_cpc, 2),
+            "deviation_ratio": round(cpc / baseline_cpc, 3),
+        })
+    if baseline_ctr > 0 and impressions >= 1000 and ctr <= baseline_ctr * 0.65:
+        candidates.append({
+            **common,
+            "metric": "ctr",
+            "factor_type": "traffic_proxy_ctr",
+            "value": round(ctr, 2),
+            "benchmark": round(baseline_ctr, 2),
+            "deviation_ratio": round(baseline_ctr / ctr, 3) if ctr > 0 else None,
+        })
+    if not candidates:
+        return {
+            **common,
+            "metric": "traffic",
+            "factor_type": "traffic_proxy_within_peer_range",
+            "cpc": round(cpc, 2),
+            "ctr": round(ctr, 2),
+            "benchmark_cpc": round(baseline_cpc, 2),
+            "benchmark_ctr": round(baseline_ctr, 2),
+            "deviation_ratio": 1.0,
+        }
+    return max(
+        candidates,
+        key=lambda item: (
+            float(item.get("deviation_ratio") or 0),
+            float(item.get("cost") or 0),
+        ),
+    )
+
+
+def _campaign_primary_factor(
+    summaries: list[dict[str, Any]],
+    *,
+    allow_traffic_proxy: bool = False,
+    allow_conversion_factors: bool = True,
+) -> dict[str, Any] | None:
+    candidates: list[tuple[int, int, float, dict[str, Any]]] = []
+    for summary in summaries:
+        if not isinstance(summary, dict):
+            continue
+        capability_id = str(
+            summary.get("capability_id")
+            or summary.get("capabilityId")
+            or summary.get("dimension")
+            or ""
+        )
+        diagnostics = summary.get("diagnostics")
+        backend_confirmed = any(
+            isinstance(rule, dict) and rule.get("passed") is True
+            for rule in (summary.get("confirmation_rules") or [])
+        )
+        period_days = int((summary.get("period") or {}).get("days") or 0)
+        if (
+            allow_conversion_factors
+            and isinstance(diagnostics, dict)
+            and diagnostics.get("kind") == "performance_contributors"
+        ):
+            waste = diagnostics.get("top_waste") or []
+            high_cpa = diagnostics.get("top_high_cpa") or []
+            if waste and isinstance(waste[0], dict):
+                factor = {
+                    **waste[0],
+                    "hypothesis_id": summary.get("hypothesis_id") or summary.get("hypothesisId"),
+                    "capability_id": capability_id,
+                    "factor_type": "waste_without_conversions",
+                    "aggregate_waste_cost": diagnostics.get("waste_cost"),
+                    "aggregate_waste_clicks": diagnostics.get("waste_clicks"),
+                    "aggregate_waste_share_pct": diagnostics.get("waste_share_pct"),
+                    "material": bool(diagnostics.get("material_waste")),
+                    "backend_confirmed": backend_confirmed,
+                    "period_days": period_days,
+                }
+                candidates.append((
+                    0 if factor["material"] else 2,
+                    -period_days,
+                    -float(factor.get("cost") or 0),
+                    factor,
+                ))
+            if high_cpa and isinstance(high_cpa[0], dict):
+                factor = {
+                    **high_cpa[0],
+                    "hypothesis_id": summary.get("hypothesis_id") or summary.get("hypothesisId"),
+                    "capability_id": capability_id,
+                    "factor_type": "high_cpa_segment",
+                    "material": True,
+                    "backend_confirmed": False,
+                    "period_days": period_days,
+                }
+                candidates.append((1, -period_days, -float(factor.get("cost") or 0), factor))
+        elif (
+            allow_conversion_factors
+            and isinstance(diagnostics, dict)
+            and diagnostics.get("kind") == "segment_comparison"
+        ):
+            worst = diagnostics.get("worst_segment")
+            best = diagnostics.get("best_segment")
+            ratio = float(diagnostics.get("cpa_ratio") or 0)
+            if isinstance(worst, dict) and isinstance(best, dict) and ratio > 1:
+                factor = {
+                    **worst,
+                    "hypothesis_id": summary.get("hypothesis_id") or summary.get("hypothesisId"),
+                    "capability_id": capability_id,
+                    "factor_type": "segment_cpa_gap",
+                    "cpa_ratio": ratio,
+                    "best_segment": best,
+                    "material": ratio >= 1.5,
+                    "backend_confirmed": backend_confirmed,
+                    "period_days": period_days,
+                }
+                candidates.append((
+                    0 if factor["material"] else 2,
+                    -period_days,
+                    -float(factor.get("cost") or 0),
+                    factor,
+                ))
+        traffic_diagnostics = summary.get("traffic_diagnostics")
+        if allow_traffic_proxy and isinstance(traffic_diagnostics, dict):
+            for traffic_candidate in (traffic_diagnostics.get("candidates") or [])[:3]:
+                if not isinstance(traffic_candidate, dict):
+                    continue
+                factor = {
+                    **traffic_candidate,
+                    "hypothesis_id": summary.get("hypothesis_id") or summary.get("hypothesisId"),
+                    "capability_id": capability_id,
+                    "factor_type": f"traffic_proxy_{traffic_candidate.get('metric') or 'signal'}",
+                    "material": False,
+                    "backend_confirmed": False,
+                    "period_days": period_days,
+                }
+                candidates.append((
+                    3,
+                    -period_days,
+                    -float(factor.get("cost") or 0),
+                    factor,
+                ))
+    return sorted(candidates, key=lambda item: (item[0], item[1], item[2]))[0][3] if candidates else None
+
+
+def _factor_evidence(factor: dict[str, Any]) -> list[str]:
+    capability_id = str(factor.get("capability_id") or "")
+    label = _FACTOR_CAPABILITY_LABELS.get(capability_id, "сегмент")
+    segment = str(factor.get("segment") or "без названия")
+    if factor.get("factor_type") == "traffic_proxy_within_peer_range":
+        benchmark_scope = str(factor.get("benchmark_scope") or "peer cohort")
+        benchmark_scope_label = _CAMPAIGN_SUBTYPE_LABELS.get(
+            benchmark_scope,
+            "сопоставимая группа кампаний",
+        )
+        return [
+            (
+                f"{label.capitalize()} «{segment}»: CTR {float(factor.get('ctr') or 0):.2f}% "
+                f"против ориентира {float(factor.get('benchmark_ctr') or 0):.2f}%; "
+                f"CPC {float(factor.get('cpc') or 0):.2f} ₽ против ориентира "
+                f"{float(factor.get('benchmark_cpc') or 0):.2f} ₽."
+            ),
+            (
+                f"Ориентир рассчитан по {int(factor.get('peer_campaigns') or 0)} "
+                f"сопоставимым кампаниям типа «{benchmark_scope_label}»; "
+                "материального отклонения трафика по заданным порогам не выявлено."
+            ),
+            "Конверсии в traffic-proxy сравнении не использовались.",
+        ]
+    if str(factor.get("factor_type") or "").startswith("traffic_proxy_"):
+        metric = str(factor.get("metric") or "")
+        metric_label = "CPC" if metric == "cpc" else "CTR"
+        value = float(factor.get("value") or 0)
+        benchmark = float(factor.get("benchmark") or 0)
+        delta_pct = (
+            (value / benchmark - 1) * 100
+            if benchmark > 0
+            else None
+        )
+        evidence = [
+            (
+                f"{label.capitalize()} «{segment}»: {metric_label} {value:.2f} "
+                f"против ориентира среза {benchmark:.2f}"
+                + (f" ({delta_pct:+.1f}%)" if delta_pct is not None else "")
+                + "; "
+                f"расход {float(factor.get('cost') or 0):.2f} ₽, клики {int(factor.get('clicks') or 0)}, "
+                f"доля расхода {float(factor.get('cost_share_pct') or 0):.1f}%."
+            ),
+            "Это traffic-proxy сигнал: он не подтверждает влияние на конверсии или продажи.",
+        ]
+        if int(factor.get("peer_campaigns") or 0) >= 2:
+            benchmark_scope = str(factor.get("benchmark_scope") or "peer cohort")
+            benchmark_scope_label = _CAMPAIGN_SUBTYPE_LABELS.get(
+                benchmark_scope,
+                "сопоставимая группа кампаний",
+            )
+            evidence.insert(1, (
+                f"Ориентир рассчитан по {int(factor.get('peer_campaigns') or 0)} "
+                f"сопоставимым кампаниям типа «{benchmark_scope_label}»; "
+                "конверсии в сравнении не использовались."
+            ))
+        return evidence
+    evidence = [
+        (
+            f"{label.capitalize()} «{segment}»: расход {float(factor.get('cost') or 0):.2f} ₽, "
+            f"клики {int(factor.get('clicks') or 0)}, "
+            f"конверсии {float(factor.get('conversions') or 0):.2f}"
+            + (
+                f", CPA {float(factor.get('cpa')):.2f} ₽"
+                if factor.get("cpa") is not None else ""
+            )
+            + f", доля расхода {float(factor.get('cost_share_pct') or 0):.1f}%."
+        )
+    ]
+    if factor.get("factor_type") == "waste_without_conversions":
+        evidence.append(
+            f"Совокупно сегменты без конверсий: {float(factor.get('aggregate_waste_cost') or 0):.2f} ₽, "
+            f"{int(factor.get('aggregate_waste_clicks') or 0)} кликов, "
+            f"{float(factor.get('aggregate_waste_share_pct') or 0):.1f}% расхода среза."
+        )
+    elif factor.get("factor_type") == "segment_cpa_gap":
+        best = factor.get("best_segment") or {}
+        evidence.append(
+            f"CPA хуже лучшего сопоставимого сегмента «{best.get('segment') or 'без названия'}» "
+            f"в {float(factor.get('cpa_ratio') or 0):.2f} раза "
+            f"({float(factor.get('cpa') or 0):.2f} ₽ против {float(best.get('cpa') or 0):.2f} ₽)."
+        )
+    return evidence
+
+
+def _factor_copy(
+    factor: dict[str, Any],
+    *,
+    base_problem: str,
+    base_recommendation: str,
+    verification_status: str,
+) -> tuple[str, str]:
+    capability_id = str(factor.get("capability_id") or "")
+    label = _FACTOR_CAPABILITY_LABELS.get(capability_id, "сегмент")
+    segment = str(factor.get("segment") or "без названия")
+    confirmed = verification_status == "confirmed"
+    low_sample = factor.get("conversion_state") == "low_sample"
+    if factor.get("factor_type") == "traffic_proxy_within_peer_range":
+        return (
+            (
+                "Конверсионная выборка мала, но CTR и CPC проверены: "
+                if low_sample
+                else "Конверсионная метрика недоступна, но CTR и CPC проверены: "
+            )
+            +
+            "материального отклонения от сопоставимых кампаний не выявлено.",
+            (
+                "Не ограничиваться расширением периода: продолжить разбор уже собранных срезов "
+                if low_sample
+                else "Не ограничиваться проверкой целей: продолжить разбор уже собранных срезов "
+            )
+            +
+            "по запросам, группам, устройствам, регионам или площадкам; "
+            + (
+                "параллельно расширить период до 60 дней и при необходимости до 90 дней."
+                if low_sample
+                else "восстановление конверсионной метрики выполнять параллельно."
+            ),
+        )
+    if str(factor.get("factor_type") or "").startswith("traffic_proxy_"):
+        metric_label = "CPC" if factor.get("metric") == "cpc" else "CTR"
+        value = float(factor.get("value") or 0)
+        benchmark = float(factor.get("benchmark") or 0)
+        delta_pct = (
+            (value / benchmark - 1) * 100
+            if benchmark > 0
+            else None
+        )
+        measured = (
+            f"{metric_label} {value:.2f} против {benchmark:.2f}"
+            + (f" ({delta_pct:+.1f}%)" if delta_pct is not None else "")
+        )
+        problem = (
+            f"Подтверждённое отклонение качества трафика: {label} «{segment}», {measured}; "
+            f"доля расхода {float(factor.get('cost_share_pct') or 0):.1f}%. "
+            + (
+                "Конверсионная выборка мала, поэтому влияние на продажи пока не подтверждено."
+                if low_sample
+                else "Конверсионная метрика недоступна, поэтому влияние на продажи не подтверждено."
+            )
+        )
+        if capability_id == "search_queries":
+            action = (
+                f"сопоставить запрос «{segment}» с объявлением и посадочной; если намерение "
+                "нерелевантно, подготовить его как минус-фразу"
+            )
+        elif capability_id == "keyword_performance":
+            action = (
+                f"сопоставить ключевую фразу «{segment}» с фактическими запросами и подготовить "
+                "уточнение оператора или минус-фразы"
+            )
+        elif capability_id == "ad_group_performance":
+            action = (
+                f"разобрать объявления и запросы группы «{segment}» и подготовить разделение "
+                "неоднородного трафика"
+            )
+        elif capability_id == "placements":
+            action = (
+                f"проверить площадку «{segment}» на нерелевантные визиты и подготовить её исключение"
+            )
+        elif capability_id == "devices":
+            action = (
+                f"проверить посадочную и конверсионный путь на устройстве «{segment}» и подготовить "
+                "корректировку устройства"
+            )
+        elif capability_id == "geo":
+            action = (
+                f"проверить спрос и обработку лидов в регионе «{segment}» и подготовить отдельную "
+                "геокорректировку"
+            )
+        else:
+            benchmark_scope = str(factor.get("benchmark_scope") or "")
+            if benchmark_scope in {"yan_prospecting", "yan_retargeting"}:
+                action = (
+                    f"для объекта: кампания «{segment}» — ранжировать уже собранные креативы, "
+                    "аудитории и площадки по расходу и CTR; подготовить A/B-тест для самого "
+                    "затратного объекта с CTR ниже ориентира"
+                )
+            else:
+                action = (
+                    f"для объекта: кампания «{segment}» — ранжировать уже собранные запросы, "
+                    "группы и объявления по расходу, CTR и CPC; подготовить ручной тест для "
+                    "самого затратного отклонения"
+                )
+        recommendation = (
+            f"Кандидат для ручного теста: {action}. Основание — {measured}, расход "
+            f"{float(factor.get('cost') or 0):.2f} ₽. Проводить тест, не связывая отклонение "
+            "с продажами до проверки. Не считать это доказанным влиянием на продажи; "
+            + (
+                "сначала повторить проверку за период 60–90 дней, затем оформить изменение "
+                "черновиком и проверить на сопоставимом периоде."
+                if low_sample
+                else "изменение сначала оформить черновиком и проверить на сопоставимом периоде."
+            )
+        )
+        return problem, recommendation
+    status_prefix = "Подтверждённый измеримый фактор" if confirmed else "Наиболее сильный измеримый фактор"
+    problem = f"{base_problem} {status_prefix}: {label} «{segment}»."
+    period_days = int(factor.get("period_days") or 0)
+    if confirmed:
+        review_prefix = ""
+    elif period_days >= 90:
+        review_prefix = (
+            "Фактор проверен за 90 дней, но строгие пороги подтверждения не пройдены; "
+            "не менять настройки автоматически и дополнительно "
+        )
+    elif period_days >= 60:
+        review_prefix = (
+            "Фактор проверен за 60 дней, но пока не подтверждён; "
+            "автоматически расширить проверку до 90 дней, затем "
+        )
+    else:
+        review_prefix = (
+            "Фактор проверен за 30 дней; автоматически повторить срез за 60 дней "
+            "и при необходимости за 90 дней, затем "
+        )
+    if capability_id == "search_queries":
+        recommendation = (
+            f"{review_prefix}проверить релевантность запроса «{segment}» объявлению и посадочной странице; "
+            "при нерелевантности подготовить минус-фразу для ручного согласования."
+        )
+    elif capability_id == "ad_group_performance":
+        recommendation = (
+            f"{review_prefix}разобрать структуру группы «{segment}», запросы и объявления внутри неё; "
+            "подготовить разделение или корректировку структуры для ручного согласования."
+        )
+    elif capability_id == "keyword_performance":
+        recommendation = (
+            f"{review_prefix}проверить соответствие ключевой фразы «{segment}» фактическим запросам; "
+            "подготовить уточнение оператора или минус-фразы для ручного согласования."
+        )
+    elif capability_id == "placements":
+        recommendation = (
+            f"{review_prefix}проверить качество трафика площадки «{segment}»; "
+            "при подтверждении подготовить её исключение для ручного согласования."
+        )
+    elif capability_id == "devices":
+        recommendation = (
+            f"{review_prefix}проверить конверсионный путь и посадочную страницу для устройства «{segment}»; "
+            "корректировку по устройствам подготовить только как черновик для согласования."
+        )
+    elif capability_id == "geo":
+        best = factor.get("best_segment") or {}
+        comparison = (
+            f"CPA {float(factor.get('cpa') or 0):.2f} ₽ против "
+            f"{float(best.get('cpa') or 0):.2f} ₽ у региона «{best.get('segment') or 'без названия'}»"
+            if factor.get("factor_type") == "segment_cpa_gap"
+            else "измеримый вклад региона в отклонение"
+        )
+        recommendation = (
+            f"{review_prefix}подготовить отдельный ручной тест для региона «{segment}»: проверить "
+            f"спрос и обработку лидов, затем вынести геокорректировку как черновик. Основание — {comparison}."
+        )
+    else:
+        recommendation = base_recommendation
+    return problem, recommendation
+
+
+def _factor_hypothesis(factor: dict[str, Any]) -> str:
+    capability_id = str(factor.get("capability_id") or "")
+    label = _FACTOR_CAPABILITY_LABELS.get(capability_id, "сегмент")
+    segment = str(factor.get("segment") or "без названия")
+    if factor.get("factor_type") == "traffic_proxy_within_peer_range":
+        return (
+            "CTR и CPC находятся в пределах заданных порогов сопоставимой группы; "
+            "гипотеза о проблеме на верхнем уровне трафика не подтверждена. "
+            "Следующий уровень проверки — структура запросов, групп, устройств, "
+            "регионов или площадок."
+        )
+    if str(factor.get("factor_type") or "").startswith("traffic_proxy_"):
+        metric_label = "CPC" if factor.get("metric") == "cpc" else "CTR"
+        limitation = (
+            "Конверсионная выборка пока мала; период нужно расширить до 60–90 дней."
+            if factor.get("conversion_state") == "low_sample"
+            else "Влияние на конверсии не подтверждено, поскольку конверсионная метрика неизвестна."
+        )
+        return (
+            f"{label.capitalize()} «{segment}» является кандидатом отклонения качества трафика: "
+            f"{metric_label} отличается от ориентира среза. {limitation}"
+        )
+    if factor.get("factor_type") == "segment_cpa_gap":
+        best = factor.get("best_segment") or {}
+        status = (
+            "является подтверждённым измеримым фактором повышенного CPA"
+            if factor.get("backend_confirmed")
+            else "является измеримым кандидатом причины повышенного CPA"
+        )
+        return (
+            f"{label.capitalize()} «{segment}» {status}: "
+            f"CPA в {float(factor.get('cpa_ratio') or 0):.2f} раза выше, чем у сопоставимого сегмента "
+            f"«{best.get('segment') or 'без названия'}»."
+        )
+    if factor.get("factor_type") == "waste_without_conversions":
+        status = (
+            "входит в подтверждённый непродуктивный расход"
+            if factor.get("backend_confirmed")
+            else "является измеримым кандидатом непродуктивного расхода"
+        )
+        return (
+            f"{label.capitalize()} «{segment}» {status} "
+            f"без конверсий по выбранным целям."
+        )
+    return (
+        f"{label.capitalize()} «{segment}» — наиболее сильный измеримый фактор отклонения, "
+        "который требует проверки перед изменением настроек."
+    )
+
+
+def _factor_verification_status(factor: dict[str, Any] | None) -> str:
+    """Describe what the numbers prove without claiming causal sales impact."""
+
+    if not factor:
+        return "unverified"
+    factor_type = str(factor.get("factor_type") or "")
+    if factor_type == "traffic_proxy_within_peer_range":
+        return "rejected"
+    if factor_type.startswith("traffic_proxy_"):
+        return "confirmed"
+    if factor.get("backend_confirmed"):
+        return "confirmed"
+    if factor_type in {"segment_cpa_gap", "waste_without_conversions", "high_cpa_segment"}:
+        return "partially_confirmed"
+    return "unverified"
+
+
+def _signal_verification_status(
+    *,
+    metric: str,
+    sufficient: bool,
+    cost: float | None,
+    clicks: float | None,
+    impressions: float | None,
+    conversions: float | None,
+    cpa: float | None,
+) -> str:
+    if metric in {"conversion_data_unknown", "low_data"}:
+        if clicks is not None and clicks >= 20 and impressions is not None and impressions > 0:
+            return "partially_confirmed"
+        return "unverified"
+    if metric in {"low_ctr", "high_cpc_traffic_proxy", "traffic_metrics_available", "traffic_metrics_reviewed"}:
+        return "confirmed" if clicks is not None and clicks >= 20 and impressions not in {None, 0} else "partially_confirmed"
+    if metric == "spend_without_goal_conversions":
+        return "confirmed" if sufficient and cost not in {None, 0} and conversions == 0 else "partially_confirmed"
+    if metric == "cpa_above_target":
+        return "confirmed" if sufficient and cpa is not None else "partially_confirmed"
+    return "confirmed" if sufficient else "partially_confirmed"
+
+
+def build_campaign_insights(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    """Build stable campaign-level conclusions from trusted backend facts and evidence."""
+
+    rows = {
+        str(item.get("name") or item.get("campaign_name") or ""): item
+        for item in (snapshot.get("campaignAnalysisRows") or [])
+        if isinstance(item, dict) and (item.get("name") or item.get("campaign_name"))
+    }
+    classifications = {
+        str(item.get("campaign_name") or item.get("campaignName") or ""): item
+        for item in (snapshot.get("campaignClassifications") or [])
+        if isinstance(item, dict)
+    }
+    registry = _hypothesis_registry(snapshot)
+    verifications = _verification_registry(snapshot)
+    hypotheses_by_campaign: dict[str, list[dict[str, Any]]] = {}
+    for hypothesis_id, item in registry.items():
+        if not isinstance(item, dict):
+            continue
+        campaign_name = str(item.get("campaign_name") or item.get("campaignName") or "")
+        if not campaign_name:
+            continue
+        hypotheses_by_campaign.setdefault(campaign_name, []).append({
+            **item,
+            "_hypothesis_id": hypothesis_id,
+            "_verification": verifications.get(hypothesis_id) or {},
+        })
+    evidence_by_hypothesis: dict[str, list[dict[str, Any]]] = {}
+    evidence_by_campaign: dict[str, list[dict[str, Any]]] = {}
+    for item in snapshot.get("drilldownEvidenceSummaries") or []:
+        if not isinstance(item, dict):
+            continue
+        hypothesis_id = str(item.get("hypothesis_id") or item.get("hypothesisId") or "")
+        if hypothesis_id:
+            evidence_by_hypothesis.setdefault(hypothesis_id, []).append(item)
+        campaign_name = str(item.get("campaign_name") or item.get("campaignName") or "")
+        if campaign_name:
+            evidence_by_campaign.setdefault(campaign_name, []).append(item)
+
+    insights: list[dict[str, Any]] = []
+    for fact in snapshot.get("observedFacts") or []:
+        if not isinstance(fact, dict):
+            continue
+        campaign_name = str(fact.get("campaign_name") or fact.get("campaignName") or "")
+        if not campaign_name or campaign_name == "Аккаунт":
+            continue
+        metric = str(fact.get("metric") or "campaign_health")
+        linked = next(
+            (
+                item for item in hypotheses_by_campaign.get(campaign_name, [])
+                if str(fact.get("fact_id") or fact.get("factId") or "") in {
+                    str(value) for value in (item.get("fact_ids") or item.get("factIds") or [])
+                }
+            ),
+            None,
+        )
+        hypothesis_id = str((linked or {}).get("_hypothesis_id") or "") or None
+        verification = (linked or {}).get("_verification") or {}
+        verification_status = str(
+            verification.get("status")
+            or (linked or {}).get("current_status")
+            or (linked or {}).get("status")
+            or "unverified"
+        )
+        row = rows.get(campaign_name) or {}
+        classification = classifications.get(campaign_name) or linked or {}
+        subtype = str(
+            classification.get("campaign_subtype")
+            or classification.get("campaignSubtype")
+            or "unknown"
+        )
+        campaign_type = _final_campaign_type(classification)
+        conversions = _number(
+            row.get("goalConversions")
+            if "goalConversions" in row
+            else row.get("goal_conversions")
+        )
+        cpa = _number(row.get("goalCpa") if "goalCpa" in row else row.get("goal_cpa"))
+        target_cpa = _number((snapshot.get("targetKpis") or {}).get("targetCpa"))
+        cpa_delta = (
+            round((float(cpa) / float(target_cpa) - 1) * 100, 2)
+            if cpa is not None and target_cpa not in {None, 0}
+            else _number(fact.get("deviation"))
+        )
+        evidence = _bounded_strings(fact.get("evidence"), 3)
+        if cpa is not None and target_cpa is not None:
+            evidence.append(f"CPA {float(cpa):.2f} при цели {float(target_cpa):.2f}; отклонение {float(cpa_delta or 0):+.1f}%.")
+        evidence = list(dict.fromkeys(evidence))[:5]
+        summaries = list({
+            (
+                str(item.get("campaign_name") or item.get("campaignName") or ""),
+                str(item.get("capability_id") or item.get("capabilityId") or item.get("dimension") or ""),
+                str(item.get("request_id") or item.get("requestId") or ""),
+            ): item
+            for item in (
+                evidence_by_hypothesis.get(hypothesis_id or "", [])
+                + evidence_by_campaign.get(campaign_name, [])
+            )
+        }.values())
+        checked = list(dict.fromkeys(
+            str(item.get("capability_id") or item.get("capabilityId") or item.get("dimension"))
+            for item in summaries
+            if item.get("status") in AVAILABLE_AUDIT_DATA_STATUSES
+            and (item.get("capability_id") or item.get("capabilityId") or item.get("dimension"))
+        ))[:12]
+        missing = _bounded_strings(
+            verification.get("remaining_data_needed")
+            or (linked or {}).get("remaining_data_needed"),
+            12,
+        )
+        sufficient = bool(
+            fact.get("sufficient_data")
+            if "sufficient_data" in fact
+            else fact.get("sufficientData")
+        )
+        opportunity = metric in {"good_campaign", "stable_efficiency"}
+        clicks = _number(row.get("clicks"))
+        impressions = _number(row.get("impressions"))
+        cost = _number(row.get("cost"))
+        ctr = _number(row.get("ctr"))
+        if ctr is None and clicks is not None and impressions not in {None, 0}:
+            ctr = float(clicks) / float(impressions) * 100
+        cpc = _number(row.get("cpc") or row.get("avgCpc") or row.get("avg_cpc"))
+        if cpc is None and cost is not None and clicks not in {None, 0}:
+            cpc = float(cost) / float(clicks)
+        traffic_metric_parts = []
+        if impressions is not None:
+            traffic_metric_parts.append(f"показы {int(impressions)}")
+        if ctr is not None:
+            traffic_metric_parts.append(f"CTR {float(ctr):.2f}%")
+        if cpc is not None:
+            traffic_metric_parts.append(f"CPC {float(cpc):.2f} ₽")
+        traffic_metrics_summary = ", ".join(traffic_metric_parts)
+        if traffic_metrics_summary:
+            evidence = list(dict.fromkeys([
+                (
+                    f"Трафик кампании: {traffic_metrics_summary}; "
+                    "эти показатели рассчитаны независимо от доступности конверсий."
+                ),
+                *evidence,
+            ]))[:5]
+        raw_conversions = (
+            row.get("goalConversions")
+            if "goalConversions" in row
+            else row.get("goal_conversions")
+        )
+        conversion_decision = classify_conversion_state(
+            raw_conversions,
+            sufficient_data=sufficient,
+            cost=float(cost or 0),
+            clicks=int(clicks or 0),
+            impressions=int(impressions or 0),
+        )
+        scenario = select_audit_scenario(
+            campaign_type=campaign_type,
+            conversion_state=conversion_decision.state,
+        )
+        data_needed = not sufficient or metric in {"low_data", "conversion_data_unknown"}
+        problem, recommendation, expected_effect = _campaign_insight_copy(
+            metric=metric,
+            subtype=subtype,
+            verification_status=verification_status,
+        )
+        factor = _campaign_primary_factor(
+            summaries,
+            allow_traffic_proxy=conversion_decision.state in {"unknown", "low_sample"},
+            allow_conversion_factors=conversion_decision.state != "low_sample",
+        )
+        if factor is None and metric in {
+            "cpa_above_target", "spend_without_goal_conversions",
+            "conversion_data_unknown", "low_data", "low_ctr",
+        }:
+            # Campaign-level conversions can be known while a detailed Direct
+            # slice has no reliable goal attribution. In that case a concrete
+            # CTR/CPC outlier is still useful as a traffic-quality hypothesis,
+            # but must not be presented as a proven cause of CPA or sales.
+            factor = _campaign_primary_factor(
+                summaries,
+                allow_traffic_proxy=True,
+                allow_conversion_factors=False,
+            )
+        if factor is None and conversion_decision.state in {"unknown", "low_sample"}:
+            analysis_period = snapshot.get("analysisPeriod") or {}
+            factor = _campaign_peer_traffic_factor(
+                campaign_name,
+                row,
+                classification,
+                rows=rows,
+                classifications=classifications,
+                period_days=int(
+                    analysis_period.get("days")
+                    or analysis_period.get("periodDays")
+                    or 0
+                ),
+            )
+        factor_matches_linked_hypothesis = bool(
+            factor
+            and hypothesis_id
+            and str(factor.get("hypothesis_id") or "") == hypothesis_id
+        )
+        traffic_proxy_factor = bool(
+            factor
+            and str(factor.get("factor_type") or "").startswith("traffic_proxy_")
+        )
+        effective_verification_status = (
+            "confirmed"
+            if factor and not traffic_proxy_factor and (
+                factor.get("backend_confirmed")
+                or (
+                    factor_matches_linked_hypothesis
+                    and verification_status == "confirmed"
+                )
+            )
+            else "unverified"
+            if factor
+            else verification_status
+        )
+        if factor:
+            factor["backend_confirmed"] = effective_verification_status == "confirmed"
+            factor["conversion_state"] = conversion_decision.state
+            problem, recommendation = _factor_copy(
+                factor,
+                base_problem=problem,
+                base_recommendation=recommendation,
+                verification_status=effective_verification_status,
+            )
+            evidence = list(dict.fromkeys(evidence + _factor_evidence(factor)))[:5]
+            factor_capability = str(factor.get("capability_id") or "")
+            if factor.get("backend_confirmed") or int(factor.get("period_days") or 0) >= 90:
+                missing = []
+            elif factor_capability and not traffic_proxy_factor:
+                missing = [factor_capability]
+        factor_verification_status = _factor_verification_status(factor)
+        traffic_hypothesis = None
+        if conversion_decision.state in {"unknown", "low_sample"} and factor is None and traffic_metrics_summary:
+            low_sample = conversion_decision.state == "low_sample"
+            problem = (
+                (
+                    "Конверсионная выборка мала, но трафик не оставлен без анализа: "
+                    if low_sample
+                    else "Конверсионная метрика недоступна, но трафик не оставлен без анализа: "
+                )
+                + f"{traffic_metrics_summary}. Для безопасного сравнительного вывода "
+                "пока недостаточно однородной контрольной группы."
+            )
+            traffic_hypothesis = (
+                "CTR и CPC рассчитаны, но отклонение нельзя надёжно подтвердить без "
+                "сопоставимой группы или детального среза; следующим шагом проверяются "
+                "запросы, группы, устройства, регионы и площадки."
+            )
+            recommendation = (
+                (
+                    "Не ограничиваться расширением периода: использовать уже собранные "
+                    if low_sample
+                    else "Не ограничиваться проверкой выбранных целей: использовать уже собранные "
+                )
+                +
+                "срезы для поиска запросов, групп, устройств, регионов или площадок с "
+                "аномальными CTR/CPC; "
+                + (
+                    "параллельно расширить период до 60 дней и при необходимости до 90 дней."
+                    if low_sample
+                    else "корректность целей и передачу конверсий проверить параллельно."
+                )
+            )
+            expected_effect = (
+                "Выделить проверяемую причину отклонения качества трафика и подтвердить "
+                "её на достаточной конверсионной выборке."
+                if low_sample
+                else "Выделить проверяемую причину отклонения качества трафика, не подменяя "
+                "неизвестные конверсии нулевыми."
+            )
+        elif traffic_proxy_factor:
+            expected_effect = (
+                "Локализовать отклонение качества трафика по измеримым CTR/CPC и затем "
+                "проверить его на конверсионных данных."
+            )
+        display_metric = metric
+        if conversion_decision.state in {"unknown", "low_sample"}:
+            factor_metric = str((factor or {}).get("metric") or "")
+            if factor_metric == "cpc":
+                display_metric = "high_cpc_traffic_proxy"
+            elif factor_metric == "ctr":
+                display_metric = "low_ctr"
+            elif factor and factor.get("factor_type") == "traffic_proxy_within_peer_range":
+                display_metric = "traffic_metrics_reviewed"
+            elif traffic_metrics_summary:
+                display_metric = "traffic_metrics_available"
+        priority = (
+            "data_needed" if data_needed
+            else "opportunity" if opportunity
+            else "critical" if metric == "spend_without_goal_conversions"
+            else "high" if metric in {"cpa_above_target", "goal_conversions_drop", "budget_spike"}
+            else "medium"
+        )
+        insights.append({
+            "priority": priority,
+            "campaign_name": campaign_name,
+            "campaign_type": campaign_type,
+            "signal_type": display_metric,
+            "signal_status": "data_needed" if data_needed else "opportunity" if opportunity else "detected",
+            "signal_verification_status": _signal_verification_status(
+                metric=display_metric,
+                sufficient=sufficient,
+                cost=float(cost) if cost is not None else None,
+                clicks=float(clicks) if clicks is not None else None,
+                impressions=float(impressions) if impressions is not None else None,
+                conversions=float(conversions) if conversions is not None else None,
+                cpa=float(cpa) if cpa is not None else None,
+            ),
+            "factor_verification_status": factor_verification_status,
+            "hypothesis_id": hypothesis_id,
+            "verification_status": effective_verification_status,
+            "cost": cost,
+            "clicks": int(clicks) if clicks is not None else None,
+            "impressions": int(impressions) if impressions is not None else None,
+            "ctr": round(float(ctr), 4) if ctr is not None else None,
+            "cpc": round(float(cpc), 4) if cpc is not None else None,
+            "conversions": float(conversions) if conversions is not None else None,
+            "cpa": float(cpa) if cpa is not None else None,
+            "target_cpa": float(target_cpa) if target_cpa is not None else None,
+            "cpa_delta_pct": float(cpa_delta) if cpa_delta is not None else None,
+            "conversion_state": conversion_decision.state,
+            "conversion_state_reason": conversion_decision.reason,
+            "analysis_mode": scenario.analysis_mode,
+            "scenario_id": scenario.scenario_id,
+            "scenario_version": scenario.public_dict()["scenario_version"],
+            "scenario_checks": list(scenario.must_analyze)[:10],
+            "forbidden_claims": list(scenario.forbidden_claims)[:5],
+            "problem": problem,
+            "evidence": evidence,
+            "hypothesis": (
+                _factor_hypothesis(factor)
+                if factor
+                else traffic_hypothesis
+                or str((linked or {}).get("hypothesis") or "")
+                or None
+            ),
+            "checked_capabilities": checked,
+            "missing_capabilities": missing,
+            "recommendation": recommendation,
+            "expected_effect": expected_effect,
+            "confidence": (
+                "high" if sufficient and effective_verification_status == "confirmed"
+                else "medium" if sufficient
+                else "low"
+            ),
+            "requires_human_approval": True,
+        })
+    insights.sort(key=lambda item: (
+        _CAMPAIGN_SIGNAL_PRIORITY.get(item["signal_type"], 99),
+        -float(item.get("cost") or 0),
+        item["campaign_name"],
+    ))
+    primary_by_campaign: list[dict[str, Any]] = []
+    seen_campaigns: set[str] = set()
+    for item in insights:
+        if item["campaign_name"] in seen_campaigns:
+            continue
+        seen_campaigns.add(item["campaign_name"])
+        primary_by_campaign.append(item)
+    return primary_by_campaign[:50]
+
+
 def _final_rule_summaries(values: Any, limit: int) -> list[dict[str, Any]]:
     if not isinstance(values, list):
         return []
@@ -2374,6 +4096,44 @@ def _final_rule_summaries(values: Any, limit: int) -> list[dict[str, Any]]:
         if len(result) >= limit:
             break
     return result
+
+
+def _final_diagnostics(value: Any, *, limit: int) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+
+    def safe_factor(raw: Any) -> dict[str, Any] | None:
+        if not isinstance(raw, dict):
+            return None
+        return {
+            "segment": _safe_final_text(raw.get("segment"), max_chars=300),
+            "cost": _number(raw.get("cost")),
+            "costSharePct": _number(raw.get("cost_share_pct") or raw.get("costSharePct")),
+            "clicks": _safe_coverage_count(raw.get("clicks"), default=0),
+            "conversions": _number(raw.get("conversions")),
+            "cpa": _number(raw.get("cpa")),
+        }
+
+    top_waste = [
+        item for item in (safe_factor(raw) for raw in (value.get("top_waste") or []))
+        if item is not None
+    ][:limit]
+    top_high_cpa = [
+        item for item in (safe_factor(raw) for raw in (value.get("top_high_cpa") or []))
+        if item is not None
+    ][:limit]
+    return {
+        "kind": str(value.get("kind") or "")[:80] or None,
+        "materialWaste": bool(value.get("material_waste")),
+        "wasteCost": _number(value.get("waste_cost")),
+        "wasteClicks": _safe_coverage_count(value.get("waste_clicks"), default=0),
+        "wasteSharePct": _number(value.get("waste_share_pct")),
+        "cpaRatio": _number(value.get("cpa_ratio")),
+        "topWaste": top_waste,
+        "topHighCpa": top_high_cpa,
+        "worstSegment": safe_factor(value.get("worst_segment")),
+        "bestSegment": safe_factor(value.get("best_segment")),
+    }
 
 
 def _final_evidence_summary(item: dict[str, Any], *, example_limit: int) -> dict[str, Any]:
@@ -2394,6 +4154,7 @@ def _final_evidence_summary(item: dict[str, Any], *, example_limit: int) -> dict
         "rejectionRules": _final_rule_summaries(
             item.get("matched_rejection_rules") or item.get("rejection_rules"), example_limit,
         ),
+        "diagnostics": _final_diagnostics(item.get("diagnostics"), limit=example_limit),
         "limitations": _bounded_strings(
             item.get("limitations") or item.get("data_quality_warnings"), example_limit,
         ),
@@ -2409,6 +4170,72 @@ def _final_classification_summary(classifications: list[dict[str, Any]]) -> dict
         by_family[family] = by_family.get(family, 0) + 1
         by_subtype[subtype] = by_subtype.get(subtype, 0) + 1
     return {"total": len(classifications), "byFamily": by_family, "bySubtype": by_subtype}
+
+
+def _final_canonical_coverage_projection(
+    snapshot: dict[str, Any], *, compaction_level: int,
+) -> dict[str, Any]:
+    """Keep model-facing coverage bounded without changing the UI/API matrix."""
+
+    coverage = snapshot.get("canonicalEvidenceCoverage") or {}
+    summary = coverage.get("summary") if isinstance(coverage, dict) else {}
+    safe_summary = {
+        str(key)[:80]: value
+        for key, value in (summary.items() if isinstance(summary, dict) else [])
+        if isinstance(value, (int, float, bool)) and not isinstance(value, str)
+    }
+    matrix = coverage.get("campaignMatrix") if isinstance(coverage, dict) else []
+    compact_rows: list[dict[str, Any]] = []
+    status_counts: dict[str, int] = {}
+    for raw in matrix if isinstance(matrix, list) else []:
+        if not isinstance(raw, dict):
+            continue
+        status_value = str(raw.get("status") or "unknown")[:50]
+        status_counts[status_value] = status_counts.get(status_value, 0) + 1
+        compact_rows.append({
+            "campaignName": _safe_final_text(raw.get("campaignName"), max_chars=300) or "Кампания без названия",
+            "capabilityId": str(raw.get("capabilityId") or "unknown")[:100],
+            "status": status_value,
+            "rowsReceived": _safe_coverage_count(raw.get("rowsReceived"), default=0) or 0,
+            "rowsAnalyzedByBackend": _safe_coverage_count(raw.get("rowsAnalyzedByBackend"), default=0) or 0,
+            "rowsSentToAi": _safe_coverage_count(raw.get("rowsSentToAi"), default=0) or 0,
+            "dataQuality": str(raw.get("dataQuality") or "unknown")[:50],
+            "applicable": bool(raw.get("applicable", True)),
+            "absenceReason": _safe_final_text(raw.get("absenceReason"), max_chars=120),
+        })
+
+    status_rank = {
+        "failed": 0,
+        "unavailable": 1,
+        "partial": 2,
+        "insufficient_data": 3,
+        "not_requested": 4,
+        "collected": 5,
+        "not_applicable": 6,
+    }
+    compact_rows.sort(key=lambda item: (
+        status_rank.get(item["status"], 7), item["campaignName"], item["capabilityId"],
+    ))
+    row_limit = {0: 48, 1: 30, 2: 18, 3: 10}.get(max(0, min(int(compaction_level), 3)), 10)
+    account_wide = coverage.get("accountWide") if isinstance(coverage, dict) else []
+    account_wide = account_wide if isinstance(account_wide, list) else []
+    compact_account = [
+        {
+            "capabilityId": str(item.get("capabilityId") or "unknown")[:100],
+            "status": str(item.get("status") or "unknown")[:50],
+            "rowsReceived": _safe_coverage_count(item.get("rowsReceived"), default=0) or 0,
+            "rowsAnalyzedByBackend": _safe_coverage_count(item.get("rowsAnalyzedByBackend"), default=0) or 0,
+        }
+        for item in account_wide[:20]
+        if isinstance(item, dict)
+    ]
+    return {
+        "summary": safe_summary,
+        "matrixRowsTotal": len(compact_rows),
+        "matrixStatusCounts": status_counts,
+        "accountWide": compact_account,
+        "campaignMatrix": compact_rows[:row_limit],
+    }
 
 
 def build_final_audit_projection(
@@ -2561,14 +4388,22 @@ def build_final_audit_projection(
         if item.get("status") == "partial"
     ]
 
-    coverage = {}
-    for key, value in (snapshot.get("dataCoverage") or {}).items():
-        if isinstance(value, dict):
-            coverage[str(key)] = {
-                field: value.get(field)
-                for field in ("available", "total", "analyzed", "source", "status", "reason")
-                if field in value and isinstance(value.get(field), (int, float, str, bool, type(None)))
-            }
+    coverage = _final_canonical_coverage_projection(snapshot, compaction_level=level)
+    decision_limit = 20 if level < 2 else 10
+    decision_scenarios = [
+        {
+            "campaignName": item["campaign_name"],
+            "campaignType": item["campaign_type"],
+            "conversionState": item["conversion_state"],
+            "conversionStateReason": item["conversion_state_reason"],
+            "analysisMode": item["analysis_mode"],
+            "scenarioId": item["scenario_id"],
+            "scenarioVersion": item["scenario_version"],
+            "mustAnalyze": item["scenario_checks"][:6 if level < 2 else 3],
+            "forbiddenClaims": item["forbidden_claims"][:3],
+        }
+        for item in build_campaign_insights(snapshot)[:decision_limit]
+    ]
     return {
         "analysisPeriod": {
             key: analysis_period.get(key)
@@ -2590,6 +4425,7 @@ def build_final_audit_projection(
         },
         "campaignClassificationSummary": _final_classification_summary(classifications),
         "campaignClassifications": compact_classifications,
+        "campaignDecisionScenarios": decision_scenarios,
         "observedFacts": observed_facts,
         "verificationRegistry": hypotheses,
         "omittedHypothesesSummary": {
@@ -2662,6 +4498,83 @@ def final_provider_timeout_code(exc: Exception) -> str | None:
 
 def _effective_final_output_tokens(job: AiAuditJob) -> int:
     return max(1, min(int(job.max_tokens or 0), FINAL_AUDIT_PROVIDER_MAX_TOKENS))
+
+
+def _effective_final_model(job: AiAuditJob) -> str:
+    """Use the latency-optimized structured model for the five-minute summary."""
+
+    profile = execution_profile_for_scope(job.requested_scope)
+    return AI_FALLBACK_ECONOMY_MODEL if profile.id == "short_summary" else job.model
+
+
+def _remaining_final_provider_seconds(snapshot: dict[str, Any]) -> float | None:
+    """Return the provider budget left before the audit hard deadline."""
+
+    remaining = scheduler_deadline_state(snapshot).get("remainingSeconds")
+    if remaining is None:
+        return float(AUDIT_STAGE_TOTAL_TIMEOUT_SECONDS["generate_answer"])
+    return max(
+        0.0,
+        min(
+            float(AUDIT_STAGE_TOTAL_TIMEOUT_SECONDS["generate_answer"]),
+            float(remaining) - FINALIZATION_COMMIT_RESERVE_SECONDS,
+        ),
+    )
+
+
+def _verification_can_start(job: AiAuditJob, snapshot: dict[str, Any]) -> bool:
+    """Reserve enough wall time for the final model before helper verification."""
+
+    remaining = scheduler_deadline_state(snapshot).get("remainingSeconds")
+    if remaining is None:
+        return True
+    profile = _audit_execution_profile(job, snapshot)
+    required_seconds = (
+        profile.finalization_reserve_seconds
+        + int(AUDIT_STAGE_TOTAL_TIMEOUT_SECONDS["verify_hypotheses"])
+        + FINALIZATION_COMMIT_RESERVE_SECONDS
+    )
+    return int(remaining) > required_seconds
+
+
+def _final_schema_repair_timeout(job: AiAuditJob, snapshot: dict[str, Any]) -> httpx.Timeout | None:
+    """Bound a formatting-only retry by both the stage lease and audit deadline."""
+    expires_at = _as_aware(job.stage_lease_expires_at) if job.stage_lease_expires_at else None
+    if expires_at is None:
+        return None
+    deadline_budget = _remaining_final_provider_seconds(snapshot)
+    remaining_seconds = int((expires_at - _now()).total_seconds())
+    if deadline_budget is not None:
+        remaining_seconds = min(remaining_seconds, int(deadline_budget))
+    if remaining_seconds < FINAL_SCHEMA_REPAIR_MIN_REMAINING_SECONDS:
+        return None
+    read_seconds = min(FINAL_SCHEMA_REPAIR_MAX_SECONDS, max(1, remaining_seconds - 10))
+    connect_seconds = min(10.0, float(read_seconds))
+    return httpx.Timeout(
+        connect=connect_seconds,
+        read=float(read_seconds),
+        write=connect_seconds,
+        pool=connect_seconds,
+    )
+
+
+def _build_final_schema_repair_prompt(snapshot: dict[str, Any], job: AiAuditJob) -> tuple[str, dict[str, Any]]:
+    """Re-run the final analysis from trusted evidence, never from an invalid model response."""
+    bundle = build_final_audit_prompt_bundle(
+        snapshot,
+        job,
+        compact_retry=True,
+        minimum_compaction_level=2,
+    )
+    prompt = str(bundle.get("prompt") or "")
+    return (
+        f"""{prompt}
+
+Форматное восстановление: предыдущий ответ не прошёл JSON-контракт.
+Сформируй новый результат только по trusted evidence projection выше. Не используй и не пересказывай предыдущий ответ.
+Верни ровно один валидный JSON-объект по указанному контракту: без Markdown, пояснений или текста вне JSON.""",
+        dict(bundle.get("diagnostics") or {}),
+    )
 
 
 def build_final_audit_prompt_bundle(
@@ -2746,6 +4659,7 @@ Final audit projection:
 {json.dumps(snapshot, ensure_ascii=False, indent=2)}
 
 Evidence policy обязателен: сначала проверь auditCompletionState и evidenceCoverageSummary.
+campaignDecisionScenarios выбраны backend по фактическому состоянию данных. Соблюдай mustAnalyze и forbiddenClaims. При conversionState=unknown продолжай traffic-proxy анализ, но не рассчитывай CPA и не называй неизвестную метрику нулём.
 Если auditCompletionState=partial_coverage, явно перечисли ограничения и не выдавай частично подтверждённую причину за установленный факт.
 Если auditCompletionState=blocked_missing_evidence, полный причинный аудит не завершён: не формируй уверенный action_plan по затронутым сигналам и укажи недостающие обязательные данные.
 Статусы unavailable, partial и missing не заменяй нулевыми значениями.
@@ -2813,7 +4727,7 @@ def build_trusted_result_data_coverage(snapshot: dict[str, Any]) -> dict[str, di
     """Convert internal coverage diagnostics to the strict public audit-result contract."""
     raw_coverage = snapshot.get("dataCoverage") if isinstance(snapshot, dict) else None
     if not isinstance(raw_coverage, dict):
-        return {}
+        raw_coverage = {}
 
     normalized: dict[str, dict[str, Any]] = {}
     for raw_name, raw_item in raw_coverage.items():
@@ -2868,6 +4782,76 @@ def build_trusted_result_data_coverage(snapshot: dict[str, Any]) -> dict[str, di
             "reason": _safe_coverage_text(raw_item.get("reason"), max_chars=500),
             "limitations": limitations,
         }
+
+    # Staged collection is campaign-scoped, while dataCoverage originates from
+    # the initial account snapshot. Reconcile the public result with the
+    # canonical evidence matrix so the final report cannot call collected
+    # Direct slices `not_collected`.
+    coverage_key_by_capability = {
+        "ad_groups": "adGroups",
+        "ad_group_performance": "adGroups",
+        "keywords": "keywords",
+        "keyword_performance": "keywords",
+        "search_queries": "searchQueries",
+        "placements": "placements",
+        "audiences": "audiences",
+        "audience_targets": "audiences",
+        "ads": "adsAndCreatives",
+        "ads_creatives": "adsAndCreatives",
+        "demographics": "demographics",
+        "devices": "devices",
+        "geo": "geo",
+        "goals": "goals",
+        "conversions_by_goal": "goals",
+        "lead_quality": "crmLeadQuality",
+    }
+    canonical = snapshot.get("canonicalEvidenceCoverage") if isinstance(snapshot, dict) else None
+    campaign_entries = (
+        canonical.get("campaignScoped")
+        if isinstance(canonical, dict) and isinstance(canonical.get("campaignScoped"), list)
+        else []
+    )
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for item in campaign_entries:
+        if not isinstance(item, dict):
+            continue
+        rows_received = _safe_coverage_count(item.get("rowsReceived"), default=0) or 0
+        if rows_received <= 0 or item.get("status") not in AVAILABLE_AUDIT_DATA_STATUSES:
+            continue
+        capability = str(item.get("capabilityId") or "").strip()
+        if not capability:
+            continue
+        grouped.setdefault(coverage_key_by_capability.get(capability, capability), []).append(item)
+
+    for name, items in grouped.items():
+        total = sum(_safe_coverage_count(item.get("rowsReceived"), default=0) or 0 for item in items)
+        analyzed = sum(
+            _safe_coverage_count(
+                item.get("rowsAnalyzedByBackend"),
+                default=_safe_coverage_count(item.get("rowsReceived"), default=0),
+            ) or 0
+            for item in items
+        )
+        sources = list(dict.fromkeys(
+            str(item.get("source")).strip()
+            for item in items
+            if str(item.get("source") or "").strip()
+        ))
+        limitations = list(dict.fromkeys(
+            str(value).strip()[:500]
+            for item in items
+            for value in (item.get("limitations") or [])
+            if isinstance(value, str) and value.strip()
+        ))[:20]
+        normalized[name] = {
+            "available": True,
+            "total": total,
+            "analyzed": analyzed,
+            "source": ", ".join(sources)[:200] or None,
+            "period": _safe_coverage_period(items[0].get("period")),
+            "reason": None,
+            "limitations": limitations,
+        }
     return normalized
 
 
@@ -2883,7 +4867,35 @@ def _trusted_result_meta(snapshot: dict[str, Any], job: AiAuditJob, response: di
         },
         "data_coverage": build_trusted_result_data_coverage(snapshot),
         "model": response.get("model") or job.model,
-        "output_budget_tokens": job.max_tokens,
+        "output_budget_tokens": _effective_final_output_tokens(job),
+    }
+
+
+def _safe_final_schema_repair_diagnostics(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+
+    def response_metadata(item: Any) -> dict[str, Any] | None:
+        if not isinstance(item, dict):
+            return None
+        return {
+            "sha256": str(item.get("sha256") or "")[:64] or None,
+            "length": max(0, int(item.get("length") or 0)),
+            "sourceFormat": str(item.get("sourceFormat") or "")[:100] or None,
+            "fullResponseStored": bool(item.get("fullResponseStored")),
+        }
+
+    return {
+        "attempted": bool(value.get("attempted")),
+        "status": str(value.get("status") or "unknown")[:100],
+        "errorCode": str(value.get("errorCode") or "")[:100] or None,
+        "returnedModel": str(value.get("returnedModel") or "")[:200] or None,
+        "promptEstimatedTokens": max(0, int(value.get("promptEstimatedTokens") or 0)),
+        "compactionLevel": max(0, int(value.get("compactionLevel") or 0)),
+        "initialParsing": _safe_model_response_parsing(value.get("initialParsing")),
+        "parsing": _safe_model_response_parsing(value.get("parsing")),
+        "initialResponse": response_metadata(value.get("initialResponse")),
+        "response": response_metadata(value.get("response")),
     }
 
 
@@ -2904,6 +4916,9 @@ def _record_final_generation_diagnostics(
             "requestedOutputTokens", "effectiveFinalOutputTokens", "providerTimedOut", "providerErrorCode",
         )
     }
+    safe_diagnostics["schemaRepair"] = _safe_final_schema_repair_diagnostics(
+        diagnostics.get("schemaRepair"),
+    )
     runtime = _audit_runtime(snapshot)
     runtime.update(safe_diagnostics)
     runtime["finalGenerationStatus"] = status_value
@@ -3024,6 +5039,407 @@ def _parse_model_json(answer: str, model_type: Any) -> tuple[Any | None, dict[st
     return validated, metadata
 
 
+def _reconcile_structured_evidence_claims(
+    result: dict[str, Any], snapshot: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Reconcile only against evidence from the exact trusted campaign/account scope."""
+
+    coverage = snapshot.get("canonicalEvidenceCoverage") or {}
+    trusted_names = set((snapshot.get("_trustedCampaignScopes") or {}).keys())
+    ambiguous_names = {str(item) for item in (snapshot.get("_ambiguousCampaignNames") or [])}
+
+    def available(item: Any) -> bool:
+        return (
+            isinstance(item, dict)
+            and int(item.get("rowsReceived") or 0) > 0
+            and item.get("status") in AVAILABLE_AUDIT_DATA_STATUSES
+        )
+
+    def add_aliases(target: dict[str, dict[str, Any]], item: dict[str, Any]) -> None:
+        for candidate in capability_candidates(item.get("capabilityId")):
+            target[candidate] = item
+
+    campaign_entries: dict[str, dict[str, dict[str, Any]]] = {}
+    ambiguous_entries: dict[str, dict[str, dict[str, Any]]] = {}
+    for item in coverage.get("campaignScoped") or []:
+        if not available(item):
+            continue
+        campaign = str(item.get("campaignName") or "")
+        target = ambiguous_entries if campaign in ambiguous_names else campaign_entries
+        if campaign in trusted_names or campaign in ambiguous_names:
+            add_aliases(target.setdefault(campaign, {}), item)
+
+    account_collected: dict[str, dict[str, Any]] = {}
+    for item in coverage.get("accountWide") or []:
+        if available(item):
+            add_aliases(account_collected, item)
+
+    any_campaign_coverage: dict[str, dict[str, Any]] = {}
+    campaign_coverage_by_capability: dict[str, set[str]] = {}
+    for campaign_name, entries in campaign_entries.items():
+        for item in entries.values():
+            capability = str(item.get("capabilityId") or "")
+            if not capability:
+                continue
+            add_aliases(any_campaign_coverage, item)
+            campaign_coverage_by_capability.setdefault(capability, set()).add(campaign_name)
+
+    capability_coverage_counts: dict[str, tuple[int, int]] = {}
+    for item in coverage.get("capabilitySummary") or []:
+        if not isinstance(item, dict):
+            continue
+        capability = str(item.get("capabilityId") or "")
+        applicable = int(item.get("applicableCampaigns") or 0)
+        covered = int(item.get("coveredCampaigns") or 0)
+        if capability and applicable > 0:
+            capability_coverage_counts[capability] = (covered, applicable)
+
+    complete_account_coverage: dict[str, dict[str, Any]] = {}
+    if capability_coverage_counts:
+        for capability, (covered, applicable) in capability_coverage_counts.items():
+            if covered < applicable:
+                continue
+            evidence = next((
+                any_campaign_coverage.get(candidate)
+                for candidate in capability_candidates(capability)
+                if any_campaign_coverage.get(candidate)
+            ), None)
+            if evidence:
+                add_aliases(complete_account_coverage, evidence)
+    elif trusted_names and not ambiguous_names:
+        capabilities = {
+            str(item.get("capabilityId") or "")
+            for entries in campaign_entries.values()
+            for item in entries.values()
+            if item.get("capabilityId")
+        }
+        for capability in capabilities:
+            candidates = capability_candidates(capability)
+            matched = [
+                next((campaign_entries.get(name, {}).get(value) for value in candidates if campaign_entries.get(name, {}).get(value)), None)
+                for name in trusted_names
+            ]
+            if matched and all(matched):
+                for candidate in candidates:
+                    complete_account_coverage[candidate] = matched[0]
+    account_available = {**complete_account_coverage, **account_collected}
+    account_claim_available = {**any_campaign_coverage, **account_collected}
+    if capability_coverage_counts:
+        partial_account_capabilities = {
+            capability
+            for capability, (covered, applicable) in capability_coverage_counts.items()
+            if 0 < covered < applicable
+            and not any(candidate in account_collected for candidate in capability_candidates(capability))
+        }
+    else:
+        partial_account_capabilities = {
+            capability
+            for capability, campaign_names in campaign_coverage_by_capability.items()
+            if len(campaign_names) < len(trusted_names)
+            and not any(candidate in account_collected for candidate in capability_candidates(capability))
+        }
+
+    removed: list[dict[str, str]] = []
+    quality_limitations: list[str] = []
+    partial_claim_capabilities: set[str] = set()
+    text_conflicts = 0
+    ambiguous_text_conflicts = 0
+    capability_terms = {
+        "search_queries": ("search_queries", "search queries", "поисков", "запрос"),
+        "placements": ("placements", "placement", "площадк"),
+        "devices": ("devices", "device", "устройств"),
+        "geo": ("geo", "географ", "регион"),
+        "goals": ("goals", "целям", "цели", "конверси"),
+        "conversions_by_goal": ("conversions_by_goal", "conversion_data", "конверси"),
+        "retargeting_segments": ("retargeting_segments", "retargeting", "ретаргет"),
+        "campaign_daily_dynamics": ("campaign_daily_dynamics", "динамик"),
+        "ad_group_performance": ("ad_group_performance", "ad_group", "групп объяв"),
+        "ad_groups": ("ad_groups", "ad groups", "групп объяв"),
+        "keyword_performance": ("keyword_performance", "keyword", "ключев"),
+        "keywords": ("keywords", "keyword", "ключев"),
+        "campaign_settings": ("campaign_settings", "настройк камп"),
+        "audience_targets": ("audience", "аудитор"),
+        "audiences": ("audiences", "audience", "аудитор"),
+        "ads": ("ads_creatives", "объявлен", "креатив"),
+        "demographics": ("demographics", "демограф"),
+        "autotargeting": ("autotargeting", "автотаргет"),
+    }
+    missing_markers = (
+        "не собран", "не получен", "нет данных", "данные отсутств", "отсутств", "недоступны данные",
+        "missing", "not collected", "no data", "data unavailable",
+    )
+    public_capability_labels = {
+        "campaigns": "кампаниям",
+        "campaign_performance": "эффективности кампаний",
+        "campaign_daily_dynamics": "динамике кампаний",
+        "campaign_settings": "настройкам кампаний",
+        "campaign_strategy": "стратегиям кампаний",
+        "campaign_status": "статусам кампаний",
+        "conversions_by_goal": "конверсиям по выбранным целям",
+        "conversion_data": "конверсиям",
+        "goals": "целям",
+        "search_queries": "поисковым запросам",
+        "placements": "площадкам РСЯ",
+        "devices": "устройствам",
+        "geo": "географии",
+        "retargeting_segments": "сегментам ретаргетинга",
+        "audience_targets": "аудиторным сегментам",
+        "ad_group_performance": "эффективности групп объявлений",
+        "ad_groups": "группам объявлений",
+        "keyword_performance": "эффективности ключевых фраз",
+        "keywords": "ключевым фразам",
+        "ads": "объявлениям и креативам",
+        "audiences": "аудиторным сегментам",
+        "demographics": "демографии",
+        "autotargeting": "автотаргетингу",
+    }
+
+    def evidence_for_scope(campaign_name: Any, *, account: bool = False) -> dict[str, dict[str, Any]]:
+        if account:
+            return account_available
+        name = str(campaign_name or "").strip()
+        return campaign_entries.get(name, {}) if name in trusted_names else {}
+
+    def text_conflict(text: Any, campaign_name: Any = None, *, account: bool = False) -> tuple[bool, bool]:
+        normalized = str(text or "").casefold()
+        if not normalized or not any(marker in normalized for marker in missing_markers):
+            return False, False
+        candidates = account_claim_available if account else evidence_for_scope(campaign_name)
+        matched_capabilities = {
+            str(item.get("capabilityId"))
+            for item in candidates.values()
+            if item.get("capabilityId")
+            and any(
+                term in normalized
+                for term in capability_terms.get(
+                    str(item.get("capabilityId")),
+                    (str(item.get("capabilityId")),),
+                )
+            )
+        }
+        if account:
+            partial_claim_capabilities.update(matched_capabilities & partial_account_capabilities)
+        conflict = bool(matched_capabilities)
+        name = str(campaign_name or "").strip()
+        ambiguous = name in ambiguous_names and any(
+            any(term in normalized for term in capability_terms.get(str(item.get("capabilityId")), (str(item.get("capabilityId")),)))
+            for item in ambiguous_entries.get(name, {}).values()
+        )
+        return conflict, ambiguous
+
+    def public_capability_label(value: Any) -> str:
+        for candidate in capability_candidates(value):
+            if candidate in public_capability_labels:
+                return public_capability_labels[candidate]
+        return "дополнительному срезу данных"
+
+    def quality_description(evidence: dict[str, Any]) -> str:
+        reason = str(evidence.get("qualityReason") or "low_data")
+        if reason == "unknown_conversion_metric":
+            return "метрика конверсий недоступна или некорректна"
+        if reason in {"low_data", "insufficient_data", "no_rows"}:
+            return "выборка ограничена"
+        return "качество выборки ограничивает вывод"
+
+    def normalize_with_evidence(
+        values: Any, campaign_name: Any, *, account: bool = False,
+    ) -> tuple[list[str], list[dict[str, Any]]]:
+        scoped = evidence_for_scope(campaign_name, account=account)
+        kept: list[str] = []
+        collected: list[dict[str, Any]] = []
+        for raw in values or []:
+            capability = str(raw)
+            evidence = next((scoped.get(candidate) for candidate in capability_candidates(capability) if scoped.get(candidate)), None)
+            if evidence is None:
+                kept.append(capability)
+                continue
+            canonical = str(evidence.get("capabilityId") or capability)
+            removed.append({"campaignName": str(campaign_name or "account"), "capabilityId": canonical})
+            collected.append(evidence)
+            if evidence.get("dataQuality") != "sufficient":
+                quality_limitations.append(
+                    f"{campaign_name or 'Аккаунт'}: данные по {public_capability_label(canonical)} собраны, "
+                    f"но {quality_description(evidence)}."
+                )
+        unique_collected = {
+            str(item.get("capabilityId") or ""): item for item in collected
+        }
+        return list(dict.fromkeys(kept))[:5], list(unique_collected.values())
+
+    def normalize(values: Any, campaign_name: Any, *, account: bool = False) -> list[str]:
+        kept, _ = normalize_with_evidence(values, campaign_name, account=account)
+        return kept
+
+    def rebuild_insufficient_data_text(
+        remaining: list[str], collected: list[dict[str, Any]],
+    ) -> tuple[str, str]:
+        sufficient = [
+            public_capability_label(item.get("capabilityId"))
+            for item in collected if item.get("dataQuality") == "sufficient"
+        ]
+        limited = [
+            (public_capability_label(item.get("capabilityId")), quality_description(item))
+            for item in collected if item.get("dataQuality") != "sufficient"
+        ]
+        missing = list(dict.fromkeys(public_capability_label(item) for item in remaining))
+        reason_parts = [f"Данные по {label} собраны." for label in dict.fromkeys(sufficient)]
+        reason_parts.extend(
+            f"Данные по {label} собраны, но {description}."
+            for label, description in dict.fromkeys(limited)
+        )
+        reason_parts.extend(f"Данные по {label} недоступны или недостаточны." for label in missing)
+
+        recommendation_parts = [
+            f"Проверить доступность и синхронизацию данных по {label}." for label in missing
+        ]
+        collected_labels = list(dict.fromkeys([*sufficient, *(label for label, _ in limited)]))
+        if collected_labels:
+            recommendation_parts.append(
+                "Повторно запрашивать уже собранные данные по "
+                f"{', '.join(collected_labels)} не требуется."
+            )
+        if not recommendation_parts:
+            recommendation_parts.append(
+                "Учитывать качество и объём уже собранной выборки без повторного запроса тех же данных."
+            )
+        return " ".join(reason_parts), " ".join(recommendation_parts)
+
+    for section in ("critical_findings", "opportunities"):
+        for finding in result.get(section) or []:
+            campaign_name = finding.get("campaign_name")
+            is_account = not campaign_name and finding.get("analysis_level") == "account"
+            before = list(finding.get("next_data_needed") or [])
+            finding["next_data_needed"] = normalize(before, campaign_name, account=is_account)
+            if before and not finding["next_data_needed"]:
+                finding["recommendation"] = (
+                    "Использовать уже собранные backend-данные; при недостаточной выборке "
+                    "ограничить уверенность вывода, а не запрашивать тот же срез повторно."
+                )
+            for field in ("problem", "fact", "hypothesis", "recommendation"):
+                conflict, ambiguous = text_conflict(finding.get(field), campaign_name, account=is_account)
+                ambiguous_text_conflicts += int(ambiguous)
+                if conflict:
+                    text_conflicts += 1
+                    finding[field] = (
+                        "Backend подтверждает наличие этого среза данных. "
+                        "Ограничения следует описывать через качество и объём выборки."
+                    )
+
+    for item in result.get("insufficient_data_campaigns") or []:
+        before = list(item.get("next_data_needed") or [])
+        campaign_name = item.get("campaign_name")
+        remaining, collected = normalize_with_evidence(before, campaign_name)
+        item["next_data_needed"] = remaining
+        if collected:
+            reason, recommendation = rebuild_insufficient_data_text(remaining, collected)
+            for field, value in (("reason", reason), ("recommendation", recommendation)):
+                if str(item.get(field) or "") != value:
+                    text_conflicts += 1
+                    item[field] = value
+        else:
+            for field in ("reason", "recommendation"):
+                _, ambiguous = text_conflict(item.get(field), campaign_name)
+                ambiguous_text_conflicts += int(ambiguous)
+
+    drilldown = result.get("drilldown_summary") or {}
+    globally_analyzed = sorted({
+        str(item.get("capabilityId"))
+        for item in [*(coverage.get("accountWide") or []), *(coverage.get("campaignScoped") or [])]
+        if available(item) and item.get("capabilityId")
+    })
+    drilldown["analyzed_levels"] = list(dict.fromkeys([
+        *(drilldown.get("analyzed_levels") or []), *globally_analyzed,
+    ]))
+    drilldown["not_analyzed_levels"] = [
+        item for item in (drilldown.get("not_analyzed_levels") or [])
+        if not any(candidate in account_claim_available for candidate in capability_candidates(item))
+    ]
+    drilldown["next_data_needed"] = normalize(
+        drilldown.get("next_data_needed") or [], None, account=True,
+    )
+    result["drilldown_summary"] = drilldown
+
+    safe_actions = []
+    account_scope_labels = {
+        "account", "аккаунт", "весь аккаунт", "all account",
+        "все кампании", "all campaigns",
+    }
+    for action in result.get("action_plan") or []:
+        scope = str(action.get("scope") or "").strip()
+        is_account = scope.casefold() in account_scope_labels
+        conflict, ambiguous = text_conflict(
+            " ".join((str(action.get("action") or ""), str(action.get("reason") or ""))),
+            scope,
+            account=is_account,
+        )
+        ambiguous_text_conflicts += int(ambiguous)
+        if conflict:
+            text_conflicts += 1
+            continue
+        safe_actions.append(action)
+    result["action_plan"] = safe_actions
+
+    safe_limitations = []
+    for item in result.get("limitations") or []:
+        conflict, _ = text_conflict(item, account=True)
+        if conflict:
+            text_conflicts += 1
+            continue
+        safe_limitations.append(item)
+    result["limitations"] = safe_limitations
+    for field in ("executive_summary", "conclusion"):
+        conflict, _ = text_conflict(result.get(field), account=True)
+        if conflict:
+            text_conflicts += 1
+            if partial_claim_capabilities:
+                labels = list(dict.fromkeys(
+                    public_capability_label(capability)
+                    for capability in sorted(partial_claim_capabilities)
+                ))
+                result[field] = (
+                    f"Данные по {', '.join(labels)} собраны для части кампаний. "
+                    "Непокрытые кампании и ограничения выборки указаны в матрице покрытия."
+                )
+            else:
+                result[field] = (
+                    "Результат согласован с фактически собранными account-wide данными; "
+                    "оставшиеся ограничения относятся к качеству и объёму выборки."
+                )
+
+    def account_coverage_count(capability: str) -> tuple[int, int]:
+        return capability_coverage_counts.get(capability, (
+            len(campaign_coverage_by_capability.get(capability, set())),
+            len(trusted_names),
+        ))
+
+    partial_coverage_limitations = [
+        (
+            f"Данные по {public_capability_label(capability)} собраны для "
+            f"{account_coverage_count(capability)[0]} из {account_coverage_count(capability)[1]} кампаний; "
+            "для остальных кампаний выводы по этому срезу ограничены."
+        )
+        for capability in sorted(partial_claim_capabilities)
+    ]
+    if quality_limitations or partial_coverage_limitations:
+        result["limitations"] = list(dict.fromkeys([
+            *(result.get("limitations") or []), *quality_limitations, *partial_coverage_limitations,
+        ]))
+    diagnostics = {
+        "status": "final_output_evidence_reconciled" if removed or text_conflicts else "consistent",
+        "removedFalseMissingClaims": len(removed),
+        "removedFreeTextConflicts": text_conflicts,
+        "ambiguousFreeTextConflicts": ambiguous_text_conflicts,
+        "requiresBackendFallback": bool(ambiguous_text_conflicts),
+        "qualityLimitationsAdded": len(set(quality_limitations)),
+        "capabilities": sorted({item["capabilityId"] for item in removed}),
+        "accountCapabilities": sorted({str(item.get("capabilityId")) for item in account_collected.values()}),
+        "completeAccountCoverage": sorted({str(item.get("capabilityId")) for item in complete_account_coverage.values()}),
+        "partialAccountCoverage": sorted(partial_account_capabilities),
+    }
+    snapshot["finalOutputEvidenceReconciliation"] = diagnostics
+    return result, diagnostics
+
+
 def _validate_structured_result_with_metadata(
     answer: str,
     *,
@@ -3068,10 +5484,24 @@ def _validate_structured_result_with_metadata(
         parsing["parseOutcome"] = "section_validation_recovered"
         parsing["errorCode"] = "partial_schema_validation"
         parsing["sectionWarnings"] = recovery_warnings
-        return _enforce_verified_result(validated, snapshot), parsing
+        enforced = _enforce_verified_result(validated, snapshot)
+        reconciled, diagnostics = _reconcile_structured_evidence_claims(enforced, snapshot)
+        parsing["evidenceReconciliation"] = diagnostics
+        if diagnostics.get("requiresBackendFallback"):
+            parsing["status"] = "fallback"
+            parsing["errorCode"] = "final_output_evidence_scope_ambiguous"
+            return None, parsing
+        return reconciled, parsing
     parsing["status"] = "success"
     parsing["errorCode"] = "truncated_provider_response" if finish_reason == "length" else None
-    return _enforce_verified_result(validated, snapshot), parsing
+    enforced = _enforce_verified_result(validated, snapshot)
+    reconciled, diagnostics = _reconcile_structured_evidence_claims(enforced, snapshot)
+    parsing["evidenceReconciliation"] = diagnostics
+    if diagnostics.get("requiresBackendFallback"):
+        parsing["status"] = "fallback"
+        parsing["errorCode"] = "final_output_evidence_scope_ambiguous"
+        return None, parsing
+    return reconciled, parsing
 
 
 def _recover_partial_audit_result(parsed: dict[str, Any]) -> tuple[dict[str, Any] | None, list[str]]:
@@ -3280,6 +5710,9 @@ def _enforce_verified_result(result: dict[str, Any], snapshot: dict[str, Any]) -
         action["requires_human_approval"] = True
         safe_actions.append(action)
     result["action_plan"] = safe_actions[:10]
+    # The primary campaign table is always rebuilt from trusted backend facts.
+    # Model prose cannot remove, rename or overstate these conclusions.
+    result["campaign_insights"] = build_campaign_insights(snapshot)
     result["tracking_and_goals"] = _trusted_tracking_and_goals(snapshot)
     return result
 
@@ -3529,6 +5962,7 @@ def _complete_backend_fallback_stage(
         status_value=final_status,
         backend_fallback_used=True,
     )
+    mark_scheduler_progress(snapshot, action=final_status, successful=True)
     job.context_snapshot_json = _json_dump(snapshot)
     job.answer_text = build_audit_answer_markdown(structured, snapshot)
     job.result_json = _json_dump({
@@ -3568,7 +6002,10 @@ def _complete_backend_fallback_stage(
         ),
         "completeness": (
             evidence_coverage["completionState"]
-            if snapshot.get("evidenceCoverageRegistry")
+            if (
+                snapshot.get("evidenceCoverageRegistry")
+                or evidence_coverage["completionState"] == "partial_coverage"
+            )
             else "backend_fallback"
         ),
         "auditCompletionState": evidence_coverage["completionState"],
@@ -3604,7 +6041,11 @@ def _complete_backend_fallback_stage(
         timings["finalizeMs"] = 0
     _complete_provider_stage(job, "generate_answer")
     timings["totalElapsedMs"] = max(
-        0, round((_now() - _as_aware(job.created_at or _now())).total_seconds() * 1000),
+        0,
+        round(
+            (_now() - _as_aware(job.started_at or job.created_at or _now())).total_seconds()
+            * 1000
+        ),
     )
     job.timings_json = _json_dump(timings)
     job.stage_version += 1
@@ -3710,6 +6151,25 @@ def _audit_runtime(snapshot: dict[str, Any]) -> dict[str, Any]:
         "requirementsBlocked": 0,
         "completionState": "complete",
         "completionGateRuns": 0,
+        "executionProfile": "full_account",
+        "softTargetAt": None,
+        "hardDeadlineAt": None,
+        "collectionDeadlineAt": None,
+        "finalizationReserveSeconds": 120,
+        "requestSafetyLimit": 128,
+        "maxDepthRounds": MAX_INVESTIGATION_ROUNDS,
+        "schedulerPhase": "breadth",
+        "lastProgressAt": None,
+        "lastSuccessfulActionAt": None,
+        "lastAction": None,
+        "nextRetryAt": None,
+        "waitingReason": None,
+        "recoveryStatus": "idle",
+        "campaignsTotal": 0,
+        "campaignsCovered": 0,
+        "breadthRequestsTotal": 0,
+        "breadthRequestsCompleted": 0,
+        "depthRequestsTotal": 0,
         "tokenUsage": {"prompt": 0, "completion": 0, "total": 0},
     }
     runtime = snapshot.setdefault("auditRuntime", {})
@@ -3736,6 +6196,153 @@ def _sync_policy_runtime(snapshot: dict[str, Any], coverage: dict[str, Any] | No
         "completionState": str(coverage.get("completionState") or "complete"),
     })
     return runtime
+
+
+def _audit_execution_profile(job: AiAuditJob, snapshot: dict[str, Any]):
+    runtime = _audit_runtime(snapshot)
+    profile_id = str(runtime.get("executionProfile") or "")
+    return execution_profile_for_scope(profile_id or job.requested_scope)
+
+
+def _minimum_coverage_plan(
+    requests: list[AuditDataRequest], snapshot: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    plan = [
+        {
+            "campaignName": item.campaign_name,
+            "capabilityId": item.capability_id or item.dimension,
+            "applicable": True,
+        }
+        for item in requests
+    ]
+    for classification in (snapshot or {}).get("campaignClassifications") or []:
+        campaign_name = str(classification.get("campaign_name") or "")
+        if not campaign_name:
+            continue
+        plan.extend([
+            {"campaignName": campaign_name, "capabilityId": "campaign_settings", "applicable": True},
+            {"campaignName": campaign_name, "capabilityId": "campaign_performance", "applicable": True},
+        ])
+    unique: dict[tuple[str, str], dict[str, Any]] = {}
+    for item in plan:
+        unique[(str(item["campaignName"]), str(item["capabilityId"]))] = item
+    return list(unique.values())
+
+
+def _request_key(item: AuditDataRequest) -> tuple[str, str]:
+    return item.campaign_name, str(item.capability_id or item.dimension)
+
+
+def _deduplicate_requests(requests: list[AuditDataRequest]) -> list[AuditDataRequest]:
+    result: list[AuditDataRequest] = []
+    seen: set[tuple[str, str]] = set()
+    for item in requests:
+        key = _request_key(item)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(item)
+    return result
+
+
+def _pending_report_wait(db: Session, job: AiAuditJob) -> tuple[str | None, datetime | None]:
+    report_jobs = list(db.scalars(select(DirectReportJob).where(
+        DirectReportJob.audit_job_id == job.id,
+        DirectReportJob.client_id == job.client_id,
+        DirectReportJob.status.in_(("queued", "requested", "processing", "waiting_for_report_queue")),
+    )))
+    retry_values = [_as_aware(item.next_retry_at) for item in report_jobs if item.next_retry_at]
+    next_retry = min(retry_values) if retry_values else None
+    if any(item.status == "waiting_for_report_queue" for item in report_jobs):
+        return "direct_report_queue", next_retry
+    if any(item.status in {"queued", "requested", "processing"} for item in report_jobs):
+        return "offline_report_processing", next_retry
+    return None, next_retry
+
+
+def _refresh_scheduler_coverage(snapshot: dict[str, Any], full_results: list[dict[str, Any]]) -> None:
+    index = build_canonical_evidence_index(snapshot, full_results)
+    projection = canonical_coverage_projection(index, snapshot)
+    snapshot["canonicalEvidenceCoverage"] = projection
+    runtime = _audit_runtime(snapshot)
+    summary = projection.get("summary") or {}
+    runtime["campaignsTotal"] = int(summary.get("applicableCampaigns") or 0)
+    runtime["campaignsCovered"] = int(summary.get("coveredCampaigns") or 0)
+    breadth_keys = {
+        (str(item.get("campaignName") or ""), str(item.get("capabilityId") or ""))
+        for item in snapshot.get("minimumCoveragePlan") or []
+        if isinstance(item, dict)
+    }
+    completed = {
+        (str(item.get("campaignName") or ""), str(item.get("capabilityId") or ""))
+        for item in projection.get("campaignMatrix") or []
+        if item.get("status") in {
+            "collected", "partial", "insufficient_data", "not_applicable", "unavailable", "failed",
+        }
+    }
+    runtime["breadthRequestsTotal"] = len(breadth_keys)
+    runtime["breadthRequestsCompleted"] = len(breadth_keys & completed)
+
+
+def _deadline_skip_results(requests: list[AuditDataRequest]) -> list[dict[str, Any]]:
+    return [AuditDataRequestResult(
+        request_id=item.request_id,
+        hypothesis_id=item.hypothesis_id,
+        capability_id=item.capability_id or item.dimension,
+        dimension=item.dimension,
+        campaign_name=item.campaign_name,
+        status="skipped_budget_limit",
+        source="backend_scheduler",
+        summary="Временной бюджет сбора данных завершён; аудит продолжен с частичным покрытием.",
+        error_code="audit_collection_deadline_reached",
+    ).model_dump(mode="json") for item in requests]
+
+
+def _finish_collection_for_deadline(
+    db: Session,
+    job: AiAuditJob,
+    snapshot: dict[str, Any],
+    requests: list[AuditDataRequest],
+    *,
+    reason: str,
+) -> None:
+    skipped = _deadline_skip_results(_deduplicate_requests(requests))
+    full_results = _merge_full_drilldown_results(
+        _load_full_drilldown_results(db, job), skipped,
+    )
+    _save_full_drilldown_results(db, job, full_results)
+    _refresh_drilldown_projections(snapshot, full_results)
+    evidence_results = _load_full_evidence_results(db, job)
+    refresh_evidence_coverage_registry(snapshot, evidence_results)
+    _refresh_scheduler_coverage(snapshot, evidence_results)
+    snapshot["pendingDataRequests"] = []
+    snapshot["processingDataRequests"] = []
+    snapshot["deferredDepthDataRequests"] = []
+    runtime = _audit_runtime(snapshot)
+    runtime["schedulerPhase"] = "finalization"
+    runtime["stopReason"] = reason
+    runtime["deadlineReached"] = True
+    mark_scheduler_progress(snapshot, action=reason)
+    job.context_snapshot_json = _json_dump(snapshot)
+    job.status = "context_ready"
+    job.current_stage = "generate_answer"
+    job.stage_attempt = 0
+    job.progress_percent = 78
+
+
+def _activate_deferred_depth(snapshot: dict[str, Any]) -> bool:
+    deferred = [
+        AuditDataRequest.model_validate(item)
+        for item in snapshot.pop("deferredDepthDataRequests", [])
+    ]
+    if not deferred:
+        return False
+    snapshot["pendingDataRequests"] = [item.model_dump(mode="json") for item in deferred]
+    snapshot["processingDataRequests"] = []
+    runtime = _audit_runtime(snapshot)
+    runtime["schedulerPhase"] = "depth"
+    mark_scheduler_progress(snapshot, action="breadth_coverage_completed", successful=True)
+    return True
 
 
 def _policy_rejection_result(item: dict[str, Any]) -> dict[str, Any]:
@@ -3911,29 +6518,46 @@ def _safe_ai_sample(value: Any) -> Any:
 
 def _cap_drilldown_results(results: list[dict[str, Any]], token_target: int = DRILLDOWN_TOKEN_TARGET) -> list[dict[str, Any]]:
     compact: list[dict[str, Any]] = []
+    source_rows: list[list[dict[str, Any]]] = []
     used = 0
     for original in results:
         item = _safe_ai_sample(dict(original))
         rows = list(item.pop("data", []) or [])
         base_tokens = estimate_tokens(_json_dump(item))
-        if used + base_tokens > token_target:
-            item["data"] = []
-            item["limitations"] = list(item.get("limitations") or []) + ["Данные исключены из AI-контекста из-за общего token budget."]
-            compact.append(item)
-            continue
-        included = []
         used += base_tokens
-        for row in rows:
+        item["data"] = []
+        item["ai_sample_rows"] = 0
+        compact.append(item)
+        source_rows.append(rows)
+
+    # Allocate rows round-robin across evidence sets. The previous sequential
+    # fill allowed early 500-row reports to consume the whole budget and left
+    # later campaigns with zero AI evidence even though backend analyzed them.
+    row_indexes = [0] * len(compact)
+    while used < token_target:
+        added = False
+        for index, rows in enumerate(source_rows):
+            row_index = row_indexes[index]
+            if row_index >= len(rows):
+                continue
+            row = rows[row_index]
             row_tokens = estimate_tokens(_json_dump(row))
             if used + row_tokens > token_target:
-                break
-            included.append(row)
+                continue
+            compact[index]["data"].append(row)
+            compact[index]["ai_sample_rows"] += 1
+            row_indexes[index] += 1
             used += row_tokens
-        item["data"] = included
-        item["ai_sample_rows"] = len(included)
-        if len(included) < len(rows):
-            item["limitations"] = list(item.get("limitations") or []) + [f"В AI-контекст включено {len(included)} из {len(rows)} строк."]
-        compact.append(item)
+            added = True
+        if not added:
+            break
+
+    for item, rows in zip(compact, source_rows):
+        included = int(item.get("ai_sample_rows") or 0)
+        if included < len(rows):
+            item["limitations"] = list(item.get("limitations") or []) + [
+                f"В AI-контекст включено {included} из {len(rows)} строк."
+            ]
     return compact
 
 
@@ -3971,6 +6595,20 @@ def _save_full_drilldown_results(db: Session, job: AiAuditJob, results: list[dic
 
 def _load_full_baseline_results(db: Session, job: AiAuditJob) -> list[dict[str, Any]]:
     return load_audit_evidence_results(db, job, evidence_kind="baseline")
+
+
+def _load_full_evidence_results(db: Session, job: AiAuditJob) -> list[dict[str, Any]]:
+    """Return all persisted read-only evidence, including the fresh baseline.
+
+    Baseline campaign and performance rows are account-wide requests, but they
+    are canonically derived into campaign-scoped evidence after campaign IDs
+    are trusted.  Dropping them when drilldown evidence is refreshed makes the
+    coverage matrix report zero covered campaigns despite collected live data.
+    """
+    return _merge_full_drilldown_results(
+        _load_full_baseline_results(db, job),
+        _load_full_drilldown_results(db, job),
+    )
 
 
 def _save_full_baseline_results(db: Session, job: AiAuditJob, results: list[dict[str, Any]]) -> None:
@@ -4012,6 +6650,7 @@ def _drilldown_evidence_summaries(
                     numeric_counts[parse_numeric_metric(value).state] += 1
         summaries.append({
             **summary,
+            "campaign_name": item.get("campaign_name"),
             "numeric_state_counts": numeric_counts,
             "confirmation_rules": [rule for rule in rules if rule.get("rule_code") == confirmation_code],
             "rejection_rules": [rule for rule in rules if rule.get("rule_code") == rejection_code],
@@ -4083,6 +6722,8 @@ def _refresh_direct_read_runtime(snapshot: dict[str, Any], direct_api_calls: int
         "direct_permission_denied",
         "direct_invalid_field_combination",
         "direct_report_processing",
+        "direct_report_queue_full",
+        "direct_report_queue_full_timeout",
         "direct_rate_limited",
         "direct_no_data",
         "adapter_failed",
@@ -4140,7 +6781,33 @@ def _locked_job(db: Session, job_id: str, organization_id: str) -> AiAuditJob:
     return job
 
 
+def _read_job(db: Session, job_id: str, organization_id: str) -> AiAuditJob:
+    """Read a job without taking the row lock used by state-changing stages."""
+    job = db.scalar(
+        select(AiAuditJob).where(
+            AiAuditJob.id == job_id,
+            AiAuditJob.organization_id == organization_id,
+        )
+    )
+    if not job:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="AI audit job not found")
+    return job
+
+
 def is_audit_stage_stale(job: AiAuditJob, now: datetime | None = None) -> bool:
+    current = _as_aware(now or _now())
+    if job.status == "queued":
+        created = job.created_at or job.updated_at
+        return bool(
+            created
+            and _as_aware(created) + timedelta(seconds=QUEUED_AUDIT_STALE_SECONDS) < current
+        )
+    if job.status == "collecting_context":
+        last_update = job.stage_started_at or job.updated_at or job.started_at or job.created_at
+        return bool(
+            last_update
+            and _as_aware(last_update) + timedelta(seconds=NON_PROVIDER_STAGE_STALE_SECONDS) < current
+        )
     if job.status != "generating":
         return False
     lease_expires_at = job.stage_lease_expires_at
@@ -4150,7 +6817,7 @@ def is_audit_stage_stale(job: AiAuditJob, now: datetime | None = None) -> bool:
             return False
         lease_seconds = AUDIT_STAGE_LEASE_SECONDS.get(job.current_stage, 180)
         lease_expires_at = _as_aware(legacy_started_at) + timedelta(seconds=lease_seconds)
-    return _as_aware(lease_expires_at) < _as_aware(now or _now())
+    return _as_aware(lease_expires_at) < current
 
 
 def _prepare_saved_evidence_for_final_fallback(
@@ -4171,8 +6838,9 @@ def _prepare_saved_evidence_for_final_fallback(
         classifications = snapshot.get("campaignClassifications")
         return bool(verification) and isinstance(classifications, list) and bool(classifications)
     try:
-        full_results = _load_full_drilldown_results(db, job)
-        coverage = refresh_evidence_coverage_registry(snapshot, full_results)
+        coverage = refresh_evidence_coverage_registry(
+            snapshot, _load_full_evidence_results(db, job),
+        )
     except Exception:
         logger.exception("AI_AUDIT_SAVED_EVIDENCE_INVALID job_id=%s", job.id)
         return False
@@ -4318,10 +6986,60 @@ def _claim_provider_stage(db: Session, job: AiAuditJob, stage: str, *, progress_
     return token
 
 
-async def _call_audit_provider(stage: str, *args: Any, **kwargs: Any) -> dict[str, Any]:
+async def _call_audit_provider(
+    stage: str,
+    *args: Any,
+    total_timeout_seconds: float | None = None,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    if stage == "generate_answer":
+        # Qwen3 can spend most of max_tokens on hidden reasoning and truncate the
+        # JSON report. Trusted calculations already happen on the backend, so the
+        # final model only needs to synthesize a compact machine-readable result.
+        model = str(args[0]) if args else ""
+        if model.startswith("qwen/"):
+            kwargs.setdefault("reasoning", {"effort": "none"})
+        kwargs.setdefault("response_format", {"type": "json_object"})
+    stage_timeout = (
+        float(total_timeout_seconds)
+        if total_timeout_seconds is not None
+        else float(AUDIT_STAGE_TOTAL_TIMEOUT_SECONDS[stage])
+    )
     try:
-        async with asyncio.timeout(AUDIT_STAGE_TOTAL_TIMEOUT_SECONDS[stage]):
-            return await generate_openrouter_response(*args, **kwargs)
+        async with asyncio.timeout(stage_timeout):
+            try:
+                return await generate_openrouter_response(*args, **kwargs)
+            except HTTPException as exc:
+                # A permanent request incompatibility of the selected final model
+                # must not discard already collected read-only evidence. The helper
+                # model is already used for the staged audit and can return the same
+                # structured final schema without exposing credentials to the client.
+                model = str(args[0]) if args else ""
+                if (
+                    stage == "generate_answer"
+                    and exc.status_code in {
+                        status.HTTP_400_BAD_REQUEST,
+                        status.HTTP_502_BAD_GATEWAY,
+                    }
+                    and not is_provider_context_overflow(exc)
+                    and model
+                ):
+                    fallback_model = (
+                        AI_FALLBACK_ECONOMY_MODEL
+                        if model == AI_AUDIT_HELPER_MODEL
+                        else AI_AUDIT_HELPER_MODEL
+                    )
+                    logger.warning(
+                        "AI_AUDIT_FINAL_MODEL_FALLBACK stage=%s requested_model=%s fallback_model=%s reason=http_%s",
+                        stage,
+                        model,
+                        fallback_model,
+                        exc.status_code,
+                    )
+                    return await generate_openrouter_response(
+                        fallback_model, *args[1:], **kwargs,
+                    )
+                raise
     except TimeoutError as exc:
         raise HTTPException(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
@@ -4375,12 +7093,54 @@ def _complete_provider_stage(job: AiAuditJob, stage: str) -> None:
 
 
 def get_audit_job(db: Session, job_id: str, *, organization_id: str) -> AiAuditJob:
+    job = _read_job(db, job_id, organization_id)
+    if not is_audit_stage_stale(job):
+        return job
+
+    # Status polling is lock-free. Only a stale-recovery write needs to claim
+    # the row, otherwise a frequent browser poll can block an active scheduler.
     job = _locked_job(db, job_id, organization_id)
     if recover_stale_audit_job(job, _now(), db=db):
         db.commit()
         db.refresh(job)
-        return job
     return job
+
+
+def get_latest_active_audit_job(
+    db: Session,
+    *,
+    client_id: str,
+    organization_id: str,
+) -> AiAuditJob | None:
+    """Return the most recently created non-terminal audit for an owned client.
+
+    The browser keeps a job id as a convenience only. This lookup is the
+    server-side recovery path after a reload or local storage loss, and is
+    deliberately scoped to both the current organization and selected client.
+    """
+    client = db.get(ClientAccount, client_id)
+    if not client or client.organization_id != organization_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Client not found")
+
+    jobs = db.scalars(
+        select(AiAuditJob)
+        .where(
+            AiAuditJob.organization_id == organization_id,
+            AiAuditJob.client_id == client_id,
+            AiAuditJob.status.notin_(TERMINAL_AUDIT_STATUSES),
+        )
+        # A newly-created queued audit must win over an older audit whose
+        # scheduler heartbeat happened more recently. Otherwise a reload made
+        # immediately after starting an audit can restore the previous run.
+        .order_by(AiAuditJob.created_at.desc(), AiAuditJob.updated_at.desc())
+    ).all()
+    for job in jobs:
+        if recover_stale_audit_job(job, _now(), db=db):
+            db.commit()
+            db.refresh(job)
+        if job.status not in TERMINAL_AUDIT_STATUSES:
+            return job
+    return None
 
 
 def _context_metadata(job: AiAuditJob, db: Session | None = None) -> dict[str, Any]:
@@ -4441,6 +7201,13 @@ def _context_metadata(job: AiAuditJob, db: Session | None = None) -> dict[str, A
         "publicRequestTrace": [], "requestDiagnostics": {},
         "dataSourceSummary": {}, "dataQualitySummary": {},
     }
+    canonical_coverage = snapshot.get("canonicalEvidenceCoverage") or {
+        "accountWide": [],
+        "campaignScoped": [],
+        "campaignMatrix": [],
+        "capabilitySummary": [],
+        "summary": {},
+    }
     if db is not None:
         evidence_results = _merge_full_drilldown_results(
             _load_full_baseline_results(db, job),
@@ -4451,6 +7218,46 @@ def _context_metadata(job: AiAuditJob, db: Session | None = None) -> dict[str, A
             DirectReportJob.client_id == job.client_id,
         )))
         public_trace = build_public_audit_trace(snapshot, evidence_results, report_jobs)
+        canonical_coverage = canonical_coverage_projection(
+            build_canonical_evidence_index(snapshot, evidence_results), snapshot,
+        )
+    runtime_public = dict(runtime)
+    if db is not None and job.status not in TERMINAL_AUDIT_STATUSES and runtime_public.get("schedulerPhase") != "finalization":
+        waiting_reason, next_retry_at = _pending_report_wait(db, job)
+        if waiting_reason:
+            runtime_public["waitingReason"] = waiting_reason
+        if next_retry_at:
+            runtime_public["nextRetryAt"] = _as_aware(next_retry_at).isoformat()
+    if job.status in TERMINAL_AUDIT_STATUSES:
+        runtime_public["waitingReason"] = None
+        runtime_public["nextRetryAt"] = None
+        runtime_public["recoveryStatus"] = "idle"
+    runtime_snapshot = {**snapshot, "auditRuntime": runtime_public}
+    runtime_public["schedulerHealth"] = (
+        {
+            "status": job.status,
+            "secondsSinceProgress": 0,
+            "waitingReason": None,
+            "nextRetryAt": None,
+        }
+        if job.status in TERMINAL_AUDIT_STATUSES
+        else scheduler_health(runtime_snapshot)
+    )
+    runtime_public["deadline"] = scheduler_deadline_state(runtime_snapshot)
+    elapsed_until = (
+        job.completed_at or job.updated_at or _now()
+        if job.status in TERMINAL_AUDIT_STATUSES
+        else _now()
+    )
+    runtime_public["elapsedSeconds"] = max(
+        0,
+        int(
+            (
+                _as_aware(elapsed_until)
+                - _as_aware(job.started_at or job.created_at or elapsed_until)
+            ).total_seconds()
+        ),
+    )
     verification_public = [
         {
             "hypothesisId": hypothesis_id,
@@ -4536,9 +7343,10 @@ def _context_metadata(job: AiAuditJob, db: Session | None = None) -> dict[str, A
         "dataQualitySummary": public_trace["dataQualitySummary"],
         "auditCompletionState": evidence_coverage["completionState"],
         "evidenceCoverage": evidence_coverage,
+        "canonicalEvidenceCoverage": canonical_coverage,
         "auditStopReason": runtime.get("stopReason"),
         "baselineEvidenceSummary": snapshot.get("baselineEvidenceSummary") or [],
-        "runtime": runtime,
+        "runtime": runtime_public,
         "helperStages": snapshot.get("helperStages") or {},
         "models": snapshot.get("auditModels") or {},
         "warnings": snapshot.get("auditWarnings") or [],
@@ -4580,7 +7388,11 @@ def _public_audit_result(job: AiAuditJob) -> tuple[dict[str, Any] | None, str | 
             result["fallbackMarkdown"] = None
             result.pop("technicalResponse", None)
             if not result.get("truncated") and not result.get("backendFallbackUsed"):
-                result["completeness"] = "structured"
+                result["completeness"] = (
+                    "partial_coverage"
+                    if result.get("auditCompletionState") == "partial_coverage"
+                    else "structured"
+                )
             result["structuredParsing"] = parsing or {
                 "status": "success", "sourceFormat": "plain_json", "errorCode": None, "validationErrorsCount": 0,
             }
@@ -4629,6 +7441,29 @@ def _public_audit_error_message(job: AiAuditJob) -> str | None:
     return message[:1000]
 
 
+def _audit_poll_after_ms(job: AiAuditJob, db: Session | None) -> int:
+    if db is None or job.status in TERMINAL_AUDIT_STATUSES:
+        return POLL_AFTER_MS
+    now = _now()
+    retry_times = [
+        value
+        for value in db.scalars(select(DirectReportJob.next_retry_at).where(
+            DirectReportJob.audit_job_id == job.id,
+            DirectReportJob.client_id == job.client_id,
+            DirectReportJob.status.in_(("queued", "requested", "processing", "waiting_for_report_queue")),
+            DirectReportJob.next_retry_at.is_not(None),
+        ))
+        if value is not None
+    ]
+    if not retry_times:
+        return POLL_AFTER_MS
+    retry_at = min(
+        value.replace(tzinfo=UTC) if value.tzinfo is None else value
+        for value in retry_times
+    )
+    return max(POLL_AFTER_MS, min(300_000, int(max(0, (retry_at - now).total_seconds()) * 1000)))
+
+
 def audit_job_response(job: AiAuditJob, db: Session | None = None) -> AiAuditJobResponse:
     result, answer = _public_audit_result(job)
     return AiAuditJobResponse(
@@ -4637,7 +7472,7 @@ def audit_job_response(job: AiAuditJob, db: Session | None = None) -> AiAuditJob
         status=job.status,
         current_stage=job.current_stage,
         progress_percent=job.progress_percent,
-        poll_after_ms=POLL_AFTER_MS,
+        poll_after_ms=_audit_poll_after_ms(job, db),
         requested_scope=job.requested_scope,
         requested_period=job.requested_period,
         selected_campaign_name=job.selected_campaign_name,
@@ -4768,7 +7603,9 @@ async def advance_audit_job(
     retry: bool = False,
     compact_retry: bool = False,
 ) -> AiAuditJob:
+    logger.info("AI_AUDIT_ADVANCE_LOCKING job_id=%s", job_id)
     job = _locked_job(db, job_id, organization_id)
+    logger.info("AI_AUDIT_ADVANCE_LOCKED job_id=%s status=%s stage=%s", job.id, job.status, job.current_stage)
     if recover_stale_audit_job(job, _now(), db=db):
         db.commit()
         db.refresh(job)
@@ -4786,7 +7623,6 @@ async def advance_audit_job(
             runtime = _audit_runtime(snapshot)
             runtime["finalGenerationStatus"] = "compact_retry_pending"
             runtime["backendFallbackUsed"] = False
-            job.context_snapshot_json = _json_dump(snapshot)
             job.status = "context_ready"
             job.current_stage = "generate_answer"
             job.stage_attempt = 0
@@ -4825,14 +7661,28 @@ async def advance_audit_job(
     execution_token: str | None = None
     try:
         if stage == "collect_context":
+            logger.info("AI_AUDIT_CONTEXT_STATUS_COMMIT_START job_id=%s", job.id)
             job.status = "collecting_context"
             job.progress_percent = 10
             job.started_at = job.started_at or _now()
             job.stage_version += 1
             db.commit()
+            logger.info("AI_AUDIT_CONTEXT_STATUS_COMMIT_DONE job_id=%s", job.id)
             context_started_at = perf_counter()
-            full_context = build_client_ai_context_from_db(db, job.client_id, selected_campaign_name=job.selected_campaign_name)
+            logger.info("AI_AUDIT_CONTEXT_BUILD_START job_id=%s", job.id)
+            input_options = _json_load(job.input_options_json, {}) or {}
+            cache_policy = str(input_options.get("cache_policy") or "fresh")
+            full_context = (
+                _fresh_initial_audit_context(db, job)
+                if cache_policy == "fresh"
+                else build_client_ai_context_from_db(
+                    db,
+                    job.client_id,
+                    selected_campaign_name=job.selected_campaign_name,
+                )
+            )
             timings["collectContextMs"] = _elapsed_ms(context_started_at)
+            logger.info("AI_AUDIT_CONTEXT_BUILD_DONE job_id=%s elapsed_ms=%s", job.id, timings["collectContextMs"])
             compact_started_at = perf_counter()
             snapshot = build_compact_audit_context(
                 full_context,
@@ -4840,9 +7690,7 @@ async def advance_audit_job(
                 options=_json_load(job.input_options_json, {}),
             )
             snapshot["requestedScope"] = job.requested_scope
-            snapshot.setdefault("metadata", {})["cachePolicy"] = str(
-                (_json_load(job.input_options_json, {}) or {}).get("cache_policy") or "fresh"
-            )
+            snapshot.setdefault("metadata", {})["cachePolicy"] = cache_policy
             snapshot["metadata"]["directApiKnowledgeVersion"] = DIRECT_API_KNOWLEDGE_VERSION
             snapshot["auditRuntime"] = {
                 "investigationRound": 1,
@@ -4870,16 +7718,48 @@ async def advance_audit_job(
                 "unavailableCapabilities": [],
                 "tokenUsage": {"prompt": 0, "completion": 0, "total": 0},
             }
+            initialize_scheduler_state(
+                snapshot,
+                scope=job.requested_scope,
+                started_at=_as_aware(job.started_at or _now()),
+            )
             _helper_stages(snapshot)
             _audit_models(snapshot, job.model)
             snapshot["metadata"]["estimatedTokens"] = estimate_tokens(_json_dump(snapshot))
             timings["compactContextMs"] = _elapsed_ms(compact_started_at)
             job.context_snapshot_json = _json_dump(snapshot)
-            internal_ids = [
-                str(item.get("campaign_id") or item.get("id"))
-                for item in (full_context.get("campaigns") or [])
-                if isinstance(item, dict) and (item.get("campaign_id") or item.get("id"))
-            ]
+            internal_ids = []
+            trusted_scopes: dict[str, str] = {}
+            ambiguous_scope_names: set[str] = set()
+            trusted_scope_names: dict[str, str] = {}
+            for item in (full_context.get("campaigns") or []):
+                if not isinstance(item, dict):
+                    continue
+                raw_id = item.get("campaign_id") or item.get("id")
+                name = str(item.get("name") or item.get("campaign_name") or "").strip()
+                if raw_id:
+                    internal_ids.append(str(raw_id))
+                    if name:
+                        scope = campaign_scope_key(raw_id) or ""
+                        if scope:
+                            trusted_scope_names[scope] = name
+                        if name in trusted_scopes and trusted_scopes[name] != scope:
+                            ambiguous_scope_names.add(name)
+                            trusted_scopes.pop(name, None)
+                        elif name not in ambiguous_scope_names:
+                            trusted_scopes[name] = scope
+            snapshot["_trustedCampaignScopes"] = {
+                key: value for key, value in trusted_scopes.items() if value
+            }
+            snapshot["_trustedCampaignScopeNames"] = trusted_scope_names
+            snapshot["_ambiguousCampaignNames"] = sorted(ambiguous_scope_names)
+            if ambiguous_scope_names:
+                snapshot["evidenceIdentityLimitations"] = [{
+                    "code": "ambiguous_campaign_identity",
+                    "campaignName": name,
+                    "message": "Имя кампании неоднозначно; доказательства не объединяются между кампаниями с одинаковым названием.",
+                } for name in sorted(ambiguous_scope_names)]
+            job.context_snapshot_json = _json_dump(snapshot)
             job.prompt_snapshot_json = _json_dump({"internalCampaignIds": internal_ids[:100]})
             job.status = "context_ready"
             job.current_stage = (
@@ -4898,6 +7778,79 @@ async def advance_audit_job(
             else:
                 pending = [AuditDataRequest.model_validate(item) for item in pending_source]
             processing = [AuditDataRequest.model_validate(item) for item in processing_source]
+            deadline = scheduler_deadline_state(snapshot)
+            if deadline["collectionDeadlineReached"] or deadline["hardDeadlineReached"]:
+                full_baseline_results = _load_full_baseline_results(db, job)
+                _refresh_baseline_projections(snapshot, full_baseline_results)
+                _apply_live_baseline(
+                    snapshot,
+                    full_baseline_results,
+                    allow_saved_fallback=False,
+                )
+                runtime = _audit_runtime(snapshot)
+                runtime["schedulerPhase"] = "finalization"
+                runtime["stopReason"] = (
+                    "hard_deadline_reached"
+                    if deadline["hardDeadlineReached"]
+                    else "collection_deadline_reached"
+                )
+                snapshot["pendingBaselineRequests"] = []
+                snapshot["processingBaselineRequests"] = []
+                classification_summary, breadth_requests, observed_facts = _prepare_campaign_classification(
+                    snapshot,
+                    scheduler_phase="finalization",
+                )
+                mark_scheduler_progress(snapshot, action=runtime["stopReason"])
+                logger.info(
+                    "CASCADE_AUDIT_DEADLINE_CLASSIFICATION audit_job_id=%s "
+                    "campaign_count=%s fact_count=%s breadth_requests=%s classifications=%s",
+                    job.id,
+                    len(snapshot["campaignClassifications"]),
+                    len(observed_facts),
+                    len(breadth_requests),
+                    classification_summary,
+                )
+                job.context_snapshot_json = _json_dump(snapshot)
+                job.status = "context_ready"
+                job.current_stage = "generate_answer"
+                job.stage_attempt = 0
+                job.progress_percent = 78
+                timings["collectFreshBaselineMs"] = int(timings.get("collectFreshBaselineMs") or 0) + _elapsed_ms(started_at)
+                timings["totalElapsedMs"] = max(
+                    0,
+                    round((_now() - _as_aware(job.created_at or _now())).total_seconds() * 1000),
+                )
+                job.timings_json = _json_dump(timings)
+                job.stage_version += 1
+                db.commit()
+                db.refresh(job)
+                return job
+            waiting_reason, next_retry_at = _pending_report_wait(db, job)
+            if (
+                waiting_reason
+                and next_retry_at is not None
+                and _as_aware(next_retry_at) > _now()
+            ):
+                mark_scheduler_waiting(
+                    snapshot,
+                    reason=waiting_reason,
+                    next_retry_at=_as_aware(next_retry_at),
+                )
+                job.context_snapshot_json = _json_dump(snapshot)
+                job.status = "context_ready"
+                job.current_stage = "collect_fresh_baseline"
+                job.stage_attempt = 0
+                job.progress_percent = max(job.progress_percent, 18)
+                timings["collectFreshBaselineMs"] = int(timings.get("collectFreshBaselineMs") or 0) + _elapsed_ms(started_at)
+                timings["totalElapsedMs"] = max(
+                    0,
+                    round((_now() - _as_aware(job.created_at or _now())).total_seconds() * 1000),
+                )
+                job.timings_json = _json_dump(timings)
+                job.stage_version += 1
+                db.commit()
+                db.refresh(job)
+                return job
             selected, deferred = select_live_request_batch(processing + pending)
             input_options = _json_load(job.input_options_json, {}) or {}
             collected, direct_api_calls = collect_audit_data_requests(
@@ -4906,7 +7859,7 @@ async def advance_audit_job(
                 selected,
                 audit_job_id=job.id,
                 cache_policy="fresh",
-                allow_saved_fallback=bool(input_options.get("allow_saved_fallback")),
+                allow_saved_fallback=False,
             )
             full_baseline_results = _merge_full_drilldown_results(
                 _load_full_baseline_results(db, job),
@@ -4914,6 +7867,12 @@ async def advance_audit_job(
             )
             _save_full_baseline_results(db, job, full_baseline_results)
             _refresh_baseline_projections(snapshot, full_baseline_results)
+            if collected or direct_api_calls:
+                mark_scheduler_progress(
+                    snapshot,
+                    action="fresh_baseline_collected",
+                    successful=any(item.status in AVAILABLE_AUDIT_DATA_STATUSES for item in collected),
+                )
             selected_by_id = {item.request_id: item for item in selected}
             pending_ids = {item.request_id for item in pending}
             processing_ids = {item.request_id for item in processing}
@@ -4931,7 +7890,7 @@ async def advance_audit_job(
                 _apply_live_baseline(
                     snapshot,
                     full_baseline_results,
-                    allow_saved_fallback=bool(input_options.get("allow_saved_fallback")),
+                    allow_saved_fallback=False,
                 )
             job.context_snapshot_json = _json_dump(snapshot)
             job.status = "context_ready"
@@ -4943,18 +7902,18 @@ async def advance_audit_job(
             timings["collectFreshBaselineMs"] = int(timings.get("collectFreshBaselineMs") or 0) + _elapsed_ms(started_at)
         elif stage == "classify_campaigns":
             snapshot = _json_load(job.context_snapshot_json, {})
-            snapshot["campaignClassifications"] = classify_audit_campaigns(snapshot)
-            observed_facts = build_observed_facts(snapshot)
-            snapshot["observedFacts"] = [item.model_dump(mode="json") for item in observed_facts]
-            base_plan = build_rule_based_investigation_plan(snapshot)
-            snapshot["ruleBasedInvestigationPlan"] = base_plan.model_dump(mode="json")
-            ensure_evidence_coverage_registry(snapshot)
-            _sync_policy_runtime(snapshot)
+            classification_summary, breadth_requests, observed_facts = _prepare_campaign_classification(snapshot)
             logger.info(
                 "CASCADE_AUDIT_FACTS_CREATED audit_job_id=%s round=1 campaign_count=%s fact_count=%s",
                 job.id,
                 len(snapshot["campaignClassifications"]),
                 len(observed_facts),
+            )
+            logger.info(
+                "CASCADE_AUDIT_CLASSIFICATION_SUMMARY audit_job_id=%s classifications=%s breadth_requests=%s",
+                job.id,
+                classification_summary,
+                len(breadth_requests),
             )
             job.context_snapshot_json = _json_dump(snapshot)
             job.status = "context_ready"
@@ -4965,9 +7924,18 @@ async def advance_audit_job(
         elif stage == "create_investigation_plan":
             snapshot = _json_load(job.context_snapshot_json, {})
             base_plan = AuditInvestigationPlan.model_validate(snapshot.get("ruleBasedInvestigationPlan") or {})
-            if not should_call_ai_investigation_planner(base_plan, snapshot):
+            planner_deadline = scheduler_deadline_state(snapshot)
+            if planner_deadline["collectionDeadlineReached"] or not should_call_ai_investigation_planner(base_plan, snapshot):
                 snapshot["investigationPlan"] = base_plan.model_dump(mode="json")
-                _set_helper_stage(snapshot, "planner", status_value="skipped_not_needed")
+                _set_helper_stage(
+                    snapshot,
+                    "planner",
+                    status_value=(
+                        "skipped_deadline"
+                        if planner_deadline["collectionDeadlineReached"]
+                        else "skipped_not_needed"
+                    ),
+                )
                 job.context_snapshot_json = _json_dump(snapshot)
                 job.status = "context_ready"
                 job.current_stage = "validate_data_requests"
@@ -5103,35 +8071,52 @@ async def advance_audit_job(
             plan = AuditInvestigationPlan.model_validate(snapshot.get("investigationPlan") or {})
             _initialize_hypothesis_state(snapshot)
             ai_requests = [request for hypothesis in plan.hypotheses for request in hypothesis.data_requests]
-            requests, policy_rejections, _ = merge_mandatory_and_ai_requests(
+            profile = _audit_execution_profile(job, snapshot)
+            breadth_requests = build_minimum_coverage_requests(snapshot)
+            policy_requests, policy_rejections, _ = merge_mandatory_and_ai_requests(
                 snapshot,
                 ai_requests,
-                request_budget=MAX_AUDIT_DATA_REQUESTS,
+                request_budget=profile.max_requests,
             )
+            requests = _deduplicate_requests([*breadth_requests, *policy_requests])[:profile.max_requests]
             _log_audit_event(
                 "AUDIT_REQUEST_PLANNED", job,
                 round=1, request_count=len(requests), status="pending",
             )
-            accepted, rejected = validate_audit_data_requests(requests)
+            accepted, rejected = validate_audit_data_requests(
+                requests, max_requests=profile.max_requests,
+            )
+            breadth, depth = partition_breadth_and_depth_requests(
+                accepted, breadth_requests, profile=profile,
+            )
             _log_audit_event(
                 "AUDIT_REQUEST_VALIDATED", job,
                 round=1, request_count=len(accepted), status="validated",
             )
             runtime = _audit_runtime(snapshot)
-            runtime["requestsCount"] = len(requests)
+            runtime["requestsCount"] = len(accepted)
+            runtime["requestSafetyLimit"] = profile.max_requests
+            runtime["maxDepthRounds"] = profile.max_depth_rounds
+            runtime["schedulerPhase"] = "breadth"
+            runtime["breadthRequestsTotal"] = len(breadth)
+            runtime["depthRequestsTotal"] = len(depth)
             snapshot["validatedDataRequests"] = [item.model_dump(mode="json") for item in accepted]
+            snapshot["minimumCoveragePlan"] = _minimum_coverage_plan(breadth, snapshot)
+            snapshot["deferredDepthDataRequests"] = [item.model_dump(mode="json") for item in depth]
             policy_rejection_results = [_policy_rejection_result(item) for item in policy_rejections]
             initial_full_results = [item.model_dump(mode="json") for item in rejected]
             initial_full_results.extend(policy_rejection_results)
             _save_full_drilldown_results(db, job, initial_full_results)
             _refresh_drilldown_projections(snapshot, initial_full_results)
-            snapshot["pendingDataRequests"] = [item.model_dump(mode="json") for item in accepted]
+            snapshot["pendingDataRequests"] = [item.model_dump(mode="json") for item in breadth]
             snapshot["processingDataRequests"] = []
             snapshot["completedDataRequests"] = []
             snapshot["failedDataRequests"] = []
             snapshot["unavailableDataRequests"] = [item.model_dump(mode="json") for item in rejected]
             snapshot["unavailableDataRequests"].extend(policy_rejection_results)
-            coverage = refresh_evidence_coverage_registry(snapshot, initial_full_results)
+            coverage = refresh_evidence_coverage_registry(
+                snapshot, _load_full_evidence_results(db, job),
+            )
             _sync_policy_runtime(snapshot, coverage)
             facts = build_observed_facts(snapshot)
             cascade_hypotheses = build_cascade_hypotheses(plan, facts, round_number=1)
@@ -5149,11 +8134,25 @@ async def advance_audit_job(
                 ",".join(sorted({item.capability_id or item.dimension for item in accepted})),
                 len(accepted),
             )
-            job.context_snapshot_json = _json_dump(snapshot)
-            job.status = "context_ready"
-            job.current_stage = "collect_live_data"
-            job.stage_attempt = 0
-            job.progress_percent = 50
+            deadline = scheduler_deadline_state(snapshot)
+            if deadline["collectionDeadlineReached"] or deadline["hardDeadlineReached"]:
+                _finish_collection_for_deadline(
+                    db,
+                    job,
+                    snapshot,
+                    [*breadth, *depth],
+                    reason=(
+                        "hard_deadline_reached"
+                        if deadline["hardDeadlineReached"]
+                        else "collection_deadline_reached"
+                    ),
+                )
+            else:
+                job.context_snapshot_json = _json_dump(snapshot)
+                job.status = "context_ready"
+                job.current_stage = "collect_live_data"
+                job.stage_attempt = 0
+                job.progress_percent = 50
             timings["validateDataRequestsMs"] = _elapsed_ms(started_at)
         elif stage in {"collect_drilldowns", "collect_live_data", "wait_for_offline_reports"}:
             snapshot = _json_load(job.context_snapshot_json, {})
@@ -5164,6 +8163,69 @@ async def advance_audit_job(
             )
             pending = [AuditDataRequest.model_validate(item) for item in (pending_source or [])]
             processing = [AuditDataRequest.model_validate(item) for item in (snapshot.get("processingDataRequests") or [])]
+            deferred_depth = [
+                AuditDataRequest.model_validate(item)
+                for item in (snapshot.get("deferredDepthDataRequests") or [])
+            ]
+            deadline = scheduler_deadline_state(snapshot)
+            runtime = _audit_runtime(snapshot)
+            if (
+                runtime.get("schedulerPhase") == "finalization"
+                or deadline["collectionDeadlineReached"]
+                or deadline["hardDeadlineReached"]
+                or not collection_batch_can_start(snapshot)
+            ):
+                _finish_collection_for_deadline(
+                    db,
+                    job,
+                    snapshot,
+                    [*pending, *processing, *deferred_depth],
+                    reason=(
+                        "hard_deadline_reached"
+                        if deadline["hardDeadlineReached"]
+                        else "collection_batch_reserve_protected"
+                        if not deadline["collectionDeadlineReached"]
+                        else "collection_deadline_reached"
+                    ),
+                )
+                timings["collectLiveDataMs"] = int(timings.get("collectLiveDataMs") or 0) + _elapsed_ms(started_at)
+                timings["totalElapsedMs"] = max(
+                    0,
+                    round((_now() - _as_aware(job.created_at or _now())).total_seconds() * 1000),
+                )
+                job.timings_json = _json_dump(timings)
+                job.stage_version += 1
+                db.commit()
+                db.refresh(job)
+                return job
+
+            waiting_reason, next_retry_at = _pending_report_wait(db, job)
+            if (
+                waiting_reason
+                and next_retry_at is not None
+                and _as_aware(next_retry_at) > _now()
+            ):
+                mark_scheduler_waiting(
+                    snapshot,
+                    reason=waiting_reason,
+                    next_retry_at=_as_aware(next_retry_at),
+                )
+                job.context_snapshot_json = _json_dump(snapshot)
+                job.status = "context_ready"
+                job.current_stage = "wait_for_offline_reports"
+                job.stage_attempt = 0
+                job.progress_percent = max(job.progress_percent, 58)
+                timings["collectLiveDataMs"] = int(timings.get("collectLiveDataMs") or 0) + _elapsed_ms(started_at)
+                timings["totalElapsedMs"] = max(
+                    0,
+                    round((_now() - _as_aware(job.created_at or _now())).total_seconds() * 1000),
+                )
+                job.timings_json = _json_dump(timings)
+                job.stage_version += 1
+                db.commit()
+                db.refresh(job)
+                return job
+
             requests, deferred = select_live_request_batch(processing + pending)
             for request in requests:
                 _log_audit_event(
@@ -5180,7 +8242,9 @@ async def advance_audit_job(
                 requests,
                 audit_job_id=job.id,
                 cache_policy=cache_policy,
-                allow_saved_fallback=bool(input_options.get("allow_saved_fallback")),
+                allow_saved_fallback=(
+                    cache_policy != "fresh" and bool(input_options.get("allow_saved_fallback"))
+                ),
             )
             full_results = _merge_full_drilldown_results(
                 _load_full_drilldown_results(db, job),
@@ -5188,8 +8252,10 @@ async def advance_audit_job(
             )
             _save_full_drilldown_results(db, job, full_results)
             _refresh_drilldown_projections(snapshot, full_results)
-            coverage = refresh_evidence_coverage_registry(snapshot, full_results)
+            evidence_results = _load_full_evidence_results(db, job)
+            coverage = refresh_evidence_coverage_registry(snapshot, evidence_results)
             _sync_policy_runtime(snapshot, coverage)
+            _refresh_scheduler_coverage(snapshot, evidence_results)
             for item in collected:
                 event_name = {
                     "processing": "AUDIT_REQUEST_PROCESSING",
@@ -5265,8 +8331,19 @@ async def advance_audit_job(
                     ],
                 )
             _refresh_direct_read_runtime(snapshot, direct_api_calls)
+            terminal_results = [item for item in collected if item.status != "processing"]
+            if terminal_results or direct_api_calls:
+                mark_scheduler_progress(
+                    snapshot,
+                    action="direct_evidence_collected",
+                    successful=any(item.status in AVAILABLE_AUDIT_DATA_STATUSES for item in terminal_results),
+                )
             has_pending = bool(next_pending)
             has_processing = bool(next_processing)
+            if not has_pending and not has_processing and _audit_runtime(snapshot).get("schedulerPhase") == "breadth":
+                if _activate_deferred_depth(snapshot):
+                    next_pending = list(snapshot.get("pendingDataRequests") or [])
+                    has_pending = True
             has_hypotheses = bool(_active_hypotheses(snapshot))
             if not has_hypotheses:
                 snapshot["activeVerifications"] = []
@@ -5277,9 +8354,19 @@ async def advance_audit_job(
             if has_pending:
                 job.current_stage = "collect_live_data"
             elif has_processing:
+                waiting_reason, next_retry_at = _pending_report_wait(db, job)
+                mark_scheduler_waiting(
+                    snapshot,
+                    reason=waiting_reason or "offline_report_processing",
+                    next_retry_at=next_retry_at,
+                )
                 job.current_stage = "wait_for_offline_reports"
             else:
                 job.current_stage = "verify_hypotheses" if has_hypotheses else "generate_answer"
+                _audit_runtime(snapshot)["schedulerPhase"] = (
+                    "verification" if has_hypotheses else "finalization"
+                )
+            job.context_snapshot_json = _json_dump(snapshot)
             job.stage_attempt = 0
             job.progress_percent = 58 if (has_pending or has_processing) else (65 if has_hypotheses else 78)
             logger.info(
@@ -5289,6 +8376,48 @@ async def advance_audit_job(
             )
             timings["collectLiveDataMs"] = int(timings.get("collectLiveDataMs") or 0) + _elapsed_ms(started_at)
         elif stage == "verify_hypotheses":
+            snapshot = _json_load(job.context_snapshot_json, {})
+            verification_deadline = scheduler_deadline_state(snapshot)
+            protect_finalization = not _verification_can_start(job, snapshot)
+            if verification_deadline["collectionDeadlineReached"] or protect_finalization:
+                verification = _verification_fallback(snapshot, _load_full_drilldown_results(db, job))
+                _apply_verification_statuses(snapshot, verification)
+                _set_helper_stage(
+                    snapshot,
+                    "verification",
+                    status_value=(
+                        "skipped_finalization_reserve"
+                        if protect_finalization and not verification_deadline["collectionDeadlineReached"]
+                        else "skipped_deadline"
+                    ),
+                )
+                runtime = _audit_runtime(snapshot)
+                runtime["schedulerPhase"] = "finalization"
+                runtime["stopReason"] = (
+                    "hard_deadline_reached"
+                    if verification_deadline["hardDeadlineReached"]
+                    else (
+                        "collection_deadline_reached"
+                        if verification_deadline["collectionDeadlineReached"]
+                        else "finalization_reserve_protected"
+                    )
+                )
+                mark_scheduler_progress(snapshot, action=runtime["stopReason"])
+                job.context_snapshot_json = _json_dump(snapshot)
+                job.status = "context_ready"
+                job.current_stage = "generate_answer"
+                job.stage_attempt = 0
+                job.progress_percent = 78
+                timings["verificationOpenrouterMs"] = 0
+                timings["totalElapsedMs"] = max(
+                    0,
+                    round((_now() - _as_aware(job.created_at or _now())).total_seconds() * 1000),
+                )
+                job.timings_json = _json_dump(timings)
+                job.stage_version += 1
+                db.commit()
+                db.refresh(job)
+                return job
             execution_token = _claim_provider_stage(db, job, stage, progress_percent=70)
             snapshot = _json_load(job.context_snapshot_json, {})
             prompt = build_verification_prompt(snapshot)
@@ -5432,20 +8561,70 @@ async def advance_audit_job(
         elif stage == "plan_next_investigation_round":
             runtime_snapshot = _json_load(job.context_snapshot_json, {})
             runtime = _audit_runtime(runtime_snapshot)
-            stop_reason = round_stop_reason(
-                round_number=int(runtime.get("investigationRound") or 1),
-                pending=len(runtime_snapshot.get("pendingDataRequests") or []),
-                processing=len(runtime_snapshot.get("processingDataRequests") or []),
-                verifications=_active_verifications(runtime_snapshot),
-                request_count=int(runtime.get("requestsCount") or 0),
+            deadline = scheduler_deadline_state(runtime_snapshot)
+            stop_reason = (
+                "hard_deadline_reached"
+                if deadline["hardDeadlineReached"]
+                else "collection_deadline_reached"
+                if deadline["collectionDeadlineReached"]
+                else round_stop_reason(
+                    round_number=int(runtime.get("investigationRound") or 1),
+                    pending=len(runtime_snapshot.get("pendingDataRequests") or []),
+                    processing=len(runtime_snapshot.get("processingDataRequests") or []),
+                    verifications=_active_verifications(runtime_snapshot),
+                    request_count=int(runtime.get("requestsCount") or 0),
+                    max_rounds=int(runtime.get("maxDepthRounds") or MAX_INVESTIGATION_ROUNDS),
+                    max_requests=int(runtime.get("requestSafetyLimit") or MAX_DATA_REQUESTS_PER_AUDIT),
+                )
             )
             if stop_reason:
                 runtime["stopReason"] = stop_reason
+                runtime["schedulerPhase"] = "finalization"
+                mark_scheduler_progress(runtime_snapshot, action=stop_reason)
                 job.context_snapshot_json = _json_dump(runtime_snapshot)
                 job.status = "context_ready"
                 job.current_stage = "generate_answer"
                 job.progress_percent = 78
             else:
+                deterministic_remediation = _validated_diagnostic_remediation_requests(
+                    runtime_snapshot,
+                )
+                if deterministic_remediation:
+                    _apply_next_round_requests(runtime_snapshot, deterministic_remediation)
+                    runtime = _audit_runtime(runtime_snapshot)
+                    _log_audit_event(
+                        "AUDIT_NEXT_ROUND_PLANNED",
+                        job,
+                        round=int(runtime.get("investigationRound") or 1),
+                        request_count=len(deterministic_remediation),
+                        status="deterministic_remediation",
+                    )
+                    mark_scheduler_progress(
+                        runtime_snapshot,
+                        action="deterministic_remediation_planned",
+                        successful=True,
+                    )
+                    job.context_snapshot_json = _json_dump(runtime_snapshot)
+                    job.status = "context_ready"
+                    job.current_stage = "collect_live_data"
+                    job.stage_attempt = 0
+                    job.progress_percent = 68
+                    timings["totalElapsedMs"] = max(
+                        0,
+                        round(
+                            (
+                                _now()
+                                - _as_aware(job.started_at or job.created_at or _now())
+                            ).total_seconds()
+                            * 1000
+                        ),
+                    )
+                    job.timings_json = _json_dump(timings)
+                    job.stage_version += 1
+                    db.commit()
+                    db.refresh(job)
+                    _log_timing(job, stage)
+                    return job
                 execution_token = _claim_provider_stage(db, job, stage, progress_percent=74)
                 snapshot = _json_load(job.context_snapshot_json, {})
                 prompt = build_next_round_prompt(snapshot)
@@ -5566,6 +8745,7 @@ async def advance_audit_job(
                         snapshot["investigationRounds"][-1]["completed_at"] = _now().isoformat()
                     next_stage = "generate_answer"
                     progress = 78
+                    _audit_runtime(snapshot)["schedulerPhase"] = "finalization"
                 job.context_snapshot_json = _json_dump(snapshot)
                 job.status = "context_ready"
                 job.current_stage = next_stage
@@ -5574,14 +8754,24 @@ async def advance_audit_job(
                 _complete_provider_stage(job, stage)
         elif stage == "apply_next_investigation_round":
             snapshot = _json_load(job.context_snapshot_json, {})
+            deadline = scheduler_deadline_state(snapshot)
             next_requests = [
                 AuditDataRequest.model_validate(item)
                 for item in snapshot.pop("fallbackNextRoundRequests", [])
             ]
-            if next_requests:
+            if next_requests and not deadline["collectionDeadlineReached"]:
                 _apply_next_round_requests(snapshot, next_requests)
             else:
-                _audit_runtime(snapshot)["stopReason"] = "low_expected_information_gain"
+                runtime = _audit_runtime(snapshot)
+                runtime["stopReason"] = (
+                    "hard_deadline_reached"
+                    if deadline["hardDeadlineReached"]
+                    else "collection_deadline_reached"
+                    if deadline["collectionDeadlineReached"]
+                    else "low_expected_information_gain"
+                )
+                runtime["schedulerPhase"] = "finalization"
+                next_requests = []
             job.context_snapshot_json = _json_dump(snapshot)
             job.status = "context_ready"
             job.current_stage = "collect_live_data" if next_requests else "generate_answer"
@@ -5589,24 +8779,42 @@ async def advance_audit_job(
             job.progress_percent = 68 if next_requests else 78
         elif stage == "generate_answer":
             snapshot = _json_load(job.context_snapshot_json, {})
+            _audit_runtime(snapshot)["schedulerPhase"] = "finalization"
             policy_active = (
                 snapshot.get("policyVersion") == AUDIT_EVIDENCE_POLICY_VERSION
                 or "evidenceCoverageRegistry" in snapshot
             )
             full_results = _load_full_drilldown_results(db, job) if policy_active else []
             if policy_active:
-                coverage = refresh_evidence_coverage_registry(snapshot, full_results)
+                all_evidence_results = _load_full_evidence_results(db, job)
+                coverage = refresh_evidence_coverage_registry(snapshot, all_evidence_results)
+                reconcile_collected_audit_evidence(snapshot, all_evidence_results)
+                coverage = refresh_evidence_coverage_registry(snapshot, all_evidence_results)
                 runtime = _sync_policy_runtime(snapshot, coverage)
                 runtime["completionGateRuns"] = int(runtime.get("completionGateRuns") or 0) + 1
             else:
                 coverage = {"completionState": "legacy_unknown"}
                 runtime = _audit_runtime(snapshot)
 
+            if (
+                policy_active
+                and coverage.get("completionState") == "blocked_missing_evidence"
+                and runtime.get("schedulerPhase") == "finalization"
+                and not runtime.get("completionGateRemediationAttempted")
+            ):
+                # The scheduler already stopped read collection before finalization.
+                # Keep the limitation public, but allow the final model to explain
+                # the partial evidence instead of silently replacing it with a
+                # generic backend report.
+                runtime["completionGateLimitedByScheduler"] = True
+                coverage = {**coverage, "completionState": "partial_coverage"}
+
             if policy_active and coverage.get("completionState") == "blocked_missing_evidence":
                 remediation_attempted = bool(runtime.get("completionGateRemediationAttempted"))
-                if not remediation_attempted:
+                if not remediation_attempted and runtime.get("schedulerPhase") != "finalization":
                     used_requests = int(runtime.get("requestsCount") or 0)
-                    remaining_budget = max(0, MAX_AUDIT_DATA_REQUESTS - used_requests)
+                    request_limit = int(runtime.get("requestSafetyLimit") or MAX_AUDIT_DATA_REQUESTS)
+                    remaining_budget = max(0, request_limit - used_requests)
                     remediation, policy_rejections, _ = merge_mandatory_and_ai_requests(
                         snapshot,
                         [],
@@ -5625,7 +8833,9 @@ async def advance_audit_job(
                         for item in remediation
                         if (item.campaign_name, item.capability_id or item.dimension) not in existing_keys
                     ]
-                    accepted, rejected = validate_audit_data_requests(remediation)
+                    accepted, rejected = validate_audit_data_requests(
+                        remediation, max_requests=request_limit,
+                    )
                     runtime["completionGateRemediationAttempted"] = True
                     if policy_rejections or rejected:
                         rejected_payloads = [_policy_rejection_result(item) for item in policy_rejections]
@@ -5635,7 +8845,9 @@ async def advance_audit_job(
                         _refresh_drilldown_projections(snapshot, full_results)
                     if accepted:
                         _apply_next_round_requests(snapshot, accepted)
-                        refreshed = refresh_evidence_coverage_registry(snapshot, full_results)
+                        refreshed = refresh_evidence_coverage_registry(
+                            snapshot, _load_full_evidence_results(db, job),
+                        )
                         _sync_policy_runtime(snapshot, refreshed)
                         job.context_snapshot_json = _json_dump(snapshot)
                         job.status = "context_ready"
@@ -5653,7 +8865,9 @@ async def advance_audit_job(
                         db.refresh(job)
                         return job
 
-                coverage = refresh_evidence_coverage_registry(snapshot, full_results)
+                coverage = refresh_evidence_coverage_registry(
+                    snapshot, _load_full_evidence_results(db, job),
+                )
                 _sync_policy_runtime(snapshot, coverage)
                 diagnostics = {
                     "finalCompactionLevel": None,
@@ -5676,6 +8890,36 @@ async def advance_audit_job(
                     preserve_job_error=False,
                 )
 
+            final_deadline = scheduler_deadline_state(snapshot)
+            final_provider_budget = _remaining_final_provider_seconds(snapshot)
+            if final_deadline["hardDeadlineReached"] or (
+                final_provider_budget is not None and final_provider_budget <= 0
+            ):
+                runtime = _audit_runtime(snapshot)
+                runtime["schedulerPhase"] = "finalization"
+                runtime["stopReason"] = "hard_deadline_reached"
+                runtime["deadlineReached"] = True
+                return _complete_backend_fallback_stage(
+                    db,
+                    job,
+                    snapshot,
+                    {
+                        "finalCompactionLevel": None,
+                        "fitsModelContext": None,
+                        "preflightFitsModelContext": None,
+                        "hardDeadlineReached": True,
+                    },
+                    timings,
+                    reason_code="audit_hard_deadline_reached",
+                    final_status="backend_fallback_after_audit_deadline",
+                    warning=(
+                        "Временной бюджет полного аудита завершён. Собранные данные сохранены, "
+                        "а результат сформирован backend без новых запросов к Яндекс.Директу."
+                    ),
+                    preserve_job_error=False,
+                    complete_immediately=True,
+                )
+
             execution_token = _claim_provider_stage(db, job, stage, progress_percent=82)
             input_options = _json_load(job.input_options_json, {}) or {}
             is_compact_retry = bool(input_options.get("compact_retry"))
@@ -5685,13 +8929,14 @@ async def advance_audit_job(
                 compact_retry=is_compact_retry,
             )
             effective_final_max_tokens = _effective_final_output_tokens(job)
+            effective_final_model = _effective_final_model(job)
             prompt = str(final_bundle.get("prompt") or "")
             final_diagnostics = dict(final_bundle.get("diagnostics") or {})
             _save_stage_prompt_metadata(
                 job,
                 stage,
                 prompt,
-                model=job.model,
+                model=effective_final_model,
                 max_tokens=effective_final_max_tokens,
                 max_tokens_cap=FINAL_AUDIT_PROVIDER_MAX_TOKENS,
             )
@@ -5727,8 +8972,10 @@ async def advance_audit_job(
             openrouter_started_at = perf_counter()
             try:
                 response = await _call_audit_provider(
-                    stage, job.model, prompt, max_tokens=effective_final_max_tokens,
-                    max_tokens_cap=FINAL_AUDIT_PROVIDER_MAX_TOKENS, timeout=AUDIT_STAGE_PROVIDER_TIMEOUTS[stage],
+                    stage, effective_final_model, prompt, max_tokens=effective_final_max_tokens,
+                    max_tokens_cap=FINAL_AUDIT_PROVIDER_MAX_TOKENS,
+                    timeout=AUDIT_STAGE_PROVIDER_TIMEOUTS[stage],
+                    total_timeout_seconds=final_provider_budget,
                 )
             except Exception as provider_exc:
                 timeout_code = final_provider_timeout_code(provider_exc)
@@ -5809,7 +9056,7 @@ async def advance_audit_job(
                     job,
                     stage,
                     prompt,
-                    model=job.model,
+                    model=effective_final_model,
                     max_tokens=effective_final_max_tokens,
                     max_tokens_cap=FINAL_AUDIT_PROVIDER_MAX_TOKENS,
                 )
@@ -5834,14 +9081,33 @@ async def advance_audit_job(
                             "в безопасный бюджет; сохранён backend-результат."
                         ),
                     )
+                retry_provider_budget = _remaining_final_provider_seconds(snapshot)
+                if retry_provider_budget is not None and retry_provider_budget <= 0:
+                    timings["finalAnswerOpenrouterMs"] = _elapsed_ms(openrouter_started_at)
+                    return _complete_backend_fallback_stage(
+                        db,
+                        job,
+                        snapshot,
+                        final_diagnostics,
+                        timings,
+                        reason_code="audit_hard_deadline_reached",
+                        final_status="backend_fallback_after_audit_deadline",
+                        warning=(
+                            "Временной бюджет аудита завершён до повторного вызова модели. "
+                            "Использован безопасный backend-отчёт по уже собранным данным."
+                        ),
+                        preserve_job_error=False,
+                        complete_immediately=True,
+                    )
                 _record_provider_attempt(snapshot, "final")
                 job.context_snapshot_json = _json_dump(snapshot)
                 db.commit()
                 try:
                     response = await _call_audit_provider(
-                        stage, job.model, prompt, max_tokens=effective_final_max_tokens,
+                        stage, effective_final_model, prompt, max_tokens=effective_final_max_tokens,
                         max_tokens_cap=FINAL_AUDIT_PROVIDER_MAX_TOKENS,
                         timeout=AUDIT_STAGE_PROVIDER_TIMEOUTS[stage],
+                        total_timeout_seconds=retry_provider_budget,
                     )
                 except Exception as retry_exc:
                     timeout_code = final_provider_timeout_code(retry_exc)
@@ -5943,6 +9209,98 @@ async def advance_audit_job(
             }
             job.returned_model = final_returned_model
             if structured is None and not truncated:
+                initial_parsing = _safe_model_response_parsing(parsing)
+                initial_response_metadata = dict(provider_response_metadata)
+                repair_timeout = _final_schema_repair_timeout(job, snapshot)
+                schema_repair = {
+                    "attempted": False,
+                    "status": "skipped_stage_time_budget" if repair_timeout is None else "pending",
+                    "initialParsing": initial_parsing,
+                    "initialResponse": initial_response_metadata,
+                }
+                if repair_timeout is not None:
+                    repair_prompt, repair_diagnostics = _build_final_schema_repair_prompt(snapshot, job)
+                    if repair_diagnostics.get("fitsModelContext"):
+                        schema_repair["attempted"] = True
+                        schema_repair["status"] = "calling_provider"
+                        final_diagnostics["schemaRepair"] = {
+                            "attempted": True,
+                            "promptEstimatedTokens": repair_diagnostics.get("finalPromptEstimatedTokens"),
+                            "compactionLevel": repair_diagnostics.get("finalCompactionLevel"),
+                        }
+                        _save_stage_prompt_metadata(
+                            job,
+                            stage,
+                            repair_prompt,
+                            model=AI_AUDIT_HELPER_MODEL,
+                            max_tokens=effective_final_max_tokens,
+                            max_tokens_cap=FINAL_AUDIT_PROVIDER_MAX_TOKENS,
+                        )
+                        _record_final_generation_diagnostics(
+                            snapshot,
+                            job,
+                            final_diagnostics,
+                            status_value="repairing_invalid_provider_response",
+                        )
+                        _record_provider_attempt(snapshot, "final")
+                        job.context_snapshot_json = _json_dump(snapshot)
+                        db.commit()
+                        try:
+                            repair_response = await _call_audit_provider(
+                                stage,
+                                AI_AUDIT_HELPER_MODEL,
+                                repair_prompt,
+                                max_tokens=effective_final_max_tokens,
+                                max_tokens_cap=FINAL_AUDIT_PROVIDER_MAX_TOKENS,
+                                timeout=repair_timeout,
+                                total_timeout_seconds=_remaining_final_provider_seconds(snapshot),
+                            )
+                        except Exception as repair_exc:
+                            schema_repair["status"] = "provider_error"
+                            schema_repair["errorCode"] = final_provider_timeout_code(repair_exc) or type(repair_exc).__name__
+                            logger.warning(
+                                "AI_AUDIT_FINAL_SCHEMA_REPAIR_FAILED job_id=%s error_code=%s",
+                                job.id,
+                                schema_repair["errorCode"],
+                            )
+                        else:
+                            _record_provider_response(snapshot, repair_response)
+                            response = repair_response
+                            answer = str(response.get("content") or "")
+                            finish_reason = str(response.get("finish_reason") or "") or None
+                            final_returned_model = str(response.get("model") or AI_AUDIT_HELPER_MODEL)
+                            _audit_models(snapshot, job.model)["final_schema_repair_returned_model"] = final_returned_model
+                            job.returned_model = final_returned_model
+                            structured, parsing = _validate_structured_result_with_metadata(
+                                answer,
+                                snapshot=snapshot,
+                                job=job,
+                                response=response,
+                                finish_reason=finish_reason,
+                            )
+                            truncated = finish_reason == "length"
+                            final_token_usage = _safe_provider_token_usage(response)
+                            provider_response_metadata = {
+                                "sha256": hashlib.sha256(answer.encode("utf-8")).hexdigest() if answer else None,
+                                "length": len(answer),
+                                "sourceFormat": parsing["sourceFormat"],
+                                "fullResponseStored": False,
+                            }
+                            schema_repair.update({
+                                "status": "recovered" if structured is not None else "invalid_response",
+                                "returnedModel": final_returned_model,
+                                "response": provider_response_metadata,
+                                "parsing": _safe_model_response_parsing(parsing),
+                            })
+                    else:
+                        schema_repair["status"] = "skipped_context_budget"
+                final_diagnostics["schemaRepair"] = schema_repair
+                _record_final_generation_diagnostics(
+                    snapshot,
+                    job,
+                    final_diagnostics,
+                    status_value="schema_repair_completed" if structured is not None else "schema_repair_unavailable",
+                )
                 parsing_error_code = str(parsing.get("errorCode") or "json_parse_failed")
                 schema_failed = parsing_error_code == "json_schema_validation_failed"
                 fallback_status = (
@@ -5957,27 +9315,29 @@ async def advance_audit_job(
                     else "Ответ модели не удалось безопасно разобрать. Данные аудита сохранены, показан "
                     "backend-отчёт без повторных внешних запросов."
                 )
-                return _complete_backend_fallback_stage(
-                    db,
-                    job,
-                    snapshot,
-                    final_diagnostics,
-                    timings,
-                    reason_code=parsing_error_code,
-                    final_status=fallback_status,
-                    warning=fallback_warning,
-                    model_response_parsing=parsing,
-                    provider_response_metadata=provider_response_metadata,
-                    finish_reason=finish_reason,
-                    final_token_usage=final_token_usage,
-                    preserve_job_error=False,
-                )
+                if structured is None and not truncated:
+                    return _complete_backend_fallback_stage(
+                        db,
+                        job,
+                        snapshot,
+                        final_diagnostics,
+                        timings,
+                        reason_code=parsing_error_code,
+                        final_status=fallback_status,
+                        warning=fallback_warning,
+                        model_response_parsing=parsing,
+                        provider_response_metadata=provider_response_metadata,
+                        finish_reason=finish_reason,
+                        final_token_usage=final_token_usage,
+                        preserve_job_error=False,
+                    )
             _record_final_generation_diagnostics(
                 snapshot,
                 job,
                 final_diagnostics,
                 status_value="provider_completed" if structured is not None else "provider_response_truncated",
             )
+            mark_scheduler_progress(snapshot, action="final_provider_completed", successful=True)
             job.context_snapshot_json = _json_dump(snapshot)
             warnings = _helper_warning_messages(snapshot)
             if not (snapshot.get("analysisPeriod") or {}).get("requestedMatchesAvailableData"):
@@ -6004,15 +9364,21 @@ async def advance_audit_job(
                     "truncated"
                     if truncated
                     else evidence_coverage["completionState"]
-                    if snapshot.get("evidenceCoverageRegistry")
+                    if (
+                        snapshot.get("evidenceCoverageRegistry")
+                        or evidence_coverage["completionState"] == "partial_coverage"
+                    )
                     else ("structured" if structured else "fallback")
                 ),
                 "auditCompletionState": evidence_coverage["completionState"],
                 "evidenceCoverage": evidence_coverage,
                 "analysisPeriod": snapshot.get("analysisPeriod") or {},
+                "periodEvidenceLimitations": snapshot.get("periodEvidenceLimitations") or [],
                 "cachePolicy": (snapshot.get("metadata") or {}).get("cachePolicy") or "fresh",
                 "directApiKnowledgeVersion": (snapshot.get("metadata") or {}).get("directApiKnowledgeVersion"),
                 "dataCoverage": snapshot.get("dataCoverage") or {},
+                "canonicalEvidenceCoverage": snapshot.get("canonicalEvidenceCoverage") or {},
+                "finalOutputEvidenceReconciliation": snapshot.get("finalOutputEvidenceReconciliation") or {},
                 "usage": final_token_usage,
                 "finalTokenUsage": final_token_usage,
                 "responseId": response.get("id"),
@@ -6042,11 +9408,29 @@ async def advance_audit_job(
             timings["finalizeMs"] = _elapsed_ms(finalize_started_at)
         else:
             raise RuntimeError(f"Unknown AI audit stage: {stage}")
-        timings["totalElapsedMs"] = max(0, round((_now() - _as_aware(job.created_at or _now())).total_seconds() * 1000))
+        if job.context_snapshot_json and (
+            job.current_stage != stage or job.status in TERMINAL_AUDIT_STATUSES
+        ) and job.current_stage != "wait_for_offline_reports":
+            progress_snapshot = _json_load(job.context_snapshot_json, {}) or {}
+            mark_scheduler_progress(
+                progress_snapshot,
+                action=f"stage_completed:{stage}",
+                successful=True,
+            )
+            job.context_snapshot_json = _json_dump(progress_snapshot)
+        timings["totalElapsedMs"] = max(
+            0,
+            round(
+                (_now() - _as_aware(job.started_at or job.created_at or _now())).total_seconds()
+                * 1000
+            ),
+        )
         job.timings_json = _json_dump(timings)
         job.stage_version += 1
+        logger.info("AI_AUDIT_ADVANCE_COMMIT_START job_id=%s stage=%s next_stage=%s", job.id, stage, job.current_stage)
         db.commit()
         db.refresh(job)
+        logger.info("AI_AUDIT_ADVANCE_COMMIT_DONE job_id=%s stage=%s next_stage=%s", job.id, stage, job.current_stage)
         _log_timing(job, stage)
         return job
     except Exception as exc:

@@ -2,6 +2,7 @@ import { access, readFile } from 'node:fs/promises';
 import { renderSafeMarkdown } from '../src/core/markdown.js';
 import { renderAiAuditJob, renderAiAuditResult } from '../src/pages/ai-assistant.js';
 import { escapeHtml } from '../src/core/html.js';
+import { newestAiAuditJob } from '../src/stores/ai-store.js';
 
 const requiredFiles = [
   'index.html',
@@ -70,6 +71,7 @@ const requiredFiles = [
   'src/core/ids.js',
   'src/core/session-api.js',
   'src/core/storage.js',
+  'scripts/preview-audit-smoke.mjs',
   'docs/frontend-architecture.md',
   'docs/legacy-pages-decision.md',
   'docs/wordstat-refactor.md',
@@ -77,11 +79,32 @@ const requiredFiles = [
   'docs/journal-domain-model.md',
 ];
 
+const vercelConfig = JSON.parse(await readFile('vercel.json', 'utf8'));
+const frontendVercelConfig = JSON.parse(await readFile('frontend/vercel.json', 'utf8'));
+const vercelBuildSources = new Set((vercelConfig.builds || []).map((item) => item.src));
+const vercelRouteSources = new Set((vercelConfig.routes || []).map((item) => item.src));
+
 await Promise.all(requiredFiles.map((file) => access(file)));
 const files = Object.fromEntries(await Promise.all(requiredFiles.map(async (file) => [file, await readFile(file, 'utf8')])));
 
 function has(file, value) {
   return files[file].includes(value);
+}
+
+const newestCompletedAudit = newestAiAuditJob(
+  {
+    job_id: 'old-active-audit',
+    status: 'collecting_context',
+    updated_at: '2026-07-28T12:00:00Z',
+  },
+  {
+    job_id: 'latest-completed-audit',
+    status: 'completed',
+    updated_at: '2026-08-03T12:00:00Z',
+  },
+);
+if (newestCompletedAudit?.job_id !== 'latest-completed-audit') {
+  throw new Error('Newest staged audit recovery did not preserve the latest completed job.');
 }
 
 function lacks(file, values) {
@@ -105,6 +128,8 @@ function functionBody(file, functionName) {
 }
 
 const checks = [
+  ['Vercel Preview serves the frontend and backend', vercelBuildSources.has('*.html') && vercelBuildSources.has('src/**/*') && vercelBuildSources.has('api/index.py') && ['/api/(.*)', '/', '/(index|login|app)\\.html', '/src/(.*)'].every((source) => vercelRouteSources.has(source))],
+  ['frontend Vercel project is static-only', frontendVercelConfig.buildCommand === 'npm run build' && frontendVercelConfig.outputDirectory === 'public'],
   ['app shells', has('index.html', 'id="app"') && has('login.html', 'data-page="login"') && has('app.html', 'data-page="app"')],
   ['routes module modes', has('src/app/routes.js', 'wordstat') && has('src/app/routes.js', 'journal') && has('src/app/routes.js', "mode: 'module'") && !has('src/app/routes.js', "mode: 'reserved'")],
   ['wordstat runtime via main', has('src/main.js', "import './wordstat.js';") && lacks('app.html', ['src/wordstat.js', 'src/wordstat_date_fix.js', 'src/wordstat_regions_patch.js', 'src/wordstat_ai_chat.js', 'src/wordstat_chart_hover.js'])],
@@ -127,20 +152,24 @@ const checks = [
   ['ai endpoints use extended timeout', ['generateAiInsight', 'requestAiChat', 'fetchClientAiRecommendations'].every((name) => has('src/services/ai-service.js', name)) && has('src/services/ai-service.js', 'AI_API_REQUEST_TIMEOUT_MS') && has('src/services/ai-service.js', "'ai_request_timeout'")],
   ['frontend token budgets match backend', has('src/stores/ai-store.js', 'maxTokens: 1200') && has('src/stores/ai-store.js', 'maxTokens: 2500') && has('src/stores/ai-store.js', 'maxTokens: 5000') && has('src/stores/ai-store.js', 'status?.presets')],
   ['ai preset travels with requests', has('src/stores/ai-store.js', 'ai_preset: preset') && has('src/controllers/ai-controller.js', 'ai_preset: preset') && has('src/main.js', 'ai_preset: aiFeatureState.model.selectedPreset')],
-  ['staged audit quick actions', has('src/pages/ai-assistant.js', 'data-ai-audit-start="full_account"') && has('src/pages/ai-assistant.js', 'data-ai-audit-start="critical_issues"') && lacks('src/pages/ai-assistant.js', ['data-ai-prompt="audit"', 'data-ai-prompt="critical"'])],
+  ['staged audit quick actions', has('src/pages/ai-assistant.js', 'data-ai-audit-start="full_account"') && has('src/pages/ai-assistant.js', 'data-ai-audit-start="critical_issues"') && has('src/pages/ai-assistant.js', 'data-ai-audit-start="short_summary"') && lacks('src/pages/ai-assistant.js', ['data-ai-prompt="audit"', 'data-ai-prompt="critical"'])],
   ['heavy audit bypasses chat request', has('src/main.js', 'aiStore.requiresStagedAudit(text)') && has('src/main.js', "await startAiAudit('full_account', text)")],
-  ['staged audit persistence and polling', has('src/main.js', 'directpilot_ai_audit_job_') && has('src/main.js', 'Math.max(1500') && has('src/main.js', 'isTerminalAiAuditStatus') && has('src/main.js', 'restoreAiAuditJob')],
+  ['staged audit persistence and polling', has('src/main.js', 'directpilot_ai_audit_job_') && has('src/main.js', 'fetchActiveAiAuditJob(selectedClientId)') && has('src/services/ai-service.js', '/ai/audits/active?client_id=') && has('src/main.js', 'Math.max(1500') && has('src/main.js', 'isTerminalAiAuditStatus') && has('src/main.js', 'restoreAiAuditJob')],
+  ['campaign-scoped audit limitations', has('src/pages/ai-assistant.js', 'Не полностью проверено по отдельным кампаниям:') && has('src/pages/ai-assistant.js', 'Ограничения явно учтены в выводах.')],
   ['staged audit result UI', has('src/pages/ai-assistant.js', 'Результат аудита') && has('src/pages/ai-assistant.js', 'data-ai-audit-retry') && has('src/pages/ai-assistant.js', 'data-ai-audit-cancel')],
   ['staged audit structured result', has('src/pages/ai-assistant.js', 'renderAiAuditResult') && has('src/pages/ai-assistant.js', 'Что проанализировано') && has('src/pages/ai-assistant.js', 'data-ai-audit-compact-retry')],
   ['adaptive audit progress', ['classify_campaigns', 'create_investigation_plan', 'collect_drilldowns', 'verify_hypotheses'].every((stage) => has('src/pages/ai-assistant.js', stage)) && has('src/pages/ai-assistant.js', 'Ход расследования: факты, гипотезы и доказательства') && has('src/pages/ai-assistant.js', 'Следующий уровень')],
   ['safe audit request trace', has('src/pages/ai-assistant.js', 'Запросы к данным') && has('src/pages/ai-assistant.js', 'Техническая диагностика аудита') && has('src/pages/ai-assistant.js', 'rowsAnalyzedByBackend') && has('src/main.js', 'data-audit-trace-filter')],
   ['audit helper fallback UX', has('src/pages/ai-assistant.js', 'Аудит продолжен безопасно.') && has('src/pages/ai-assistant.js', 'helperProviderCallsCount') && lacks('src/pages/ai-assistant.js', ['helper_model || job.model'])],
+  ['audit separates measured signal from causal impact', has('src/pages/ai-assistant.js', 'Сигнал: ${escapeHtml(auditVerificationLabel(signalVerification))}') && has('src/pages/ai-assistant.js', 'Влияние на результат: ${escapeHtml(auditVerificationLabel(verification))}')],
+  ['preview audit requires structured campaign insights', has('scripts/preview-audit-smoke.mjs', 'audit returned no structured result') && has('scripts/preview-audit-smoke.mjs', 'campaign insights do not separate measured signal verification') && has('scripts/preview-audit-smoke.mjs', 'E2E_AUDIT_MAX_TOKENS || 4000')],
   ['staged audit GET polling recovery', has('src/main.js', 'function refreshActiveAiAudit()') && has('src/main.js', 'aiAuditStatusCanAdvance') && has('src/main.js', 'void refreshActiveAiAudit()') && has('src/services/ai-service.js', '/reset')],
   ['staged audit timeout switches to polling', has('src/main.js', "error?.code === 'ai_audit_generation_timeout'") && has('src/main.js', 'scheduleAiAuditProgress(job.poll_after_ms, pollOnlyAfterRequest)')],
   ['staged audit assistant order', appearsInOrder('src/pages/ai-assistant.js', ['${renderAiAuditJob(context)}', '${renderAiQuickActions(context)}', '${renderAiChat(context)}'])],
   ['staged audit hidden debug panels', !has('src/pages/ai-assistant.js', '${renderAiChat(context)}\n    ${renderAiPromptDebugPanel(context)}') && !has('src/pages/ai-assistant.js', '${renderClientAiRecommendations(context)}\n  `;')],
   ['ai chat minimum height', has('src/app-product-polish.css', 'min-height: 520px') && has('src/app-product-polish.css', 'min-height: 360px')],
   ['audit source counters are explicit', has('src/pages/ai-assistant.js', 'выполнено по сохранённым данным') && has('src/pages/ai-assistant.js', 'live-попыток') && has('src/pages/ai-assistant.js', 'переходов к сохранённым данным') && has('src/pages/ai-assistant.js', 'unavailableDimensions')],
+  ['completed audit scheduler status', has('src/pages/ai-assistant.js', "completed: 'Аудит завершён'") && has('src/pages/ai-assistant.js', 'return label || auditDimensionLabel(key)')],
   ['audit findings grouped by verification', has('src/pages/ai-assistant.js', 'Подтверждённые проблемы') && has('src/pages/ai-assistant.js', 'Частично подтверждённые проблемы') && has('src/pages/ai-assistant.js', 'Опровергнутые гипотезы')],
   ['audit technical response is hidden', !has('src/pages/ai-assistant.js', 'class="aiAuditTechnicalDetails"') && !has('src/pages/ai-assistant.js', 'Технический ответ модели')],
   ['completed audit chat is compact', has('src/main.js', 'job.result?.structured') && has('src/main.js', 'auditJobId: job.job_id') && has('src/pages/ai-assistant.js', 'data-ai-audit-open')],
@@ -165,6 +194,18 @@ const auditSmoke = renderAiAuditResult({
     executive_summary: 'Итог', data_quality: { status: 'sufficient' },
     critical_findings: [{ campaign_name: 'Кампания Бренд', problem: 'Проблема', fact: 'Факт', recommendation: 'Проверить', risk: 'high' }],
     opportunities: [],
+    campaign_insights: [{
+      priority: 'high', campaign_name: 'Кампания Бренд', campaign_type: 'search',
+      signal_type: 'cpa_above_target', signal_status: 'detected',
+      signal_verification_status: 'confirmed', factor_verification_status: 'unverified',
+      verification_status: 'unverified', cost: 12000, clicks: 80, conversions: 2,
+      cpa: 6000, target_cpa: 4000, cpa_delta_pct: 50,
+      problem: 'CPA выше целевого значения.', evidence: ['CPA 6000 при цели 4000.'],
+      hypothesis: 'Нерелевантные запросы повышают CPA.',
+      checked_capabilities: ['campaign_performance'], missing_capabilities: ['search_queries'],
+      recommendation: 'Проверить запросы.', expected_effect: 'Снизить CPA.',
+      confidence: 'medium', requires_human_approval: true,
+    }],
     insufficient_data_campaigns: [{ campaign_name: 'Кампания РСЯ', reason: 'Мало кликов', recommendation: 'Собрать данные', next_data_needed: ['search_queries'] }],
     action_plan: [], prohibited_actions: [], limitations: [], conclusion: 'Вывод',
   },
@@ -185,15 +226,43 @@ const auditSmoke = renderAiAuditResult({
 if (!auditSmoke.includes('<p class="aiAuditPeriod">Период анализа: 10.06.2026–09.07.2026, 30 дней.')
   || auditSmoke.indexOf('Период анализа:') > auditSmoke.indexOf('Что проанализировано')
   || !auditSmoke.includes('Что проанализировано')
+  || !auditSmoke.includes('Что оптимизировать по кампаниям')
+  || !auditSmoke.includes('Сигнал, измеримый фактор и его влияние на результат проверяются отдельно')
+  || !auditSmoke.includes('Сигнал: Подтверждено')
+  || !auditSmoke.includes('Влияние на результат: Не подтверждено')
+  || !auditSmoke.includes('CPA выше цели')
+  || !auditSmoke.includes('Ожидаемый эффект: Снизить CPA.')
   || !auditSmoke.includes('Кампания Бренд')
   || !auditSmoke.includes('Выполнено по данным последней синхронизации DirectPilot: 1')
-  || !auditSmoke.includes('площадки. Эти данные не учитывались в выводах')
+  || !auditSmoke.includes('Не полностью проверено по отдельным кампаниям:')
+  || !auditSmoke.includes('площадки. Ограничения явно учтены в выводах.')
   || !auditSmoke.includes('Неподтверждённые гипотезы')
   || !auditSmoke.includes('<strong>Кампания РСЯ</strong>: Мало кликов')
   || auditSmoke.includes('[object Object]')
   || !auditSmoke.includes('Ответ модели достиг лимита')
   || auditSmoke.includes('CampaignId')) {
   failed.push(['structured audit runtime smoke', false]);
+}
+const missingMetricAuditSmoke = renderAiAuditResult({
+  structured: {
+    meta: { period: {}, data_coverage: {} },
+    executive_summary: 'Итог', data_quality: { status: 'partial' },
+    critical_findings: [], opportunities: [],
+    campaign_insights: [{
+      campaign_name: 'Без конверсий', signal_type: 'conversion_data_unknown',
+      verification_status: 'unverified', conversions: null, cpa: null,
+      problem: 'Метрика недоступна.', evidence: [], checked_capabilities: [],
+      missing_capabilities: [], recommendation: 'Проверить цели.',
+      expected_effect: 'Восстановить измерение.',
+    }],
+    insufficient_data_campaigns: [], action_plan: [], prohibited_actions: [],
+    limitations: [], conclusion: 'Вывод',
+  },
+}, '', escapeHtml, {});
+if (!missingMetricAuditSmoke.includes('Конверсии: —')
+  || !missingMetricAuditSmoke.includes('CPA: —')
+  || missingMetricAuditSmoke.includes('Конверсии: 0')) {
+  failed.push(['audit missing metrics presentation', false]);
 }
 const rawAuditFallbackSmoke = renderAiAuditResult({
   structured: null,
@@ -217,6 +286,19 @@ if (technicalAuditSmoke.includes('must-not-run')
   || technicalAuditSmoke.includes('Технический ответ модели')) {
   failed.push(['audit technical response runtime smoke', false]);
 }
+const resumableAuditSmoke = renderAiAuditJob({
+  selectedClientId: 'client-1',
+  aiAuditJob: {
+    job_id: 'audit-resume', status: 'context_ready', current_stage: 'collect_fresh_baseline', progress_percent: 15,
+    context_metadata: { runtime: {} },
+  },
+  escapeHtml,
+});
+if (!resumableAuditSmoke.includes('data-ai-audit-advance')
+  || !resumableAuditSmoke.includes('Продолжить аудит')) {
+  failed.push(['resumable staged audit UI smoke', false]);
+}
+
 const providerContextFallbackSmoke = renderAiAuditJob({
   selectedClientId: 'client-1',
   aiAuditJob: {
@@ -253,6 +335,18 @@ const evidenceCoverageSmoke = renderAiAuditJob({
     job_id: 'audit-coverage', status: 'completed', current_stage: 'finalize', progress_percent: 100,
     result: { backendFallbackUsed: true, compactRetryAvailable: false },
     context_metadata: {
+      canonicalEvidenceCoverage: {
+        summary: {
+          applicableCampaigns: 1, coveredCampaigns: 1,
+          rowsReceived: 12, rowsAnalyzedByBackend: 12, rowsSentToAi: 8,
+        },
+        capabilitySummary: [{ capabilityId: 'search_queries' }],
+        campaignMatrix: [{
+          campaignName: 'Search A', capabilityId: 'search_queries', status: 'collected',
+          rowsReceived: 12, rowsAnalyzedByBackend: 12, rowsSentToAi: 8,
+          source: 'yandex_direct_live_report', applicable: true, absenceReason: null,
+        }],
+      },
       evidenceCoverage: {
         completionState: 'blocked_missing_evidence',
         summary: {
@@ -269,7 +363,12 @@ const evidenceCoverageSmoke = renderAiAuditJob({
   },
   escapeHtml,
 });
-if (!evidenceCoverageSmoke.includes('Полнота обязательных данных')
+if (!evidenceCoverageSmoke.includes('Что реально проанализировано')
+  || !evidenceCoverageSmoke.includes('Получено / backend / сырые строки AI')
+  || !evidenceCoverageSmoke.includes('сырых строк передано AI')
+  || !evidenceCoverageSmoke.includes('агрегаты, рассчитанные backend по всем проверенным строкам')
+  || !evidenceCoverageSmoke.includes('12 / 12 / 8')
+  || !evidenceCoverageSmoke.includes('Полнота обязательных данных')
   || !evidenceCoverageSmoke.includes('Аудит не получил часть обязательных данных')
   || !evidenceCoverageSmoke.includes('недоступно')
   || !evidenceCoverageSmoke.includes('неприменимо')
