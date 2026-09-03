@@ -1,416 +1,328 @@
-# DirectPilot AI Project Plan
+# DirectPilot AI — план продукта
 
-## 1. Product Summary
+> Редакция 2 от 2026-09-03. Заменяет предыдущую редакцию, которая описывала состояние,
+> не соответствующее коду. Этот файл — источник истины о том, что мы строим и в каком порядке.
+> Читается перед каждой задачей.
 
-DirectPilot AI is an AI-powered SaaS MVP for Yandex Direct optimization.
+---
 
-The product helps users:
-- connect Yandex Direct and Yandex Metrika;
-- load advertising performance data;
-- analyze campaign performance;
-- evaluate conversions by selected Yandex Metrika goal IDs;
-- detect campaign problems;
-- generate safe optimization recommendations;
-- prepare manual action drafts;
-- eventually support approval-based optimization actions.
+## 1. Что это за продукт
 
-The product is not a general dashboard. It is an AI assistant for performance marketing analysis and optimization.
+**DirectPilot — это второй аналитик, который каждое утро проверяет все рекламные кабинеты
+и приносит 3–5 проблем с доказательствами и готовым решением.**
 
-## 2. Current Implemented State
+Не дашборд: дашбордов достаточно, и они не говорят, что делать.
+Не чат: в чат надо приходить самому, а проблема возникает тогда, когда ты смотришь в другую сторону.
+Регулярный автоматический разбор с доказанными выводами.
 
-The project currently has:
+Из определения следуют три правила, которые обязательны при принятии любого решения по продукту:
 
-### Frontend
-- Static frontend hosted on GitHub Pages.
-- Main app page: app.html.
-- Login page: login.html.
-- Main app logic in src/main.js.
-- Standalone login script in src/login.js.
-- Backend API base defaults to:
-  https://directpilot-ai.vercel.app/api/v1
-  when opened from GitHub Pages.
-- Backend API URL can still be overridden via localStorage/directpilot_api_base.
-- Input/focus bugs in app and login have been fixed.
-- App redirects unauthenticated users to login.html.
-- Logout button exists.
-- Client state is scoped by logged-in email.
-- AI chat/recommendation state is scoped by selected client.
-- Dashboard includes MVP readiness and sync center.
-- Optimization workspace exists.
-- AI recommendations page exists.
-- Per-client Yandex binding UI exists.
+1. **Главный экран — лента находок**, а не диагностика, не настройки и не чат.
+2. **Находка обязана заканчиваться решением.** «Соберите дополнительные данные» —
+   это не находка. Если система не доходит до решения, находку не показываем.
+3. **Ценность меряется временем аналитика** — сколько часов в неделю специалист
+   не потратил на ручной разбор кабинетов.
 
-### Backend
-- FastAPI backend deployed on Vercel.
-- Email code login exists.
-- Email sessions are stored in the database.
-- API requests use Authorization: Bearer <session_token>.
-- /auth/me returns authenticated user information.
-- One email = one workspace/organization for MVP.
-- Clients are scoped by authenticated user organization.
-- Yandex OAuth works.
-- Yandex connected accounts are scoped by organization/workspace.
-- A Yandex account must be explicitly bound to a client.
-- Client sync requires a bound Yandex account.
-- Client delete endpoint exists.
-- Client settings exist:
-  - name
-  - direct_login
-  - metrica_counter
-  - yandex_account_id
-  - target_cpa
-  - main_goal_id
-  - notes
-- Safe MVP schema patches are used in backend/app/db.py.
-- Sync jobs are stored.
-- Direct campaign period stats are stored.
-- Performance summary endpoint exists.
-- Optimization plan endpoint exists.
-- AI recommendations endpoint exists.
-- AI chat endpoint exists.
+### Кто клиент
 
-### Database / Persistence
-- PostgreSQL is used.
-- SQLAlchemy models are used.
-- There is no Alembic yet.
-- Safe MVP schema patches are used with ALTER TABLE ADD COLUMN IF NOT EXISTS.
-- Destructive migrations are forbidden.
-- Existing data must not be dropped.
+| Клиент | Что ему нужно | За что платит | Когда |
+|---|---|---|---|
+| Агентство / фрилансер, 5–40 кабинетов | Не пропустить проблему в кабинете, до которого не дошли руки | За охват: один человек ведёт вдвое больше клиентов | первый рынок |
+| Прямой рекламодатель, 1 кабинет | Понять, что происходит и работает ли подрядчик | За понятность и контроль | позже |
 
-## 3. Known Current Gaps
+Практическое следствие: агентству нужен обзор **по всем кабинетам сразу** — «где сегодня горит».
+Сейчас продукт умеет работать только внутри одного выбранного клиента.
 
-The most important current gaps:
+---
 
-1. Goal conversions are not yet fully loaded from Yandex Metrika by goal ID.
-   Current data can still rely on total/general conversions from Yandex Direct.
-   This must be fixed.
+## 2. Целевая метрика продукта
 
-2. The AI needs stronger server-side context.
-   AI should not rely only on frontend-provided client_context.
-   It should load trusted backend context:
-   - client settings;
-   - Yandex binding;
-   - sync jobs;
-   - performance summary;
-   - campaign diagnostics;
-   - optimization plan;
-   - selected goal IDs;
-   - conversion source.
+Бизнес-цель клиента одна: **снизить стоимость заявки или покупки**. Всё, что мы строим —
+аналитика, визуализация, рекомендации — должно вести к ней.
 
-3. AI UI should become one unified AI analyst chat.
-   Avoid multiple fragmented AI panels.
+### Основное тождество
 
-4. Optimization actions must remain drafts only.
-   No write actions to Yandex Direct until explicit approval workflow exists.
+```
+CPA = Расход / Конверсии = (Клики × CPC) / (Клики × CR) = CPC / CR
+```
 
-5. Proper migrations with Alembic are needed later.
-   For MVP, safe schema patches are acceptable.
+Значит **любое** изменение CPA раскладывается на вклад цены клика и вклад конверсионности,
+без остатка, и вклад каждого считается в рублях:
 
-## 4. Target Product Vision
+> «CPA вырос с 6 200 до 8 900 ₽. Из 2 700 ₽ роста 1 900 ₽ дало подорожание клика,
+> 800 ₽ — падение конверсионности.»
 
-The final target product should support the following flow:
+Это разложение — скелет всей аналитики. Реализация: `backend/app/services/metrics_core.py`
+(ТЗ №1, см. `docs/specs/`).
 
-1. User logs in by email.
-2. User creates a client/project.
-3. User enters:
-   - Yandex Direct login;
-   - Yandex Metrika counter ID;
-   - one or multiple Yandex Metrika goal IDs;
-   - target CPA;
-   - notes/business context.
-4. User connects Yandex OAuth.
-5. User binds the connected Yandex account to the selected client.
-6. User runs sync.
-7. Backend loads:
-   - Direct campaign cost/impressions/clicks;
-   - Metrika goal conversions by selected goal IDs;
-   - sync metadata and warnings.
-8. Summary shows:
-   - total spend;
-   - clicks;
-   - impressions;
-   - CTR;
-   - CPC;
-   - selected goal conversions;
-   - CPA by selected goals;
-   - conversion source.
-9. Optimization workspace detects:
-   - spend without goal conversions;
-   - high CPA;
-   - low CTR;
-   - low data;
-   - inefficient spend share;
-   - promising campaigns.
-10. AI chat can answer questions about:
-   - all campaigns;
-   - a selected campaign;
-   - selected goal IDs;
-   - conversion source;
-   - optimization plan.
-11. AI produces safe draft actions.
-12. User reviews/approves actions.
-13. Only after explicit approval, future versions may apply write actions to Yandex Direct.
+### Три рычага снижения CPA
 
-## 5. MVP Roadmap
+Каждая находка и каждая рекомендация обязана быть помечена одним из трёх рычагов
+и содержать оценку эффекта в рублях.
 
-### Phase 1: Stable User + Client Infrastructure
-Status: Mostly done.
+| Рычаг | Что делаем | Риск | Скорость эффекта |
+|---|---|---|---|
+| **Убрать пустой расход** | Сегменты с расходом и нулём конверсий | низкий | сразу |
+| **Снизить CPC** | Ставки, стратегия, корректировки, качество объявлений | средний | недели |
+| **Поднять CR** | Релевантность трафика, посадочная, оффер | высокий | месяцы |
 
-Includes:
-- email login;
-- session auth;
-- user/workspace scoping;
-- client CRUD;
-- per-client Yandex binding;
-- app auth gate;
-- logout;
-- backend API config.
+### Заголовочный показатель
 
-### Phase 2: Data Sync Foundation
-Status: Partially done.
+**Доля расхода, не давшая ни одной конверсии.** «12 % расхода = 47 000 ₽/мес впустую» —
+это то, ради чего агентство платит. Показатель выносится на главный экран.
 
-Includes:
-- Yandex Direct sync;
-- sync jobs;
-- stored campaign stats;
-- performance summary;
-- no fake/demo data.
+### Запрещённые формулировки
 
-Remaining:
-- Yandex Metrika goal conversions by selected goal IDs;
-- robust conversion source labeling;
-- sync warnings when goal data is unavailable.
+Ни один вывод продукта не имеет права заканчиваться словами
+«снизить CPA в направлении целевого значения», «проверить дополнительно»,
+«собрать больше данных» — без конкретного действия и числа.
+Если система не может назвать действие, находка не показывается.
 
-### Phase 3: Goal-Based Analytics
-Status: In progress / next priority.
+---
 
-Need:
-- support one or multiple goal IDs;
-- parse goal IDs from client settings;
-- load goal conversions from Metrika;
-- map Metrika goal data to Direct campaigns safely;
-- show goal conversion source in summary;
-- compute CPA by selected goals;
-- do not allocate goal conversions artificially unless explicitly marked as estimated.
+## 3. Пять режимов работы
 
-### Phase 4: AI Optimization Workspace
-Status: Partially done.
+Продукт состоит из пяти режимов. Все пять опираются на одно ядро метрик (раздел 2).
 
-Need:
-- stronger server-side AI context;
-- unified AI analyst chat;
-- campaign selector;
-- quick actions;
-- optimization plan as draft actions;
-- evidence-based AI responses.
+### Режим 1. Утренняя сводка
 
-### Phase 5: Approval Workflow
-Status: Not started.
+Каждый день автоматически, по данным за вчера.
 
-Need:
-- action draft storage;
-- user approval;
-- status tracking;
-- no direct Yandex write actions without approval.
+- **Дневное сравнение — только «тот же день недели неделю назад».**
+  Недельная сезонность в контексте сильнее любого тренда: понедельник против воскресенья
+  даст «падение конверсий на 60 %» на ровном месте. Сравнение со вчерашним днём
+  разрешено показывать, но запрещено использовать как основание для вывода.
+- Дополнительные окна: 7 к 7 и 28 к 28 (28 = ровно 4 недели, поэтому в окнах
+  одинаковое число каждого дня недели; сравнение 30 на 30 систематически смещено).
+- Выход: от нуля до пяти изменений.
+- **Молчание — правильный и ценный ответ.** Сводка, которая кричит каждый день,
+  перестаёт читаться через неделю. Порог значимости зависит от объёма данных,
+  а не задан константой.
 
-### Phase 6: Safe Yandex Direct Write Actions
-Status: Future only.
+### Режим 2. Полный аудит
 
-Potential actions:
-- pause keyword/ad/campaign;
-- add negative keywords;
-- adjust bid/budget;
-- create recommendations.
+По требованию и раз в месяц. Структурный разбор всего кабинета.
 
-Rules:
-- never auto-apply;
-- require explicit approval;
-- log every action;
-- rollback plan required where possible.
+- Может идти долго, но **в фоне, с уведомлением по готовности**, а не при открытой вкладке.
+- Выход: план работ по всему кабинету, отсортированный по деньгам.
+- Каждый пункт плана: проблема, доказательство с числами, рычаг, эффект в рублях, действие.
 
-## 6. Engineering Rules
+### Режим 3. Точечное расследование
 
-### General
-- Prefer small, reviewable PRs, but larger cohesive product iterations are acceptable.
-- Always run:
-  npm run build
-  python -m compileall -q backend/app index.py backend/index.py
-  python -m pytest -q backend/tests if pytest is available
-- If pytest is not installed locally, say so honestly.
-- Keep changed files within the allowed scope of the task.
-- Do not modify unrelated files.
+По конкретному вопросу, 30–60 секунд. «Почему вырос CPA в кампании X».
+Один вопрос — целевой сбор данных — быстрый ответ. Это то, чем должен стать чат.
 
-### Backend
-- Use FastAPI.
-- Keep auth/organization scoping intact.
-- Protected endpoints must require Authorization: Bearer <session_token>.
-- Never expose tokens/secrets.
-- Never return raw secret values.
-- Use current user/organization for client ownership checks.
-- Do not create global data leaks between users.
-- No destructive migrations.
-- Schema patches must use ADD COLUMN IF NOT EXISTS only.
-- Prefer clear JSON errors over raw 500.
+### Режим 4. Контроль после изменения
 
-### Frontend
-- Keep static frontend approach.
-- Do not introduce React/Vite/build tooling unless explicitly requested.
-- Keep app usable on GitHub Pages.
-- Preserve backend API URL override.
-- Preserve input focus behavior.
-- Keep state scoped by user email and selected client.
-- Do not leak AI chat or summary between clients.
+Пользователь отмечает: применил / отклонил / отложил.
+Через 7 и 14 дней система сама возвращается и считает, что изменилось.
 
-### AI
-- AI must not invent campaign metrics.
-- AI must clearly state when goal data is unavailable.
-- AI must not claim write actions were applied.
-- AI recommendations are draft actions only.
-- AI should answer in Russian by default.
-- AI context should come from trusted backend data where possible.
+Это одновременно: доказательство ценности для продажи, обучающая выборка для ИИ
+и единственное основание, на котором в будущем можно дать системе право менять кабинет.
 
-### Yandex
-- OAuth account is global within user workspace but must be bound to a client.
-- Do not use the latest global Yandex token as fallback.
-- Sync must use the token bound to the selected client.
-- No write actions to Yandex Direct yet.
+### Режим 5. Недельный отчёт клиенту
 
-## 7. Safety Boundaries
+То, на что агентство тратит часы руками. Что изменилось, что сделано, что дальше.
 
-Forbidden until explicitly implemented:
-- automatic campaign changes;
-- automatic bid updates;
-- automatic budget changes;
-- pausing campaigns/ads/keywords;
-- deleting anything from Yandex Direct;
-- writing to Yandex Direct without explicit user approval;
-- storing plaintext OAuth tokens;
-- exposing tokens in logs or API responses;
-- showing one user's clients to another user.
+---
 
-## 8. Recommended Next Major Task
+## 4. Текущее состояние — честно
 
-Next major task:
-Metrika goal sync + unified AI workspace.
+### Работает и сделано хорошо
 
-This should include:
-- conversion_goal_ids field;
-- one or multiple goal IDs;
-- Yandex Metrika API loader;
-- campaign-level goal conversion matching;
-- summary conversion-source labeling;
-- AI context endpoint/helper;
-- unified AI analyst chat;
-- quick action prompts;
-- campaign context selector;
-- per-client AI state.
+- Безопасность: OAuth-токены зашифрованы (Fernet), сессии хранятся хешами,
+  данные разделены по организациям, ключи не уходят во фронтенд,
+  автозаполнение бизнес-контекста защищено от запросов во внутреннюю сеть.
+- Реестр возможностей Директа `yandex_direct_read_capabilities.py` — около 50 срезов
+  с типом отчёта, полями, метриками, лимитами и применимостью к типу кампании,
+  с проверкой, что срез не может быть записывающим.
+- Машина сбора данных: за один прогон аудита собирается 3 000 поисковых запросов,
+  4 392 строки по географии, 996 площадок, 468 ключей, 257 объявлений.
+- 429 тестов, все проходят.
+- Дневная статистика по кампаниям (`direct_campaign_daily_stats`) и анализатор динамики
+  с окнами 7/7, 14/14, 30.
+- Wordstat — самый зрелый раздел интерфейса; его вёрстка взята за образец для остальных.
 
-## 9. Helpful Skills, Subagents, and Tools
+### Не работает или отсутствует
 
-The following specialized helpers would improve development speed:
+| Что | Состояние |
+|---|---|
+| Яндекс.Метрика | `yandex_metrika.py` нигде не вызывается — мёртвый код. Конверсии идут через параметр `Goals` в отчётах Директа. Визитов, отказов, глубины, соцдема нет |
+| Демография и сводка аккаунта | Не собираются: `not_collected` |
+| Графики | Единственный график во всём продукте — в Wordstat |
+| Модель атрибуции | `AttributionModels` не передаётся, работает модель по умолчанию, пользователю не показывается |
+| Дневное сравнение | Анализатор начинается с недели; сравнения «вчера к тому же дню недели» нет |
+| Пороги значимости | Константы 30 %, 25 %, 20 % независимо от объёма данных |
+| Оценка в рублях | Не считается нигде |
+| Планировщик | Vercel Cron не настроен, автоматически не запускается ничего |
+| История дневных данных | Жёстко обрезана 30 днями (`client_sync.py`, `days=min(max(days, 30), 30)`), перезаписывается при синхронизации, в двух местах есть полное удаление истории клиента |
+| Записи в Директ | Отсутствуют полностью (это соответствует правилам безопасности) |
+| Согласования и контроль эффекта | Каркас: 261 строка на три сервиса |
+| Журнал | Работает, но автологирование почти ничего не пишет |
 
-### Backend API specialist
-Useful for:
-- FastAPI routers;
-- auth dependencies;
-- API schema design;
-- error handling;
-- endpoint tests.
+### Известные проблемы качества
 
-### Yandex API specialist
-Useful for:
-- Yandex Direct Reports API;
-- Yandex Metrika API;
-- OAuth scopes;
-- campaign/goal attribution;
-- API pagination and rate limits.
+1. **Пороги подтверждения глушат любой вывод.** На реальном прогоне: ноль подтверждённых
+   гипотез из четырнадцати. Система нашла «регион Сочи, CPA в 4,6 раза выше Краснодара»
+   и пометила это «не подтверждено», после чего план действий выродился в пять одинаковых
+   строк «собрать дополнительные данные».
+2. **Промпт заполнен процессом, а не данными.** 88 011 токенов промпта, из них
+   сырых строк данных — 44 при 9 555 собранных.
+3. **Бизнес-контекст пустой и помечен недостоверным.** Уходит в промпт с меткой
+   `trustLevel: "reference_only"`, обрезанный до 500 символов. Поля «Ниша» и
+   «Средний чек / ценность лида» не заполнены, при этом интерфейс показывает «Готово, 75 %».
+4. **59 % запросов к Директу падают** — 85 из 144 на реальном прогоне.
+   Аудит строит выводы примерно по четверти кабинета.
+5. **Аудит живёт, пока открыта вкладка.** 915 секунд выполняются цепочкой запросов
+   из браузера, потому что у Vercel нет фонового процесса.
+6. **`ai_audit_jobs.py` — 9 501 строка и 228 функций верхнего уровня**, треть бэкенда.
 
-### Data modeling specialist
-Useful for:
-- SQLAlchemy models;
-- sync tables;
-- schema patches;
-- future Alembic migration plan;
-- safe data persistence.
+---
 
-### Frontend static app specialist
-Useful for:
-- src/main.js refactoring;
-- state management without React;
-- UI state isolation;
-- input/focus safety;
-- GitHub Pages constraints.
+## 5. Дорожная карта
 
-### AI prompt/context specialist
-Useful for:
-- server-side AI context builder;
-- OpenRouter prompt design;
-- anti-hallucination constraints;
-- campaign evidence formatting;
-- unified AI chat UX.
+Сроки — ориентир, не обязательство.
 
-### QA/test specialist
-Useful for:
-- regression tests;
-- auth-scope tests;
-- sync tests;
-- AI context tests;
-- manual test plans.
+### Этап 0. Гигиена — 1–2 недели
 
-### Product manager agent
-Useful for:
-- MVP scope control;
-- prioritization;
-- user flow;
-- roadmap;
-- acceptance criteria.
+Убрать то, что прямо сейчас разрушает доверие: нули и ошибка на «Обзоре» поверх реальных
+данных; слипшиеся подписи и значения на пяти экранах; форма контекста бизнеса из
+17 крошечных полей в ряд; сырые коды и JSON в интерфейсе; фантомная кнопка в «Оптимизации»;
+тройное повторение одного совета в «Диагностике»; общий контейнер ширины по образцу Wordstat.
 
-## 10. Codex Workflow Rules
+**Готово, когда:** экран можно показать человеку со стороны, и он не спросит
+«почему тут везде нули» и «что такое direct_no_data».
 
-For every task:
-1. Read AGENTS.md.
-2. Read PROJECT_PLAN.md.
-3. Run git status.
-4. Stop if working tree is not clean.
-5. Implement only the requested scope.
-6. Run required checks.
-7. Summarize changed files.
-8. Provide manual test steps.
-9. Do not claim tests passed if they did not run.
-10. Do not make unrelated improvements.
+### Этап 1. Аудит, который доходит до решения — 4–5 недель
 
-Preferred task flow:
-- Create a branch for every major task.
-- Keep PRs cohesive.
-- Backend + frontend changes are acceptable when needed for one product feature.
-- Do not mix product features with formatting-only changes.
+Четыре независимые работы:
 
-## 11. Current Priority Order
+- **Перекалибровать пороги подтверждения.** Три состояния вместо двух:
+  подтверждено / вероятно / недостаточно данных. «Вероятно» тоже даёт конкретное действие,
+  с пометкой уверенности и предложением начать с малого шага.
+- **Разобрать 85 упавших запросов.** Где отказ Директа, где неверный набор полей,
+  где нехватка времени.
+- **Наполнить промпт данными вместо процесса.** Служебные метаданные — 5–10 % промпта,
+  остальное: агрегаты и строки. Плюс собрать то, чего нет: сводку по аккаунту и демографию.
+- **Не проверять одно и то же трижды.** Раунды 2 и 3 повторяют гипотезы раунда 1.
 
-1. Metrika goal conversion sync.
-2. Unified AI analyst chat.
-3. Server-side AI context builder.
-4. Improved optimization plan.
-5. Approval workflow for draft actions.
-6. Safe Yandex Direct write actions after approval.
-7. Alembic migrations.
-8. Better UI styling and onboarding.
-9. Billing/subscriptions later.
+**Готово, когда:** аудит того же кабинета возвращает 3–5 находок, каждая заканчивается
+конкретным действием с числом.
 
-## 12. Definition of Done for MVP
+### Этап 2. Визуализация динамики — 2–3 недели
 
-MVP is considered usable when:
+Расход, конверсии и CPA по дням на одной оси; переключатель периода; сравнение с предыдущим
+периодом; разложение CPA на CPC и CR; разбивка по кампаниям; отметки событий.
 
-- user can log in;
-- user can create isolated client;
-- user can connect Yandex;
-- user can bind Yandex account to client;
-- user can set Direct login, Metrika counter, goal IDs;
-- user can sync real data;
-- summary shows cost/click/conversion/CPA by selected goals;
-- AI sees campaign-level data;
-- AI can answer questions about campaigns;
-- AI creates safe optimization plan;
-- no data leaks between users/clients;
-- no fake/demo campaign data;
-- no unsafe write actions.
+**Готово, когда:** за 10 секунд без чтения текста видно, стало лучше или хуже и в какой кампании.
+
+### Этап 3. Лента находок и все кабинеты сразу — 3–4 недели
+
+Находки наверх, диагностика прогона — за ссылку «подробности». Чат переезжает внутрь находки.
+Страница по всем клиентам агентства. Аудит по расписанию.
+
+**Готово, когда:** можно вести свои кабинеты, открывая только эту ленту, и она не пропускает
+того, что нашёл бы руками.
+
+### Этап 4. Метрика, атрибуция, поведение — 3 недели
+
+Визиты, отказы, глубина, время на сайте, соцдем, срезы по кампаниям.
+Зафиксировать и показывать модель атрибуции.
+
+**Готово, когда:** в находке про высокий CPA видно, отказы выросли или конверсия упала
+при том же поведении.
+
+### Этап 5. Петля «действие → эффект» — 4–6 недель
+
+Отметка применения, замер через 7 и 14 дней, оживший журнал.
+Первые записи в Директ на самом безопасном действии — добавление минус-слов,
+только после явного согласования, с логом и откатом.
+
+**Готово, когда:** можно показать таблицу «за 3 месяца найдено 47 проблем,
+31 согласована, экономия — столько-то рублей».
+
+### Этап 6. Продукт для чужих рук — после пилотов
+
+Тарифы и биллинг, лимиты расхода на ИИ, онбординг без участия автора,
+приглашение коллег, расширение автопилота.
+
+**Готово, когда:** незнакомый человек регистрируется, подключает кабинет
+и получает первую находку без единого сообщения автору.
+
+### Вне дорожной карты
+
+**Wordstat** — самый зрелый раздел и единственный, не участвующий в основном сценарии.
+Либо подключается к аудиту как источник данных о спросе на этапе 4, либо замораживается.
+Параллельно не развивается.
+
+**Рефакторинг фронтенда** — модули страниц вынесены, но не подключены
+(в каждом лежит записка `nextStep: подключить ... к ...Content`). На этапе 0 решить:
+доводить страница за страницей или остановить и вернуть логику в `main.js`.
+Хуже всего — оставить наполовину.
+
+---
+
+## 6. Очередь задач
+
+Полосы подобраны так, чтобы задачи не пересекались по файлам и могли идти параллельно.
+Подробнее о полосах — в `AGENTS.md`, раздел 11.
+
+| № | ТЗ | Полоса | Трогает `ai_audit_jobs.py` | Статус |
+|---|---|---|---|---|
+| 1 | Ядро метрик: сравнение периодов, декомпозиция CPA, значимость | A | нет | см. `docs/state.md` |
+| 2 | Хранение дневной истории: снять лимит 30 дней, append-only | A | нет | не начато |
+| 3 | Утренняя сводка: сервис + Vercel Cron + экран | A | нет | не начато |
+| 4 | Гигиена интерфейса | B | нет | не начато |
+| 5 | Перекалибровка порогов подтверждения | C | **да** | не начато |
+| 6 | Промпт: данные вместо процесса | C | **да** | не начато |
+
+Перед задачами 5 и 6 разрезать `ai_audit_jobs.py` на 6–8 модулей:
+планирование, сбор, проверка гипотез, сверка доказательств, сборка промпта,
+разбор ответа, состояние задачи. 429 тестов — страховка.
+
+**Правило приоритизации.** Перед каждой задачей ответить на вопрос:
+*к какому критерию готовности из раздела 5 она приближает?*
+Если ни к какому — задача не берётся, какой бы разумной она ни выглядела.
+
+---
+
+## 7. Правила безопасности
+
+Запрещено до отдельной явной реализации:
+
+- автоматические изменения кампаний, ставок, бюджетов;
+- остановка кампаний, групп, объявлений, ключевых фраз;
+- удаление чего-либо в Яндекс.Директе;
+- любая запись в Яндекс.Директ без явного подтверждения пользователя;
+- хранение OAuth-токенов в открытом виде;
+- вывод токенов и секретов в логи и ответы API;
+- показ клиентов одного пользователя другому.
+
+Правила данных:
+
+- Никогда не подставлять `0` вместо «неизвестно». Достоверный ноль и отсутствие данных —
+  разные состояния на всём пути вычислений.
+- Не выдавать гипотезу за установленную причину.
+- Не утверждать, что действие выполнено, без подтверждённого результата.
+- Не выдумывать метрики, конверсии, периоды и настройки кампаний.
+
+Правила разработки:
+
+- Схема базы меняется только аддитивно: `ADD COLUMN IF NOT EXISTS`.
+  Разрушающие миграции запрещены. Alembic — перед этапом 5.
+- Все вызовы Яндекса и OpenRouter — только через backend.
+- Фронтенд остаётся vanilla JS, без миграции на фреймворк.
+
+---
+
+## 8. Что вне рамок MVP
+
+- Полностью автономная оптимизация без согласования.
+- Миграция фронтенда на большой фреймворк.
+- Сложная многопользовательская модель прав.
+- Интеграции с CRM до того, как стабильно работает ядро Директа.
+- Файнтюнинг моделей. Он учит форме, а не фактам; наша проблема — в фактах
+  и в порогах подтверждения. Правильная последовательность: перекалибровать пороги →
+  наполнить промпт данными → сильная модель на финальном шаге со строгой JSON-схемой →
+  настоящий RAG на документации Директа и истории находок → и только потом, не раньше
+  чем через год, файнтюнинг ради снижения стоимости.

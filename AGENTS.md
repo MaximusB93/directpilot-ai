@@ -125,7 +125,91 @@ Backend checks/tests (when present):
 
 ---
 
-## 11) What is out of scope for MVP
+## 11) Working with multiple agents
+
+Several agents (Codex, Claude, Antigravity) work on this repository. Claude writes the
+specifications and reviews diffs; Codex implements them; light mechanical work may go to
+any agent. The rules below prevent agents from overwriting each other.
+
+### Lanes
+
+Every task belongs to exactly one lane. Lanes are chosen so that they do not share files.
+
+| Lane | Scope | Main files |
+|---|---|---|
+| **A — data & metrics** | Metric core, sync, storage, daily stats | `app/services/metrics_core.py`, `app/services/client_sync.py`, `app/services/campaign_dynamics_analyzer.py`, `app/models.py` |
+| **B — interface** | Pages, layout, CSS, UI hygiene | `src/**` |
+| **C — audit internals** | Audit pipeline, evidence policy, prompts | `app/services/ai_audit_jobs.py`, `app/services/audit_evidence*.py`, `app/ai/prompts/**` |
+
+**Lane C is exclusive.** While any agent works in `ai_audit_jobs.py`, no other agent enters
+that file. It is 9 501 lines long and any parallel edit will conflict.
+
+### Branches
+
+- One agent = one branch = one lane. Never two agents on the same branch.
+- Branch per specification: `feat/<short-name>` or `fix/<short-name>`.
+- Never work directly on `main`.
+- Merge or delete a branch within a week. The repository already carries 221 branches;
+  do not add to that without closing others.
+
+### Parallel work in one folder
+
+Agents share one local checkout. Two agents in the same working tree will corrupt each
+other's state: one switches branch, the other's files change mid-edit.
+
+Either run agents **sequentially**, or give each one its own worktree:
+
+```bash
+git worktree add ../dp-lane-a feat/metrics-core
+git worktree add ../dp-lane-b feat/ui-hygiene
+```
+
+Each worktree is a separate folder sharing one repository and history. Remove it after merge:
+
+```bash
+git worktree remove ../dp-lane-a
+```
+
+### Before starting any task
+
+1. Read `PROJECT_PLAN.md` — product definition, roadmap, task queue.
+2. Read the specification for this task in `docs/specs/`.
+3. Read `docs/decisions.md` — do not re-open settled decisions.
+4. Read `docs/state.md` — check which lanes are currently occupied.
+5. Run `git status`. Stop if the working tree is dirty.
+6. Confirm the task's lane is free.
+
+### After finishing a task
+
+1. Run the checks from section 5.
+2. Update `docs/state.md`: what was done, which branch, what remains.
+3. If the task settled a question that future tasks could re-open, propose a one-line
+   entry for `docs/decisions.md`.
+4. Report changed files and manual test steps. Do not claim tests passed if they did not run.
+
+---
+
+## 12) Documentation is the shared memory
+
+Agent context dies with the session; files do not. The repository is the shared memory of
+the project, so these files must stay true to the code.
+
+| File | Contents | Maintained by |
+|---|---|---|
+| `PROJECT_PLAN.md` | Product definition, target metric, five modes, roadmap, task queue | Claude, on roadmap changes |
+| `AGENTS.md` | Rules for all agents | Claude |
+| `docs/specs/TZ-NN-*.md` | One specification per task | Claude |
+| `docs/decisions.md` | Dated log of settled decisions | Claude, after acceptance |
+| `docs/state.md` | What is done, in flight, and on which branch | any agent, after each task |
+
+If an agent finds that a document contradicts the code, that contradiction is a finding and
+must be reported. Do not silently follow a stale document, and do not silently rewrite it —
+`PROJECT_PLAN.md` previously described integrations that did not exist, and every session
+started from a wrong picture of the project.
+
+---
+
+## 13) What is out of scope for MVP
 - Full autonomous optimization without approval.
 - Large frontend framework migration.
 - Complex multi-tenant enterprise RBAC redesign beyond current MVP needs.
