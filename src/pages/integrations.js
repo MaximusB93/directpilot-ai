@@ -92,7 +92,7 @@ export function renderClientYandexAccountPanel({
   const selectedAccountBadge = renderStatusBadge({
     label: selectedAccountId ? 'Аккаунт привязан' : 'Аккаунт не выбран',
     tone: selectedAccountId ? 'success' : 'warning',
-    title: selectedAccountId || 'Для активного клиента не выбран аккаунт Яндекса',
+    title: selectedAccountId ? 'Аккаунт Яндекса привязан к активному клиенту' : 'Для активного клиента не выбран аккаунт Яндекса',
   });
   const accountCards = accounts.map((account) => {
     const accountId = String(account.id || '');
@@ -100,7 +100,8 @@ export function renderClientYandexAccountPanel({
     const buttonClass = selected ? 'secondaryButton' : 'approveButton';
     const buttonText = selected ? 'Привязан' : 'Привязать';
     const selectedBadge = selected ? renderStatusBadge({ label: 'выбран', tone: 'success' }) : '';
-    return `<article class="accountCard ${selected ? 'selected' : ''}"><div><strong>${escapeHtml(account.login || account.name || account.id)}</strong><span>${escapeHtml(account.id)}</span>${selectedBadge}</div><div class="panelActionsInline"><button class="${buttonClass}" data-bind-yandex-account="${escapeHtml(account.id)}" ${selected ? 'disabled' : ''}>${buttonText}</button><button class="dangerButton" data-delete-yandex-account="${escapeHtml(account.id)}">Удалить</button></div></article>`;
+    const accountTitle = account.login || account.name || 'Аккаунт Яндекса';
+    return `<article class="accountCard ${selected ? 'selected' : ''}"><div><strong>${escapeHtml(accountTitle)}</strong>${selectedBadge}</div><div class="panelActionsInline"><button class="${buttonClass}" data-bind-yandex-account="${escapeHtml(account.id)}" ${selected ? 'disabled' : ''}>${buttonText}</button><button class="dangerButton" data-delete-yandex-account="${escapeHtml(account.id)}">Удалить</button></div></article>`;
   }).join('');
 
   return renderPanel({

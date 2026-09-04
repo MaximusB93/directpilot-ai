@@ -1,3 +1,5 @@
+import { labelFor, labelList, labelOrDash } from '../core/labels.js';
+
 export const AI_ASSISTANT_PAGE_ID = 'ai';
 
 export const aiAssistantPage = {
@@ -169,45 +171,27 @@ export function renderAiChat({
 }
 
 function auditRequestStatusLabel(status) {
-  return ({
-    pending: 'Ожидает выполнения', queued: 'Ожидает выполнения', processing: 'В обработке',
-    waiting_for_report_queue: 'Ожидает свободное место в очереди',
-    offline_report_processing: 'Формируется отчёт',
-    unavailable_after_retry_limit: 'Недоступно после повторных попыток',
-    ready: 'Данные получены', completed: 'Данные получены',
-    collected: 'Данные получены', cached: 'Получено из кеша', partial: 'Получены частично',
-    insufficient_data: 'Недостаточно данных', unavailable: 'Источник недоступен',
-    unsupported: 'Не поддерживается', failed: 'Ошибка получения', not_applicable: 'Неприменимо',
-    rejected_by_validation: 'Отклонено backend-валидатором',
-  })[status] || 'Ожидает';
+  return labelFor('auditRequestStatus', status) || 'Ожидает';
 }
 
 function auditVerificationStatusLabel(status) {
-  return ({
-    confirmed: 'Подтверждена', partially_confirmed: 'Подтверждена частично', rejected: 'Отклонена',
-    unverified: 'Не подтверждена', not_applicable: 'Неприменима', collecting_data: 'Собираем данные',
-    proposed: 'Предложена',
-  })[status] || 'Проверяется';
+  return labelFor('auditVerificationStatus', status) || 'Проверяется';
 }
 
 function auditSourceLabel(source) {
-  return ({
-    live: 'Live Яндекс.Директ', cached_live: 'Кеш live-данных', saved: 'Сохранённые данные',
-    mixed: 'Смешанный источник',
-    yandex_direct_live_report: 'Live-отчёт Директа', yandex_direct_live_service: 'Live API Директа',
-    yandex_direct_cached_live: 'Кеш live-отчёта', direct_read_cache: 'Кеш DirectPilot',
-    saved_campaign_stats: 'Сохранённая статистика', unavailable: 'Источник недоступен',
-  })[source] || (source ? 'Доверенный read-only источник' : 'Ожидается');
+  return labelFor('auditSource', source) || (source ? 'Доверенный read-only источник' : 'Ожидается');
 }
 
 function auditCapabilityLabel(value) {
-  return ({
-    campaigns: 'кампании', campaign_performance: 'эффективность кампаний', goals: 'цели',
-    search_queries: 'поисковые запросы', ad_groups: 'группы', ad_group_performance: 'эффективность групп',
-    keywords: 'ключевые фразы', keyword_performance: 'эффективность ключей', placements: 'площадки',
-    devices: 'устройства', geo: 'география', retargeting_lists: 'списки ретаргетинга',
-    retargeting_segments: 'сегменты ретаргетинга', audience_targets: 'аудиторные таргетинги',
-  })[value] || value || 'данные';
+  return labelFor('auditCapability', value) || 'данные';
+}
+
+function auditHypothesisLabel(value) {
+  return labelOrDash('auditHypothesis', value);
+}
+
+function auditStopReasonLabel(value) {
+  return labelFor('auditStopReason', value);
 }
 
 function renderAuditRequestTrace(metadata, escapeHtml) {
@@ -217,7 +201,7 @@ function renderAuditRequestTrace(metadata, escapeHtml) {
   const overflow = trace.slice(20);
   const options = (key) => [...new Set(trace.map((item) => item[key]).filter(Boolean))];
   const renderRows = (items) => items.map((item) => `<tr data-audit-trace-row data-campaign="${escapeHtml(item.campaignName || '')}" data-round="${escapeHtml(String(item.roundNumber || ''))}" data-hypothesis="${escapeHtml(item.hypothesisType || '')}" data-capability="${escapeHtml(item.capabilityId || '')}" data-status="${escapeHtml(item.status || '')}" data-source="${escapeHtml(item.source || '')}">
-    <td>${escapeHtml(String(item.roundNumber || 1))}</td><td>${escapeHtml(item.campaignName || 'Аккаунт')}</td><td>${escapeHtml(item.hypothesisType || '—')}</td>
+    <td>${escapeHtml(String(item.roundNumber || 1))}</td><td>${escapeHtml(item.campaignName || 'Аккаунт')}</td><td>${escapeHtml(auditHypothesisLabel(item.hypothesisType))}</td>
     <td>${escapeHtml(auditCapabilityLabel(item.capabilityId))}</td><td>${escapeHtml(item.reason || '—')}</td><td>${escapeHtml(auditSourceLabel(item.source))}</td>
     <td>${escapeHtml(auditRequestStatusLabel(item.status))}</td>
     <td>${escapeHtml(String(item.rowsReceived || 0))}</td><td>${escapeHtml(String(item.rowsAnalyzedByBackend || 0))}</td><td>${escapeHtml(String(item.rowsSentToAi || 0))}</td>
@@ -246,7 +230,7 @@ function renderAuditRequestTrace(metadata, escapeHtml) {
       <div class="aiAuditTraceFilters">
         <label>Кампания <select data-audit-trace-filter="campaign"><option value="">Все</option>${options('campaignName').map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`).join('')}</select></label>
         <label>Раунд <select data-audit-trace-filter="round"><option value="">Все</option>${options('roundNumber').map((value) => `<option value="${escapeHtml(String(value))}">${escapeHtml(String(value))}</option>`).join('')}</select></label>
-        <label>Гипотеза <select data-audit-trace-filter="hypothesis"><option value="">Все</option>${options('hypothesisType').map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`).join('')}</select></label>
+        <label>Гипотеза <select data-audit-trace-filter="hypothesis"><option value="">Все</option>${options('hypothesisType').map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(auditHypothesisLabel(value))}</option>`).join('')}</select></label>
         <label>Срез <select data-audit-trace-filter="capability"><option value="">Все</option>${options('capabilityId').map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(auditCapabilityLabel(value))}</option>`).join('')}</select></label>
         <label>Статус <select data-audit-trace-filter="status"><option value="">Все</option>${options('status').map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(auditRequestStatusLabel(value))}</option>`).join('')}</select></label>
         <label>Источник <select data-audit-trace-filter="source"><option value="">Все</option>${options('source').map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(auditSourceLabel(value))}</option>`).join('')}</select></label>
@@ -360,16 +344,16 @@ function renderAuditInvestigationTree(rounds, escapeHtml) {
                   <p><b>Исходный факт:</b> ${triggeringFacts.length ? triggeringFacts.map((fact) => escapeHtml((fact.evidence || []).join(' ') || fact.metric || '')).join(' ') : 'Доверенный факт не привязан.'}</p>
                   <details class="quietDetails">
                     <summary>Гипотеза: ${escapeHtml(hypothesis.hypothesis || 'Причина проверяется')} · ${escapeHtml(auditVerificationStatusLabel(verification.status || hypothesis.status))}</summary>
-                    <p><b>Тип:</b> ${escapeHtml(hypothesis.hypothesisType || '—')}${hypothesis.parentHypothesisId ? ` · <b>Родительская гипотеза:</b> ${escapeHtml(hypothesis.parentHypothesisId)}` : ''}</p>
+                    <p><b>Тип:</b> ${escapeHtml(auditHypothesisLabel(hypothesis.hypothesisType))}${hypothesis.parentHypothesisId ? ' · <b>Уточняет предыдущую гипотезу</b>' : ''}</p>
                     ${hypothesisRequests.length ? `<ul>${hypothesisRequests.map((item) => `<li><b>${escapeHtml(auditCapabilityLabel(item.capabilityId))}</b>: ${escapeHtml(auditRequestStatusLabel(item.status))} · ${escapeHtml(auditSourceLabel(item.source))}${item.rows ? ` · строк: ${escapeHtml(String(item.rows))}` : ''}</li>`).join('')}</ul>` : '<p>Дополнительные запросы не требуются.</p>'}
                     ${(verification.supporting_evidence || []).length ? `<p><b>Подтверждающие данные:</b> ${escapeHtml(verification.supporting_evidence.join(' '))}</p>` : ''}
                     ${(verification.contradicting_evidence || []).length ? `<p><b>Противоречащие данные:</b> ${escapeHtml(verification.contradicting_evidence.join(' '))}</p>` : ''}
                     ${(verification.limitations || []).length ? `<p><b>Ограничения:</b> ${escapeHtml(verification.limitations.join(' '))}</p>` : ''}
-                    ${(verification.remaining_data_needed || []).length ? `<p><b>Осталось получить:</b> ${verification.remaining_data_needed.map((value) => escapeHtml(auditCapabilityLabel(value))).join(', ')}</p>` : ''}
+                    ${auditDimensionList(verification.remaining_data_needed).length ? `<p><b>Осталось получить:</b> ${auditDimensionList(verification.remaining_data_needed).map(escapeHtml).join(', ')}</p>` : ''}
                   </details>
                 </article>
               `; }).join('')}
-              ${round.stopReason ? `<small>Причина остановки раунда: ${escapeHtml(String(round.stopReason))}</small>` : ''}
+              ${auditStopReasonLabel(round.stopReason) ? `<small>Причина остановки раунда: ${escapeHtml(auditStopReasonLabel(round.stopReason))}</small>` : ''}
             </section>
           `;
         }).join('')}
@@ -572,11 +556,11 @@ export function renderAiAuditJob({
         </ol>
         ${renderAuditSchedulerStatus(runtime, escapeHtml)}
         <div class="aiAuditInvestigation"><strong>Данные аудита: ${escapeHtml({ fresh: 'свежие live-данные', prefer_cache: 'кеш с обновлением при необходимости', cache_only: 'только кеш' }[cachePolicy] || cachePolicy)}</strong><small>Раунд ${escapeHtml(String(runtime.investigationRound || 1))} из ${escapeHtml(String(runtime.maxInvestigationRounds || 3))} · запросов ${escapeHtml(String(runtime.requestsCount || 0))} · live-попыток ${escapeHtml(String(dataRequests.liveAttempts || 0))} · успешно ${escapeHtml(String(dataRequests.liveSucceeded || 0))} · кеш ${escapeHtml(String(dataRequests.cacheHits || 0))} · сохранённые данные ${escapeHtml(String(dataRequests.savedFallbacks || 0))} · служебных AI-вызовов ${escapeHtml(String(runtime.helperProviderCallsCount || 0))} · финальных ${escapeHtml(String(runtime.finalProviderCallsCount || 0))}</small></div>
-        ${requestedDimensions.length ? `<div class="aiAuditInvestigation"><strong>Запрошены данные:</strong> ${requestedDimensions.map((value) => escapeHtml({ ad_groups: 'группы', search_queries: 'поисковые запросы', goals: 'цели', placements: 'площадки', audiences: 'аудитории', retargeting_segments: 'сегменты ретаргетинга', devices: 'устройства', geo: 'география', demographics: 'демография', frequency: 'частота', lead_quality: 'качество лидов' }[value] || value)).join(', ')}.</div>` : ''}
+        ${auditDimensionList(requestedDimensions).length ? `<div class="aiAuditInvestigation"><strong>Запрошены данные:</strong> ${auditDimensionList(requestedDimensions).map(escapeHtml).join(', ')}.</div>` : ''}
         ${(dataRequests.live || dataRequests.processing || dataRequests.cacheHits || dataRequests.saved) ? `
           <div class="aiAuditInvestigation">
             <strong>Дополнительные данные</strong>
-            <small>Live Direct API: ${escapeHtml(String(dataRequests.live || 0))} · Готово: ${escapeHtml(String(dataRequests.liveCompleted || 0))} · Формируется: ${escapeHtml(String(dataRequests.processing || 0))} · Из кеша: ${escapeHtml(String(dataRequests.cacheHits || 0))} · Saved fallback: ${escapeHtml(String(dataRequests.saved || 0))}</small>
+            <small>Live Direct API: ${escapeHtml(String(dataRequests.live || 0))} · Готово: ${escapeHtml(String(dataRequests.liveCompleted || 0))} · Формируется: ${escapeHtml(String(dataRequests.processing || 0))} · Из кеша: ${escapeHtml(String(dataRequests.cacheHits || 0))} · Из сохранённых данных: ${escapeHtml(String(dataRequests.saved || 0))}</small>
             ${(dataRequests.unavailableCapabilities || []).length ? `<small>Недоступно: ${(dataRequests.unavailableCapabilities || []).map((value) => escapeHtml(value)).join(', ')}.</small>` : ''}
             ${dataRequests.freshestDataAt ? `<small>Свежесть данных: ${escapeHtml(String(dataRequests.freshestDataAt))}.</small>` : ''}
           </div>
@@ -687,26 +671,16 @@ function auditCoverageLabel(key) {
 }
 
 function auditVerificationLabel(status) {
-  return {
-    confirmed: 'Подтверждено', partially_confirmed: 'Частично подтверждено',
-    unverified: 'Не подтверждено', rejected: 'Опровергнуто', not_applicable: 'Неприменимо',
-  }[status] || 'Не подтверждено';
+  return labelFor('auditVerification', status) || 'Не подтверждено';
 }
 
 function auditDimensionLabel(value) {
-  return {
-    campaign_performance: 'эффективность кампании', conversions_by_goal: 'конверсии по выбранным целям',
-    campaign_daily_dynamics: 'дневная динамика кампании', campaign_settings: 'настройки кампании',
-    campaign_strategy: 'стратегия кампании', campaign_status: 'статус кампании',
-    ad_groups: 'группы', keywords: 'ключевые фразы', search_queries: 'поисковые запросы',
-    ad_group_performance: 'эффективность групп', keyword_performance: 'эффективность ключевых фраз',
-    autotargeting: 'автотаргетинг', bid_modifiers: 'корректировки ставок',
-    ads: 'объявления и креативы', landing_pages: 'посадочные страницы', placements: 'площадки',
-    audiences: 'аудитории', retargeting_segments: 'сегменты ретаргетинга',
-    audience_exclusions: 'исключения аудиторий', devices: 'устройства', geo: 'география',
-    demographics: 'демография', frequency: 'частотность', goals: 'цели',
-    conversion_sources: 'источники конверсий', lead_quality: 'качество лидов',
-  }[value] || value;
+  return labelOrDash('auditCapability', value);
+}
+
+/** Translates a list of slice codes, dropping any code we have no name for. */
+function auditDimensionList(values) {
+  return labelList('auditCapability', values);
 }
 
 function formatAuditDate(value) {
@@ -724,7 +698,7 @@ function renderFinding(item, escapeHtml) {
     ${item.evidence?.length ? `<details><summary>Доказательства</summary><ul>${item.evidence.map((value) => `<li>${escapeHtml(value)}</li>`).join('')}</ul></details>` : ''}
     ${item.hypothesis ? `<p><strong>Гипотеза:</strong> ${escapeHtml(item.hypothesis)}</p>` : ''}
     <p><strong>Рекомендация:</strong> ${escapeHtml(item.recommendation || '—')}</p>
-    ${item.next_data_needed?.length ? `<p><strong>Недостающие данные:</strong> ${item.next_data_needed.map((value) => escapeHtml(auditDimensionLabel(value))).join(', ')}</p>` : ''}
+    ${auditDimensionList(item.next_data_needed).length ? `<p><strong>Недостающие данные:</strong> ${auditDimensionList(item.next_data_needed).map(escapeHtml).join(', ')}</p>` : ''}
     <small>Тип: ${escapeHtml(item.campaign_type || 'не определён')} · Уровень: ${escapeHtml(item.analysis_level || 'кампания')} · Уверенность: ${escapeHtml(item.confidence || 'низкая')} · Подтверждение действия: ${item.requires_human_approval === false ? 'не требуется' : 'обязательно'}</small>
   </article>`;
 }
@@ -735,41 +709,15 @@ function renderFindingSection(title, items, escapeHtml, { open = true } = {}) {
 }
 
 function auditSignalLabel(value) {
-  return {
-    spend_without_goal_conversions: 'Расход без конверсий',
-    cpa_above_target: 'CPA выше цели',
-    goal_conversions_drop: 'Снижение конверсий',
-    budget_spike: 'Рост расхода',
-    low_ctr: 'Низкий CTR',
-    high_cpc_traffic_proxy: 'Высокий CPC относительно кампаний-аналогов',
-    traffic_metrics_reviewed: 'CTR и CPC проверены',
-    traffic_metrics_available: 'CTR и CPC рассчитаны',
-    conversion_data_unknown: 'Нет надёжных данных о конверсиях',
-    low_data: 'Мало статистики',
-    good_campaign: 'Эффективная кампания',
-    stable_efficiency: 'Стабильная эффективность',
-    campaign_health: 'Состояние кампании',
-  }[value] || value || 'Сигнал';
+  return labelFor('auditSignal', value) || 'Сигнал';
 }
 
 function auditConversionStateLabel(value) {
-  return {
-    known_positive: 'Конверсии получены',
-    known_zero: 'Подтверждённый 0',
-    unknown: 'Метрика не получена',
-    low_sample: 'Малая выборка',
-    not_applicable: 'Нет показов в периоде',
-  }[value] || value || 'Состояние не определено';
+  return labelFor('auditConversionState', value) || 'Состояние не определено';
 }
 
 function auditAnalysisModeLabel(value) {
-  return {
-    conversion_performance: 'анализ CPA и конверсий',
-    zero_conversion_investigation: 'расследование расхода без конверсий',
-    traffic_proxy: 'анализ качества трафика без CPA',
-    sample_extension: 'анализ трафика и расширение выборки',
-    no_delivery: 'проверка статуса и настроек',
-  }[value] || value || 'базовый анализ';
+  return labelFor('auditAnalysisMode', value) || 'базовый анализ';
 }
 
 function formatAuditMetric(value, suffix = '') {
@@ -805,7 +753,7 @@ function renderCampaignInsights(items, escapeHtml) {
       <th><strong>${escapeHtml(item.campaign_name || 'Кампания')}</strong><small>${escapeHtml(item.campaign_type || 'unknown')}</small></th>
       <td><strong>${escapeHtml(auditSignalLabel(item.signal_type))}</strong><span class="aiStatusBadge ${signalStatusClass}">Сигнал: ${escapeHtml(auditVerificationLabel(signalVerification))}</span><small>${metrics.map(escapeHtml).join(' · ')}</small><small>Состояние: ${escapeHtml(auditConversionStateLabel(item.conversion_state))}</small><small>Режим: ${escapeHtml(auditAnalysisModeLabel(item.analysis_mode))}</small></td>
       <td><p>${escapeHtml(item.problem || '—')}</p>${item.evidence?.length ? `<ul>${item.evidence.map((value) => `<li>${escapeHtml(value)}</li>`).join('')}</ul>` : ''}</td>
-      <td><span class="aiStatusBadge ${factorStatusClass}">Фактор: ${escapeHtml(auditVerificationLabel(factorVerification))}</span><span class="aiStatusBadge ${statusClass}">Влияние на результат: ${escapeHtml(auditVerificationLabel(verification))}</span>${item.hypothesis ? `<p>${escapeHtml(item.hypothesis)}</p>` : '<p>Причинная гипотеза ещё не сформирована.</p>'}${item.scenario_checks?.length ? `<small>Сценарий проверяет: ${item.scenario_checks.map((value) => escapeHtml(auditDimensionLabel(value))).join(', ')}</small>` : ''}${item.checked_capabilities?.length ? `<small>Проверено: ${item.checked_capabilities.map((value) => escapeHtml(auditDimensionLabel(value))).join(', ')}</small>` : ''}${item.missing_capabilities?.length ? `<small>Нужно: ${item.missing_capabilities.map((value) => escapeHtml(auditDimensionLabel(value))).join(', ')}</small>` : ''}</td>
+      <td><span class="aiStatusBadge ${factorStatusClass}">Фактор: ${escapeHtml(auditVerificationLabel(factorVerification))}</span><span class="aiStatusBadge ${statusClass}">Влияние на результат: ${escapeHtml(auditVerificationLabel(verification))}</span>${item.hypothesis ? `<p>${escapeHtml(item.hypothesis)}</p>` : '<p>Причинная гипотеза ещё не сформирована.</p>'}${auditDimensionList(item.scenario_checks).length ? `<small>Сценарий проверяет: ${auditDimensionList(item.scenario_checks).map(escapeHtml).join(', ')}</small>` : ''}${auditDimensionList(item.checked_capabilities).length ? `<small>Проверено: ${auditDimensionList(item.checked_capabilities).map(escapeHtml).join(', ')}</small>` : ''}${auditDimensionList(item.missing_capabilities).length ? `<small>Нужно: ${auditDimensionList(item.missing_capabilities).map(escapeHtml).join(', ')}</small>` : ''}</td>
       <td><p><strong>${escapeHtml(item.recommendation || '—')}</strong></p><small>Ожидаемый эффект: ${escapeHtml(item.expected_effect || '—')}</small><small>Любое изменение — только после ручного подтверждения.</small></td>
     </tr>`;
   }).join('');
@@ -847,7 +795,7 @@ function renderAuditDataRequests(job, escapeHtml) {
       <span><strong>${Number(statuses.failed || 0)}</strong> ошибок</span>
     </div>
     ${saved && !liveAttempts ? `<p>Выполнено по данным последней синхронизации DirectPilot: ${saved}. Live-запросы к Яндекс.Директу в этом аудите не выполнялись.</p>` : ''}
-    ${unavailable.length ? `<aside class="aiAuditNotice"><strong>Не полностью проверено по отдельным кампаниям:</strong> ${unavailable.map((value) => escapeHtml(auditDimensionLabel(value))).join(', ')}. Ограничения явно учтены в выводах.</aside>` : ''}
+    ${auditDimensionList(unavailable).length ? `<aside class="aiAuditNotice"><strong>Не полностью проверено по отдельным кампаниям:</strong> ${auditDimensionList(unavailable).map(escapeHtml).join(', ')}. Ограничения явно учтены в выводах.</aside>` : ''}
   </section>`;
 }
 
@@ -887,7 +835,7 @@ export function renderAiAuditResult(result, fallbackAnswer, escapeHtml, job = {}
     ${renderFindingSection('Неподтверждённые гипотезы', byStatus('unverified'), escapeHtml)}
     ${renderFindingSection('Опровергнутые гипотезы', byStatus('rejected'), escapeHtml, { open: false })}
     ${opportunities.length ? `<section><h4>Возможности</h4><div class="aiAuditFindingGrid">${opportunities.map((item) => renderFinding(item, escapeHtml)).join('')}</div></section>` : ''}
-    ${structured.insufficient_data_campaigns?.length ? `<aside class="aiAuditNotice"><h4>Недостаточно данных</h4><ul>${structured.insufficient_data_campaigns.map((item) => `<li><strong>${escapeHtml(item.campaign_name || 'Кампания')}</strong>: ${escapeHtml(item.reason || 'Недостаточно данных.')} ${item.recommendation ? `<span>${escapeHtml(item.recommendation)}</span>` : ''}${item.next_data_needed?.length ? `<small> Нужны данные: ${item.next_data_needed.map((value) => escapeHtml(auditDimensionLabel(value))).join(', ')}.</small>` : ''}</li>`).join('')}</ul></aside>` : ''}
+    ${structured.insufficient_data_campaigns?.length ? `<aside class="aiAuditNotice"><h4>Недостаточно данных</h4><ul>${structured.insufficient_data_campaigns.map((item) => `<li><strong>${escapeHtml(item.campaign_name || 'Кампания')}</strong>: ${escapeHtml(item.reason || 'Недостаточно данных.')} ${item.recommendation ? `<span>${escapeHtml(item.recommendation)}</span>` : ''}${auditDimensionList(item.next_data_needed).length ? `<small> Нужны данные: ${auditDimensionList(item.next_data_needed).map(escapeHtml).join(', ')}.</small>` : ''}</li>`).join('')}</ul></aside>` : ''}
     ${structured.action_plan?.length ? `<section><h4>План действий</h4><ol>${[...structured.action_plan].sort((a, b) => Number(a.priority) - Number(b.priority)).map((item) => `<li><strong>${escapeHtml(item.action)}</strong> — ${escapeHtml(item.reason)} <small>Объект: ${escapeHtml(item.scope)} · ${escapeHtml(item.mode)} · подтверждение обязательно</small></li>`).join('')}</ol></section>` : ''}
     ${structured.prohibited_actions?.length ? `<aside class="aiAuditNotice"><h4>Запрещённые автоматические действия</h4><ul>${structured.prohibited_actions.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul></aside>` : ''}
     <aside class="aiAuditNotice"><h4>Ограничения</h4><ul>${(structured.limitations || []).map((item) => `<li>${escapeHtml(item)}</li>`).join('') || '<li>Не указаны.</li>'}</ul></aside>

@@ -1,4 +1,6 @@
 import { getCurrentEmail, scopedStorageKey } from './core/storage.js';
+import { formatDateRange } from './core/date.js';
+import { labelFor } from './core/labels.js';
 
 function resolveApiBase() {
   const custom = window.localStorage.getItem('directpilot_api_base')?.trim();
@@ -86,8 +88,9 @@ function periodLabel(period) {
     '14d': '14 дней',
     '30d': '30 дней',
     custom: 'Произвольный период',
-  }[period.preset] || period.preset;
-  return `${presetLabel}: ${period.dateFrom} — ${period.dateTo}`;
+  }[period.preset] || 'Выбранный период';
+  const range = formatDateRange(period.dateFrom, period.dateTo);
+  return range ? `${presetLabel}: ${range}` : presetLabel;
 }
 
 function renderDelta(value) {
@@ -206,9 +209,9 @@ function renderPeriodPanel() {
       </div>
       ${state.error ? `<div class="authStatus aiError">${escapeHtmlLocal(state.error)}</div>` : ''}
       ${summary ? `
-        <p class="periodSummaryCaption">${escapeHtmlLocal(periodLabel(period))} · цели: ${escapeHtmlLocal((summary.selectedGoalIds || []).join(', ') || 'не указаны')} · источник: ${escapeHtmlLocal(summary.source || '')}</p>
+        <p class="periodSummaryCaption">${escapeHtmlLocal(periodLabel(period))} · цели: ${escapeHtmlLocal((summary.selectedGoalIds || []).join(', ') || 'не указаны')}${labelFor('auditSource', summary.source) ? ` · источник: ${escapeHtmlLocal(labelFor('auditSource', summary.source))}` : ''}</p>
         ${renderPeriodKpis(summary)}
-        <p>CTR: ${formatPercent(summary.totals?.ctr)} · CPC: ${formatMoney(summary.totals?.avgCpc)} · предыдущий период: ${escapeHtmlLocal(period?.previousDateFrom || '—')} — ${escapeHtmlLocal(period?.previousDateTo || '—')}</p>
+        <p>CTR: ${formatPercent(summary.totals?.ctr)} · CPC: ${formatMoney(summary.totals?.avgCpc)}${formatDateRange(period?.previousDateFrom, period?.previousDateTo) ? ` · предыдущий период: ${escapeHtmlLocal(formatDateRange(period.previousDateFrom, period.previousDateTo))}` : ''}</p>
         ${renderCampaignRows(summary.campaigns || [])}
       ` : '<div class="emptyStatePanel compact"><h3>Период ещё не загружен</h3><p>Нажмите «Загрузить данные», чтобы подтянуть live-отчёт Яндекс.Директа.</p></div>'}
       ${renderAiAnalysis(state.analysis)}

@@ -1,4 +1,5 @@
 import { groupJournalEntriesByDate } from './journal-store.js';
+import { LABEL_GROUPS, labelFor } from '../../core/labels.js';
 
 function fallbackEscapeHtml(value) {
   return String(value ?? '')
@@ -9,31 +10,9 @@ function fallbackEscapeHtml(value) {
     .replaceAll("'", '&#039;');
 }
 
-const SOURCE_LABELS = {
-  ai: 'AI',
-  optimization: 'Оптимизация',
-  integration: 'Интеграции',
-  sync: 'Синхронизация',
-  business_context: 'Контекст бизнеса',
-  client: 'Клиент',
-  system: 'Система',
-};
-
-const CATEGORY_LABELS = {
-  recommendation: 'Рекомендация',
-  action: 'Действие',
-  status: 'Статус',
-  data_change: 'Изменение данных',
-  error: 'Ошибка',
-  note: 'Заметка',
-};
-
-const SEVERITY_LABELS = {
-  info: 'Инфо',
-  success: 'Успех',
-  warning: 'Внимание',
-  error: 'Ошибка',
-};
+const SOURCE_LABELS = LABEL_GROUPS.journalSource;
+const CATEGORY_LABELS = LABEL_GROUPS.journalCategory;
+const SEVERITY_LABELS = LABEL_GROUPS.journalSeverity;
 
 export function createJournalPageRenderers({ escapeHtml = fallbackEscapeHtml } = {}) {
   function renderJournalPage(context = {}) {
@@ -61,10 +40,7 @@ export function createJournalPageRenderers({ escapeHtml = fallbackEscapeHtml } =
           ${renderSelect('source', 'Источник', filters.source, SOURCE_LABELS)}
           ${renderSelect('category', 'Категория', filters.category, CATEGORY_LABELS)}
           ${renderSelect('severity', 'Важность', filters.severity, SEVERITY_LABELS)}
-          <label class="fieldGroup">
-            <span>Тип события</span>
-            <input name="type" value="${escapeHtml(filters.type || '')}" placeholder="optimization.action_status_changed" />
-          </label>
+          ${renderSelect('type', 'Тип события', filters.type, LABEL_GROUPS.journalEventType)}
           <label class="fieldGroup">
             <span>С даты</span>
             <input type="date" name="fromDate" value="${escapeHtml(filters.fromDate || '')}" />
@@ -117,25 +93,28 @@ export function createJournalPageRenderers({ escapeHtml = fallbackEscapeHtml } =
   }
 
   function renderJournalEntry(entry) {
-    const sourceLabel = SOURCE_LABELS[entry.source] || entry.source;
-    const categoryLabel = CATEGORY_LABELS[entry.category] || entry.category;
-    const severityLabel = SEVERITY_LABELS[entry.severity] || entry.severity;
+    // Unknown codes are dropped rather than printed: a backend code that has no
+    // name here is noise to the reader, not information.
+    const sourceLabel = labelFor('journalSource', entry.source);
+    const categoryLabel = labelFor('journalCategory', entry.category);
+    const severityLabel = labelFor('journalSeverity', entry.severity);
+    const typeLabel = labelFor('journalEventType', entry.type);
     const occurredTime = formatTime(entry.occurredAt);
     return `
       <article class="journalEntry journalEntry--${escapeHtml(entry.severity)}" data-journal-entry-id="${escapeHtml(entry.id)}">
         <div class="journalEntryMeta">
           <span>${escapeHtml(occurredTime)}</span>
-          <span>${escapeHtml(sourceLabel)}</span>
-          <span>${escapeHtml(categoryLabel)}</span>
-          <span>${escapeHtml(severityLabel)}</span>
+          ${sourceLabel ? `<span>${escapeHtml(sourceLabel)}</span>` : ''}
+          ${categoryLabel ? `<span>${escapeHtml(categoryLabel)}</span>` : ''}
+          ${severityLabel ? `<span>${escapeHtml(severityLabel)}</span>` : ''}
         </div>
         <div class="journalEntryBody">
           <h4>${escapeHtml(entry.title)}</h4>
           ${entry.summary ? `<p>${escapeHtml(entry.summary)}</p>` : ''}
           <div class="journalEntryDetails">
-            <span>Автор: ${escapeHtml(entry.actor?.label || 'System')}</span>
+            <span>Автор: ${escapeHtml(entry.actor?.label || 'Система')}</span>
             ${entry.entity ? `<span>Объект: ${escapeHtml(entry.entity.label)}</span>` : ''}
-            <span>Тип: ${escapeHtml(entry.type)}</span>
+            ${typeLabel ? `<span>Событие: ${escapeHtml(typeLabel)}</span>` : ''}
           </div>
           ${renderJournalEntryDetailsPanel(entry)}
         </div>
