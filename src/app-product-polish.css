@@ -202,6 +202,17 @@ body[data-page="app"] .kpi strong {
   letter-spacing: -0.045em;
 }
 
+/* Base rule for the label/value card template `<article><span>Подпись</span><strong>Значение</strong></article>`.
+   Both tags are inline, so without this they render glued together in any container
+   that has no styles of its own (.syncStatusGrid, .insightGrid). Styling the template
+   itself instead of each container keeps the defect from returning with the next grid.
+   Scoped to `span + strong` on purpose: numbered cards (`<span>01</span><h3>`) and
+   recommendation cards (`<span>приоритет</span><h3>`) must keep their inline badge. */
+body[data-page="app"] article > span + strong,
+body[data-page="app"] article > span:has(+ strong) {
+  display: block;
+}
+
 body[data-page="app"] .primaryButton,
 body[data-page="app"] .approveButton {
   min-height: 40px;

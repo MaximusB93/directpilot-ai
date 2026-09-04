@@ -13,6 +13,8 @@ import {
 import { requestEmailCode, verifyEmailCode } from './core/session-api.js';
 import { resolvePageContentRenderer, resolvePageRenderer } from './app/page-router.js';
 import { normalizeAppRouteId } from './app/routes.js';
+import { formatDateRange } from './core/date.js';
+import { labelFor } from './core/labels.js';
 import { applyClientScopeResetPatch, createClientScopeResetPatch } from './app/client-scope-reset.js';
 import './wordstat.js';
 import {
@@ -175,15 +177,19 @@ let performanceRangeState = {
   dateTo: '',
   loading: false,
   status: '',
+  error: '',
   summary: null,
+  loadedAt: null,
 };
 let optimizationPlan = null;
 let optimizationPlanLoading = false;
 let optimizationStatus = '';
+let optimizationProgress = '';
 let optimizationFilter = 'all';
 let optimizationActions = [];
 let optimizationActionsLoading = false;
 let optimizationActionsStatus = '';
+let optimizationActionsProgress = '';
 let optimizationActionsLoadedFor = '';
 let optimizationActionFilter = 'all';
 let optimizationExecutionPreviews = {};
@@ -374,15 +380,19 @@ function resetClientScopedUiState({ nextActiveView = activeView } = {}) {
       ...performanceRangeState,
       loading: false,
       status: '',
+      error: '',
       summary: null,
+      loadedAt: null,
     };
     performanceCampaignSearch = '';
     optimizationPlan = patch.optimizationPlan;
     optimizationPlanLoading = false;
     optimizationStatus = '';
+    optimizationProgress = '';
     optimizationActions = patch.optimizationActions;
     optimizationActionsLoading = false;
     optimizationActionsStatus = '';
+    optimizationActionsProgress = '';
     optimizationActionsLoadedFor = patch.optimizationActionsLoadedFor;
     optimizationExecutionPreviews = patch.optimizationExecutionPreviews;
     journalState = createInitialJournalState();
@@ -426,6 +436,16 @@ function formatPercent(value) {
   return `${numeric.toFixed(1).replace('.', ',')}%`;
 }
 
+/** «8 июля 2026, 16:24» — when the currently shown data was actually loaded. */
+function formatLoadedAt(value) {
+  if (!value) return 'прошлой загрузки';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'прошлой загрузки';
+  return date.toLocaleString('ru-RU', {
+    day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit',
+  });
+}
+
 function performancePeriodPresetLabel(preset) {
   return {
     today: 'Сегодня',
@@ -443,7 +463,8 @@ function performancePeriodLabel(summary = performanceRangeState.summary) {
   const period = summary?.period;
   if (!period) return performancePeriodPresetLabel(performanceRangeState.preset);
   const label = performancePeriodPresetLabel(period.preset || performanceRangeState.preset);
-  return `${label}: ${period.dateFrom || period.from || '—'} — ${period.dateTo || period.to || '—'}`;
+  const range = formatDateRange(period.dateFrom || period.from, period.dateTo || period.to);
+  return range ? `${label}: ${range}` : label;
 }
 
 function mapRangeCampaignToSummaryCampaign(campaign = {}) {
@@ -495,12 +516,7 @@ function canRunSync() {
 }
 
 function syncJobStatusLabel(status) {
-  return {
-    completed: 'Завершено',
-    failed: 'Ошибка',
-    running: 'В процессе',
-    pending: 'Ожидает',
-  }[status] || status || 'Неизвестно';
+  return labelFor('syncStatus', status) || 'Неизвестно';
 }
 
 function normalizeDate(value) {
@@ -744,10 +760,10 @@ function compactStatusLabel(status) {
     approved: 'Одобрено',
     rejected: 'Отклонено',
     needs_changes: 'Нужны правки',
-  }[status] || status || 'Нет данных';
+  }[status] || 'Нет данных';
 }
 
-function renderReadinessPanel(readiness, nextAction) {
+function renderReadinessPanel(readiness) {
   return `
     <section class="panel readinessPanel">
       <div class="panelHeader">
@@ -764,7 +780,6 @@ function renderReadinessPanel(readiness, nextAction) {
           </article>
         `).join('')}
       </div>
-      ${nextAction ? `<div class="authStatus integrationStatus"><strong>Фокус:</strong> ${escapeHtml(nextAction.nextAction)}</div>` : ''}
     </section>
   `;
 }
@@ -815,7 +830,7 @@ function getReadinessState() {
       id: 'optimization',
       label: 'Черновики действий',
       status: hasOptimizationDrafts ? 'ready' : hasPerformanceData() ? 'action_needed' : 'pending',
-      description: hasOptimizationDrafts ? 'Есть черновики для согласования.' : hasPerformanceData() ? 'Сформируйте план оптимизации.' : 'Появятся после загрузки статистики.',
+      description: hasOptimizationDrafts ? 'Есть черновики для согласования.' : hasPerformanceData() ? 'Черновики ещё не сформированы.' : 'Появятся после загрузки статистики.',
     },
   ];
 }
@@ -1400,7 +1415,8 @@ async function loadPerformanceSummary() {
 async function loadPerformanceRangeSummary() {
   if (!selectedClientId || performanceRangeState.loading) return;
   performanceRangeState.loading = true;
-  performanceRangeState.status = 'Загружаем данные из Яндекс.Директа за выбранный период...';
+  performanceRangeState.status = '';
+  performanceRangeState.error = '';
   render();
   try {
     const summary = await performanceService.fetchPerformanceRangeSummary(selectedClientId, {
@@ -1409,11 +1425,14 @@ async function loadPerformanceRangeSummary() {
       dateTo: performanceRangeState.dateTo,
     });
     performanceRangeState.summary = summary;
+    performanceRangeState.loadedAt = new Date().toISOString();
+    performanceRangeState.error = '';
     performanceRangeState.status = 'Данные за выбранный период загружены из Яндекс.Директа.';
     perfStatus = `Таблица кампаний обновлена: ${performancePeriodLabel(summary)}.`;
     performanceCampaignSearch = '';
   } catch (error) {
-    performanceRangeState.status = error.message || 'Не удалось загрузить данные за выбранный период.';
+    performanceRangeState.error = error.message || 'Не удалось загрузить данные за выбранный период.';
+    performanceRangeState.status = '';
   } finally {
     performanceRangeState.loading = false;
     render();
@@ -1538,7 +1557,8 @@ async function loadOptimizationPlan() {
     optimizationService,
     onStart: (message) => {
       optimizationPlanLoading = true;
-      optimizationStatus = message;
+      optimizationProgress = message;
+      optimizationStatus = '';
       render();
     },
     onSuccess: (plan, message) => {
@@ -1550,6 +1570,7 @@ async function loadOptimizationPlan() {
     },
     onFinally: () => {
       optimizationPlanLoading = false;
+      optimizationProgress = '';
       render();
     },
   });
@@ -1566,7 +1587,8 @@ async function loadOptimizationActions(force = false) {
     optimizationService,
     onStart: (message) => {
       optimizationActionsLoading = true;
-      optimizationActionsStatus = message;
+      optimizationActionsProgress = message;
+      optimizationActionsStatus = '';
       render();
     },
     onSuccess: (actions, loadedFor, message) => {
@@ -1579,6 +1601,7 @@ async function loadOptimizationActions(force = false) {
     },
     onFinally: () => {
       optimizationActionsLoading = false;
+      optimizationActionsProgress = '';
       render();
     },
   });
@@ -1591,7 +1614,8 @@ async function createOptimizationDraftsFromPlan() {
     optimizationService,
     onStart: (message) => {
       optimizationActionsLoading = true;
-      optimizationActionsStatus = message;
+      optimizationActionsProgress = message;
+      optimizationActionsStatus = '';
       render();
     },
     onSuccess: (actions, loadedFor, message) => {
@@ -1604,6 +1628,7 @@ async function createOptimizationDraftsFromPlan() {
     },
     onFinally: () => {
       optimizationActionsLoading = false;
+      optimizationActionsProgress = '';
       render();
     },
   });
@@ -1619,7 +1644,8 @@ async function updateOptimizationActionStatus(actionId, status, reviewerNote = '
     actions: optimizationActions,
     optimizationService,
     onStart: (message) => {
-      optimizationActionsStatus = message;
+      optimizationActionsProgress = message;
+      optimizationActionsStatus = '';
       render();
     },
     onSuccess: (actions, message) => {
@@ -1636,7 +1662,10 @@ async function updateOptimizationActionStatus(actionId, status, reviewerNote = '
     onError: (message) => {
       optimizationActionsStatus = message;
     },
-    onFinally: render,
+    onFinally: () => {
+      optimizationActionsProgress = '';
+      render();
+    },
   });
 }
 
@@ -1749,7 +1778,7 @@ function renderSyncDiagnosticsPanel(compact = false) {
       </div>
       ${hasProblems ? `
         <div class="issueList compactIssues">
-          ${issues.map(([title, description]) => `<article class="issue medium"><span>fix</span><h3>${escapeHtml(title)}</h3><p>${escapeHtml(description)}</p></article>`).join('')}
+          ${issues.map(([title, description]) => `<article class="issue medium"><h3>${escapeHtml(title)}</h3><p>${escapeHtml(description)}</p></article>`).join('')}
         </div>
       ` : '<div class="authStatus integrationStatus">Можно запускать синхронизацию и строить AI-рекомендации.</div>'}
     </section>
@@ -1791,6 +1820,10 @@ function renderPerformanceTrendCharts(summary) {
 function renderYesterdaySummaryPanel() {
   const summary = performanceRangeState.summary;
   const totals = summary?.totals || {};
+  // A zero is a statement about the data. While the request is in flight or
+  // after it failed we have no such statement, so every value renders as a dash.
+  const hasData = Boolean(summary);
+  const metric = (value, format) => (hasData ? format(value) : '—');
   const selectedGoals = summary?.selectedGoalIds?.length
     ? summary.selectedGoalIds.join(', ')
     : currentClient().conversionGoalIds || currentClient().mainGoalId || '';
@@ -1822,20 +1855,23 @@ function renderYesterdaySummaryPanel() {
           <label class="authField"><span>По дату</span><input type="date" data-period-to value="${escapeHtml(performanceRangeState.dateTo)}" /></label>
         </div>
       ` : ''}
-      ${performanceRangeState.status ? `<div class="authStatus integrationStatus">${escapeHtml(performanceRangeState.status)}</div>` : ''}
+      ${performanceRangeState.loading ? '<div class="authStatus integrationStatus">Загружаем данные из Яндекс.Директа за выбранный период...</div>' : ''}
+      ${performanceRangeState.error ? `<div class="authStatus integrationStatus errorStatus">${escapeHtml(performanceRangeState.error)}</div>` : ''}
+      ${performanceRangeState.error && hasData ? `<div class="authStatus integrationStatus">Показаны ранее загруженные данные от ${escapeHtml(formatLoadedAt(performanceRangeState.loadedAt))}.</div>` : ''}
+      ${!performanceRangeState.error && performanceRangeState.status ? `<div class="authStatus integrationStatus">${escapeHtml(performanceRangeState.status)}</div>` : ''}
       <div class="kpiGrid">
-        <article class="kpi"><span>Кампаний</span><strong>${formatNumberSafe(summary?.campaigns?.length || 0)}</strong></article>
-        <article class="kpi"><span>Показы</span><strong>${formatNumberSafe(totals.impressions || 0)}</strong></article>
-        <article class="kpi"><span>Клики</span><strong>${formatNumberSafe(totals.clicks || 0)}</strong></article>
-        <article class="kpi"><span>Расход</span><strong>${formatMoney(totals.cost || 0)}</strong></article>
-        <article class="kpi"><span>CTR</span><strong>${formatPercent(totals.ctr || 0)}</strong></article>
-        <article class="kpi"><span>CPC</span><strong>${formatMoney(totals.avgCpc || 0)}</strong></article>
-        <article class="kpi"><span>Конверсии по целям</span><strong>${formatNumberSafe(totals.goalConversions || 0)}</strong></article>
-        <article class="kpi"><span>CPA по целям</span><strong>${formatMoney(totals.goalCpa || 0)}</strong></article>
+        <article class="kpi"><span>Кампаний</span><strong>${metric(summary?.campaigns?.length, formatNumberSafe)}</strong></article>
+        <article class="kpi"><span>Показы</span><strong>${metric(totals.impressions, formatNumberSafe)}</strong></article>
+        <article class="kpi"><span>Клики</span><strong>${metric(totals.clicks, formatNumberSafe)}</strong></article>
+        <article class="kpi"><span>Расход</span><strong>${metric(totals.cost, formatMoney)}</strong></article>
+        <article class="kpi"><span>CTR</span><strong>${metric(totals.ctr, formatPercent)}</strong></article>
+        <article class="kpi"><span>CPC</span><strong>${metric(totals.avgCpc, formatMoney)}</strong></article>
+        <article class="kpi"><span>Конверсии по целям</span><strong>${metric(totals.goalConversions, formatNumberSafe)}</strong></article>
+        <article class="kpi"><span>CPA по целям</span><strong>${metric(totals.goalCpa, formatMoney)}</strong></article>
       </div>
       ${renderPerformanceTrendCharts(summary)}
       ${selectedGoals ? `<div class="authStatus integrationStatus"><strong>Цели:</strong> ${escapeHtml(selectedGoals)}</div>` : '<div class="authStatus integrationStatus">Укажите ID целей Метрики/Директа, чтобы считать CPA по целям.</div>'}
-      ${!summary ? '<div class="authStatus integrationStatus">Данные за период ещё не загружены. Нажмите «Загрузить данные».</div>' : ''}
+      ${!hasData && !performanceRangeState.loading && !performanceRangeState.error ? '<div class="authStatus integrationStatus">Данные за период ещё не загружены. Нажмите «Загрузить данные».</div>' : ''}
     </section>
   `;
 }
@@ -1863,7 +1899,7 @@ function renderYandexDirectAuditPanel(compact = false) {
         <span class="aiStatusBadge ${issues.length ? 'pending' : 'ready'}">${issues.length ? 'Есть задачи' : 'Ок'}</span>
       </div>
       <div class="issueList compactIssues">
-        ${visibleIssues.map(([title, description]) => `<article class="issue ${issues.length ? 'medium' : 'low'}"><span>${issues.length ? 'fix' : 'ok'}</span><h3>${escapeHtml(title)}</h3><p>${escapeHtml(description)}</p></article>`).join('')}
+        ${visibleIssues.map(([title, description]) => `<article class="issue ${issues.length ? 'medium' : 'low'}"><h3>${escapeHtml(title)}</h3><p>${escapeHtml(description)}</p></article>`).join('')}
       </div>
     </section>
   `;
@@ -1884,7 +1920,7 @@ function renderPerformanceSummaryPanel() {
   const campaignGoalConversions = (campaign) => campaign.goal_conversions ?? campaign.goalConversions ?? campaign.conversions_used ?? campaign.conversionsUsed ?? 0;
   const campaignGoalCpa = (campaign) => campaign.cpa_used ?? campaign.cpaUsed ?? campaign.goal_cpa ?? campaign.goalCpa ?? campaign.cpa ?? 0;
   const goals = tableSummary?.selectedGoalIds || [];
-  const periodLabel = period?.from && period?.to ? `${period.from} — ${period.to}` : 'последняя синхронизация';
+  const periodLabel = formatDateRange(period?.from || period?.dateFrom, period?.to || period?.dateTo) || 'последняя синхронизация';
   return `
     <section class="panel performancePanel">
       <div class="panelHeader">
@@ -1987,7 +2023,7 @@ function renderProjectDiagnostics() {
       </div>
       ${syncStatusMessage ? `<div class="authStatus integrationStatus">${escapeHtml(syncStatusMessage)}</div>` : ''}
     </section>
-    ${renderReadinessPanel(readiness, nextAction)}
+    ${renderReadinessPanel(readiness)}
     ${renderSyncCenter()}
     ${renderSyncDiagnosticsPanel(false)}
     ${renderYandexDirectAuditPanel(true)}
@@ -2204,9 +2240,11 @@ function optimizationPageContext() {
     optimizationPlan,
     optimizationPlanLoading,
     optimizationStatus,
+    optimizationProgress,
     optimizationActions,
     optimizationActionsLoading,
     optimizationActionsStatus,
+    optimizationActionsProgress,
     optimizationActionFilter,
     optimizationExecutionPreviews,
     getFilteredOptimizationActions,

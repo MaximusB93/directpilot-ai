@@ -870,6 +870,7 @@ td {
   line-height: 1.5;
 }
 .authStatus.dev { color: #8a5a00; background: #fff7e6; }
+.authStatus.errorStatus { color: #9f1239; background: #fff1f2; }
 .integrationStatus { width: fit-content; }
 
 .integrationCard button:disabled { opacity: .7; cursor: progress; }

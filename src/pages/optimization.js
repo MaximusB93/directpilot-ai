@@ -1,3 +1,5 @@
+import { labelFor, labelOrDash } from '../core/labels.js';
+
 export const OPTIMIZATION_PAGE_ID = 'optimization';
 
 export const optimizationPage = {
@@ -46,15 +48,27 @@ function renderPreviewList(title, items = [], escapeHtml) {
   `;
 }
 
+/**
+ * Object and action type of a draft, in words. Codes we have no name for are
+ * dropped: the line disappears rather than showing a backend identifier.
+ */
+function actionMetaLine(action, escapeHtml) {
+  const parts = [
+    labelFor('optimizationEntityType', action.entityType),
+    labelFor('optimizationActionType', action.actionType),
+  ].filter(Boolean);
+  return parts.length ? `<small>${parts.map(escapeHtml).join(' · ')}</small>` : '';
+}
+
 function renderExecutionPreview(previewData, escapeHtml) {
   if (!previewData) return '';
   return `
     <div class="executionPreviewCard">
       <div class="authStatus integrationStatus">Это только предпросмотр. Изменения в Яндекс.Директ не применяются.</div>
       <div class="insightGrid">
-        <article><span>Статус</span><strong>${escapeHtml(previewData.status || 'черновик')}</strong></article>
+        <article><span>Статус</span><strong>${escapeHtml(labelOrDash('optimizationStatus', previewData.status, 'Черновик'))}</strong></article>
         <article><span>Можно применить</span><strong>Нет</strong></article>
-        <article><span>Тип действия</span><strong>${escapeHtml(previewData.action_type || 'manual_review')}</strong></article>
+        <article><span>Тип действия</span><strong>${escapeHtml(labelOrDash('optimizationActionType', previewData.action_type, 'Проверить вручную'))}</strong></article>
       </div>
       ${previewData.summary ? `<p>${escapeHtml(previewData.summary)}</p>` : ''}
       ${renderPreviewList('Что будет подготовлено', previewData.would_do, escapeHtml)}
@@ -73,6 +87,7 @@ export function renderOptimizationPlanPanel({
   optimizationPlanLoading = false,
   optimizationActionsLoading = false,
   optimizationStatus = '',
+  optimizationProgress = '',
   normalizeDate,
   formatNumberSafe,
   formatPercent,
@@ -86,10 +101,11 @@ export function renderOptimizationPlanPanel({
       <div class="panelHeader">
         <div><h3>1. План действий</h3><p>Правила и AI формируют черновики на основе кампаний, CPA по целям и поисковых запросов.</p></div>
         <div class="heroActions">
-          <button class="secondaryButton" data-load-optimization-plan ${selectedClientId && !optimizationPlanLoading ? '' : 'disabled'}>${optimizationPlanLoading ? 'Формируем...' : 'Обновить план'}</button>
+          <button class="secondaryButton" data-load-optimization-plan ${selectedClientId && !optimizationPlanLoading ? '' : 'disabled'}>Обновить план</button>
           <button class="approveButton" data-create-optimization-drafts ${selectedClientId && plan && !optimizationActionsLoading ? '' : 'disabled'}>Сохранить как черновики</button>
         </div>
       </div>
+      ${optimizationProgress ? `<div class="authStatus integrationStatus">${escapeHtml(optimizationProgress)}</div>` : ''}
       ${optimizationStatus ? `<div class="authStatus integrationStatus">${escapeHtml(optimizationStatus)}</div>` : ''}
       ${plan ? `
         <div class="optimizationGrid">
@@ -111,6 +127,7 @@ export function renderOptimizationActionsPanel({
   optimizationActionFilter = 'all',
   optimizationActionsLoading = false,
   optimizationActionsStatus = '',
+  optimizationActionsProgress = '',
   optimizationExecutionPreviews = {},
   getFilteredOptimizationActions,
   compactStatusLabel,
@@ -134,7 +151,7 @@ export function renderOptimizationActionsPanel({
             <option value="approved" ${optimizationActionFilter === 'approved' ? 'selected' : ''}>Одобрено</option>
             <option value="rejected" ${optimizationActionFilter === 'rejected' ? 'selected' : ''}>Отклонено</option>
           </select>
-          <button class="secondaryButton" data-load-optimization-actions ${selectedClientId && !optimizationActionsLoading ? '' : 'disabled'}>${optimizationActionsLoading ? 'Загрузка...' : 'Обновить'}</button>
+          <button class="secondaryButton" data-load-optimization-actions ${selectedClientId && !optimizationActionsLoading ? '' : 'disabled'}>Обновить</button>
         </div>
       </div>
       <div class="insightGrid">
@@ -143,10 +160,11 @@ export function renderOptimizationActionsPanel({
         <article><span>Отклонено</span><strong>${statusCounts.rejected || 0}</strong></article>
         <article><span>К предпросмотру</span><strong>${(statusCounts.approved || 0) + (statusCounts.reviewed || 0)}</strong></article>
       </div>
+      ${optimizationActionsProgress ? `<div class="authStatus integrationStatus">${escapeHtml(optimizationActionsProgress)}</div>` : ''}
       ${optimizationActionsStatus ? `<div class="authStatus integrationStatus">${escapeHtml(optimizationActionsStatus)}</div>` : ''}
       ${actions.length ? `<div class="actionList">${actions.map((action) => {
         const preview = optimizationExecutionPreviews[action.id];
-        return `<article class="optimizationAction ${action.status || 'draft'}"><div><span>${escapeHtml(compactStatusLabel(action.status || 'draft'))}</span><h3>${escapeHtml(action.title || action.entityName || action.actionType || 'Действие')}</h3><p>${escapeHtml(action.description || action.reason || '')}</p><small>${escapeHtml(action.entityType || '')} · ${escapeHtml(action.actionType || '')}</small></div><div class="actionButtons"><button class="secondaryButton" data-preview-optimization-action="${escapeHtml(action.id)}">Предпросмотр</button><button class="approveButton" data-update-optimization-action="${escapeHtml(action.id)}" data-status="approved">Одобрить</button><button class="dangerButton" data-update-optimization-action="${escapeHtml(action.id)}" data-status="rejected">Отклонить</button></div>${preview?.loading ? '<div class="authStatus integrationStatus">Загружаем предпросмотр...</div>' : ''}${preview?.error ? `<div class="authStatus integrationStatus">${escapeHtml(preview.error)}</div>` : ''}${preview?.data ? `<details class="quietDetails executionPreviewDetails" open><summary>3. Предпросмотр применения</summary>${renderExecutionPreview(preview.data, escapeHtml)}</details>` : ''}</article>`;
+        return `<article class="optimizationAction ${action.status || 'draft'}"><div><span>${escapeHtml(compactStatusLabel(action.status || 'draft'))}</span><h3>${escapeHtml(action.title || action.entityName || labelFor('optimizationActionType', action.actionType) || 'Действие')}</h3><p>${escapeHtml(action.description || action.reason || '')}</p>${actionMetaLine(action, escapeHtml)}</div><div class="actionButtons"><button class="secondaryButton" data-preview-optimization-action="${escapeHtml(action.id)}">Предпросмотр</button><button class="approveButton" data-update-optimization-action="${escapeHtml(action.id)}" data-status="approved">Одобрить</button><button class="dangerButton" data-update-optimization-action="${escapeHtml(action.id)}" data-status="rejected">Отклонить</button></div>${preview?.loading ? '<div class="authStatus integrationStatus">Загружаем предпросмотр...</div>' : ''}${preview?.error ? `<div class="authStatus integrationStatus">${escapeHtml(preview.error)}</div>` : ''}${preview?.data ? `<details class="quietDetails executionPreviewDetails" open><summary>3. Предпросмотр применения</summary>${renderExecutionPreview(preview.data, escapeHtml)}</details>` : ''}</article>`;
       }).join('')}</div>` : '<div class="authStatus integrationStatus">Черновиков пока нет. Сформируйте план и нажмите «Сохранить как черновики».</div>'}
     </section>
   `;
