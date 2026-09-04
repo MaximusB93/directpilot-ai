@@ -1,6 +1,8 @@
 from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from app.connectors.yandex_direct import YandexDirectConnector
@@ -14,6 +16,22 @@ NO_DATA_MESSAGE = "No Yandex Direct data for selected period"
 DIRECT_GOAL_FALLBACK_MESSAGE = "Direct goal conversions unavailable for selected goals. Falling back to total Direct conversions."
 SEARCH_QUERY_SYNC_WARNING = "Search query report could not be loaded. Campaign sync completed; negative keyword insights are unavailable."
 DAILY_SYNC_WARNING = "Daily campaign reports could not be loaded. Campaign sync completed; daily dynamics are unavailable."
+
+# How far back the first sync of a client reaches. A bit over a year, so a
+# year-over-year comparison has both of its points.
+INITIAL_HISTORY_DAYS = 400
+
+# Direct is asked for at most this many days per report. One 400-day report over
+# all campaigns risks outliving the serverless request budget, and a chunk that
+# is committed on its own survives an abort halfway through the backfill.
+HISTORY_CHUNK_DAYS = 90
+
+# Recent days are re-read on every sync. Direct's conversion numbers are not
+# final on the day they are collected: Metrica keeps re-attributing conversions
+# for days afterwards, so yesterday's figure changes over the following week.
+# Without this second pass the history would keep understated conversions — and
+# therefore an overstated CPA — forever, without ever looking like a failure.
+DAILY_RESTATEMENT_WINDOW_DAYS = 21
 
 
 def _int(v: str | None) -> int:
@@ -90,6 +108,68 @@ def _daily_campaign_issue_flags(*, cost: float, clicks: int, impressions: int, c
     return flags
 
 
+def _daily_row_values(
+    row: dict[str, str],
+    *,
+    client_id: str,
+    goal_ids: list[str],
+    goal_ids_text: str | None,
+) -> dict[str, object] | None:
+    raw_date = row.get("Date") or row.get("stat_date") or row.get("StatDate")
+    if not raw_date:
+        return None
+    try:
+        stat_date = date.fromisoformat(str(raw_date)[:10])
+    except ValueError:
+        return None
+    cost = _float(row.get("Cost"))
+    clicks = _int(row.get("Clicks"))
+    impressions = _int(row.get("Impressions"))
+    ctr = _float(row.get("Ctr"))
+    goal_conversions = _direct_goal_conversion_value(row, goal_ids) if goal_ids else None
+    goal_cpa = (cost / goal_conversions) if goal_conversions else None
+    conversion_rate = (goal_conversions / clicks * 100) if goal_conversions is not None and clicks else None
+    flags = _daily_campaign_issue_flags(
+        cost=cost,
+        clicks=clicks,
+        impressions=impressions,
+        ctr=ctr,
+        goal_conversions=goal_conversions,
+    )
+    return {
+        "client_id": client_id,
+        "stat_date": stat_date,
+        "campaign_id": str(row.get("CampaignId") or ""),
+        "campaign_name": str(row.get("CampaignName") or ""),
+        "impressions": impressions,
+        "clicks": clicks,
+        "cost": cost,
+        "ctr": ctr,
+        "avg_cpc": _float(row.get("AvgCpc")),
+        "goal_ids": goal_ids_text,
+        "goal_conversions": goal_conversions,
+        "goal_cpa": goal_cpa,
+        "conversion_rate": conversion_rate,
+        "issue_flags": ",".join(flags) if flags else None,
+    }
+
+
+# Everything except the key and the generated id is refreshed from the report.
+_DAILY_UPSERT_FIELDS = (
+    "campaign_name",
+    "impressions",
+    "clicks",
+    "cost",
+    "ctr",
+    "avg_cpc",
+    "goal_ids",
+    "goal_conversions",
+    "goal_cpa",
+    "conversion_rate",
+    "issue_flags",
+)
+
+
 def _store_daily_campaign_rows(
     db: Session,
     *,
@@ -98,52 +178,177 @@ def _store_daily_campaign_rows(
     goal_ids: list[str],
     goal_ids_text: str | None,
 ) -> int:
-    inserted = 0
+    """Insert or update daily rows in place, keyed on (client, day, campaign).
+
+    Rows already in the database that the report does not mention are left
+    alone: a campaign missing from a period's report means it had no impressions
+    then, not that the stored history became untrustworthy.
+    """
+
+    values: dict[tuple[date, str], dict[str, object]] = {}
     for row in rows:
-        raw_date = row.get("Date") or row.get("stat_date") or row.get("StatDate")
-        if not raw_date:
-            continue
-        try:
-            stat_date = date.fromisoformat(str(raw_date)[:10])
-        except ValueError:
-            continue
-        cost = _float(row.get("Cost"))
-        clicks = _int(row.get("Clicks"))
-        impressions = _int(row.get("Impressions"))
-        ctr = _float(row.get("Ctr"))
-        goal_conversions = _direct_goal_conversion_value(row, goal_ids) if goal_ids else None
-        goal_cpa = (cost / goal_conversions) if goal_conversions else None
-        conversion_rate = (goal_conversions / clicks * 100) if goal_conversions is not None and clicks else None
-        flags = _daily_campaign_issue_flags(
-            cost=cost,
-            clicks=clicks,
-            impressions=impressions,
-            ctr=ctr,
-            goal_conversions=goal_conversions,
+        prepared = _daily_row_values(
+            row,
+            client_id=client_id,
+            goal_ids=goal_ids,
+            goal_ids_text=goal_ids_text,
         )
-        db.add(
-            DirectCampaignDailyStat(
-                client_id=client_id,
-                stat_date=stat_date,
-                campaign_id=str(row.get("CampaignId") or ""),
-                campaign_name=str(row.get("CampaignName") or ""),
-                impressions=impressions,
-                clicks=clicks,
-                cost=cost,
-                ctr=ctr,
-                avg_cpc=_float(row.get("AvgCpc")),
-                goal_ids=goal_ids_text,
-                goal_conversions=goal_conversions,
-                goal_cpa=goal_cpa,
-                conversion_rate=conversion_rate,
-                issue_flags=",".join(flags) if flags else None,
+        if prepared is None:
+            continue
+        # One report can carry the same day and campaign twice. A single
+        # ON CONFLICT statement may not touch the same row twice, so collapse
+        # duplicates here and keep the last occurrence.
+        values[(prepared["stat_date"], prepared["campaign_id"])] = prepared
+
+    if not values:
+        return 0
+
+    dialect = db.get_bind().dialect.name
+    if dialect in {"postgresql", "sqlite"}:
+        insert = postgresql_insert if dialect == "postgresql" else sqlite_insert
+        statement = insert(DirectCampaignDailyStat).values(list(values.values()))
+        db.execute(
+            statement.on_conflict_do_update(
+                index_elements=[
+                    DirectCampaignDailyStat.client_id,
+                    DirectCampaignDailyStat.stat_date,
+                    DirectCampaignDailyStat.campaign_id,
+                ],
+                # loaded_at records when Direct last confirmed the row.
+                set_={
+                    field: getattr(statement.excluded, field) for field in _DAILY_UPSERT_FIELDS
+                }
+                | {"loaded_at": func.now()},
             )
         )
-        inserted += 1
-    return inserted
+        return len(values)
+
+    return _store_daily_campaign_rows_without_upsert(db, values)
 
 
-def sync_campaign_daily_stats(db: Session, client_id: str, days: int = 30) -> dict[str, object]:
+def _store_daily_campaign_rows_without_upsert(
+    db: Session, values: dict[tuple[date, str], dict[str, object]]
+) -> int:
+    """Portable fallback for dialects without ON CONFLICT support."""
+    for key, prepared in values.items():
+        stat_date, campaign_id = key
+        existing = db.scalar(
+            select(DirectCampaignDailyStat).where(
+                DirectCampaignDailyStat.client_id == prepared["client_id"],
+                DirectCampaignDailyStat.stat_date == stat_date,
+                DirectCampaignDailyStat.campaign_id == campaign_id,
+            )
+        )
+        if existing is None:
+            db.add(DirectCampaignDailyStat(**prepared))
+            continue
+        for field in _DAILY_UPSERT_FIELDS:
+            setattr(existing, field, prepared[field])
+        existing.loaded_at = datetime.now(UTC)
+    return len(values)
+
+
+def _daily_history_bounds(db: Session, client_id: str) -> tuple[date | None, date | None]:
+    """Oldest and newest stored day for a client, or (None, None) when empty.
+
+    Derived from the rows themselves rather than a stored progress field: one
+    less piece of state that can drift out of step with the data.
+    """
+    earliest, latest = db.execute(
+        select(
+            func.min(DirectCampaignDailyStat.stat_date),
+            func.max(DirectCampaignDailyStat.stat_date),
+        ).where(DirectCampaignDailyStat.client_id == client_id)
+    ).one()
+    return earliest, latest
+
+
+def _stored_days(db: Session, client_id: str, date_from: date, date_to: date) -> set[date]:
+    return set(
+        db.scalars(
+            select(DirectCampaignDailyStat.stat_date)
+            .where(
+                DirectCampaignDailyStat.client_id == client_id,
+                DirectCampaignDailyStat.stat_date >= date_from,
+                DirectCampaignDailyStat.stat_date <= date_to,
+            )
+            .distinct()
+        ).all()
+    )
+
+
+def _contiguous_ranges(days: set[date]) -> list[tuple[date, date]]:
+    """Group single days into inclusive ranges, newest range first."""
+    ranges: list[tuple[date, date]] = []
+    for day in sorted(days):
+        if ranges and day == ranges[-1][1] + timedelta(days=1):
+            ranges[-1] = (ranges[-1][0], day)
+        else:
+            ranges.append((day, day))
+    return list(reversed(ranges))
+
+
+def _chunk_range(date_from: date, date_to: date, chunk_days: int) -> list[tuple[date, date]]:
+    """Split one range into report-sized chunks, newest chunk first."""
+    chunks: list[tuple[date, date]] = []
+    end = date_to
+    while end >= date_from:
+        start = max(date_from, end - timedelta(days=chunk_days - 1))
+        chunks.append((start, end))
+        end = start - timedelta(days=1)
+    return chunks
+
+
+def _plan_daily_history_requests(
+    db: Session,
+    *,
+    client_id: str,
+    date_to: date,
+    restatement_days: int,
+) -> tuple[list[tuple[date, date]], str]:
+    """Decide which day ranges to ask Direct for, newest first.
+
+    First sync of a client: the whole initial history window. Afterwards: the
+    restatement window, plus any day between the newest stored day and yesterday
+    that is missing — so a sync that has not run for a month still catches up
+    without re-reading days that are already final.
+    """
+
+    _, latest = _daily_history_bounds(db, client_id)
+    if latest is None:
+        initial_from = date_to - timedelta(days=INITIAL_HISTORY_DAYS - 1)
+        return _chunk_range(initial_from, date_to, HISTORY_CHUNK_DAYS), "initial"
+
+    window_from = date_to - timedelta(days=max(restatement_days, 1) - 1)
+    wanted = {window_from + timedelta(days=offset) for offset in range((date_to - window_from).days + 1)}
+
+    gap_from = min(latest, window_from)
+    if gap_from <= date_to:
+        stored = _stored_days(db, client_id, gap_from, date_to)
+        span = (date_to - gap_from).days + 1
+        wanted |= {
+            gap_from + timedelta(days=offset)
+            for offset in range(span)
+            if gap_from + timedelta(days=offset) not in stored
+        }
+
+    requests: list[tuple[date, date]] = []
+    for range_from, range_to in _contiguous_ranges(wanted):
+        requests.extend(_chunk_range(range_from, range_to, HISTORY_CHUNK_DAYS))
+    return requests, "incremental"
+
+
+def sync_campaign_daily_stats(
+    db: Session, client_id: str, days: int = DAILY_RESTATEMENT_WINDOW_DAYS
+) -> dict[str, object]:
+    """Bring the client's daily history up to date without ever shortening it.
+
+    `days` is the depth of the window that is always re-read; the first sync of
+    a client additionally backfills `INITIAL_HISTORY_DAYS`, and later syncs add
+    any missing days. Each request range is committed on its own, so an abort
+    partway through keeps everything already stored.
+    """
+
     client = db.get(ClientAccount, client_id)
     if not client:
         raise ValueError("Client not found")
@@ -154,35 +359,43 @@ def sync_campaign_daily_stats(db: Session, client_id: str, days: int = 30) -> di
         return {"status": "skipped", "rows": 0, "warning": NO_TOKEN_MESSAGE}
 
     date_to = datetime.now(UTC).date() - timedelta(days=1)
-    date_from = date_to - timedelta(days=max(days, 1) - 1)
     goal_ids = parse_goal_ids(client.conversion_goal_ids, fallback=client.main_goal_id)
     goal_ids_text = ", ".join(goal_ids) or None
     connector = YandexDirectConnector(access_token=token, client_login=client.direct_login)
 
-    db.execute(
-        delete(DirectCampaignDailyStat).where(
-            DirectCampaignDailyStat.client_id == client_id,
-            DirectCampaignDailyStat.stat_date >= date_from,
-            DirectCampaignDailyStat.stat_date <= date_to,
-        )
-    )
-    rows = connector.get_campaign_daily_range_report(
-        date_from=date_from,
-        date_to=date_to,
-        goal_ids=goal_ids or None,
-    )
-    inserted = _store_daily_campaign_rows(
+    requests, mode = _plan_daily_history_requests(
         db,
         client_id=client_id,
-        rows=rows,
-        goal_ids=goal_ids,
-        goal_ids_text=goal_ids_text,
+        date_to=date_to,
+        restatement_days=days,
     )
+
+    stored = 0
+    completed: list[tuple[date, date]] = []
+    for range_from, range_to in requests:
+        rows = connector.get_campaign_daily_range_report(
+            date_from=range_from,
+            date_to=range_to,
+            goal_ids=goal_ids or None,
+        )
+        stored += _store_daily_campaign_rows(
+            db,
+            client_id=client_id,
+            rows=rows,
+            goal_ids=goal_ids,
+            goal_ids_text=goal_ids_text,
+        )
+        db.commit()
+        completed.append((range_from, range_to))
+
     return {
         "status": "success",
-        "rows": inserted,
-        "date_from": date_from.isoformat(),
+        "mode": mode,
+        "rows": stored,
+        "requests": len(requests),
+        "date_from": min(item[0] for item in requests).isoformat() if requests else None,
         "date_to": date_to.isoformat(),
+        "ranges": [(item[0].isoformat(), item[1].isoformat()) for item in completed],
     }
 
 
@@ -206,7 +419,10 @@ def run_client_sync(db: Session, client_id: str, days: int = 30) -> SyncJob:
         if not client.yandex_account_id:
             db.execute(delete(DirectCampaignPeriodStat).where(DirectCampaignPeriodStat.client_id == client_id))
             db.execute(delete(DirectSearchQueryPeriodStat).where(DirectSearchQueryPeriodStat.client_id == client_id))
-            db.execute(delete(DirectCampaignDailyStat).where(DirectCampaignDailyStat.client_id == client_id))
+            # The daily history is deliberately kept: an expired token or a
+            # temporarily unbound account is recoverable, but history deleted
+            # beyond Direct's report depth is not. The user should see the last
+            # known data marked as stale rather than an empty screen.
             client.sync_status = "no_connection"
             client.sync_error = NO_BOUND_ACCOUNT_MESSAGE
             client.last_synced_at = now
@@ -227,7 +443,10 @@ def run_client_sync(db: Session, client_id: str, days: int = 30) -> SyncJob:
         if not token:
             db.execute(delete(DirectCampaignPeriodStat).where(DirectCampaignPeriodStat.client_id == client_id))
             db.execute(delete(DirectSearchQueryPeriodStat).where(DirectSearchQueryPeriodStat.client_id == client_id))
-            db.execute(delete(DirectCampaignDailyStat).where(DirectCampaignDailyStat.client_id == client_id))
+            # The daily history is deliberately kept: an expired token or a
+            # temporarily unbound account is recoverable, but history deleted
+            # beyond Direct's report depth is not. The user should see the last
+            # known data marked as stale rather than an empty screen.
             client.sync_status = "no_connection"
             client.sync_error = NO_TOKEN_MESSAGE
             client.last_synced_at = now
@@ -355,7 +574,7 @@ def run_client_sync(db: Session, client_id: str, days: int = 30) -> SyncJob:
             search_query_warning = f"{SEARCH_QUERY_SYNC_WARNING} {str(exc)[:300]}"
 
         try:
-            daily_result = sync_campaign_daily_stats(db, client_id, days=min(max(days, 30), 30))
+            daily_result = sync_campaign_daily_stats(db, client_id)
             daily_warning = str(daily_result.get("warning")) if daily_result.get("warning") else None
         except Exception as exc:
             daily_warning = f"{DAILY_SYNC_WARNING} {str(exc)[:300]}"

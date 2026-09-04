@@ -233,6 +233,17 @@ class DirectSearchQueryPeriodStat(Base):
 
 class DirectCampaignDailyStat(Base):
     __tablename__ = "direct_campaign_daily_stats"
+    # One row per client, day and campaign. The constraint is what makes an
+    # upsert possible: without it the sync had to delete a date range before
+    # inserting, which emptied the window whenever the insert did not follow.
+    __table_args__ = (
+        UniqueConstraint(
+            "client_id",
+            "stat_date",
+            "campaign_id",
+            name="ux_direct_campaign_daily_stats_client_date_campaign",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     client_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)

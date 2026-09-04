@@ -243,6 +243,36 @@ DIRECT_READ_SCHEMA_STATEMENTS = (
 )
 
 
+# Keeps the newest row of every (client_id, stat_date, campaign_id) group and
+# drops the rest. `loaded_at` says when Direct last confirmed the row, so the
+# newest one is the one to trust; `id` only breaks ties so the result is stable.
+#
+# This is the single destructive statement the daily-history work introduces,
+# and it collapses duplicates rather than deleting history: every group keeps
+# exactly one row.
+DAILY_STATS_DEDUPLICATE_SQL = """
+DELETE FROM direct_campaign_daily_stats
+WHERE id IN (
+    SELECT id
+    FROM (
+        SELECT
+            id,
+            ROW_NUMBER() OVER (
+                PARTITION BY client_id, stat_date, campaign_id
+                ORDER BY loaded_at DESC, id DESC
+            ) AS row_number_in_group
+        FROM direct_campaign_daily_stats
+    ) ranked
+    WHERE ranked.row_number_in_group > 1
+)
+"""
+
+DAILY_STATS_UNIQUE_INDEX_SQL = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS ux_direct_campaign_daily_stats_client_date_campaign"
+    " ON direct_campaign_daily_stats (client_id, stat_date, campaign_id)"
+)
+
+
 def check_db_connection() -> None:
     if database_engine_error:
         raise RuntimeError(database_engine_error)
@@ -389,6 +419,11 @@ def ensure_mvp_schema() -> None:
         "CREATE INDEX IF NOT EXISTS ix_direct_campaign_daily_stats_client_id ON direct_campaign_daily_stats (client_id)",
         "CREATE INDEX IF NOT EXISTS ix_direct_campaign_daily_stats_stat_date ON direct_campaign_daily_stats (stat_date)",
         "CREATE INDEX IF NOT EXISTS ix_direct_campaign_daily_stats_campaign_id ON direct_campaign_daily_stats (campaign_id)",
+        # The daily history had no uniqueness, so existing databases can already
+        # hold duplicates. They must go before the unique index can be created,
+        # otherwise the statement below fails and the whole patch aborts.
+        DAILY_STATS_DEDUPLICATE_SQL,
+        DAILY_STATS_UNIQUE_INDEX_SQL,
         """
         CREATE TABLE IF NOT EXISTS optimization_action_drafts (
             id VARCHAR(36) PRIMARY KEY,
