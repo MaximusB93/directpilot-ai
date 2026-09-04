@@ -6,7 +6,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api.routers import ai, approvals, audit, auth, business_context, clients, debug, health, integrations, performance_range, recommendations, wordstat, yandex_direct
+from app.api.routers import ai, approvals, audit, auth, business_context, clients, debug, digests, health, integrations, performance_range, recommendations, wordstat, yandex_direct
 from app.core.config import settings
 from app.db import init_db
 from app.services.token_crypto import OAuthTokenDecryptionError
@@ -68,6 +68,7 @@ app.include_router(yandex_direct.router, prefix=settings.api_prefix)
 app.include_router(wordstat.router, prefix=settings.api_prefix)
 app.include_router(ai.router, prefix=settings.api_prefix)
 app.include_router(debug.router, prefix=settings.api_prefix)
+app.include_router(digests.router, prefix=settings.api_prefix)
 
 
 @app.exception_handler(OAuthTokenDecryptionError)
@@ -117,5 +118,7 @@ def read_root(request: Request) -> dict[str, object]:
             f"{settings.api_prefix}/wordstat/dynamics/batch",
             f"{settings.api_prefix}/ai/openrouter/status",
             f"{settings.api_prefix}/debug/routes",
+            f"{settings.api_prefix}/digests/run",
+            f"{settings.api_prefix}/clients/{{client_id}}/digest",
         ],
     }

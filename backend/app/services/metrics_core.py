@@ -120,6 +120,21 @@ class MetricComparison:
     cpa: MetricDelta
 
 
+# Spend is measured exactly — there is no sampling noise in it, so the Poisson
+# test that suits conversions makes no sense here. The question for spend is not
+# "is this change real" but "is this change material", and materiality needs both
+# a relative and an absolute floor: 50 rouble growing to 150 is +200% and still
+# nothing worth a morning digest slot.
+COST_MATERIALITY_PCT = 20.0
+COST_MATERIALITY_ABS = 1000.0
+
+
+def _cost_significant(absolute: float | None, percent: float | None) -> bool:
+    if absolute is None or percent is None:
+        return False
+    return abs(percent) >= COST_MATERIALITY_PCT and abs(absolute) >= COST_MATERIALITY_ABS
+
+
 def _percent(current: float | None, previous: float | None) -> float | None:
     if current is None or previous is None or previous == 0:
         return None
@@ -220,6 +235,25 @@ def _confidence_by_clicks(n_current: float | None, n_previous: float | None) -> 
     return "insufficient"
 
 
+def _confidence_by_impressions(n_current: float | None, n_previous: float | None) -> str:
+    """Confidence for impression-based metrics, judged on their own denominator.
+
+    Impressions and CTR were previously judged on clicks, which sits on a scale
+    two orders of magnitude smaller and reported "insufficient" for volumes that
+    are plainly large enough.
+    """
+    if n_current is None or n_previous is None:
+        return "insufficient"
+    n = min(n_current, n_previous)
+    if n >= 50_000:
+        return "high"
+    if n >= 10_000:
+        return "medium"
+    if n >= 1_000:
+        return "low"
+    return "insufficient"
+
+
 def compare(current: PeriodMetrics, previous: PeriodMetrics) -> MetricComparison:
     """Compare two periods metric by metric.
 
@@ -227,11 +261,17 @@ def compare(current: PeriodMetrics, previous: PeriodMetrics) -> MetricComparison
     metrics (impressions, clicks, conversions) use a Poisson noise threshold,
     share metrics (ctr, cr) use a binomial standard error, and derived metrics
     (cpc, cpa) inherit significance from the count they are built on (clicks,
-    conversions respectively) rather than getting their own test.
+    conversions respectively) rather than getting their own test. Spend is the
+    exception: it is exact, so it is judged on materiality instead of noise.
     """
 
     clicks_conf = _confidence_by_clicks(current.clicks, previous.clicks)
     conversions_conf = _confidence_by_conversions(current.conversions, previous.conversions)
+    impressions_conf = _confidence_by_impressions(current.impressions, previous.impressions)
+
+    cost_sig = _cost_significant(
+        _absolute(current.cost, previous.cost), _percent(current.cost, previous.cost)
+    )
 
     impressions_pct = _percent(current.impressions, previous.impressions)
     impressions_sig = _poisson_significant(current.impressions, previous.impressions, impressions_pct)
@@ -246,12 +286,12 @@ def compare(current: PeriodMetrics, previous: PeriodMetrics) -> MetricComparison
     cr_sig = _binomial_significant(current.conversions, current.clicks, previous.conversions, previous.clicks)
 
     return MetricComparison(
-        cost=_make_delta(current.cost, previous.cost, is_significant=False, confidence=clicks_conf),
+        cost=_make_delta(current.cost, previous.cost, is_significant=cost_sig, confidence=clicks_conf),
         impressions=_make_delta(
-            current.impressions, previous.impressions, is_significant=impressions_sig, confidence=clicks_conf
+            current.impressions, previous.impressions, is_significant=impressions_sig, confidence=impressions_conf
         ),
         clicks=_make_delta(current.clicks, previous.clicks, is_significant=clicks_sig, confidence=clicks_conf),
-        ctr=_make_delta(current.ctr, previous.ctr, is_significant=ctr_sig, confidence=clicks_conf),
+        ctr=_make_delta(current.ctr, previous.ctr, is_significant=ctr_sig, confidence=impressions_conf),
         cpc=_make_delta(current.cpc, previous.cpc, is_significant=clicks_sig, confidence=clicks_conf),
         conversions=_make_delta(
             current.conversions, previous.conversions, is_significant=conversions_sig, confidence=conversions_conf

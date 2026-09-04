@@ -1,0 +1,88 @@
+name: Morning digest
+
+# Runs the digest once a day. See docs/specs/TZ-03-morning-digest.md, part 5.
+#
+# Vercel's own cron jobs were not used. Two documented facts rule them out for
+# this endpoint as specified: Vercel triggers a cron with an HTTP GET against the
+# production deployment URL, while the endpoint is a POST, and Vercel sends its
+# own `Authorization: Bearer $CRON_SECRET` header, which fixes the name of the
+# secret. On top of that a Vercel cron cannot be confirmed from a preview
+# deployment at all — crons only fire against production and are listed in the
+# project dashboard — so the check the specification asks for is not available
+# to us here. GitHub Actions does not depend on the hosting platform, its run
+# history is visible in the repository, and the workflow can be triggered by
+# hand to prove it works.
+#
+# Requires two repository secrets:
+#   DIGEST_API_BASE_URL — backend root, e.g. https://directpilot-ai.vercel.app
+#   DIGEST_CRON_SECRET  — must equal the DIGEST_CRON_SECRET the backend reads
+
+on:
+  schedule:
+    # 05:30 UTC = 08:30 Moscow: after the night, before the working day.
+    # GitHub only runs scheduled workflows from the default branch.
+    - cron: '30 5 * * *'
+  workflow_dispatch:
+    inputs:
+      digest_date:
+        description: Day to compute, YYYY-MM-DD. Empty means yesterday.
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  run-digest:
+    name: Compute morning digests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Trigger digest run
+        env:
+          BASE_URL: ${{ secrets.DIGEST_API_BASE_URL }}
+          DIGEST_CRON_SECRET: ${{ secrets.DIGEST_CRON_SECRET }}
+          DIGEST_DATE: ${{ inputs.digest_date }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${BASE_URL:-}" ] || [ -z "${DIGEST_CRON_SECRET:-}" ]; then
+            echo "DIGEST_API_BASE_URL and DIGEST_CRON_SECRET must be set as repository secrets." >&2
+            exit 1
+          fi
+
+          if [ -n "${DIGEST_DATE:-}" ]; then
+            body="{\"digest_date\":\"${DIGEST_DATE}\"}"
+          else
+            body='{}'
+          fi
+
+          # --fail-with-body turns a 4xx/5xx into a non-zero exit while still
+          # printing what the backend said, so a failed run is legible.
+          curl --fail-with-body --silent --show-error \
+            --max-time 300 \
+            --request POST "${BASE_URL%/}/api/v1/digests/run" \
+            --header "Authorization: Bearer ${DIGEST_CRON_SECRET}" \
+            --header 'Content-Type: application/json' \
+            --data "${body}" \
+            --output response.json
+
+          echo "Digest run response:"
+          cat response.json
+
+          # A partial run is not a failure, but it must be visible: the endpoint
+          # stops before the platform's time limit and reports what is left.
+          python3 - <<'PY'
+          import json
+          with open('response.json', encoding='utf-8') as handle:
+              payload = json.load(handle)
+          print(
+              f"date={payload.get('digest_date')} "
+              f"processed={payload.get('processed_count')} "
+              f"remaining={payload.get('remaining_count')}"
+          )
+          if not payload.get('complete', True):
+              print('::warning::Digest run was cut short by the time budget; '
+                    'the next run will finish the remaining clients.')
+          PY

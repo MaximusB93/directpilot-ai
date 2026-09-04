@@ -455,3 +455,64 @@ def test_estimate_savings_degenerate_period_does_not_raise() -> None:
     assert estimate.monthly_cost_saved == 0.0
     assert estimate.conversions_at_risk is None
     assert estimate.confidence == "insufficient"
+
+
+# ---------------------------------------------------------------------------
+# Spend materiality and impression-based confidence (TZ-03 part 1)
+# ---------------------------------------------------------------------------
+
+
+def test_large_spend_growth_is_significant() -> None:
+    previous = _period(cost=1000.0, clicks=100, conversions=5.0)
+    current = _period(cost=10000.0, clicks=100, conversions=5.0)
+    result = compare(current, previous)
+    assert result.cost.percent == 900.0
+    assert result.cost.is_significant is True
+
+
+def test_small_absolute_spend_growth_is_not_significant() -> None:
+    # +200% but only 100 roubles: relatively loud, materially nothing.
+    previous = _period(cost=50.0, clicks=100, conversions=5.0)
+    current = _period(cost=150.0, clicks=100, conversions=5.0)
+    result = compare(current, previous)
+    assert result.cost.percent == 200.0
+    assert result.cost.is_significant is False
+
+
+def test_small_relative_spend_growth_is_not_significant() -> None:
+    # 5000 roubles more, but only 5% of the window: not a change of behaviour.
+    previous = _period(cost=100000.0, clicks=100, conversions=5.0)
+    current = _period(cost=105000.0, clicks=100, conversions=5.0)
+    result = compare(current, previous)
+    assert result.cost.percent == 5.0
+    assert result.cost.absolute == 5000.0
+    assert result.cost.is_significant is False
+
+
+def test_spend_significance_needs_both_thresholds() -> None:
+    previous = _period(cost=5000.0, clicks=100, conversions=5.0)
+    current = _period(cost=6000.0, clicks=100, conversions=5.0)
+    result = compare(current, previous)
+    assert result.cost.absolute == 1000.0
+    assert result.cost.percent == 20.0
+    assert result.cost.is_significant is True
+
+
+def test_impressions_confidence_uses_impressions_not_clicks() -> None:
+    previous = _period(impressions=60000, clicks=100, cost=1000.0, conversions=5.0)
+    current = _period(impressions=61000, clicks=100, cost=1000.0, conversions=5.0)
+    result = compare(current, previous)
+    assert result.impressions.confidence == "high"
+    assert result.ctr.confidence == "high"
+    # Clicks-based metrics keep their own basis.
+    assert result.clicks.confidence == "low"
+
+
+def test_impression_confidence_thresholds() -> None:
+    cases = [(60000, "high"), (20000, "medium"), (5000, "low"), (500, "insufficient")]
+    for impressions, expected in cases:
+        result = compare(
+            _period(impressions=impressions, clicks=10, cost=100.0, conversions=1.0),
+            _period(impressions=impressions, clicks=10, cost=100.0, conversions=1.0),
+        )
+        assert result.impressions.confidence == expected, impressions
