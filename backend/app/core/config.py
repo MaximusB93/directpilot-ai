@@ -274,6 +274,11 @@ class Settings:
             os.getenv("YANDEX_OAUTH_SCOPES", "direct:api metrika:read login:info")
         )
     )
+    # Shared secret for the scheduled digest run. The scheduler has no user
+    # session, so the endpoint authenticates on this alone. When it is unset the
+    # endpoint refuses to run at all: an unauthenticated trigger would be open
+    # to the whole internet.
+    digest_cron_secret: str | None = os.getenv("DIGEST_CRON_SECRET")
     yandex_search_api_key: str | None = os.getenv("YANDEX_SEARCH_API_KEY")
     yandex_search_folder_id: str | None = os.getenv("YANDEX_SEARCH_FOLDER_ID")
     allowed_origins: list[str] = field(

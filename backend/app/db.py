@@ -416,6 +416,20 @@ def ensure_mvp_schema() -> None:
             loaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
         """,
+        """
+        CREATE TABLE IF NOT EXISTS morning_digests (
+            id VARCHAR(36) PRIMARY KEY,
+            client_id VARCHAR(64) NOT NULL,
+            digest_date DATE NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            findings_json TEXT NOT NULL DEFAULT '[]',
+            findings_count INTEGER NOT NULL DEFAULT 0,
+            status VARCHAR(32) NOT NULL DEFAULT 'ok'
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_morning_digests_client_id ON morning_digests (client_id)",
+        "CREATE INDEX IF NOT EXISTS ix_morning_digests_digest_date ON morning_digests (digest_date)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_morning_digests_client_date ON morning_digests (client_id, digest_date)",
         "CREATE INDEX IF NOT EXISTS ix_direct_campaign_daily_stats_client_id ON direct_campaign_daily_stats (client_id)",
         "CREATE INDEX IF NOT EXISTS ix_direct_campaign_daily_stats_stat_date ON direct_campaign_daily_stats (stat_date)",
         "CREATE INDEX IF NOT EXISTS ix_direct_campaign_daily_stats_campaign_id ON direct_campaign_daily_stats (campaign_id)",

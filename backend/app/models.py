@@ -263,6 +263,28 @@ class DirectCampaignDailyStat(Base):
     loaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
+class MorningDigest(Base):
+    """One stored morning digest per client and day.
+
+    `status` separates "we looked and all is calm" (`ok` with no findings) from
+    "there was nothing to look at" (`no_data`). Collapsing those two would repeat
+    the mistake of treating an unknown as a zero.
+    """
+
+    __tablename__ = "morning_digests"
+    __table_args__ = (
+        UniqueConstraint("client_id", "digest_date", name="ux_morning_digests_client_date"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    client_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    digest_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    findings_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    findings_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="ok")
+
+
 class OptimizationActionDraft(Base):
     __tablename__ = "optimization_action_drafts"
 
